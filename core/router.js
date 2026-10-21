@@ -1,0 +1,146 @@
+/**
+ * 路由层：给定一个客户端请求的模型名，决定这一单交给谁。
+ *
+ * 决策规则（刻意做成可解释的两步，而不是加权打分）：
+ *   1. 硬约束：只留评分健康（healthy）的供给
+ *   2. 排序：按「有效成本 = 名义价格 ÷ 质量」升序
+ *
+ * 全都不可用时不做硬拒绝——按价格排下去试，但在响应头标记 degraded。
+ * 个人工具里「能用」通常比「严格」更重要。
+ */
+import { offerCost } from './pricing.js'
+import { isRoutable, effectiveCost } from './score.js'
+import { normalizeModelKey } from './inventory.js'
+
+const INFINITY_COST = Number.POSITIVE_INFINITY
+
+/** scoreOffers 返回 Map，但也允许传普通对象，两种都兼容。 */
+function getScore(scores, offerId) {
+  if (!scores) return undefined
+  return scores instanceof Map ? scores.get(offerId) : scores[offerId]
+}
+
+/**
+ * @param {{offers, providers, credentials, scores, benchmarks, settings, model, order?}} input
+ *   order —— 用户手动调过的 offerId 顺序；只影响可用的那几条，不影响可用性判定
+ * @returns {Array<{offer,provider,credential,price,quality,routable,effective,status,ttftMs}>}
+ */
+export function selectCandidates({ offers, providers, credentials, scores, benchmarks, settings, model, order }) {
+  const key = normalizeModelKey(model)
+  const maxTtftMs = Number(settings?.maxTtftMs) || 0
+  const matched = offers.filter(
+    (offer) =>
+      offer.modelKey === key ||
+      offer.upstreamName === model ||
+      normalizeModelKey(offer.upstreamName) === key,
+  )
+
+  const rows = matched.map((offer) => {
+    const provider = providers.find((p) => p.id === offer.providerId)
+    const credential =
+      (offer.credentialId && credentials.find((c) => c.id === offer.credentialId)) ||
+      // 优先用同分组的 Key：不同分组的 Key 权限和倍率可能不同
+      credentials.find(
+        (c) => c.providerId === offer.providerId && (c.group || '') === (offer.group || ''),
+      ) ||
+      credentials.find((c) => c.providerId === offer.providerId)
+    const cost = offerCost(offer, settings, benchmarks)
+    const score = getScore(scores, offer.id)
+    const quality = score?.quality ?? null
+    const price = cost.blendedCnyPerMtok
+    const ttftMs = score?.ttftMs ?? null
+    // 太慢的直接排除，但仍保留在候选列表里——决策日志要能看出「为什么没选它」
+    const tooSlow = maxTtftMs > 0 && typeof ttftMs === 'number' && ttftMs > maxTtftMs
+
+    // 把「为什么不可用」拆成人话，决策页直接显示
+    const reasons = []
+    if (tooSlow) reasons.push('首字超限')
+    if (score?.stale) reasons.push('评分过期')
+    if (typeof score?.availability === 'number' && score.availability < 0.8) {
+      reasons.push(`可用率 ${Math.round(score.availability * 100)}%`)
+    }
+    if (typeof score?.fingerprintRate === 'number' && score.fingerprintRate < 1) {
+      reasons.push(`指纹 ${Math.round(score.fingerprintRate * 100)}%`)
+    }
+    if (typeof score?.truncationRate === 'number' && score.truncationRate < 1) {
+      reasons.push(`截断 ${Math.round(score.truncationRate * 100)}%`)
+    }
+    if (typeof score?.billingRate === 'number' && score.billingRate < 1) {
+      reasons.push(`计费 ${Math.round(score.billingRate * 100)}%`)
+    }
+
+    return {
+      offer,
+      provider,
+      credential,
+      price,
+      quality,
+      routable: isRoutable(score) && !tooSlow,
+      tooSlow,
+      effective: effectiveCost(price, quality),
+      status: score?.status || 'unknown',
+      statusReason: reasons.join(' · ') || null,
+      ttftMs,
+    }
+  })
+
+  const manualIndex =
+    Array.isArray(order) && order.length > 0
+      ? new Map(order.map((id, index) => [id, index]))
+      : null
+
+  return rows
+    .filter((row) => row.provider && row.credential)
+    .sort((a, b) => {
+      // 可用性永远优先：手动排序不能把不可信的站提到前面
+      if (a.routable !== b.routable) return a.routable ? -1 : 1
+      if (manualIndex) {
+        const ia = manualIndex.has(a.offer.id) ? manualIndex.get(a.offer.id) : Number.MAX_SAFE_INTEGER
+        const ib = manualIndex.has(b.offer.id) ? manualIndex.get(b.offer.id) : Number.MAX_SAFE_INTEGER
+        if (ia !== ib) return ia - ib
+      }
+      const ea = a.effective ?? INFINITY_COST
+      const eb = b.effective ?? INFINITY_COST
+      if (ea !== eb) return ea - eb
+      return (a.price ?? INFINITY_COST) - (b.price ?? INFINITY_COST)
+    })
+}
+
+/** 网关对外的模型清单：按归一化名去重，客户端用这个名字请求即可。 */
+export function listPublicModels({ offers, scores }) {
+  const seen = new Map()
+  for (const offer of offers) {
+    const id = offer.modelKey || normalizeModelKey(offer.upstreamName)
+    if (!id) continue
+    const entry = seen.get(id)
+    const score = getScore(scores, offer.id)
+    const healthy = isRoutable(score)
+    if (!entry) {
+      seen.set(id, { id, providers: 1, healthy: healthy ? 1 : 0 })
+    } else {
+      entry.providers += 1
+      if (healthy) entry.healthy += 1
+    }
+  }
+  return [...seen.values()].sort((a, b) => a.id.localeCompare(b.id))
+}
+
+/** 生成给人看的决策说明，写进日志与响应头。 */
+export function explain(candidates) {
+  return candidates.map((c, index) => ({
+    rank: index + 1,
+    offerId: c.offer.id,
+    providerId: c.offer.providerId,
+    providerName: c.provider?.name ?? null,
+    upstreamName: c.offer.upstreamName,
+    group: c.offer.group || '',
+    price: c.price,
+    quality: c.quality,
+    effective: c.effective,
+    routable: c.routable,
+    tooSlow: Boolean(c.tooSlow),
+    ttftMs: c.ttftMs,
+    status: c.status,
+    statusReason: c.statusReason ?? null,
+  }))
+}

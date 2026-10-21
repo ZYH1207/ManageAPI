@@ -1,0 +1,137 @@
+/**
+ * 基准价表：中转站的「倍率」需要一个参照物才能换算成绝对价格。
+ *
+ * 两个来源：
+ *   1. 从「你信得过的那个站」的实际标价导入（更可信，主路径）
+ *   2. 内置官方参考价（`model-prices.js`），解决「不知道官方价」的冷启动问题
+ *
+ * 内置参考价**不会自动生效**——必须用户主动点「载入参考价」才写入，
+ * 而且只补空缺、不覆盖已有条目。宁可空着，也不偷偷给错数。
+ *
+ * 文件存在 ~/.manage-api/benchmark.json，可手工编辑。
+ */
+import { join } from 'node:path'
+import { readFile, writeFile, rename, mkdir } from 'node:fs/promises'
+import { dataDir } from './store.js'
+import { resolveReference } from './model-prices.js'
+
+function filePath() {
+  return join(dataDir(), 'benchmark.json')
+}
+
+/**
+ * 种子数据：只放价格长期稳定的经典模型，用来让新用户第一眼看到比价效果。
+ * 2026 年的新模型一律留空，由用户自行导入——宁可空着，也不给错数。
+ */
+const SEED = {
+  'gpt-4o': { display: 'GPT-4o', in: 2.5, out: 10, currency: 'USD', source: 'seed' },
+  'gpt-4o-mini': { display: 'GPT-4o mini', in: 0.15, out: 0.6, currency: 'USD', source: 'seed' },
+  'claude-3-5-sonnet': { display: 'Claude 3.5 Sonnet', in: 3, out: 15, currency: 'USD', source: 'seed' },
+  'deepseek-chat': { display: 'DeepSeek Chat', in: 0.27, out: 1.1, currency: 'USD', source: 'seed' },
+}
+
+export async function readBenchmarks() {
+  const p = filePath()
+  try {
+    const raw = JSON.parse(await readFile(p, 'utf8'))
+    return raw && typeof raw === 'object' ? raw : { ...SEED }
+  } catch {
+    return { ...SEED }
+  }
+}
+
+export async function writeBenchmarks(table) {
+  await mkdir(dataDir(), { recursive: true })
+  const p = filePath()
+  const tmp = `${p}.${process.pid}.tmp`
+  await writeFile(tmp, JSON.stringify(table, null, 2), 'utf8')
+  await rename(tmp, p)
+  return table
+}
+
+/** 单条写入/覆盖一个基准价。 */
+export async function setBenchmark(modelKey, entry) {
+  const table = await readBenchmarks()
+  const num = (v) => (v === null || v === undefined || v === '' ? null : Number(v))
+  table[modelKey] = {
+    display: entry.display || modelKey,
+    in: num(entry.in),
+    out: num(entry.out),
+    // 峰谷：留空表示该模型没有分时段定价
+    offPeakIn: num(entry.offPeakIn),
+    offPeakOut: num(entry.offPeakOut),
+    currency: entry.currency === 'CNY' ? 'CNY' : 'USD',
+    source: entry.source || 'manual',
+    updatedAt: new Date().toISOString(),
+  }
+  return writeBenchmarks(table)
+}
+
+export async function deleteBenchmark(modelKey) {
+  const table = await readBenchmarks()
+  delete table[modelKey]
+  return writeBenchmarks(table)
+}
+
+/**
+ * 把内置参考价里能匹配上的模型写入基准价表。
+ * 只补缺失的，不覆盖已有条目——用户手填或从站导入的更可信。
+ */
+export async function seedReferenceBenchmarks(modelKeys) {
+  const table = await readBenchmarks()
+  const added = []
+  const skipped = []
+  for (const key of modelKeys) {
+    if (!key) continue
+    const existing = table[key]
+    // 用户手填或从站导入的，绝不覆盖；只刷新之前由参考价写入的条目
+    if (existing && !String(existing.source || '').startsWith('reference:')) {
+      skipped.push(key)
+      continue
+    }
+    const ref = resolveReference(key)
+    if (!ref) {
+      skipped.push(key)
+      continue
+    }
+    table[key] = {
+      display: key,
+      in: ref.in,
+      out: ref.out,
+      offPeakIn: ref.offPeakIn ?? null,
+      offPeakOut: ref.offPeakOut ?? null,
+      currency: ref.currency,
+      source: `reference:${ref.matchedKey}`,
+      updatedAt: new Date().toISOString(),
+    }
+    added.push({ modelKey: key, matchedKey: ref.matchedKey, in: ref.in, out: ref.out, currency: ref.currency })
+  }
+  await writeBenchmarks(table)
+  return { added, skipped, total: Object.keys(table).length }
+}
+
+/**
+ * 把某个站已填好的实际价，整体设为基准。
+ * 找一个你确信「没虚标」的站，一键导入。
+ */
+export async function importBenchmarksFrom(offers, providerId) {
+  const table = await readBenchmarks()
+  let imported = 0
+  for (const offer of offers) {
+    if (offer.providerId !== providerId) continue
+    if (offer.pricingMode === 'ratio') continue
+    if (offer.inPrice === null && offer.outPrice === null) continue
+    const key = offer.modelKey || offer.upstreamName
+    table[key] = {
+      display: offer.upstreamName,
+      in: offer.inPrice === null ? null : Number(offer.inPrice),
+      out: offer.outPrice === null ? null : Number(offer.outPrice),
+      currency: offer.currency === 'CNY' ? 'CNY' : 'USD',
+      source: `imported:${providerId}`,
+      updatedAt: new Date().toISOString(),
+    }
+    imported += 1
+  }
+  await writeBenchmarks(table)
+  return { imported, total: Object.keys(table).length }
+}

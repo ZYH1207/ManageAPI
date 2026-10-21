@@ -1,0 +1,47 @@
+{
+  "name": "manage-api",
+  "version": "0.1.0",
+  "description": "管理你买的多个 AI 中转站：跨站比价、降智检测、一个 Key 走全部站点",
+  "type": "module",
+  "license": "MIT",
+  "author": "ZYH <2385377554@qq.com> (https://github.com/ZYH1207)",
+  "homepage": "https://github.com/ZYH1207/ManageAPI#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ZYH1207/ManageAPI.git"
+  },
+  "bugs": {
+    "url": "https://github.com/ZYH1207/ManageAPI/issues"
+  },
+  "keywords": [
+    "ai",
+    "llm",
+    "api-gateway",
+    "openai-compatible",
+    "one-api",
+    "new-api",
+    "sub2api",
+    "relay",
+    "llm-router",
+    "cost-tracking"
+  ],
+  "bin": {
+    "manage-api": "./daemon/index.js"
+  },
+  "files": [
+    "core",
+    "daemon",
+    "web"
+  ],
+  "scripts": {
+    "start": "node daemon/index.js",
+    "dev": "node daemon/index.js --open",
+    "mock": "node .test/mock-upstream.mjs",
+    "test": "node .test/run-e2e.mjs",
+    "seed:showcase": "node .test/seed-showcase.mjs",
+    "shots": "node .test/capture-shots.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

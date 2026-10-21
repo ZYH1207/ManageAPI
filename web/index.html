@@ -1,0 +1,473 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>ManageAPI · 中转站台账</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <div class="shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <span class="logo">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 2 2 7l10 5 10-5-10-5Z" /><path d="m2 17 10 5 10-5" /><path d="m2 12 10 5 10-5" />
+          </svg>
+        </span>
+        <div class="brand-text">
+          <h1>ManageAPI</h1>
+          <span class="sub">中转站台账</span>
+        </div>
+      </div>
+
+      <nav class="nav" id="nav">
+        <button data-tab="overview" class="active">
+          <svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/></svg>
+          <span class="nav-text"><span class="nav-title">概览</span><span class="nav-desc">状态与排名</span></span>
+        </button>
+        <button data-tab="providers">
+          <svg viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="7" rx="2"/><rect x="2" y="14" width="20" height="7" rx="2"/><line x1="6" y1="6.5" x2="6.01" y2="6.5"/><line x1="6" y1="17.5" x2="6.01" y2="17.5"/></svg>
+          <span class="nav-text"><span class="nav-title">站点</span><span class="nav-desc">中转站与 Key</span></span>
+        </button>
+        <button data-tab="pricing">
+          <svg viewBox="0 0 24 24"><line x1="6" y1="20" x2="6" y2="13"/><line x1="12" y1="20" x2="12" y2="6"/><line x1="18" y1="20" x2="18" y2="10"/></svg>
+          <span class="nav-text"><span class="nav-title">比价</span><span class="nav-desc">同一模型对比</span></span>
+        </button>
+        <button data-tab="decision">
+          <svg viewBox="0 0 24 24"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></svg>
+          <span class="nav-text"><span class="nav-title">智能决策</span><span class="nav-desc">选站与手动调整</span></span>
+        </button>
+        <button data-tab="probes">
+          <svg viewBox="0 0 24 24"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+          <span class="nav-text"><span class="nav-title">探针</span><span class="nav-desc">检测是否偷工</span></span>
+        </button>
+        <button data-tab="gateway">
+          <svg viewBox="0 0 24 24"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+          <span class="nav-text"><span class="nav-title">网关</span><span class="nav-desc">一个入口接管</span></span>
+        </button>
+        <button data-tab="usage">
+          <svg viewBox="0 0 24 24"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/></svg>
+          <span class="nav-text"><span class="nav-title">用量</span><span class="nav-desc">消耗统计</span></span>
+        </button>
+        <button data-tab="benchmark">
+          <svg viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>
+          <span class="nav-text"><span class="nav-title">基准价</span><span class="nav-desc">官方价参照</span></span>
+        </button>
+      </nav>
+
+      <div class="sidebar-foot">
+        <div class="sidebar-actions">
+          <button type="button" id="sidebar-toggle" data-act="toggle-sidebar" title="收起侧边栏">
+            <svg viewBox="0 0 24 24"><polyline points="11 17 6 12 11 7"/><polyline points="18 17 13 12 18 7"/></svg>
+          </button>
+          <button type="button" id="theme-btn" title="切换深色模式">
+            <svg viewBox="0 0 24 24"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+          </button>
+        </div>
+        <label class="fx">
+          <span>汇率 USD→CNY</span>
+          <input id="fx-input" type="number" step="0.01" min="1" />
+        </label>
+        <div class="sidebar-links">
+          <button type="button" data-act="show-help">使用说明</button>
+          <button type="button" data-act="show-contact">联系我们</button>
+        </div>
+      </div>
+    </aside>
+
+    <main>
+      <header class="topbar">
+        <div class="topbar-left">
+          <h2 id="page-title">概览</h2>
+          <span id="page-sub" class="topbar-sub"></span>
+        </div>
+        <div class="topbar-right">
+          <div class="notify-wrap">
+            <button id="notify-btn" class="notify-btn" type="button" aria-label="通知">
+              <svg viewBox="0 0 24 24"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
+              <span id="notify-dot" class="notify-dot" hidden></span>
+            </button>
+            <div id="notify-panel" class="notify-panel" hidden>
+              <div class="notify-head">
+                <span>通知</span>
+                <button class="ghost tiny" data-act="mark-read">全部已读</button>
+              </div>
+              <div id="notify-list" class="notify-list"></div>
+            </div>
+          </div>
+          <div id="topbar-badges" style="display:flex;gap:8px"></div>
+        </div>
+      </header>
+
+      <div class="content">
+        <section id="view-overview" class="view"></section>
+        <section id="view-providers" class="view" hidden></section>
+        <section id="view-pricing" class="view" hidden></section>
+        <section id="view-decision" class="view" hidden></section>
+        <section id="view-probes" class="view" hidden></section>
+        <section id="view-gateway" class="view" hidden></section>
+        <section id="view-usage" class="view" hidden></section>
+        <section id="view-benchmark" class="view" hidden></section>
+
+        <section id="view-help" class="view" hidden>
+          <div class="doc">
+            <p class="doc-lead">
+              ManageAPI 解决一个问题：<b>你买了几个 AI 中转站，但不知道哪个更划算、哪个在偷工减料</b>。
+              它把这些站放在一起比价、定期检测质量，然后用一个本地网关替你自动选站。
+              全部在本机运行，数据不出本机。
+            </p>
+
+            <h3 class="doc-h3">快速开始</h3>
+            <ol class="doc-steps">
+              <li><b>站点</b> 页添加中转站（地址结尾要带 <code>/v1</code>），粘贴它的 Key</li>
+              <li>点 <b>同步模型</b>，拉取该站有哪些模型</li>
+              <li>点 <b>导入倍率</b>，在弹出的分组列表里选你实际买的那个，倍率会自动填好</li>
+              <li>缺官方价的模型，去 <b>基准价</b> 页补上，或者载入内置参考价</li>
+              <li>去 <b>探针</b> 页跑一次检测，让程序知道哪些站可信</li>
+              <li>程序会按评分体系自动决定用哪个站，也可以在 <b>智能决策</b> 页手动调整先后</li>
+              <li>去 <b>网关</b> 页复制地址和 Key，填进 DSH 等 agent 平台</li>
+            </ol>
+
+            <h3 class="doc-h3">各页面怎么用</h3>
+
+            <h4 class="doc-h4">概览</h4>
+            <p>
+              打开就能看的总结页，不需要填任何东西。<br />
+              · <b>一句话结论</b> —— 你在用的那个模型，现在哪家最便宜、省多少<br />
+              · <b>四个指标</b> —— 站点数、模型供给数、可比较的模型数、最大价差<br />
+              · <b>需要关注</b> —— 探针判定有问题的站，按站聚合，写明原因<br />
+              · <b>站点排名</b> —— 按长期评分排序，绿点健康、黄点需关注、红点不稳定
+            </p>
+
+            <h4 class="doc-h4">站点</h4>
+            <p>
+              录入中转站和 Key 的地方。一个站可以挂多个 Key。<br />
+              · <b>名称</b> —— 随便填，只用于你自己识别<br />
+              · <b>地址</b> —— 中转站给你的 API 地址，<b>结尾必须带 <code>/v1</code></b>
+              （如 <code>https://api.example.com/v1</code>）<br />
+              · <b>类型</b> —— 不确定就选「不确定」，不影响功能<br />
+              · <b>Key</b> —— 粘贴完整的 <code>sk-...</code>，加密存储，界面只显示尾号
+            </p>
+            <p>每个站点卡片上有一排按钮：</p>
+            <p>
+              · <b>同步模型</b> —— 拉取该站 <code>/v1/models</code> 的列表。只是「有哪些模型」，不含价格。<br />
+              · <b>导入倍率</b> —— 点开先列分组，你选一个，倍率就填到下面所有模型。详见下面「分组」一节。<br />
+              · <b>用量核对</b> —— 用管理令牌拉站方记录的消费，和我们的估算对比。<br />
+              · <b>读余额</b> —— 尝试自动读余额。多数站读不到，读不到会说明原因。<br />
+              · <b>导出配置</b> —— 生成 OpenAI 兼容的配置片段，方便复制到客户端。<br />
+              · <b>令牌</b>（在 Key 那一行）—— 站点后台的登录令牌，用来读余额和用量。不参与对话。<br />
+              · <b>分组</b>（在 Key 那一行）—— 显示这把 Key 属于哪个分组，点它也能打开选分组。
+            </p>
+            <p>
+              <b>令牌怎么拿</b>：浏览器登录站点后台 → F12 → Network → 点任意 <code>/api/v1/</code> 开头的请求 →
+              复制 Request Headers 里的 <code>Authorization</code> 值（去掉 <code>Bearer </code> 前缀）。
+              令牌会过期（一般 7-30 天），失效后重新复制。
+            </p>
+
+            <h4 class="doc-h4">分组</h4>
+            <p>
+              中转站的计费公式是 <code>模型原价 × 分组倍率</code>。倍率 0.1 就是打一折，0.3 是三折。<br />
+              <b>「分组」就是你买的那一档</b>——同一个站常常有十几个分组（特惠池、企业通道、按次计费、
+              某个模型专用的高价组），<b>同一个模型在不同分组里价格能差好几倍</b>。
+            </p>
+            <p>
+              <b>为什么必须你自己选？</b>因为「你在哪个分组」是商务事实，API 读不出来。
+              Key 只能告诉你「能调用哪些模型」，不会告诉你「属于哪一档套餐」。
+              工具能列出所有分组和倍率，但最后一步得你点。
+            </p>
+            <p>
+              <b>点「导入倍率」之后会发生什么：</b><br />
+              ① 弹出该站所有分组，每个后面标着倍率和能覆盖你几个模型，能用的排在前面<br />
+              ② 你选中自己买的那个，点「应用倍率」<br />
+              ③ 这个分组会记在 Key 上，倍率写进下面所有模型，比价 / 决策 / 路由立刻同步<br />
+              ④ 下次再点「导入倍率」，会默认选中上次那个
+            </p>
+            <p>
+              数据从哪来：有「令牌」时读 <code>/api/v1/channels/available</code>（数据最全，
+              <b>不要求站开广场</b>）；没令牌则回落「模型广场」。两条路都不通会直接告诉你原因。
+            </p>
+            <p>
+              <b>分组倍率那几行怎么看</b>：<br />
+              · 标 <b>站点值</b>（绿）—— 和站点公布的一致，没动过<br />
+              · 标 <b>自定义</b>（黄）—— 你手改过，旁边会写出站点原本是多少<br />
+              · 标 <b>混合</b> —— 这个分组下的模型倍率不一致（单独改过某几个）<br />
+              · 直接改那个输入框就是<b>自定义倍率</b>，改一次该分组下所有模型一起变<br />
+              · 出现「恢复」按钮时点一下，回到站点公布的值；顶部「全部恢复为站点值」是整个站一起还原
+            </p>
+            <p>
+              自己调倍率有实际用处：比如站方标的 0.15 你觉得有水分，按「扣费核对」算出来实际是 0.18，
+              就手动改成 0.18，比价结果才准。
+            </p>
+
+            <h4 class="doc-h4">比价</h4>
+            <p>
+              同一个模型在不同站的价格横向对比。<br />
+              · <b>搜索框</b> —— 输入模型名过滤，右边显示「N / M 个模型」<br />
+              · <b>输入价 / 输出价</b> —— 直接改，失焦即保存<br />
+              · <b>倍率</b> —— 更省事的填法：实际价 = 基准价 × 倍率。填了倍率就不用填单价<br />
+              · <b>「＋」</b> —— 按当前行复制一条，用来给同一个模型建新分组<br />
+              · <b>¥/百万 token</b> —— 综合成本，输入按 25%、输出按 75% 加权（权重可在左下角调）<br />
+              · <b>价差</b> —— 比最便宜的贵多少百分比
+            </p>
+            <p>
+              行里的标记：<b>「最便宜」</b>是该模型当前最低价；<b>「可疑」</b>是探针判定不可信的站，
+              价格照常显示但不参与推荐；<b>「超时」</b>是首字延迟超过你设的上限。
+              模型名下方的小字是缓存命中率和空闲时段价。
+            </p>
+            <p>
+              一个站挂了多个分组时，同一个模型会出现在同一列的多行里，行内标着是哪个分组。
+              想给某个模型单独加一个分组，点行尾的 <b>「＋」</b> 复制一条再改。
+            </p>
+
+            <h4 class="doc-h4">智能决策</h4>
+            <p>
+              看路由会选谁，也能手动干预。每个模型一张表：<br />
+              · <b>绿底行</b> —— 当前会选中的那个站<br />
+              · <b>有效成本</b> —— 价格 ÷ 质量，越小越优先<br />
+              · <b>↑↓</b> —— 调整「可用」候选的先后，改完立即生效<br />
+              · <b>恢复自动</b> —— 清掉手动顺序，回到按有效成本排
+            </p>
+            <p>
+              手动顺序只影响「同样可用」的那几条。不可信、太慢、评分过期的站永远排在后面，
+              你拖不动它——<b>可用性是硬判断，不能被手动覆盖</b>。
+            </p>
+
+            <h4 class="doc-h4">探针</h4>
+            <p>
+              检测站有没有偷工。每个模型可以单独点「探测」，也可以点「探测全部」。<br />
+              · <b>指纹</b> —— 要求精确输出固定内容，返回不对说明可能被掉包<br />
+              · <b>截断</b> —— 要求数到 120，没数完说明上游压低了 max_tokens<br />
+              · <b>计费</b> —— 返回的 prompt_tokens 远超实际请求规模，说明用量虚报<br />
+              · <b>缓存</b> —— 同一段长前缀连发两次，看第二次命中多少（这一步要发 2 个请求）<br />
+              · <b>身份自述</b> —— 问它「你是什么模型」，结果<b>只记录、不评分</b>。
+              因为模型自述本来就不可信，同一个模型换个说法很常见，拿它扣分误伤太多。
+            </p>
+            <p>
+              <b>点表格里任意一行会展开</b>，能看到质量是怎么算出来的，以及最近一次探测的原始返回证据。
+            </p>
+            <p>顶部设置项：</p>
+            <p>
+              · <b>自动探测</b> —— 设间隔后后台定时跑。默认 1 小时，可以关掉。模型多的话建议设长一点，
+              每次探测都要花一点 token。<br />
+              · <b>评分有效期</b> —— 超过这个时间没重新探测，评分就作废、不再参与路由。<br />
+              · <b>首字上限</b> —— 超过这个延迟的供给不参与路由。0 表示不限。
+            </p>
+
+            <h4 class="doc-h4">网关</h4>
+            <p>
+              一个地址接管所有站，客户端只填一个 Key。<br />
+              · <b>地址</b> —— <code>http://127.0.0.1:4319/v1</code><br />
+              · <b>Key</b> —— <code>sk-mapi-...</code>，点「新建 Key」可以给每个客户端建一把<br />
+              · <b>月限额</b> —— 建 Key 时可设月度 token 上限，超了返回 429<br />
+              · <b>轮换</b> —— 某把 Key 泄露了单独换，不影响其他客户端
+            </p>
+            <p>
+              <b>最近请求</b>表记录每次路由：选了谁、试了几次、耗时多少。
+              点开能看到完整的候选排序和失败原因。
+            </p>
+
+            <h4 class="doc-h4">用量</h4>
+            <p>
+              · <b>范围</b> —— 7 / 30 / 90 天切换<br />
+              · <b>按天柱图</b> —— 柱高是 token 总量，悬停看当天明细<br />
+              · <b>按 Key / 模型 / 站点</b> —— 三张表，看谁用的、用的什么、实际跑在哪家
+            </p>
+            <p>
+              <b>只有经过网关的请求才计入。</b>如果你在站上直接用，或别的客户端没走网关，那些不会算进来。
+            </p>
+
+            <h4 class="doc-h4">基准价</h4>
+            <p>
+              倍率换算的参照物，本质就是「官方价」：<code>实际价 = 基准价 × 倍率</code>。
+              某个模型没有基准价，它的倍率就没法换算成钱，只能填绝对价。三个来源：<br />
+              · <b>从站点导入官方价</b> —— 选一个站，一键拉取。有「令牌」读可用渠道、没令牌读模型广场。
+              只补空缺，不覆盖你已有的<br />
+              · <b>以此站已填价为准</b> —— 把某个站已经填好的实际价整体设为基准，适合你确信它没虚标<br />
+              · <b>载入内置参考价</b> —— 工具内置的一份官方价，价格常变，务必核对
+            </p>
+            <p>
+              表格里可以直接改价格。「空闲输入 / 空闲输出」是峰谷定价用的（比如 DeepSeek 空闲时段半价）。
+              「来源」列会标 <code>reference:</code>（内置）、<code>channels:</code>（可用渠道）、
+              <code>plaza:</code>（模型广场）或 <code>imported:</code>（从站导入），方便分辨数据从哪来。
+            </p>
+            <p>
+              <b>导入的是哪个价？</b>是站方自己标的<b>模型原价</b>（还没乘分组倍率的那一层），
+              这样倍率才有意义。模型广场里另有一个叫「官方价」的字段，实测不少站把它填成同一个占位值
+              （比如所有 deepseek 模型都报 0.15），所以工具<b>不用它</b>。
+            </p>
+
+            <h3 class="doc-h3">它是怎么工作的</h3>
+            <p>
+              整个工具是一条闭环：<b>探针产生评分 → 评分决定路由 → 路由产生真实流量 → 流量回写评分</b>。
+              下面拆开讲每一步在做什么、为什么这么做。
+            </p>
+
+            <h4 class="doc-h4">① 探针：查的是「有没有偷工」，不是「模型聪不聪明」</h4>
+            <p>
+              每次探测对一个模型发 5 个请求，分别对应中转站最常见的几种偷工方式。
+              它测的不是 MMLU 那种「模型有多聪明」——同一个模型在 A 站和 B 站能力本来就一样，
+              有差别的是<b>它们有没有老实提供服务</b>。
+            </p>
+
+            <h4 class="doc-h4">② 评分：两个维度分开算</h4>
+            <p>
+              <b>可用率</b> = 成功次数 ÷ 总次数（探针 + 真实流量一起算）<br />
+              <b>完整性</b> = 指纹通过率 × 0.5 + 未截断率 × 0.3 + 计费正常率 × 0.2<br />
+              <b>质量</b> = 可用率 × 完整性<br />
+              任一维度低于 0.8 就标记为不可用，不参与路由。
+            </p>
+            <p>
+              评分有有效期（默认 6 小时）。过期后不再参与路由——<b>过期数据比没有数据更危险</b>，
+              因为它会让你误以为已经检查过了。定时探测就是为了让评分保持新鲜。
+            </p>
+
+            <h4 class="doc-h4">③ 决策：先筛掉，再比价</h4>
+            <p>
+              <b>硬约束</b> —— 不可信、太慢、评分过期的，直接排除。<br />
+              <b>有效成本排序</b> —— 剩下的按 <code>价格 ÷ 质量</code> 从小到大排。
+            </p>
+            <p>
+              为什么用除法而不是加权求和？因为「便宜 10% 但降智 30%」的站，加权后可能仍然胜出；
+              而除以质量之后，质量掉一半成本就翻倍，再怎么便宜也压不住。
+              这个公式还天然可解释：它表示「为一份可信输出实际付了多少钱」。
+            </p>
+
+            <h4 class="doc-h4">④ 路由：首选挂了会自动换下一个</h4>
+            <p>
+              <b>这是网关的核心能力。</b>同一个模型，如果排第一的站挂了，会自动试第二个、第三个，
+              客户端完全感知不到。关键在流式转发的边界：
+              <b>必须读到第一个 chunk 并确认它不是错误，才向客户端提交响应头</b>。
+            </p>
+            <p>
+              · <b>首字节之前失败</b> —— 静默换下一个站，客户端无感<br />
+              · <b>首字节之后失败</b> —— 已经吐数据了，只能报错收尾，不能重试<br />
+              所以顺序很重要：第一个站要选最可能成功的，这就是为什么要排除不可信和太慢的。
+            </p>
+
+            <h4 class="doc-h4">⑤ 回写：真实流量也算数</h4>
+            <p>
+              探针是模拟请求，测不出「高峰期 5xx」这类问题。所以网关每次转发的成败也会累计到对应站上，
+              和探针一起算可用率。一个站探针正常、但连续 3 次真实请求失败，可用率会掉到 63%，
+              状态自动变成「不稳定」，下次路由就跳过它。
+            </p>
+
+            <h4 class="doc-h4">几个刻意的取舍</h4>
+            <p>
+              <b>延迟不参与加权排序</b> —— 延迟和价格量纲不同，硬凑成分数会失真。
+              改成一个可选上限：超过就不参与路由，规则简单可预期。<br />
+              <b>缓存命中率只展示、不折算成本</b> —— 缓存收益取决于你的使用模式。
+              前缀都不重复的话命中率就是 0，那个「便宜」对你没意义。<br />
+              <b>余额读不到就留空</b> —— 多数站不对 API Key 开放余额接口，工具不会猜一个数字填进去。
+            </p>
+
+            <h3 class="doc-h3">常见问题</h3>
+            <p>
+              <b>余额读不到？</b> 多数站不对 API Key 开放余额接口。可以在 Key 那行点「令牌」填一个后台登录令牌，
+              或者直接手动填余额。<br />
+              <b>「导入倍率」和「基准价导入」有什么区别？</b> 站点页的导入倍率写的是<b>倍率</b>，
+              基准价页的写的是<b>官方价</b>。两边分工：官方价归基准价页，折扣归站点页。<br />
+              <b>为什么同一个模型在两个分组里价格不一样？</b> 正常。分组背后是不同的上游渠道，
+              原价和倍率都可能不同。所以必须先选对分组，价格才有意义。<br />
+              <b>选了分组，价格还是没变？</b> 两种情况：① 那个模型没有基准价，只能填绝对价，
+              提示里会写「N 个缺基准价」，去基准价页补上；② 这个模型不在你选的分组里，会算进「未匹配」。<br />
+              <b>能不能不选分组？</b> 能，会按站点原价（倍率 1）算。价格偏贵、不会偏便宜，
+              比价方向不会错，只是不如填准了精确。<br />
+              <b>为什么结果可疑？</b> 探针发现指纹不符、输出被截断或用量虚报。点探针页的行能看到原始返回证据。<br />
+              <b>一定要用网关吗？</b> 不一定。只用来比价和检测也完全够用。网关的额外价值是自动选站、
+              一个 Key 走全部站、按客户端统计用量。<br />
+              <b>多个实例能同时跑吗？</b> 不能。它们会抢同一个数据目录，互相覆盖。只保留一个进程。
+            </p>
+
+            <h3 class="doc-h3">数据存在哪</h3>
+            <p>
+              全部在本机 <code>~/.manage-api/</code>，不联网、不上传。Key 加密存储，界面只显示尾号。
+              备份直接拷这个目录即可。
+            </p>
+          </div>
+        </section>
+      </div>
+    </main>
+  </div>
+
+  <div id="toast" class="toast" hidden></div>
+
+  <div id="help-modal" class="modal" hidden>
+    <div class="modal-backdrop" data-act="close-help"></div>
+    <div class="modal-panel help-panel">
+      <div class="modal-head">
+        <h3>使用说明</h3>
+        <div style="display:flex;gap:8px;align-items:center">
+          <a class="ghost-btn" href="/#help" target="_blank" rel="noopener">在新页面打开</a>
+          <button class="ghost" data-act="close-help">关闭</button>
+        </div>
+      </div>
+      <div class="help-body">
+        <nav class="help-toc" id="help-toc"></nav>
+        <div class="help-content" id="help-content"></div>
+      </div>
+    </div>
+  </div>
+
+  <div id="contact-modal" class="modal" hidden>
+    <div class="modal-backdrop" data-act="close-contact"></div>
+    <div class="modal-panel" style="width:min(560px,calc(100vw - 40px))">
+      <div class="modal-head">
+        <h3>联系我们</h3>
+        <button class="ghost" data-act="close-contact">关闭</button>
+      </div>
+      <div class="modal-body">
+        <div class="contact-intro">
+          <span class="contact-logo">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 2 2 7l10 5 10-5-10-5Z" /><path d="m2 17 10 5 10-5" /><path d="m2 12 10 5 10-5" />
+            </svg>
+          </span>
+          <div>
+            <div class="contact-name">ManageAPI</div>
+            <div class="contact-tagline">管理你买的多个 AI 中转站 · 本地运行 · 数据不出本机</div>
+          </div>
+        </div>
+        <div class="contact-grid" id="contact-grid"></div>
+        <p class="contact-note">
+          遇到问题请优先看「使用说明」。想加新功能或者发现 bug，欢迎通过上面任一渠道告诉我。
+        </p>
+      </div>
+    </div>
+  </div>
+
+  <div id="group-modal" class="modal" hidden>
+    <div class="modal-backdrop" data-act="close-group-modal"></div>
+    <div class="modal-panel" style="width:min(620px,calc(100vw - 40px))">
+      <div class="modal-head">
+        <h3>选择分组</h3>
+        <button class="ghost" data-act="close-group-modal">关闭</button>
+      </div>
+      <div class="modal-body" id="group-modal-body"></div>
+    </div>
+  </div>
+
+  <template id="tpl-add-provider">
+    <form class="card form-card" id="form-add-provider">
+      <h3>添加站点</h3>
+      <div class="grid">
+        <label>名称<input name="name" placeholder="例如：XX 中转站" required /></label>
+        <label>地址<input name="baseUrl" placeholder="https://api.example.com/v1" required /></label>
+        <label>类型
+          <select name="kind">
+            <option value="unknown">不确定</option>
+            <option value="one-api">one-api</option>
+            <option value="new-api">new-api</option>
+          </select>
+        </label>
+        <label>备注<input name="note" placeholder="可选" /></label>
+      </div>
+      <div class="form-actions">
+        <button type="submit" class="primary">添加</button>
+      </div>
+    </form>
+  </template>
+
+  <script type="module" src="/app.js"></script>
+</body>
+</html>

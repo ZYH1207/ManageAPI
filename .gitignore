@@ -1,0 +1,24 @@
+node_modules/
+dist/
+*.log
+.DS_Store
+Thumbs.db
+
+# 本地测试产生的数据目录
+.test-data/
+.smoke/
+.test/tmp/
+
+# 编辑器
+.vscode/
+.idea/
+
+# 工具缓存（不属于项目内容）
+.workbuddy-ai/
+.research/
+
+# 本机真实数据的临时备份，别误提交
+db.json
+benchmark.json
+usage.json
+master.key

@@ -1,0 +1,9 @@
+# 统一用 LF，避免 Windows 上提交 CRLF 导致 diff 全是噪音
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.ico binary
+
+# 锁文件不参与 diff 统计
+package-lock.json -diff
