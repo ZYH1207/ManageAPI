@@ -361,7 +361,8 @@ web/               Frontend (vanilla JS, no build, no framework)
   check-lang.mjs     Round-trip check for the language switch
   dump-strings.mjs   Dumps every Chinese string in the UI, as a translation checklist
 
-docs/              Images for the README
+docs/              README images + design docs
+  dsh-plugin-plan.md DSH plugin plan (feature list and extension points)
 ```
 
 `core/` has no host dependencies and can be reused on its own.
@@ -414,7 +415,7 @@ Site names in the demo data (云雀 / 星链 / 极光 / 苍穹) are entirely fic
 - **More upstream types** — optimised for one-api / new-api / Sub2API; other self-hosted gateways need manual prices
 - **Per-request billing** — currently token-based only
 - **Master-password key derivation** — stronger local key protection
-- **DSH plugin form** — move the ledger into the DSH sidebar and register it as a tool, so an agent can answer "which site is cheapest right now"
+- **DSH plugin form** — more than a sidebar: register as a DSH provider so every real agent turn takes part in routing and feeds back into scoring. See [`docs/dsh-plugin-plan.md`](docs/dsh-plugin-plan.md)
 
 ---
 

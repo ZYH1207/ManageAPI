@@ -368,7 +368,8 @@ web/               前端（原生 JS，无构建，无框架）
   check-lang.mjs     中英切换往返检查
   dump-strings.mjs   把界面上所有中文文案抓成清单，加新文案时对照用
 
-docs/              README 用图
+docs/              README 用图 + 设计文档
+  dsh-plugin-plan.md DSH 插件端规划（功能清单与扩展点）
 ```
 
 `core/` 不依赖任何宿主，可以单独复用。
@@ -420,7 +421,7 @@ node .test/capture-shots.mjs
 - **更多上游类型** —— 目前针对 one-api / new-api / Sub2API 系优化，其他自建网关要手动填价
 - **按次计费** —— 现在只支持按 token 计价
 - **主密码派生密钥** —— 提升本地密钥强度
-- **DSH 插件形态** —— 把台账搬进 DSH 侧边栏，并注册成 tool，让 agent 能直接回答「现在哪个站最便宜」
+- **DSH 插件形态** —— 不只是搬进侧边栏：注册成 DSH 的 provider，让 agent 的每次真实对话都参与选站并回写评分。方案见 [`docs/dsh-plugin-plan.md`](docs/dsh-plugin-plan.md)
 
 ---
 
