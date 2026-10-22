@@ -90,11 +90,12 @@ await send('Emulation.setDeviceMetricsOverride', {
   width: 1440, height: 900, deviceScaleFactor: 1, mobile: false,
 })
 
-// 强制界面语言（默认中文；SHOT_LANG=en 出英文图）
+// 强制界面语言（默认中文；SHOT_LANG=en 出英文图）和主题（默认浅色）
 const LANG = process.env.SHOT_LANG || 'zh'
+const THEME = process.env.SHOT_THEME || 'light'
 await send('Page.navigate', { url: `${APP}/` })
 await sleep(1200)
-await evalJs(`localStorage.setItem('manageapi.lang', '${LANG}')`)
+await evalJs(`localStorage.setItem('manageapi.lang', '${LANG}'); localStorage.setItem('manageapi.theme', '${THEME}')`)
 
 // 拦截 /api/providers/*/groups，回一份假的分组列表
 listeners.set('Fetch.requestPaused', async ({ requestId, request }) => {
@@ -130,10 +131,19 @@ console.log('抓使用说明…')
 await goto('#help')
 await shot('help')
 
+console.log('抓语言菜单…')
+await goto('#overview')
+await evalJs(`document.querySelector('#lang-btn').click()`)
+await sleep(500)
+await shot('lang')
+await evalJs(`document.querySelector('#lang-btn').click()`)
+await sleep(300)
+
 console.log('抓深色模式…')
 await goto('#overview')
-await evalJs(`document.documentElement.dataset.theme = 'dark'`)
-await sleep(500)
+// 点按钮而不是直接改 dataset：这样「深色模式 / 浅色模式」的文案也会跟着翻
+await evalJs(`if (!document.documentElement.dataset.theme) document.querySelector('#theme-btn').click()`)
+await sleep(600)
 await shot('dark')
 
 console.log('完成')

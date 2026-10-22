@@ -57,22 +57,18 @@
       </nav>
 
       <div class="sidebar-foot">
-        <div class="sidebar-actions">
-          <button type="button" id="sidebar-toggle" data-act="toggle-sidebar" title="收起侧边栏" data-i18n-title="收起侧边栏">
-            <svg viewBox="0 0 24 24"><polyline points="11 17 6 12 11 7"/><polyline points="18 17 13 12 18 7"/></svg>
-          </button>
-          <button type="button" id="theme-btn" title="切换深色模式" data-i18n-title="切换深色模式">
-            <svg viewBox="0 0 24 24"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
-          </button>
-        </div>
-        <label class="fx">
-          <span data-i18n="汇率 USD→CNY">汇率 USD→CNY</span>
-          <input id="fx-input" type="number" step="0.01" min="1" />
-        </label>
-        <div class="sidebar-links">
-          <button type="button" data-act="show-help" data-i18n="使用说明">使用说明</button>
-          <button type="button" data-act="show-contact" data-i18n="联系我们">联系我们</button>
-        </div>
+        <button type="button" class="side-link" data-act="show-contact">
+          <svg viewBox="0 0 24 24"><rect x="2.5" y="4.5" width="19" height="15" rx="2.5"/><path d="m3 7 9 6 9-6"/></svg>
+          <span data-i18n="联系我们">联系我们</span>
+        </button>
+        <button type="button" class="side-link" id="theme-btn">
+          <svg id="theme-icon" viewBox="0 0 24 24"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+          <span id="theme-label" data-i18n="深色模式">深色模式</span>
+        </button>
+        <button type="button" class="side-link" id="sidebar-toggle" data-act="toggle-sidebar">
+          <svg viewBox="0 0 24 24"><polyline points="11 17 6 12 11 7"/><polyline points="18 17 13 12 18 7"/></svg>
+          <span id="sidebar-label" data-i18n="收起">收起</span>
+        </button>
       </div>
     </aside>
 
@@ -96,10 +92,27 @@
               <div id="notify-list" class="notify-list"></div>
             </div>
           </div>
-          <button id="lang-btn" class="lang-btn" type="button" title="切换语言" aria-label="切换语言" data-i18n-title="切换语言">
-            <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3a15 15 0 0 1 0 18a15 15 0 0 1 0-18"/></svg>
-            <span id="lang-label">EN</span>
+          <button class="top-btn" type="button" data-act="show-help">
+            <svg viewBox="0 0 24 24"><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H20v15.5H6.5A2.5 2.5 0 0 0 4 21z"/><path d="M4 18.5V5.5"/><path d="M8 7h8"/></svg>
+            <span data-i18n="文档">文档</span>
           </button>
+          <div class="lang-wrap">
+            <button id="lang-btn" class="lang-btn" type="button" title="切换语言" aria-label="切换语言" data-i18n-title="切换语言">
+              <span id="lang-label">CN ZH</span>
+              <svg class="lang-chev" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg>
+            </button>
+            <div id="lang-menu" class="lang-menu" hidden>
+              <button type="button" class="lang-item" data-act="set-lang" data-lang="en">
+                <span class="lang-code">us</span>
+                <span class="lang-name">English</span>
+              </button>
+              <button type="button" class="lang-item" data-act="set-lang" data-lang="zh">
+                <span class="lang-code">CN</span>
+                <span class="lang-name">中文</span>
+                <svg class="lang-check" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>
+              </button>
+            </div>
+          </div>
           <div id="topbar-badges" style="display:flex;gap:8px"></div>
         </div>
       </header>
@@ -300,6 +313,9 @@
               <b>导入的是哪个价？</b>是站方自己标的<b>模型原价</b>（还没乘分组倍率的那一层），
               这样倍率才有意义。模型广场里另有一个叫「官方价」的字段，实测不少站把它填成同一个占位值
               （比如所有 deepseek 模型都报 0.15），所以工具<b>不用它</b>。
+            </p>
+            <p>
+              页面底部还有<b>汇率（USD→CNY）</b>：只影响按美元标价的站点，人民币标价的站不受影响。
             </p>
 
             <h3 class="doc-h3">它是怎么工作的</h3>
@@ -580,6 +596,9 @@
               is applied — otherwise ratios would be meaningless. The model plaza also exposes a field called "official
               price", but in practice several sites fill it with one placeholder value for everything (e.g. every
               deepseek model reporting 0.15), so the tool ignores it.
+            </p>
+            <p>
+              At the bottom of this page there is a <b>USD→CNY rate</b>: it only affects sites priced in USD.
             </p>
 
             <h3 class="doc-h3">How it works</h3>

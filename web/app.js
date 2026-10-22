@@ -1,5 +1,5 @@
 /** 前端：无框架，全量状态 + 重渲染。 */
-import { getLang, onLangChange, restoreDom, t, toggleLang, translateDom } from './i18n.js'
+import { getLang, onLangChange, restoreDom, setLang, t, translateDom } from './i18n.js'
 
 const $ = (sel, root = document) => root.querySelector(sel)
 
@@ -90,8 +90,8 @@ function buildNotifications() {
     list.push({
       id: `quota:${c.id}:${c.quotaRemaining}`,
       level: c.quotaRemaining <= 0 ? 'danger' : 'warn',
-      title: `${provider?.name || '站点'} 余额偏低`,
-      desc: `剩余 ${c.quotaRemaining} ${c.currency}，该充值了`,
+      title: t('{name} 余额偏低', { name: provider?.name || t('站点') }),
+      desc: t('剩余 {amount} {currency}，该充值了', { amount: c.quotaRemaining, currency: c.currency }),
     })
   }
 
@@ -104,8 +104,8 @@ function buildNotifications() {
     const entry = health.get(offer.providerId) || { count: 0, severe: false, reasons: new Set() }
     entry.count += 1
     if (score.status === 'unstable') entry.severe = true
-    if (score.status === 'degraded') entry.reasons.add('结果可疑')
-    if (score.status === 'stale') entry.reasons.add('评分过期')
+    if (score.status === 'degraded') entry.reasons.add(t('结果可疑'))
+    if (score.status === 'stale') entry.reasons.add(t('评分过期'))
     health.set(offer.providerId, entry)
   }
   for (const [providerId, entry] of health) {
@@ -113,8 +113,11 @@ function buildNotifications() {
     list.push({
       id: `health:${providerId}:${[...entry.reasons].join(',')}`,
       level: entry.severe ? 'danger' : 'warn',
-      title: `${provider?.name || '站点'} ${entry.severe ? '不稳定' : '需要关注'}`,
-      desc: `${entry.count} 个模型 · ${[...entry.reasons].join(' · ')}`,
+      title: t('{name} {state}', {
+        name: provider?.name || t('站点'),
+        state: entry.severe ? t('不稳定') : t('需要关注'),
+      }),
+      desc: t('{n} 个模型 · {reasons}', { n: entry.count, reasons: [...entry.reasons].join(' · ') }),
     })
   }
 
@@ -124,15 +127,19 @@ function buildNotifications() {
       list.push({
         id: `fail:${r.id}`,
         level: 'danger',
-        title: '请求全部失败',
-        desc: `${r.model}：所有候选站都不可用`,
+        title: t('请求全部失败'),
+        desc: t('{model}：所有候选站都不可用', { model: r.model }),
       })
     } else if (r.attempts > 1) {
       list.push({
         id: `switch:${r.id}`,
         level: 'info',
-        title: '自动切换了站点',
-        desc: `${r.model}：首选失败，第 ${r.attempts} 次成功（${r.chosenProviderName || '—'}）`,
+        title: t('自动切换了站点'),
+        desc: t('{model}：首选失败，第 {n} 次成功（{provider}）', {
+          model: r.model,
+          n: r.attempts,
+          provider: r.chosenProviderName || '—',
+        }),
       })
     }
   }
@@ -150,7 +157,7 @@ function renderNotifications() {
   if (dot) dot.hidden = unread.length === 0
 
   const btn = $('#notify-btn')
-  if (btn) btn.title = unread.length ? `${unread.length} 条未读` : '通知'
+  if (btn) btn.title = unread.length ? t('{n} 条未读', { n: unread.length }) : t('通知')
 
   const container = $('#notify-list')
   if (!container) return
@@ -213,8 +220,6 @@ function render() {
   renderGateway()
   renderUsage()
   renderBenchmark()
-  const fx = $('#fx-input')
-  if (document.activeElement !== fx) fx.value = state.settings.fxUsdCny
 
   const badges = $('#topbar-badges')
   if (badges) {
@@ -860,7 +865,7 @@ function renderPricing() {
       <input id="pricing-search" class="search" type="search" placeholder="搜索模型名…" value="${esc(filters.pricing)}" />
       <span class="hint" style="margin:0">${visibleGroups.length} / ${state.ranked.length} 个模型</span>
     </div>
-    <p class="hint">价格直接改，失焦即保存。「¥/百万 token」是综合成本：输入按 25%、输出按 75% 加权（权重可在左下角汇率旁调）。</p>
+    <p class="hint">价格直接改，失焦即保存。「¥/百万 token」是综合成本：输入按 25%、输出按 75% 加权。美元标价的站按「基准价」页里的汇率换算。</p>
     ${groups}${unpricedBlock}`
 }
 
@@ -1447,6 +1452,13 @@ function renderBenchmark() {
           asOf: esc(state.reference?.asOf || '—'),
         })}
       </p>
+      <div class="inline-form" style="margin-top:12px">
+        <label class="field-inline">
+          <span data-i18n="汇率 USD→CNY">汇率 USD→CNY</span>
+          <input id="fx-input" data-act="fx" type="number" step="0.01" min="1" value="${esc(state.settings.fxUsdCny)}" style="width:86px" />
+        </label>
+        <span class="hint" style="margin:0">只影响按美元标价的站点；人民币标价的站不受影响。</span>
+      </div>
     </div>
     <div class="toolbar" style="margin:18px 0 10px">
       <input id="benchmark-search" class="search" type="search" placeholder="搜索模型名…" value="${esc(filters.benchmark)}" />
@@ -1615,6 +1627,14 @@ function setTab(name) {
   if (location.hash !== `#${name}`) history.replaceState(null, '', `#${name}`)
 }
 
+// 点语言菜单以外的地方收起它
+document.addEventListener('click', (event) => {
+  const menu = $('#lang-menu')
+  if (!menu || menu.hidden) return
+  if (event.target.closest('.lang-wrap')) return
+  closeLangMenu()
+})
+
 // 点通知面板以外的地方收起它
 document.addEventListener('click', (event) => {
   const panel = $('#notify-panel')
@@ -1625,6 +1645,7 @@ document.addEventListener('click', (event) => {
 
 document.addEventListener('keydown', (event) => {
   if (event.key !== 'Escape') return
+  closeLangMenu()
   for (const id of ['help-modal', 'contact-modal', 'group-modal']) {
     const modal = document.getElementById(id)
     if (modal && !modal.hidden) modal.hidden = true
@@ -1633,7 +1654,16 @@ document.addEventListener('keydown', (event) => {
 
 document.addEventListener('click', async (event) => {
   if (event.target.closest('#lang-btn')) {
-    toggleLang()
+    const wrap = document.querySelector('.lang-wrap')
+    const menu = $('#lang-menu')
+    if (!wrap || !menu) return
+    menu.hidden = !menu.hidden
+    wrap.classList.toggle('open', !menu.hidden)
+    return
+  }
+  if (event.target.closest('[data-act="set-lang"]')) {
+    setLang(event.target.closest('[data-act="set-lang"]').dataset.lang)
+    closeLangMenu()
     return
   }
   if (event.target.closest('#theme-btn')) {
@@ -1646,6 +1676,7 @@ document.addEventListener('click', async (event) => {
     } catch {
       /* 忽略 */
     }
+    paintThemeButton()
     return
   }
   if (event.target.closest('[data-act="toggle-sidebar"]')) {
@@ -1657,6 +1688,7 @@ document.addEventListener('click', async (event) => {
     } catch {
       /* 忽略 */
     }
+    paintSidebarButton()
     return
   }
 
@@ -2287,16 +2319,18 @@ document.addEventListener('change', async (event) => {
   }
 })
 
-$('#fx-input').addEventListener('change', async (event) => {
+// 汇率输入框在「基准价」页里动态渲染，所以用事件委托而不是直接绑定
+document.addEventListener('change', async (event) => {
+  const input = event.target.closest('[data-act="fx"]')
+  if (!input) return
   try {
-    state = await api('PATCH', '/api/settings', { fxUsdCny: Number(event.target.value) })
+    state = await api('PATCH', '/api/settings', { fxUsdCny: Number(input.value) })
     render()
     toast('汇率已更新')
   } catch (error) {
     toast(error.message, true)
   }
 })
-
 document.addEventListener('click', async (event) => {
   if (event.target.id === 'btn-plaza-benchmark') {
     const providerId = $('#import-provider')?.value
@@ -2359,9 +2393,42 @@ document.addEventListener('click', async (event) => {
 
 /** 语言按钮上的小字：显示「切过去之后」的语言 */
 function paintLangButton() {
+  const lang = getLang()
   const label = $('#lang-label')
-  if (label) label.textContent = getLang() === 'zh' ? 'EN' : '中'
-  document.documentElement.dataset.lang = getLang()
+  // 按钮上显示「当前」语言，和 MikuAPI 一样：中文环境写 CN ZH，英文写 us EN
+  if (label) label.textContent = lang === 'zh' ? 'CN ZH' : 'us EN'
+  document.documentElement.dataset.lang = lang
+  for (const item of document.querySelectorAll('.lang-item')) {
+    item.classList.toggle('active', item.dataset.lang === lang)
+  }
+}
+
+function closeLangMenu() {
+  const menu = $('#lang-menu')
+  if (menu) menu.hidden = true
+  document.querySelector('.lang-wrap')?.classList.remove('open')
+}
+
+/** 侧边栏底部的主题按钮：图标和文案都跟着当前主题走 */
+function paintThemeButton() {
+  const dark = document.documentElement.dataset.theme === 'dark'
+  const label = $('#theme-label')
+  if (label) label.setAttribute('data-i18n', dark ? '浅色模式' : '深色模式')
+  if (label) label.textContent = t(dark ? '浅色模式' : '深色模式')
+  const icon = $('#theme-icon')
+  if (icon) {
+    icon.innerHTML = dark
+      ? '<circle cx="12" cy="12" r="4.2"/><path d="M12 2v2.5M12 19.5V22M2 12h2.5M19.5 12H22M4.9 4.9l1.8 1.8M17.3 17.3l1.8 1.8M19.1 4.9l-1.8 1.8M6.7 17.3l-1.8 1.8"/>'
+      : '<path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>'
+  }
+}
+
+/** 收起按钮：收起后箭头翻转，文案跟着变 */
+function paintSidebarButton() {
+  const collapsed = document.querySelector('.sidebar')?.classList.contains('collapsed')
+  const label = $('#sidebar-label')
+  if (label) label.setAttribute('data-i18n', collapsed ? '展开' : '收起')
+  if (label) label.textContent = t(collapsed ? '展开' : '收起')
 }
 
 onLangChange((lang) => {
@@ -2369,6 +2436,8 @@ onLangChange((lang) => {
   // 静态外壳（侧边栏副标题、弹窗标题这些）不会重渲染，切回中文时靠还原
   if (lang === 'zh') restoreDom(document.body)
   applyShellText()
+  paintThemeButton()
+  paintSidebarButton()
   // 动态内容都是从中文模板重渲染出来的，重画一遍就换过来了
   render()
   setTab(activeTab === 'help' ? 'help' : activeTab)
@@ -2393,6 +2462,8 @@ try {
   state = await api('GET', '/api/state')
   paintLangButton()
   applyShellText()
+  paintThemeButton()
+  paintSidebarButton()
   render()
   setTab(location.hash.replace('#', '') || 'providers')
   // ?help=1 / ?contact=1 直接打开对应面板（方便分享链接）

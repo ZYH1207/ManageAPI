@@ -39,9 +39,17 @@ Eight pages on the left, one job each:
 | **Usage** | Tokens by day / key / model / site |
 | **Benchmarks** | The baseline that ratios convert against |
 
-Dark mode included:
+The top bar holds notifications, the docs entry and the language dropdown; the sidebar bottom has three fixed entries: Contact, Dark mode, Collapse.
+
+Dark mode (navy + mint):
 
 ![Dark mode](docs/screenshot-dark.png)
+
+The UI is bilingual; switch it from the top-bar dropdown. The choice is stored in `localStorage` and defaults to your browser language.
+
+![Language switch](docs/screenshot-lang.png)
+
+![English UI](docs/screenshot-pricing-en.png)
 
 ---
 
@@ -126,6 +134,8 @@ Ratios need something to convert against. Three sources:
 | **Load built-in prices** | A bundled list for cold start; **prices change often, verify** |
 
 Built-in entries only fill gaps and are marked `reference:` in the Source column.
+
+At the bottom of this page there is a **USD→CNY rate** field. It only affects sites priced in USD; CNY-priced sites are unaffected. It lives here because it is a price-conversion parameter you rarely touch.
 
 > Note: the model plaza also exposes a field called `official_pricing`, but several sites fill it with one placeholder value for everything (e.g. every deepseek model reporting 0.15), so the tool ignores it and uses `pricing` (the site's base price) instead.
 

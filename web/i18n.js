@@ -646,3 +646,32 @@ const PATTERNS_MORE = [
   [/^复制失败，手动复制：(.+)$/, 'Copy failed — copy manually: $1'],
 ]
 for (const row of PATTERNS_MORE) PATTERNS.push(row)
+
+// 顶栏 / 侧边栏底部 / 通知中心
+Object.assign(EN, {
+  '文档': 'Docs',
+  '深色模式': 'Dark mode',
+  '浅色模式': 'Light mode',
+  '收起': 'Collapse',
+  '展开': 'Expand',
+  '只影响按美元标价的站点；人民币标价的站不受影响。':
+    'Only affects sites priced in USD; CNY-priced sites are unaffected.',
+  '暂时没有通知': 'Nothing to notify',
+  '{name} 余额偏低': '{name} balance is low',
+  '剩余 {amount} {currency}，该充值了': '{amount} {currency} left — time to top up',
+  '{n} 个模型 · {reasons}': '{n} models · {reasons}',
+  '请求全部失败': 'All requests failed',
+  '{model}：所有候选站都不可用': '{model}: no candidate site was usable',
+  '自动切换了站点': 'Switched sites automatically',
+  '{model}：首选失败，第 {n} 次成功（{provider}）':
+    '{model}: first choice failed, succeeded on attempt {n} ({provider})',
+})
+
+Object.assign(EN, {
+  '{n} 条未读': '{n} unread',
+})
+
+Object.assign(EN, {
+  '价格直接改，失焦即保存。「¥/百万 token」是综合成本：输入按 25%、输出按 75% 加权。美元标价的站按「基准价」页里的汇率换算。':
+    'Edit prices inline; saved on blur. ¥/Mtok is a blended cost: 25% input, 75% output. USD-priced sites convert at the rate on the Benchmarks page.',
+})

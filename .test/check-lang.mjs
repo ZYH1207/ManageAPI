@@ -60,13 +60,19 @@ await sleep(2500)
 const zh1 = await ev(SNAPSHOT)
 console.log('① 初始中文：', JSON.stringify(zh1))
 
-await ev(`document.querySelector('#lang-btn').click()`)
-await sleep(900)
+/** 语言是下拉菜单：先点按钮展开，再点具体那一项 */
+const pickLang = async (lang) => {
+  await ev(`document.querySelector('#lang-btn').click()`)
+  await sleep(250)
+  await ev(`document.querySelector('[data-act="set-lang"][data-lang="${lang}"]').click()`)
+  await sleep(800)
+}
+
+await pickLang('en')
 const en = await ev(SNAPSHOT)
 console.log('② 切到英文：', JSON.stringify(en))
 
-await ev(`document.querySelector('#lang-btn').click()`)
-await sleep(900)
+await pickLang('zh')
 const zh2 = await ev(SNAPSHOT)
 console.log('③ 切回中文：', JSON.stringify(zh2))
 
@@ -79,10 +85,8 @@ if (!same) {
 }
 
 // 再切一次，确认多次往返也稳
-await ev(`document.querySelector('#lang-btn').click()`)
-await sleep(700)
-await ev(`document.querySelector('#lang-btn').click()`)
-await sleep(700)
+await pickLang('en')
+await pickLang('zh')
 const zh3 = await ev(SNAPSHOT)
 console.log(JSON.stringify(zh1) === JSON.stringify(zh3) ? '✅ 二次往返仍然一致' : '❌ 二次往返出现偏差')
 
