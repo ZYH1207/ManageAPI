@@ -59,7 +59,7 @@
   --shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
   --topbar-bg: rgba(13, 21, 38, 0.85);
   --warn-border: rgba(251, 191, 36, 0.28);
-  --danger-border: rgba(248, 113, 113, 0.30);
+  --danger-border: rgba(248, 113, 113, 0.42);
   --alert-desc: rgba(255, 255, 255, 0.78);
   color-scheme: dark;
 }
@@ -97,8 +97,8 @@ button.primary {
 button.primary:hover { background: #0b5b47; }
 button.ghost { border-color: transparent; color: var(--muted); padding: 4px 8px; }
 button.ghost:hover { background: var(--hover); color: var(--text); }
-button.danger { color: var(--muted); border-color: var(--border); }
-button.danger:hover { color: var(--danger); border-color: var(--danger-border); background: var(--danger-soft); }
+button.danger { color: var(--danger); border-color: var(--danger-border); }
+button.danger:hover { background: var(--danger-soft); border-color: var(--danger); }
 button:disabled { opacity: 0.5; cursor: default; }
 
 input, select {
