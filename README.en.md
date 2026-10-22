@@ -173,7 +173,13 @@ integrity    = fingerprint pass × 0.5 + not-truncated × 0.3 + normal billing �
 quality      = availability × integrity
 ```
 
-Below 0.8 on either dimension means unusable, and it is excluded from routing.
+Below 0.8 on either dimension means unusable; by default it sinks to the back and is only a last resort.
+
+> **Want suspicious sites to be usable?** The Probes page has an **Allow suspicious supplies** switch. When on,
+> supplies flagged for fingerprint mismatch / truncation / inflated usage / expired scores are no longer pushed back —
+> they compete on effective cost like everything else. Half the quality doubles the cost, so only a large enough
+> discount wins, but they can genuinely return swapped or truncated answers; the trade-off is yours. The TTFT limit
+> is separate and unaffected.
 
 States: `healthy`, `degraded`, `unstable`, `stale`, `unknown`.
 
@@ -213,7 +219,7 @@ Fully automatic has one gap: **you cannot say "I want this one"**. So each row h
 
 Manual order only affects rows that are equally usable:
 
-- Untrusted / too slow / expired supplies always sink to the bottom — **availability is a hard rule, not an opinion**
+- Untrusted / too slow / expired supplies sink to the bottom by default and cannot be dragged up — **availability is a hard rule, not an opinion** (turn on "Allow suspicious supplies" on the Probes page if you want them to compete)
 - New supplies not in the manual order are appended by automatic sort
 - **Back to auto** clears the manual order
 

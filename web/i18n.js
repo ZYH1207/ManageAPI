@@ -675,3 +675,18 @@ Object.assign(EN, {
   '价格直接改，失焦即保存。「¥/百万 token」是综合成本：输入按 25%、输出按 75% 加权。美元标价的站按「基准价」页里的汇率换算。':
     'Edit prices inline; saved on blur. ¥/Mtok is a blended cost: 25% input, 75% output. USD-priced sites convert at the rate on the Benchmarks page.',
 })
+
+// 放行可疑供给（开关）
+Object.assign(EN, {
+  '太慢': 'Too slow',
+  '已放行': 'allowed',
+  '放行可疑供给': 'Allow suspicious supplies',
+  '探针判定可疑（指纹不符 / 输出截断 / 用量虚报 / 评分过期）的站，也按有效成本正常参与路由':
+    'Sites the probes flagged (fingerprint mismatch, truncated output, inflated usage, expired score) also compete on effective cost',
+  '已放行：可疑的站会正常参与选站':
+    'Enabled: suspicious sites now take part in routing',
+  '它们仍然按「价格 ÷ 质量」排序——质量差一半，成本就翻倍，只有便宜到足够多才会被选中。首字上限仍然独立生效。如果你更在意输出是否可信，把这个开关关掉。':
+    'They still sort by price ÷ quality, so half the quality doubles the cost — only a large enough discount wins. The TTFT limit still applies separately. Turn this off if you care more about trustworthy output.',
+  '已放行可疑供给，它们会正常参与选站': 'Suspicious supplies are now allowed to compete',
+  '已恢复：可疑供给只作为最后兜底': 'Restored: suspicious supplies are only a last resort',
+})

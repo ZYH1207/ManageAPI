@@ -2,8 +2,12 @@
  * 路由层：给定一个客户端请求的模型名，决定这一单交给谁。
  *
  * 决策规则（刻意做成可解释的两步，而不是加权打分）：
- *   1. 硬约束：只留评分健康（healthy）的供给
+ *   1. 硬约束：只留评分健康（healthy）的供给；首字超限的排除
  *   2. 排序：按「有效成本 = 名义价格 ÷ 质量」升序
+ *
+ * 但用户可以在探针页打开「放行可疑供给」：打开后探针判定不可信/过期的照样参与排序，
+ * 由「价格 ÷ 质量」自己去权衡——质量差一半，成本就翻倍，贵不到哪里去才轮得到它。
+ * 首字上限是独立的显式设置，不受这个开关影响。
  *
  * 全都不可用时不做硬拒绝——按价格排下去试，但在响应头标记 degraded。
  * 个人工具里「能用」通常比「严格」更重要。
@@ -28,6 +32,8 @@ function getScore(scores, offerId) {
 export function selectCandidates({ offers, providers, credentials, scores, benchmarks, settings, model, order }) {
   const key = normalizeModelKey(model)
   const maxTtftMs = Number(settings?.maxTtftMs) || 0
+  // 用户开关：探针说可疑的也让它正常参与排序（首字上限仍然独立生效）
+  const allowUntrusted = Boolean(settings?.allowUntrusted)
   const matched = offers.filter(
     (offer) =>
       offer.modelKey === key ||
@@ -75,7 +81,9 @@ export function selectCandidates({ offers, providers, credentials, scores, bench
       credential,
       price,
       quality,
-      routable: isRoutable(score) && !tooSlow,
+      // probeOk 是探针的原始判定；routable 是「这一单会不会考虑它」
+      probeOk: isRoutable(score),
+      routable: (allowUntrusted || isRoutable(score)) && !tooSlow,
       tooSlow,
       effective: effectiveCost(price, quality),
       status: score?.status || 'unknown',
@@ -138,6 +146,7 @@ export function explain(candidates) {
     quality: c.quality,
     effective: c.effective,
     routable: c.routable,
+    probeOk: c.probeOk,
     tooSlow: Boolean(c.tooSlow),
     ttftMs: c.ttftMs,
     status: c.status,

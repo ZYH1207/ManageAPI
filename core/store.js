@@ -40,6 +40,9 @@ export function emptyDb() {
       scoreMaxAgeHours: 6,
       // 首字延迟上限（毫秒），0 = 不限
       maxTtftMs: 0,
+      // 放行可疑供给：默认 false，探针判定不可信/过期的会被排到后面。
+      // 打开后它们按有效成本正常参与竞争——风险由用户自己承担。
+      allowUntrusted: false,
     },
     providers: [],
     credentials: [],

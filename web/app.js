@@ -810,7 +810,7 @@ function renderPricing() {
         maxTtft > 0 && typeof score?.ttftMs === 'number' && score.ttftMs > maxTtft
       const badge = tooSlow
         ? ' <span class="badge warn">超时</span>'
-        : row.trusted === false
+        : score?.probeTrusted === false
           ? ' <span class="badge warn">可疑</span>'
           : ''
       const cacheNote =
@@ -873,12 +873,18 @@ function renderPricing() {
 // --------------------------------------------------------------- 决策视图
 
 function decisionState(candidate) {
-  if (candidate.tooSlow) return { label: '太慢', cls: 'warn' }
-  if (candidate.status === 'stale') return { label: '评分过期', cls: 'warn' }
-  if (candidate.status === 'degraded') return { label: '结果可疑', cls: 'warn' }
-  if (candidate.status === 'unstable') return { label: '不稳定', cls: 'danger' }
-  if (candidate.status === 'unknown') return { label: '未探测', cls: '' }
-  return { label: '可用', cls: 'ok' }
+  if (candidate.tooSlow) return { label: t('太慢'), cls: 'warn' }
+  // 探针说可疑，但因为「放行可疑供给」开着，它照样参与选站——标出来别让人误以为是健康的
+  const passed = candidate.routable && candidate.probeOk === false
+  const tag = (label, cls) => ({
+    label: passed ? `${label} · ${t('已放行')}` : label,
+    cls: passed ? 'warn' : cls,
+  })
+  if (candidate.status === 'stale') return tag(t('评分过期'), 'warn')
+  if (candidate.status === 'degraded') return tag(t('结果可疑'), 'warn')
+  if (candidate.status === 'unstable') return tag(t('不稳定'), 'danger')
+  if (candidate.status === 'unknown') return tag(t('未探测'), '')
+  return { label: t('可用'), cls: 'ok' }
 }
 
 function renderDecision() {
@@ -1044,6 +1050,7 @@ function renderProbes() {
   const interval = Number(state.settings.probeIntervalMinutes) || 0
   const maxAge = Number(state.settings.scoreMaxAgeHours) || 6
   const maxTtft = Number(state.settings.maxTtftMs) || 0
+  const allowUntrusted = Boolean(state.settings.allowUntrusted)
   const intervalOptions = [
     [0, '关闭'],
     [30, '30 分钟'],
@@ -1076,6 +1083,26 @@ function renderProbes() {
           <input id="max-ttft" type="number" min="0" max="60000" step="500" value="${maxTtft}" style="width:82px" /> ms
         </label>
         <span class="hint" style="margin:0">0 = 不限；超过上限的供给不参与路由</span>
+      </div>
+      <div class="switch-row">
+        <label class="switch">
+          <input type="checkbox" id="allow-untrusted" ${allowUntrusted ? 'checked' : ''} />
+          <span class="switch-track"><span class="switch-knob"></span></span>
+          <span class="switch-text">
+            <b>放行可疑供给</b>
+            <span>探针判定可疑（指纹不符 / 输出截断 / 用量虚报 / 评分过期）的站，也按有效成本正常参与路由</span>
+          </span>
+        </label>
+        ${
+          allowUntrusted
+            ? `<div class="alert" style="margin-top:10px;background:var(--warn-soft);border-color:var(--warn-border)">
+                 <div>
+                   <div class="name">已放行：可疑的站会正常参与选站</div>
+                   <div class="desc">它们仍然按「价格 ÷ 质量」排序——质量差一半，成本就翻倍，只有便宜到足够多才会被选中。首字上限仍然独立生效。如果你更在意输出是否可信，把这个开关关掉。</div>
+                 </div>
+               </div>`
+            : ''
+        }
       </div>
     </div>`
 
@@ -2228,6 +2255,17 @@ document.addEventListener('change', async (event) => {
       state = await api('PATCH', '/api/settings', { maxTtftMs: ms })
       render()
       toast(ms > 0 ? `首字超过 ${ms}ms 的供给将被跳过` : '已取消首字延迟限制')
+    } catch (error) {
+      toast(error.message, true)
+    }
+    return
+  }
+
+  if (input.id === 'allow-untrusted') {
+    try {
+      state = await api('PATCH', '/api/settings', { allowUntrusted: input.checked })
+      render()
+      toast(input.checked ? '已放行可疑供给，它们会正常参与选站' : '已恢复：可疑供给只作为最后兜底')
     } catch (error) {
       toast(error.message, true)
     }

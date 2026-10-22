@@ -247,8 +247,10 @@
               · <b>恢复自动</b> —— 清掉手动顺序，回到按有效成本排
             </p>
             <p>
-              手动顺序只影响「同样可用」的那几条。不可信、太慢、评分过期的站永远排在后面，
+              手动顺序只影响「可用」的那几条。不可信、太慢、评分过期的站默认排在后面，
               你拖不动它——<b>可用性是硬判断，不能被手动覆盖</b>。
+              如果你确实想让可疑的站参与竞争，去探针页打开「放行可疑供给」，它们会正常参与排序，
+              状态列会标出「已放行」。
             </p>
 
             <h4 class="doc-h4">探针</h4>
@@ -269,7 +271,14 @@
               · <b>自动探测</b> —— 设间隔后后台定时跑。默认 1 小时，可以关掉。模型多的话建议设长一点，
               每次探测都要花一点 token。<br />
               · <b>评分有效期</b> —— 超过这个时间没重新探测，评分就作废、不再参与路由。<br />
-              · <b>首字上限</b> —— 超过这个延迟的供给不参与路由。0 表示不限。
+              · <b>首字上限</b> —— 超过这个延迟的供给不参与路由。0 表示不限。<br />
+              · <b>放行可疑供给</b> —— 默认关闭。关闭时，探针判定可疑（指纹不符 / 截断 / 虚报 / 评分过期）的站
+              只会排在最后兜底；打开后它们按有效成本正常参与竞争。
+            </p>
+            <p>
+              <b>打开这个开关要清楚代价</b>：可疑的站仍然按「价格 ÷ 质量」排序——质量差一半，成本就翻倍，
+              所以只有便宜到足够多才会被选中。但它确实可能给你返回掉包或截断的结果。
+              省钱优先就打开，输出可信优先就关着。首字上限是独立设置，不受这个开关影响。
             </p>
 
             <h4 class="doc-h4">网关</h4>
@@ -345,8 +354,13 @@
 
             <h4 class="doc-h4">③ 决策：先筛掉，再比价</h4>
             <p>
-              <b>硬约束</b> —— 不可信、太慢、评分过期的，直接排除。<br />
+              <b>硬约束</b> —— 不可信、太慢、评分过期的，默认排到最后只做兜底。<br />
               <b>有效成本排序</b> —— 剩下的按 <code>价格 ÷ 质量</code> 从小到大排。
+            </p>
+            <p>
+              「不可信」这一条是可以用探针页的 <b>放行可疑供给</b> 开关关掉的：打开后它们不再被压到后面，
+              而是和健康的站一起按有效成本竞争。太慢（首字上限）是独立设置，不受那个开关影响。
+              注意开关会同时影响比价页的「最便宜」和概览页的结论，保证推荐和实际路由是同一套口径。
             </p>
             <p>
               为什么用除法而不是加权求和？因为「便宜 10% 但降智 30%」的站，加权后可能仍然胜出；
@@ -528,8 +542,10 @@
               · <b>Back to auto</b> — clears the manual order
             </p>
             <p>
-              Manual order only affects rows that are equally usable. Untrusted, too-slow or expired supplies always
-              sink to the bottom and cannot be dragged up — <b>availability is a hard rule, not an opinion</b>.
+              Manual order only affects rows that are usable. Untrusted, too-slow or expired supplies sink to the
+              bottom by default and cannot be dragged up — <b>availability is a hard rule, not an opinion</b>.
+              If you do want suspicious sites to compete, turn on "Allow suspicious supplies" on the Probes page;
+              their status then reads "allowed".
             </p>
 
             <h4 class="doc-h4">Probes</h4>
@@ -550,7 +566,16 @@
               · <b>Auto probe</b> — runs in the background on an interval. Default 1 hour; can be turned off. With many
               models, set it longer — every probe costs a few tokens.<br />
               · <b>Score TTL</b> — a score older than this is discarded and no longer used for routing.<br />
-              · <b>TTFT limit</b> — supplies slower than this are excluded from routing. 0 means no limit.
+              · <b>TTFT limit</b> — supplies slower than this are excluded from routing. 0 means no limit.<br />
+              · <b>Allow suspicious supplies</b> — off by default. When off, sites the probes flagged
+              (fingerprint mismatch / truncated / inflated / expired score) are only a last resort; when on,
+              they compete on effective cost like everything else.
+            </p>
+            <p>
+              <b>Know the trade-off before turning it on</b>: suspicious sites still sort by price ÷ quality, so half
+              the quality doubles the cost — only a large enough discount wins. But they can genuinely return swapped
+              or truncated answers. Turn it on when saving money matters more; leave it off when trustworthy output does.
+              The TTFT limit is separate and unaffected.
             </p>
 
             <h4 class="doc-h4">Gateway</h4>
@@ -628,8 +653,14 @@
 
             <h4 class="doc-h4">③ Decision: filter first, then compare price</h4>
             <p>
-              <b>Hard constraints</b> — untrusted, too slow, expired: excluded outright.<br />
+              <b>Hard constraints</b> — untrusted, too slow, expired: pushed to the back as a last resort.<br />
               <b>Effective cost</b> — the rest are sorted by <code>price ÷ quality</code>, ascending.
+            </p>
+            <p>
+              The "untrusted" part can be switched off with <b>Allow suspicious supplies</b> on the Probes page: they
+              then compete on effective cost instead of being pushed back. The TTFT limit is separate and unaffected.
+              The switch also changes what Pricing calls "cheapest" and what the Overview concludes, so recommendations
+              and real routing always use the same rule.
             </p>
             <p>
               Why divide instead of weighting? Because "10% cheaper but 30% dumber" can still win a weighted sum, while

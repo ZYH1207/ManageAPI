@@ -81,15 +81,21 @@ async function buildState() {
   const benchmarks = await bench.readBenchmarks()
   const scoreMap = scoresFor(db)
   const maxTtftMs = Number(db.settings.maxTtftMs) || 0
-  // 没探过的保留，否则新用户永远看不到结论；
-  // 不可信、或超过用户设的首字上限，都不算「可用」
-  const isTrusted = (offerId) => {
+  // 用户开关：放行可疑供给。打开后探针判定不可信/过期的照样参与排序，
+  // 由「有效成本 = 价格 ÷ 质量」自己去权衡——质量差的价格会被除上去。
+  const allowUntrusted = Boolean(db.settings.allowUntrusted)
+
+  // 探针口径的可信度：没探过的保留（否则新用户永远看不到结论），
+  // 不可信、或超过首字上限的算不可信
+  const probeTrusted = (offerId) => {
     const score = scoreMap.get(offerId)
     if (!score || score.samples === 0) return true
     if (!isRoutable(score)) return false
     if (maxTtftMs > 0 && typeof score.ttftMs === 'number' && score.ttftMs > maxTtftMs) return false
     return true
   }
+  // 实际参与推荐/排序的口径：开关打开就全放行
+  const isTrusted = (offerId) => allowUntrusted || probeTrusted(offerId)
 
   const { ranked, unpriced } = pricing.rankByModel(db.offers, db.settings, benchmarks, isTrusted)
   const summary = pricing.summarize(db.offers, db.settings, benchmarks, isTrusted)
@@ -139,7 +145,13 @@ async function buildState() {
 
   const scores = {}
   for (const [offerId, score] of scoreMap) {
-    scores[offerId] = { ...score, routable: isRoutable(score) }
+    scores[offerId] = {
+      ...score,
+      // routable 表示「会不会参与路由」，受开关影响
+      routable: isTrusted(offerId),
+      // probeTrusted 是探针的原始判定，只用于界面打「可疑」标记，不受开关影响
+      probeTrusted: probeTrusted(offerId),
+    }
   }
 
   // 把缓存命中率与延迟挂到比价行上，供前端展示
@@ -262,6 +274,9 @@ route('PATCH', /^\/api\/settings$/, async (ctx) => {
       const v = Number(ctx.body.maxTtftMs)
       if (!Number.isFinite(v) || v < 0) throw new HttpError(400, '首字延迟上限不能为负')
       db.settings.maxTtftMs = v
+    }
+    if (ctx.body.allowUntrusted !== undefined) {
+      db.settings.allowUntrusted = Boolean(ctx.body.allowUntrusted)
     }
   })
   return buildState()
