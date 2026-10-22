@@ -59,7 +59,7 @@ The **Docs** button in the top bar opens the built-in manual (one copy per langu
 
 ## Quick start
 
-Requires **Node.js ≥ 20**. No dependencies, no `npm install`.
+Requires **Node.js ≥ 20**. No dependencies, no `npm install`. Runs on Windows, macOS and Linux — the only platform-specific code is the "open browser" call.
 
 ```bash
 git clone https://github.com/ZYH1207/ManageAPI.git

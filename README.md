@@ -62,7 +62,7 @@ ManageAPI 针对这三点，分别做了**比价**、**探针**、**网关**。
 
 ## 快速开始
 
-需要 **Node.js ≥ 20**，没有其他依赖，不用 `npm install`。
+需要 **Node.js ≥ 20**，没有其他依赖，不用 `npm install`。Windows / macOS / Linux 都能跑，代码里只有「打开浏览器」这一处区分平台。
 
 ```bash
 git clone https://github.com/ZYH1207/ManageAPI.git
