@@ -4,7 +4,14 @@
 
 零依赖、零构建、纯本地。一个 Node 进程 + 一个网页，数据不出本机。
 
+**中文** · [English](README.en.md)
+
 ![概览页](docs/screenshot-overview.png)
+
+> 界面支持中英切换（右上角铃铛左边那个按钮），选择记在浏览器里。
+> 下图是英文模式：
+>
+> ![English UI](docs/screenshot-overview-en.png)
 
 ---
 
@@ -38,6 +45,10 @@ ManageAPI 针对这三点，分别做了**比价**、**探针**、**网关**。
 支持深色模式：
 
 ![深色模式](docs/screenshot-dark.png)
+
+界面中英双语，右上角切换，偏好存在 `localStorage`。默认跟随浏览器语言（中文环境给中文，其余给英文）。
+
+![英文界面](docs/screenshot-pricing-en.png)
 
 ---
 
@@ -332,8 +343,9 @@ daemon/            本地 HTTP 服务 + 网关（同一个端口）
   scheduler.js       定时探测调度
 
 web/               前端（原生 JS，无构建，无框架）
-  index.html         结构与使用说明正文
+  index.html         结构与使用说明正文（中英各一份）
   app.js             全部渲染与交互
+  i18n.js            语言切换与英文词典
   style.css          CSS 变量双主题
 
 .test/             测试与截图工具

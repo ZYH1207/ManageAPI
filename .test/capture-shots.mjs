@@ -90,6 +90,12 @@ await send('Emulation.setDeviceMetricsOverride', {
   width: 1440, height: 900, deviceScaleFactor: 1, mobile: false,
 })
 
+// 强制界面语言（默认中文；SHOT_LANG=en 出英文图）
+const LANG = process.env.SHOT_LANG || 'zh'
+await send('Page.navigate', { url: `${APP}/` })
+await sleep(1200)
+await evalJs(`localStorage.setItem('manageapi.lang', '${LANG}')`)
+
 // 拦截 /api/providers/*/groups，回一份假的分组列表
 listeners.set('Fetch.requestPaused', async ({ requestId, request }) => {
   if (request.url.endsWith('/groups')) {

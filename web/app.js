@@ -1,6 +1,10 @@
 /** 前端：无框架，全量状态 + 重渲染。 */
+import { getLang, onLangChange, t, toggleLang, translateDom } from './i18n.js'
 
 const $ = (sel, root = document) => root.querySelector(sel)
+
+// 先把语言挂到 <html> 上，使用说明的中英双块靠它选显示哪一份
+document.documentElement.dataset.lang = getLang()
 
 let state = null
 let activeTab = 'providers'
@@ -26,6 +30,7 @@ function toast(message, isError = false) {
   el.textContent = message
   el.className = `toast${isError ? ' error' : ''}`
   el.hidden = false
+  translateDom(el)
   clearTimeout(toastTimer)
   toastTimer = setTimeout(() => { el.hidden = true }, isError ? 4200 : 2200)
 }
@@ -151,6 +156,7 @@ function renderNotifications() {
   if (!container) return
   if (list.length === 0) {
     container.innerHTML = '<div class="notify-empty">暂时没有通知</div>'
+    translateDom(container)
     return
   }
   container.innerHTML = list
@@ -162,14 +168,18 @@ function renderNotifications() {
       </div>`,
     )
     .join('')
+  translateDom(container)
 }
 
 /**
  * 打开使用说明弹窗。
  * 内容从隐藏的 #view-help 页面复制过来——一份内容两处用，不用维护两份。
+ * 说明有中英两份静态块（data-lang-block），按当前语言挑一份复制。
  */
 function openHelpModal() {
-  const source = document.querySelector('#view-help .doc')
+  const source =
+    document.querySelector(`#view-help .doc[data-lang-block="${getLang()}"]`) ||
+    document.querySelector('#view-help .doc')
   const content = $('#help-content')
   const toc = $('#help-toc')
   if (!source || !content || !toc) return
@@ -215,6 +225,8 @@ function render() {
       <span class="badge ${gw?.enabled ? 'ok' : ''}">网关${gw?.enabled ? '运行中' : '已关闭'}</span>`
   }
   renderNotifications()
+  // 所有页面都渲染完之后统一过一遍文案，把中文换成英文（中文模式下是空操作）
+  translateDom(document.body)
 }
 
 // --------------------------------------------------------------- 概览视图
@@ -222,11 +234,17 @@ function render() {
 function headlineHtml() {
   const line = state.headline
   if (!line) return ''
+  // 整句走 t()：中英语序不同，拆成片段翻会串行
+  const sentence = t('{model} 目前 {provider} 最便宜，{price}/百万 token，比最贵的省 {pct}%', {
+    model: esc(line.modelKey),
+    provider: `<strong>${esc(line.providerName)}</strong>`,
+    price: `<strong>¥${money(line.price)}</strong>`,
+    pct: `<strong>${line.spreadPct}%</strong>`,
+  })
   return `
     <div class="headline">
       <div class="kicker">当前最优选择</div>
-      <div class="line">${esc(line.modelKey)} 目前 <strong>${esc(line.providerName)}</strong> 最便宜，
-        <strong>¥${money(line.price)}</strong>/百万 token，比最贵的省 <strong>${line.spreadPct}%</strong></div>
+      <div class="line">${sentence}</div>
     </div>`
 }
 
@@ -411,7 +429,11 @@ async function openGroupPicker(providerId) {
 function renderGroupModal() {
   const body = $('#group-modal-body')
   if (!body) return
+  paintGroupModal(body)
+  translateDom(body)
+}
 
+function paintGroupModal(body) {
   if (groupPicker.loading) {
     body.innerHTML = '<p class="hint" style="margin:6px 0">正在从站点读取分组和倍率…</p>'
     return
@@ -673,7 +695,7 @@ function renderProviders() {
             <button type="submit">添加 Key</button>
           </form>
           <div class="hint" style="margin-top:2px">
-            「令牌」是站点后台的登录凭证，只用来读余额、不参与对话。获取：登录后台 → F12 → Network → 点任意 <code>/api/v1/</code> 请求 → 复制 Request Headers 里的 <code>Authorization</code>（去掉 <code>Bearer </code> 前缀）。令牌会过期，失效后重新复制。
+            ${t('「令牌」是站点后台的登录凭证，只用来读余额、不参与对话。获取：登录后台 → F12 → Network → 点任意 <code>/api/v1/</code> 请求 → 复制 Request Headers 里的 <code>Authorization</code>（去掉 <code>Bearer </code> 前缀）。令牌会过期，失效后重新复制。')}
           </div>
         </div>
         ${groupRows ? `
@@ -932,7 +954,7 @@ function renderDecision() {
       <span class="hint" style="margin:0">${visibleDecisions.length} / ${decisions.length} 个模型</span>
     </div>
     <p class="hint">默认按「有效成本 = 价格 ÷ 质量」排序，用 ↑↓ 手动调整「可用」那几条的先后——不可信的站不会因为你拖它而排到前面。</p>
-    <p class="hint">注意：<b>同一个模型在不同站的状态是各自独立的</b>（A 站健康、B 站掉包很正常），所以这里按「站 × 模型」逐条评估，状态下方会写明具体原因。</p>
+    <p class="hint">${t('注意：<b>同一个模型在不同站的状态是各自独立的</b>（A 站健康、B 站掉包很正常），所以这里按「站 × 模型」逐条评估，状态下方会写明具体原因。')}</p>
     ${blocks}`
 }
 
@@ -1419,9 +1441,11 @@ function renderBenchmark() {
         <button id="btn-seed-benchmark">载入内置参考价</button>
       </div>
       <p class="hint" style="margin:10px 0 0">
-        <b>从站点导入官方价</b>：优先用「令牌」读该站的「可用渠道」（数据最全，不要求开广场），读不到再回落「模型广场」。只补空缺、不覆盖你已有的条目。<br />
-        <b>以此站已填价为准</b>：把这个站已经填好的实际价整体设为基准，适合你确信它没虚标的情况。<br />
-        <b>载入内置参考价</b>：用工具内置的一份官方价（截至 ${esc(state.reference?.asOf || '—')}），价格常变，务必核对。
+        ${t('<b>从站点导入官方价</b>：优先用「令牌」读该站的「可用渠道」（数据最全，不要求开广场），读不到再回落「模型广场」。只补空缺、不覆盖你已有的条目。<br />')}
+        ${t('<b>以此站已填价为准</b>：把这个站已经填好的实际价整体设为基准，适合你确信它没虚标的情况。<br />')}
+        ${t('<b>载入内置参考价</b>：用工具内置的一份官方价（截至 {asOf}），价格常变，务必核对。', {
+          asOf: esc(state.reference?.asOf || '—'),
+        })}
       </p>
     </div>
     <div class="toolbar" style="margin:18px 0 10px">
@@ -1500,6 +1524,7 @@ function renderContacts() {
       </div>`
     })
     .join('')
+  translateDom(grid)
 }
 
 // ------------------------------------------------------------- 主题与折叠
@@ -1567,6 +1592,7 @@ function setTab(name) {
     const titleEl = $('#page-title')
     if (titleEl) titleEl.textContent = '使用说明'
     setPageSub('这个工具怎么用、为什么这么设计')
+    translateDom($('.topbar-left') || document.body)
     if (location.hash !== '#help') history.replaceState(null, '', '#help')
     return
   }
@@ -1585,6 +1611,7 @@ function setTab(name) {
   const titleEl = $('#page-title')
   if (titleEl) titleEl.textContent = meta.title
   setPageSub(meta.sub)
+  translateDom($('.topbar-left') || document.body)
   if (location.hash !== `#${name}`) history.replaceState(null, '', `#${name}`)
 }
 
@@ -1605,6 +1632,10 @@ document.addEventListener('keydown', (event) => {
 })
 
 document.addEventListener('click', async (event) => {
+  if (event.target.closest('#lang-btn')) {
+    toggleLang()
+    return
+  }
   if (event.target.closest('#theme-btn')) {
     const root = document.documentElement
     const next = root.dataset.theme === 'dark' ? 'light' : 'dark'
@@ -2326,8 +2357,41 @@ document.addEventListener('click', async (event) => {
 
 // ------------------------------------------------------------------ 启动
 
+/** 语言按钮上的小字：显示「切过去之后」的语言 */
+function paintLangButton() {
+  const label = $('#lang-label')
+  if (label) label.textContent = getLang() === 'zh' ? 'EN' : '中'
+  document.documentElement.dataset.lang = getLang()
+}
+
+onLangChange(() => {
+  paintLangButton()
+  // 动态内容都是从中文模板重渲染出来的，重画一遍就换过来了；
+  // 静态外壳靠 data-i18n 复位（见 index.html）
+  applyShellText()
+  render()
+  setTab(activeTab === 'help' ? 'help' : activeTab)
+  const helpModal = $('#help-modal')
+  if (helpModal && !helpModal.hidden) openHelpModal()
+  const contactModal = $('#contact-modal')
+  if (contactModal && !contactModal.hidden) renderContacts()
+  if (groupPicker.providerId) renderGroupModal()
+})
+
+/** 静态外壳里带 data-i18n 的文案，切回中文时靠它复位 */
+function applyShellText() {
+  for (const el of document.querySelectorAll('[data-i18n]')) {
+    el.textContent = t(el.getAttribute('data-i18n'))
+  }
+  for (const el of document.querySelectorAll('[data-i18n-title]')) {
+    el.setAttribute('title', t(el.getAttribute('data-i18n-title')))
+  }
+}
+
 try {
   state = await api('GET', '/api/state')
+  paintLangButton()
+  applyShellText()
   render()
   setTab(location.hash.replace('#', '') || 'providers')
   // ?help=1 / ?contact=1 直接打开对应面板（方便分享链接）

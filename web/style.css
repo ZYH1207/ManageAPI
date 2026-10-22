@@ -954,3 +954,24 @@ button.group-chip {
   color: var(--muted);
 }
 button.group-chip:hover { color: var(--accent); }
+
+/* --------------------------------------------------------------- 语言切换 */
+.lang-btn {
+  display: inline-flex; align-items: center; gap: 5px;
+  height: 32px; padding: 0 10px;
+  border: 1px solid var(--border); background: var(--surface);
+  color: var(--muted); border-radius: 9px; cursor: pointer;
+  font-size: 11.5px; font-weight: 600; letter-spacing: 0.3px;
+  transition: background 0.12s, color 0.12s, border-color 0.12s;
+}
+.lang-btn:hover { background: var(--hover); color: var(--text); }
+.lang-btn svg {
+  width: 14px; height: 14px;
+  stroke: currentColor; fill: none;
+  stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round;
+}
+
+/* 使用说明中英双份，按 html[data-lang] 显示其一 */
+.doc[data-lang-block] { display: none; }
+html[data-lang='zh'] .doc[data-lang-block='zh'] { display: block; }
+html[data-lang='en'] .doc[data-lang-block='en'] { display: block; }
