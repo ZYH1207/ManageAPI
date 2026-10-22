@@ -51,6 +51,10 @@ The UI is bilingual; switch it from the top-bar dropdown. The choice is stored i
 
 ![English UI](docs/screenshot-pricing-en.png)
 
+The **Docs** button in the top bar opens the built-in manual (one copy per language, with a table of contents):
+
+![Docs](docs/screenshot-help.png)
+
 ---
 
 ## Quick start
@@ -353,7 +357,9 @@ web/               Frontend (vanilla JS, no build, no framework)
   mock-upstream.mjs  Fake relay (MODE=good|degraded|truncated|fail)
   run-*.mjs          End-to-end scripts
   seed-showcase.mjs  Generates the demo data used for README screenshots
-  capture-shots.mjs  Headless Chrome screenshots
+  capture-shots.mjs  Headless Chrome screenshots (SHOT_LANG=en for English)
+  check-lang.mjs     Round-trip check for the language switch
+  dump-strings.mjs   Dumps every Chinese string in the UI, as a translation checklist
 
 docs/              Images for the README
 ```

@@ -54,6 +54,10 @@ ManageAPI 针对这三点，分别做了**比价**、**探针**、**网关**。
 
 ![英文界面](docs/screenshot-pricing-en.png)
 
+顶栏的「文档」打开内置使用说明，中英各一份，左边带目录：
+
+![使用说明](docs/screenshot-help.png)
+
 ---
 
 ## 快速开始
@@ -360,7 +364,9 @@ web/               前端（原生 JS，无构建，无框架）
   mock-upstream.mjs  假中转站（MODE=good|degraded|truncated|fail）
   run-*.mjs          端到端脚本
   seed-showcase.mjs  生成 README 用的展示数据
-  capture-shots.mjs  无头 Chrome 抓截图
+  capture-shots.mjs  无头 Chrome 抓截图（SHOT_LANG=en 出英文图）
+  check-lang.mjs     中英切换往返检查
+  dump-strings.mjs   把界面上所有中文文案抓成清单，加新文案时对照用
 
 docs/              README 用图
 ```
