@@ -1,5 +1,5 @@
 /** 前端：无框架，全量状态 + 重渲染。 */
-import { getLang, onLangChange, t, toggleLang, translateDom } from './i18n.js'
+import { getLang, onLangChange, restoreDom, t, toggleLang, translateDom } from './i18n.js'
 
 const $ = (sel, root = document) => root.querySelector(sel)
 
@@ -2364,11 +2364,12 @@ function paintLangButton() {
   document.documentElement.dataset.lang = getLang()
 }
 
-onLangChange(() => {
+onLangChange((lang) => {
   paintLangButton()
-  // 动态内容都是从中文模板重渲染出来的，重画一遍就换过来了；
-  // 静态外壳靠 data-i18n 复位（见 index.html）
+  // 静态外壳（侧边栏副标题、弹窗标题这些）不会重渲染，切回中文时靠还原
+  if (lang === 'zh') restoreDom(document.body)
   applyShellText()
+  // 动态内容都是从中文模板重渲染出来的，重画一遍就换过来了
   render()
   setTab(activeTab === 'help' ? 'help' : activeTab)
   const helpModal = $('#help-modal')

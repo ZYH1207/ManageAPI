@@ -377,6 +377,15 @@ node .test/run-e2e.mjs
 
 `MODE` 可选 `good` / `degraded`（掉包 + 虚报）/ `truncated`（砍额度）/ `fail`（连不上）。
 
+### 检查中英切换
+
+改完界面文案后，跑一次这个，确认切到英文再切回来没有残留：
+
+```bash
+chrome --headless=new --remote-debugging-port=9222 about:blank &
+node .test/check-lang.mjs
+```
+
 ### 重新生成 README 截图
 
 ```bash

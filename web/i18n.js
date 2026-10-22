@@ -77,6 +77,18 @@ function normalize(s) {
 }
 
 /**
+ * 记住每个被翻译过的节点原来的样子，切回中文时用它还原。
+ *
+ * 为什么要记：静态 HTML（侧边栏副标题、弹窗标题这些）翻成英文之后，
+ * 没有任何东西会把它们改回中文——它们不像页面视图那样每次渲染都重建。
+ *
+ * 存 {原串, 译串} 两个值，还原时先比对当前内容是不是当初写进去的译串：
+ * 是才还原。否则像 toast 这种复用同一个节点、内容会换的，会被还原成过期文案。
+ */
+const originalText = new WeakMap() // textNode → { from, to }
+const originalAttr = new WeakMap() // element → Map<attr, { from, to }>
+
+/**
  * 把一棵子树里的中文翻成英文。
  *
  * 只处理文本节点和 title / placeholder / aria-label，且只做整串匹配。
@@ -101,6 +113,7 @@ export function translateDom(root = document.body) {
     const lead = raw.match(/^\s*/)[0]
     const trail = raw.match(/\s*$/)[0]
     node.nodeValue = lead + hit + trail
+    if (!originalText.has(node)) originalText.set(node, { from: raw, to: node.nodeValue })
   }
 
   for (const el of root.querySelectorAll('[title], [placeholder], [aria-label]')) {
@@ -109,8 +122,45 @@ export function translateDom(root = document.body) {
       if (!value) continue
       const key = normalize(value)
       const hit = EN[key] ?? hitPattern(key)
-      if (hit !== undefined) el.setAttribute(attr, hit)
+      if (hit === undefined) continue
+      el.setAttribute(attr, hit)
+      let bag = originalAttr.get(el)
+      if (!bag) {
+        bag = new Map()
+        originalAttr.set(el, bag)
+      }
+      if (!bag.has(attr)) bag.set(attr, { from: value, to: hit })
     }
+  }
+}
+
+/** 切回中文时调用：把当初翻译过的静态文案还原回去 */
+export function restoreDom(root = document.body) {
+  if (!root) return
+
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
+  const nodes = []
+  while (walker.nextNode()) nodes.push(walker.currentNode)
+
+  for (const node of nodes) {
+    const saved = originalText.get(node)
+    if (!saved) continue
+    // 内容被换过了（比如 toast 复用了这个节点），就别拿旧文案盖回去
+    if (node.nodeValue !== saved.to) {
+      originalText.delete(node)
+      continue
+    }
+    node.nodeValue = saved.from
+    originalText.delete(node)
+  }
+
+  for (const el of root.querySelectorAll('[title], [placeholder], [aria-label]')) {
+    const bag = originalAttr.get(el)
+    if (!bag) continue
+    for (const [attr, saved] of bag) {
+      if (el.getAttribute(attr) === saved.to) el.setAttribute(attr, saved.from)
+    }
+    originalAttr.delete(el)
   }
 }
 
@@ -559,3 +609,40 @@ Object.assign(EN, {
 Object.assign(EN, {
   '在新页面打开': 'Open as page',
 })
+
+// 提示消息（toast）与零散状态文案
+Object.assign(EN, {
+  'Key 已创建': 'Key created',
+  'Key 已删除': 'Key deleted',
+  'Key 已加密保存': 'Key saved (encrypted)',
+  '先在上面选一个站点': 'Pick a site above first',
+  '已删除': 'Deleted',
+  '已复制到剪贴板': 'Copied to clipboard',
+  '已复制新 Key': 'New key copied',
+  '已恢复自动排序': 'Back to automatic order',
+  '已拉取站方数据': 'Pulled data from the site',
+  '已轮换，记得更新客户端配置': 'Rotated — update your client config',
+  '权重已更新': 'Weight updated',
+  '正在探测，需要几秒到几十秒…': 'Probing… this takes a few seconds',
+  '汇率已更新': 'FX rate updated',
+  '站点已添加': 'Site added',
+  '网关地址已复制': 'Gateway URL copied',
+  '配置已复制到剪贴板': 'Config copied to clipboard',
+  '余额已更新': 'Balance updated',
+  '分组已更新': 'Group updated',
+  '已保存': 'Saved',
+  '正在应用中…': 'Applying…',
+})
+
+// 带变量的提示：整句用正则，避免在模板里塞 t()
+const PATTERNS_MORE = [
+  [/^导入 (\d[\d,]*) 条基准价$/, 'Imported $1 benchmark prices'],
+  [/^已创建分组「(.+)」，记得填它的价格$/, 'Created group "$1" — remember to set its price'],
+  [/^已复制「(.+)」的 Key$/, 'Copied the key for "$1"'],
+  [/^拉到 (\d[\d,]*) 个模型，新增 (\d[\d,]*)（(.+)）$/, '$1 models fetched, $2 new ($3)'],
+  [/^探测 (\d[\d,]*) 个，成功 (\d[\d,]*)$/, 'Probed $1, $2 succeeded'],
+  [/^探测失败：(.+)$/, 'Probe failed: $1'],
+  [/^评分有效期改为 (\d+) 小时$/, 'Score TTL set to $1 hours'],
+  [/^复制失败，手动复制：(.+)$/, 'Copy failed — copy manually: $1'],
+]
+for (const row of PATTERNS_MORE) PATTERNS.push(row)

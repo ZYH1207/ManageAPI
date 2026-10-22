@@ -362,6 +362,15 @@ node .test/run-e2e.mjs
 
 `MODE` can be `good`, `degraded` (swapped + inflated), `truncated` (cut off), or `fail`.
 
+### Checking the language switch
+
+After touching UI copy, run this to confirm switching to English and back leaves nothing behind:
+
+```bash
+chrome --headless=new --remote-debugging-port=9222 about:blank &
+node .test/check-lang.mjs
+```
+
 ### Regenerating README screenshots
 
 ```bash
