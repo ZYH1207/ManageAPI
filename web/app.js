@@ -1479,17 +1479,15 @@ function renderBenchmark() {
           asOf: esc(state.reference?.asOf || '—'),
         })}
       </p>
-      <div class="inline-form" style="margin-top:12px">
-        <label class="field-inline">
-          <span data-i18n="汇率 USD→CNY">汇率 USD→CNY</span>
-          <input id="fx-input" data-act="fx" type="number" step="0.01" min="1" value="${esc(state.settings.fxUsdCny)}" style="width:86px" />
-        </label>
-        <span class="hint" style="margin:0">只影响按美元标价的站点；人民币标价的站不受影响。</span>
-      </div>
     </div>
     <div class="toolbar" style="margin:18px 0 10px">
       <input id="benchmark-search" class="search" type="search" placeholder="搜索模型名…" value="${esc(filters.benchmark)}" />
       <span class="hint" style="margin:0">${entries.length} / ${Object.keys(state.benchmarks).length} 条</span>
+      <span style="flex:1"></span>
+      <label class="field-inline" title="只影响按美元标价的站点">
+        <span data-i18n="汇率 USD→CNY">汇率 USD→CNY</span>
+        <input id="fx-input" data-act="fx" type="number" step="0.01" min="1" value="${esc(state.settings.fxUsdCny)}" style="width:78px" />
+      </label>
     </div>
     <div class="table-wrap">
       <table>
