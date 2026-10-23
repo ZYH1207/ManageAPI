@@ -108,15 +108,21 @@ export const PRESET_SITES = [
 export const PRESET_PLATFORMS = [
   {
     id: 'workbuddy',
-    label: 'WorkBuddy',
+    label: 'WorkBuddy 国际版',
     connectorId: 'workbuddy',
-    note: '国际版 / 国内版，支持登录后自动读积分与签到',
+    note: 'workbuddy.ai，登录后自动读积分与签到',
+  },
+  {
+    id: 'workbuddy-cn',
+    label: 'WorkBuddy 国内版',
+    connectorId: 'workbuddy-cn',
+    note: '同一站点，国内客户端身份；模型权限可能不同',
   },
   {
     id: 'codebuddy',
     label: 'CodeBuddy',
-    connectorId: 'workbuddy',
-    note: '与 WorkBuddy 同一套接口（腾讯）',
+    connectorId: 'codebuddy',
+    note: '腾讯 copilot.tencent.com，接口同 WorkBuddy',
   },
   {
     id: 'trae',

@@ -42,6 +42,16 @@ const PRODUCTS = {
     // 国际版与国内版 UA 不同，先按国际版写；换产品时这个值要跟着换
     userAgent: 'CodeBuddyIDE/1.106.1',
   },
+  // 国内版与国际版共用同一套接口和域名，差别只在客户端 UA 上：
+  // 国际版 UA 里带 "WorkBuddy AI"，国内版不带。模型权限也可能不同，所以分成两个入口。
+  'workbuddy-cn': {
+    id: 'workbuddy-cn',
+    endpoint: 'https://www.workbuddy.ai',
+    apiDomain: 'www.workbuddy.ai',
+    platform: 'workbuddy-ai',
+    productCode: 'workbuddy',
+    userAgent: 'WorkBuddy/5.5.2 WorkBuddy/5.5.2 CLI/5.5.2',
+  },
   codebuddy: {
     id: 'codebuddy',
     endpoint: 'https://copilot.tencent.com',
@@ -242,6 +252,10 @@ function resolveProduct(name) {
  * 这样授权流的每个分支都能在没凭据的机器上跑到。
  */
 export function createWorkbuddyConnector(options = {}) {
+  // 同一个实现注册成两个连接器（国际版 / 国内版），靠默认产品区分
+  const defaultProduct = String(options.product || 'workbuddy')
+  const connectorId = String(options.id || 'workbuddy')
+  const connectorLabel = String(options.label || 'WorkBuddy')
   const fetchImpl = options.fetch ?? globalThis.fetch
   if (typeof fetchImpl !== 'function') throw new Error('当前运行环境没有 fetch')
   const now = typeof options.now === 'function' ? options.now : () => Date.now()
@@ -388,7 +402,7 @@ export function createWorkbuddyConnector(options = {}) {
 
   // ------------------------------------------------------------- 授权流
 
-  async function startConnect({ product: productName = 'workbuddy' } = {}) {
+  async function startConnect({ product: productName = defaultProduct } = {}) {
     const product = resolveProduct(productName)
     const json = await request(
       `${product.endpoint}/v2/plugin/auth/state?platform=${encodeURIComponent(product.platform)}`,
@@ -532,8 +546,9 @@ export function createWorkbuddyConnector(options = {}) {
   }
 
   return {
-    id: 'workbuddy',
-    label: 'WorkBuddy',
+    id: connectorId,
+    label: connectorLabel,
+    defaultProduct,
     // 轮询节奏交给 UI：连接器自己 sleep 会占住请求线程
     pollIntervalMs: POLL_INTERVAL_MS,
     authTimeoutMs: AUTH_TIMEOUT_MS,
@@ -551,7 +566,28 @@ export function createWorkbuddyConnector(options = {}) {
   }
 }
 
-export const workbuddyConnector = createWorkbuddyConnector()
+export const workbuddyConnector = createWorkbuddyConnector({
+  id: 'workbuddy',
+  label: 'WorkBuddy 国际版',
+  product: 'workbuddy',
+})
+
+// 国内版是同一套接口、同一域名，只换客户端 UA。分成两个连接器是因为
+// 「加一个平台」在界面上是一次动作，两种账号该是两张卡。
+export const workbuddyCnConnector = createWorkbuddyConnector({
+  id: 'workbuddy-cn',
+  label: 'WorkBuddy 国内版',
+  product: 'workbuddy-cn',
+})
+
+// CodeBuddy 是腾讯的另一个产品（copilot.tencent.com），接口一样但端点和 platform 不同
+export const codebuddyConnector = createWorkbuddyConnector({
+  id: 'codebuddy',
+  label: 'CodeBuddy',
+  product: 'codebuddy',
+})
 
 // 导入即注册：与 manual.js 同一约定，调用方不必记得登记
 registerConnector(workbuddyConnector)
+registerConnector(workbuddyCnConnector)
+registerConnector(codebuddyConnector)
