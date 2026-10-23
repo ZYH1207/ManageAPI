@@ -68,6 +68,14 @@ export async function createProvider({ name, baseUrl, kind = 'unknown', note = '
 }
 
 export async function updateProvider(id, patch) {
+  // 令牌加密必须在 mutate 外面做——mutate 的回调是同步的
+  const encryptedAdmin =
+    patch.adminToken === undefined
+      ? undefined
+      : patch.adminToken
+        ? await encryptSecret(String(patch.adminToken).trim())
+        : null
+
   return mutate((db) => {
     const provider = db.providers.find((p) => p.id === id)
     if (!provider) throw new Error(`站点不存在：${id}`)
@@ -75,6 +83,16 @@ export async function updateProvider(id, patch) {
     if (patch.baseUrl !== undefined) provider.baseUrl = normalizeBaseUrl(patch.baseUrl)
     if (patch.kind !== undefined) provider.kind = patch.kind
     if (patch.note !== undefined) provider.note = patch.note
+    // 令牌与余额是站点级的：一个后台账号一套，跟下面挂几个 Key 无关
+    if (encryptedAdmin !== undefined) {
+      provider.adminToken = encryptedAdmin
+      provider.adminTokenTail = encryptedAdmin ? String(patch.adminToken).trim().slice(-6) : null
+    }
+    if (patch.quotaRemaining !== undefined) {
+      provider.quotaRemaining = patch.quotaRemaining === null ? null : Number(patch.quotaRemaining)
+      provider.quotaUpdatedAt = nowIso()
+    }
+    if (patch.currency !== undefined) provider.currency = patch.currency
     provider.updatedAt = nowIso()
     return provider
   })
@@ -94,10 +112,9 @@ export async function deleteProvider(id) {
 
 // -------------------------------------------------------------- credentials
 
-export async function createCredential({ providerId, label, secret, adminToken = null, group = '', quotaRemaining = null, currency = 'CNY', expiresAt = null }) {
+export async function createCredential({ providerId, label, secret, group = '', expiresAt = null }) {
   if (!secret || !String(secret).trim()) throw new Error('API Key 不能为空')
   const encrypted = await encryptSecret(String(secret).trim())
-  const encryptedAdmin = adminToken ? await encryptSecret(String(adminToken).trim()) : null
   return mutate((db) => {
     if (!db.providers.some((p) => p.id === providerId)) throw new Error(`站点不存在：${providerId}`)
     const credential = {
@@ -109,12 +126,6 @@ export async function createCredential({ providerId, label, secret, adminToken =
       tail: String(secret).trim().slice(-4),
       // 这把 Key 属于站点的哪个分组——同步模型、探针、路由都按它走
       group: String(group || '').trim(),
-      // 可选：站点后台的登录令牌，只用来读余额/用量，不参与对话
-      adminToken: encryptedAdmin,
-      adminTokenTail: encryptedAdmin ? String(adminToken).trim().slice(-6) : null,
-      quotaRemaining: quotaRemaining === null ? null : Number(quotaRemaining),
-      currency,
-      quotaUpdatedAt: quotaRemaining === null ? null : nowIso(),
       expiresAt,
       createdAt: nowIso(),
     }
@@ -124,39 +135,28 @@ export async function createCredential({ providerId, label, secret, adminToken =
 }
 
 export async function updateCredential(id, patch) {
-  // 加密必须在 mutate 外面做——mutate 的回调是同步的
-  const encryptedAdmin =
-    patch.adminToken === undefined
-      ? undefined
-      : patch.adminToken
-        ? await encryptSecret(String(patch.adminToken).trim())
-        : null
-
   return mutate((db) => {
     const credential = db.credentials.find((c) => c.id === id)
     if (!credential) throw new Error(`凭据不存在：${id}`)
     if (patch.label !== undefined) credential.label = patch.label
     if (patch.group !== undefined) credential.group = String(patch.group || '').trim()
-    if (patch.quotaRemaining !== undefined) {
-      credential.quotaRemaining = patch.quotaRemaining === null ? null : Number(patch.quotaRemaining)
-      credential.quotaUpdatedAt = nowIso()
-    }
-    if (patch.currency !== undefined) credential.currency = patch.currency
     if (patch.expiresAt !== undefined) credential.expiresAt = patch.expiresAt
-    if (encryptedAdmin !== undefined) {
-      credential.adminToken = encryptedAdmin
-      credential.adminTokenTail = encryptedAdmin ? String(patch.adminToken).trim().slice(-6) : null
-    }
     return credential
   })
 }
 
-/** 取出管理令牌（明文）。没有就返回 null。 */
-export async function revealAdminToken(credentialId) {
+/**
+ * 取出站点后台令牌（明文）。没有就返回 null。
+ *
+ * 传 providerId 是正常用法；也接受 credentialId，兼容旧调用与未迁移的数据。
+ */
+export async function revealAdminToken(providerIdOrCredentialId) {
   const db = await readDb()
-  const credential = db.credentials.find((c) => c.id === credentialId)
-  if (!credential?.adminToken) return null
-  return decryptSecret(credential.adminToken)
+  const provider = db.providers.find((p) => p.id === providerIdOrCredentialId)
+  if (provider?.adminToken) return decryptSecret(provider.adminToken)
+  const credential = db.credentials.find((c) => c.id === providerIdOrCredentialId)
+  if (credential?.adminToken) return decryptSecret(credential.adminToken)
+  return null
 }
 
 export async function deleteCredential(id) {

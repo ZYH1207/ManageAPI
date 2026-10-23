@@ -235,19 +235,22 @@ async function buildState() {
   return {
     settings: db.settings,
     dataDir: store.dataDir(),
-    providers: db.providers,
+    // 令牌与余额挂在站点上：它们是「一个后台账号一套」，跟下面挂几个 Key 无关
+    providers: db.providers.map((p) => ({
+      ...p,
+      hasAdminToken: Boolean(p.adminToken),
+      adminTokenTail: p.adminTokenTail ?? null,
+      quotaRemaining: typeof p.quotaRemaining === 'number' ? p.quotaRemaining : null,
+      currency: p.currency || 'CNY',
+      quotaUpdatedAt: p.quotaUpdatedAt ?? null,
+    })),
     credentials: db.credentials.map((c) => ({
       id: c.id,
       providerId: c.providerId,
       label: c.label,
       group: c.group || '',
       tail: c.tail,
-      quotaRemaining: c.quotaRemaining,
-      currency: c.currency,
-      quotaUpdatedAt: c.quotaUpdatedAt,
       expiresAt: c.expiresAt,
-      hasAdminToken: Boolean(c.adminToken),
-      adminTokenTail: c.adminTokenTail ?? null,
     })),
     offers: db.offers,
     // 免费池：与付费侧完全隔离。两栏数据分开给，前端不用自己筛。
@@ -394,33 +397,73 @@ route('POST', /^\/api\/providers\/([\w-]+)\/sync$/, async (ctx) => {
   const db = await store.readDb()
   const provider = db.providers.find((p) => p.id === ctx.params[0])
   if (!provider) throw new HttpError(404, '站点不存在')
-  const credentialId = ctx.body.credentialId || db.credentials.find((c) => c.providerId === provider.id)?.id
-  if (!credentialId) throw new HttpError(400, '该站点还没有 Key，先添加一个')
-
-  const apiKey = await inv.revealSecret(credentialId)
-  if (!apiKey) throw new HttpError(400, 'Key 解密失败，可能是 master.key 被替换过')
+  // 同步模型时把该站**所有** Key 都试一遍，取并集。
+  // 只试第一个 Key 是个坑：加了一把新 Key 之后，同步用的还是那把旧的，
+  // 旧的过期了就会「明明填了新 Key 却拉不到模型」。
+  const targets = ctx.body.credentialId
+    ? db.credentials.filter((c) => c.id === ctx.body.credentialId)
+    : db.credentials.filter((c) => c.providerId === provider.id)
+  if (targets.length === 0) throw new HttpError(400, '该站点还没有 Key，先添加一个')
 
   const previous = new Set(
     db.offers.filter((o) => o.providerId === provider.id).map((o) => o.upstreamName),
   )
-  const { models, elapsedMs } = await providers.listModels({
-    baseUrl: provider.baseUrl,
-    apiKey,
-    timeoutMs: db.settings.probeTimeoutMs || 15000,
-  })
-  const credential = db.credentials.find((c) => c.id === credentialId)
-  const result = await inv.syncOffers(provider.id, credentialId, models, credential?.group || '')
 
-  const current = new Set(models)
+  const models = new Set()
+  const failures = []
+  const usedCredentialIds = []
+  const startedAt = Date.now()
+  let firstGroup = ''
+  let firstCredentialId = null
+
+  for (const credential of targets) {
+    const apiKey = await inv.revealSecret(credential.id)
+    if (!apiKey) {
+      failures.push({ label: credential.label, error: 'Key 解密失败，可能是 master.key 被替换过' })
+      continue
+    }
+    try {
+      const result = await providers.listModels({
+        baseUrl: provider.baseUrl,
+        apiKey,
+        timeoutMs: db.settings.probeTimeoutMs || 15000,
+      })
+      for (const name of result.models) models.add(name)
+      usedCredentialIds.push(credential.id)
+      if (!firstCredentialId) {
+        firstCredentialId = credential.id
+        firstGroup = credential.group || ''
+      }
+    } catch (error) {
+      failures.push({ label: credential.label, error: error.message || String(error) })
+    }
+  }
+
+  if (models.size === 0) {
+    throw new HttpError(
+      502,
+      `所有 Key 都拉不到模型：${failures.map((f) => `${f.label}: ${f.error}`).join(' | ')}`,
+    )
+  }
+
+  const elapsedMs = Date.now() - startedAt
+  const list = [...models]
+  const result = await inv.syncOffers(provider.id, firstCredentialId, list, firstGroup)
+
+  const current = new Set(list)
   const state = await buildState()
   return {
     ...state,
     sync: {
       providerId: provider.id,
-      fetched: models.length,
+      fetched: list.length,
       added: result.added,
       removed: [...previous].filter((name) => !current.has(name)),
       elapsedMs,
+      // 哪几把 Key 成功了、哪几把失败——失败原因直接给出来，不然用户不知道该换哪把
+      keysUsed: usedCredentialIds.length,
+      keysTotal: targets.length,
+      failures,
     },
   }
 })
@@ -443,8 +486,7 @@ async function loadProviderPricing(providerId) {
   const provider = db.providers.find((p) => p.id === providerId)
   if (!provider) throw new HttpError(404, '站点不存在')
 
-  const credential = db.credentials.find((c) => c.providerId === provider.id)
-  const adminToken = credential ? await inv.revealAdminToken(credential.id) : null
+  const adminToken = await inv.revealAdminToken(provider.id)
   const pricing = await providers.fetchProviderPricing({ baseUrl: provider.baseUrl, adminToken })
 
   const byModel = new Map()
@@ -623,9 +665,9 @@ route('POST', /^\/api\/providers\/([\w-]+)\/usage-check$/, async (ctx) => {
   if (!provider) throw new HttpError(404, '站点不存在')
   const credential = db.credentials.find((c) => c.providerId === provider.id)
   if (!credential) throw new HttpError(400, '该站还没有 Key')
-  const adminToken = await inv.revealAdminToken(credential.id)
+  const adminToken = await inv.revealAdminToken(provider.id)
   if (!adminToken) {
-    throw new HttpError(400, '需要先在 Key 那行点「令牌」，填一个站点后台的登录令牌')
+    throw new HttpError(400, '需要先在站点卡片上点「令牌」，填一个站点后台的登录令牌')
   }
 
   const raw = await providers.fetchSiteUsage({ baseUrl: provider.baseUrl, adminToken })
@@ -669,14 +711,15 @@ route('POST', /^\/api\/providers\/([\w-]+)\/balance$/, async (ctx) => {
   const db = await store.readDb()
   const provider = db.providers.find((p) => p.id === ctx.params[0])
   if (!provider) throw new HttpError(404, '站点不存在')
-  const credentialId = ctx.body.credentialId || db.credentials.find((c) => c.providerId === provider.id)?.id
-  if (!credentialId) throw new HttpError(400, '该站点还没有 Key')
+  const credential = db.credentials.find((c) => c.providerId === provider.id)
+  if (!credential) throw new HttpError(400, '该站点还没有 Key')
 
-  const apiKey = await inv.revealSecret(credentialId)
-  const adminToken = await inv.revealAdminToken(credentialId)
+  const apiKey = await inv.revealSecret(credential.id)
+  const adminToken = await inv.revealAdminToken(provider.id)
   const result = await providers.tryBalance({ baseUrl: provider.baseUrl, apiKey, adminToken })
+  // 余额是账号级的，写回站点——挂在 Key 上会导致「加第二个 Key 余额显示 0」
   if (result.ok) {
-    await inv.updateCredential(credentialId, {
+    await inv.updateProvider(provider.id, {
       quotaRemaining: result.remaining,
       currency: result.currency,
     })
@@ -914,8 +957,7 @@ route('POST', /^\/api\/benchmarks\/import-plaza$/, async (ctx) => {
   const provider = db.providers.find((p) => p.id === providerId)
   if (!provider) throw new HttpError(404, '站点不存在')
 
-  const credential = db.credentials.find((c) => c.providerId === provider.id)
-  const adminToken = credential ? await inv.revealAdminToken(credential.id) : null
+  const adminToken = await inv.revealAdminToken(provider.id)
   const pricing = await providers.fetchProviderPricing({ baseUrl: provider.baseUrl, adminToken })
 
   const table = await bench.readBenchmarks()

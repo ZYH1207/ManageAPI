@@ -843,3 +843,11 @@ Object.assign(EN, {
   '自动连接使用平台未公开接口，可能随平台升级失效':
     'Auto-connect uses an undocumented platform API and may break when the platform updates',
 })
+
+// 站点级令牌与余额
+Object.assign(EN, {
+  '站点余额': 'Site balance',
+  '一个后台账号一套，整站通用': 'One per backend account — shared by the whole site',
+  '「令牌」在站点卡片上（不在 Key 上）——它是站点后台的登录凭证，一个后台账号填一次，整站通用。获取：登录后台 → F12 → Network → 点任意 <code>/api/v1/</code> 请求 → 复制 Request Headers 里的 <code>Authorization</code>（去掉 <code>Bearer </code> 前缀）。令牌会过期，失效后重新复制。':
+    'The token lives on the site card, not on individual keys — it is the backend login credential, entered once per backend account and shared by the whole site. To get it: log in → F12 → Network → click any <code>/api/v1/</code> request → copy <code>Authorization</code> from Request Headers (drop the <code>Bearer </code> prefix). Tokens expire; copy a fresh one when they do.',
+})

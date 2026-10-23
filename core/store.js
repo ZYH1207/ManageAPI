@@ -13,7 +13,7 @@ import { mkdir, readFile, writeFile, rename, chmod, access } from 'node:fs/promi
 import { constants } from 'node:fs'
 import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto'
 
-const DB_VERSION = 1
+const DB_VERSION = 2
 
 export function dataDir() {
   return process.env.MANAGE_API_HOME || join(homedir(), '.manage-api')
@@ -120,6 +120,41 @@ export async function decryptSecret(blob) {
   }
 }
 
+/**
+ * v1 → v2：把「令牌 / 余额」从 Key 上挪到站点上。
+ *
+ * 原因：令牌是站点后台的登录凭证，余额是账号余额——两者都跟 Key 无关。
+ * 挂在 Key 上会导致「加第二个 Key 后余额显示 0」「换个 Key 就要重填令牌」。
+ *
+ * 迁移是就地提升：取该站第一个填过令牌的 Key，复制到站点上。
+ * Key 上的旧字段保留不删，万一要回滚还能读。
+ */
+function migrate(db) {
+  const version = Number(db.version) || 1
+  if (version >= DB_VERSION) return db
+
+  for (const provider of db.providers || []) {
+    const mine = (db.credentials || []).filter((c) => c.providerId === provider.id)
+    if (!provider.adminToken) {
+      const withToken = mine.find((c) => c.adminToken)
+      if (withToken) {
+        provider.adminToken = withToken.adminToken
+        provider.adminTokenTail = withToken.adminTokenTail ?? null
+      }
+    }
+    if (provider.quotaRemaining === undefined || provider.quotaRemaining === null) {
+      const withQuota = mine.find((c) => typeof c.quotaRemaining === 'number')
+      if (withQuota) {
+        provider.quotaRemaining = withQuota.quotaRemaining
+        provider.currency = withQuota.currency || 'CNY'
+        provider.quotaUpdatedAt = withQuota.quotaUpdatedAt ?? null
+      }
+    }
+  }
+  db.version = DB_VERSION
+  return db
+}
+
 export async function readDb() {
   const p = dbPath()
   if (!(await exists(p))) return emptyDb()
@@ -130,7 +165,7 @@ export async function readDb() {
     throw new Error(`数据文件解析失败：${p}（${error.message}）`)
   }
   const base = emptyDb()
-  return {
+  return migrate({
     ...base,
     ...raw,
     settings: { ...base.settings, ...(raw.settings || {}) },
@@ -138,7 +173,7 @@ export async function readDb() {
     credentials: raw.credentials || [],
     offers: raw.offers || [],
     probes: raw.probes || [],
-  }
+  })
 }
 
 export async function writeDb(db) {

@@ -353,7 +353,7 @@ The daemon binds `127.0.0.1` only, has no authentication, and must not be expose
 
 ## Known limitations
 
-- **Balance is usually unreadable.** one-api's `/api/user/self` needs a "user access token" rather than an `sk-` key; many sites disable these endpoints; Sub2API's account APIs sit under `/api/v1/*` and only accept a login session. Workaround: click **Token** on the key row and paste a site login token. If it still fails, type the balance in — the tool never guesses.
+- **Balance is usually unreadable.** one-api's `/api/user/self` needs a "user access token" rather than an `sk-` key; many sites disable these endpoints; Sub2API's account APIs sit under `/api/v1/*` and only accept a login session. Workaround: click **Token** on the site card and paste a site login token (once per backend account, shared by the whole site). If it still fails, type the balance in — the tool never guesses.
 - **Only `/v1/chat/completions` and `/v1/models` are proxied.** Embeddings, images and other endpoints are not.
 - **Usage depends on the upstream returning `usage`.** A few sites do not, even when asked; those requests record 0 tokens but still count as requests.
 - **Price units are per-million and per-thousand tokens only.** Per-request billing is not supported.

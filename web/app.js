@@ -83,17 +83,17 @@ function buildNotifications() {
   const list = []
   const scores = state.scores || {}
 
-  // 余额偏低
-  for (const c of state.credentials || []) {
-    if (typeof c.quotaRemaining !== 'number') continue
-    const threshold = c.currency === 'USD' ? 1.5 : 10
-    if (c.quotaRemaining > threshold) continue
-    const provider = state.providers.find((p) => p.id === c.providerId)
+  // 余额偏低（余额挂在站点上，一个站一条）
+  for (const p of state.providers || []) {
+    if (typeof p.quotaRemaining !== 'number') continue
+    const currency = p.currency || 'CNY'
+    const threshold = currency === 'USD' ? 1.5 : 10
+    if (p.quotaRemaining > threshold) continue
     list.push({
-      id: `quota:${c.id}:${c.quotaRemaining}`,
-      level: c.quotaRemaining <= 0 ? 'danger' : 'warn',
-      title: t('{name} 余额偏低', { name: provider?.name || t('站点') }),
-      desc: t('剩余 {amount} {currency}，该充值了', { amount: c.quotaRemaining, currency: c.currency }),
+      id: `quota:${p.id}:${p.quotaRemaining}`,
+      level: p.quotaRemaining <= 0 ? 'danger' : 'warn',
+      title: t('{name} 余额偏低', { name: p.name }),
+      desc: t('剩余 {amount} {currency}，该充值了', { amount: p.quotaRemaining, currency }),
     })
   }
 
@@ -340,12 +340,12 @@ function renderOverview() {
   const siteRows = orderedProviders.map((provider) => {
     const offers = state.offers.filter((o) => o.providerId === provider.id)
     const healthy = offers.filter((o) => scores[o.id]?.routable).length
-    const credentials = state.credentials.filter((c) => c.providerId === provider.id)
-    const quota = credentials.reduce((sum, c) => {
-      if (typeof c.quotaRemaining !== 'number') return sum
-      return sum + (c.currency === 'CNY' ? c.quotaRemaining : c.quotaRemaining * state.settings.fxUsdCny)
-    }, 0)
-    const hasQuota = credentials.some((c) => typeof c.quotaRemaining === 'number')
+    const hasQuota = typeof provider.quotaRemaining === 'number'
+    const quota = hasQuota
+      ? provider.currency === 'USD'
+        ? provider.quotaRemaining * state.settings.fxUsdCny
+        : provider.quotaRemaining
+      : 0
     const rank = rankingMap.get(provider.id)
     const issue = issueMap.get(provider.id)
     const dotClass = issue ? (issue.severe ? 'red' : 'yellow') : rank ? 'green' : 'gray'
@@ -367,7 +367,7 @@ function renderOverview() {
         <td class="num">${offers.length}</td>
         <td class="num">${healthy ? `<span class="badge ok">${healthy}</span>` : '<span class="badge">0</span>'}</td>
         <td class="num">${hasQuota ? `¥${money(quota)}` : '<span style="color:var(--faint)">未录入</span>'}</td>
-        <td class="num">${credentials.length}</td>
+        <td class="num">${state.credentials.filter((c) => c.providerId === provider.id).length}</td>
       </tr>`
   }).join('')
 
@@ -609,12 +609,13 @@ function renderProviders() {
     const keys = state.credentials.filter((c) => c.providerId === p.id)
     const offers = state.offers.filter((o) => o.providerId === p.id)
     const priced = offers.filter((o) => o.inPrice !== null || o.outPrice !== null || o.ratio !== null)
-    const quota = keys.reduce((sum, k) => {
-      if (typeof k.quotaRemaining !== 'number') return sum
-      const cny = k.currency === 'CNY' ? k.quotaRemaining : k.quotaRemaining * state.settings.fxUsdCny
-      return sum + cny
-    }, 0)
-    const hasQuota = keys.some((k) => typeof k.quotaRemaining === 'number')
+    // 余额是站点级的：一个后台账号一套，跟下面挂几个 Key 无关
+    const hasQuota = typeof p.quotaRemaining === 'number'
+    const quota = hasQuota
+      ? p.currency === 'USD'
+        ? p.quotaRemaining * state.settings.fxUsdCny
+        : p.quotaRemaining
+      : 0
 
     // 中转站的倍率按「分组」定，不是按模型——所以按分组给一个批量入口
     const groupNames = [...new Set(offers.map((o) => o.group || ''))]
@@ -669,6 +670,7 @@ function renderProviders() {
             <button data-act="open-group-picker" title="从站点读分组，选你买的那个，倍率自动填到下面所有模型">导入倍率</button>
             <button data-act="usage-check" title="用管理令牌拉站方用量，和我们的估算对比">用量核对</button>
             <button data-act="balance">读余额</button>
+            <button class="ghost" data-act="set-admin-token" data-provider="${esc(p.id)}" title="站点后台的登录令牌，一次填好整站通用，用来读余额和用量">${p.hasAdminToken ? '令牌 ✓' : '令牌'}</button>
             <button data-act="export">导出配置</button>
             <button data-act="del-provider" class="danger">删除</button>
           </div>
@@ -680,6 +682,16 @@ function renderProviders() {
           <span class="badge ${priced.length ? 'ok' : 'warn'}">${priced.length} 个已定价</span>
           ${hasQuota ? `<span class="badge ok">余额 ≈ ¥${money(quota)}</span>` : '<span class="badge warn">余额未录入</span>'}
         </div>
+        <div class="keyrow" style="border-top:none">
+          <span style="color:var(--muted);font-size:12px">站点余额</span>
+          <span style="color:var(--faint);font-size:11px">一个后台账号一套，整站通用</span>
+          <span class="grow"></span>
+          <input type="number" step="0.01" placeholder="余额" value="${p.quotaRemaining ?? ''}" data-act="quota" />
+          <select data-act="currency" style="width:74px">
+            <option value="CNY" ${(p.currency || 'CNY') === 'CNY' ? 'selected' : ''}>CNY</option>
+            <option value="USD" ${p.currency === 'USD' ? 'selected' : ''}>USD</option>
+          </select>
+        </div>
         <div class="keylist">
           ${keys.length === 0 ? '<div class="hint">还没有 Key，加一个才能拉模型。</div>' : keys.map((k) => `
             <div class="keyrow" data-credential="${esc(k.id)}">
@@ -689,12 +701,6 @@ function renderProviders() {
                 ${k.group ? `分组 · ${esc(k.group)}` : '选分组'}
               </button>
               <span class="grow"></span>
-              <input type="number" step="0.01" placeholder="余额" value="${k.quotaRemaining ?? ''}" data-act="quota" />
-              <select data-act="currency" style="width:74px">
-                <option value="CNY" ${k.currency === 'CNY' ? 'selected' : ''}>CNY</option>
-                <option value="USD" ${k.currency === 'USD' ? 'selected' : ''}>USD</option>
-              </select>
-              <button class="ghost" data-act="set-admin-token" title="填后台登录令牌后，可自动读余额">${k.hasAdminToken ? '令牌 ✓' : '令牌'}</button>
               <button class="ghost danger" data-act="del-key">删除</button>
             </div>`).join('')}
           <form class="inline-form" data-form="add-key">
@@ -704,7 +710,7 @@ function renderProviders() {
             <button type="submit">添加 Key</button>
           </form>
           <div class="hint" style="margin-top:2px">
-            ${t('「令牌」是站点后台的登录凭证，只用来读余额、不参与对话。获取：登录后台 → F12 → Network → 点任意 <code>/api/v1/</code> 请求 → 复制 Request Headers 里的 <code>Authorization</code>（去掉 <code>Bearer </code> 前缀）。令牌会过期，失效后重新复制。')}
+            ${t('「令牌」在站点卡片上（不在 Key 上）——它是站点后台的登录凭证，一个后台账号填一次，整站通用。获取：登录后台 → F12 → Network → 点任意 <code>/api/v1/</code> 请求 → 复制 Request Headers 里的 <code>Authorization</code>（去掉 <code>Bearer </code> 前缀）。令牌会过期，失效后重新复制。')}
           </div>
         </div>
         ${groupRows ? `
@@ -2126,7 +2132,15 @@ document.addEventListener('click', async (event) => {
       render()
       const sync = result.sync
       const removed = sync.removed.length ? `，${sync.removed.length} 个已下线` : ''
-      toast(`拉到 ${sync.fetched} 个模型，新增 ${sync.added}${removed}（${sync.elapsedMs}ms）`)
+      const failed = sync.failures?.length ? `，${sync.failures.length} 把 Key 失败` : ''
+      toast(`拉到 ${sync.fetched} 个模型，新增 ${sync.added}${removed}${failed}（${sync.elapsedMs}ms）`)
+      // 有 Key 失败时说清是哪一把、为什么——不然用户不知道新加的 Key 到底有没有用上
+      if (sync.failures?.length) {
+        setTimeout(
+          () => toast(`失败的 Key：${sync.failures.map((f) => `${f.label}（${f.error}）`).join('；')}`, true),
+          1600,
+        )
+      }
     })
     return
   }
@@ -2320,14 +2334,15 @@ document.addEventListener('click', async (event) => {
   }
 
   if (action === 'set-admin-token') {
-    const credentialId = actionButton.closest('[data-credential]').dataset.credential
+    const providerId = actionButton.dataset.provider || actionButton.closest('[data-provider]')?.dataset.provider
+    if (!providerId) return
     const value = prompt(
-      '粘贴站点后台的登录令牌（浏览器 F12 → Network → 任意 /api/v1/ 请求 → Request Headers 里的 Authorization 值，去掉 Bearer 前缀）\n\n留空表示清除。',
+      '粘贴站点后台的登录令牌（浏览器 F12 → Network → 任意 /api/v1/ 请求 → Request Headers 里的 Authorization 值，去掉 Bearer 前缀）\n\n一个后台账号填一次，整站通用。留空表示清除。',
       '',
     )
     if (value === null) return
     try {
-      state = await api('PATCH', `/api/credentials/${credentialId}`, { adminToken: value.trim() || null })
+      state = await api('PATCH', `/api/providers/${providerId}`, { adminToken: value.trim() || null })
       render()
       toast(value.trim() ? '令牌已保存，点「读余额」试试' : '令牌已清除')
     } catch (error) {
@@ -2664,18 +2679,18 @@ document.addEventListener('change', async (event) => {
     return
   }
 
-  const credentialRow = input.closest('[data-credential]')
-  if (credentialRow) {
-    const credentialId = credentialRow.dataset.credential
-    const fieldMap = { quota: 'quotaRemaining', currency: 'currency' }
-    const field = fieldMap[input.dataset.act]
-    if (!field) return
+  // 余额与币种是站点级的（一个后台账号一套），所以写到 provider 上而不是 Key 上
+  const quotaFieldMap = { quota: 'quotaRemaining', currency: 'currency' }
+  const quotaField = quotaFieldMap[input.dataset.act]
+  if (quotaField) {
+    const quotaRow = input.closest('[data-provider]')
+    if (!quotaRow) return
     try {
-      state = await api('PATCH', `/api/credentials/${credentialId}`, {
-        [field]: input.value === '' ? (field === 'group' ? '' : null) : input.value,
+      state = await api('PATCH', `/api/providers/${quotaRow.dataset.provider}`, {
+        [quotaField]: input.value === '' ? null : input.value,
       })
       render()
-      toast(field === 'group' ? '分组已更新' : '已保存')
+      toast('已保存')
     } catch (error) {
       toast(error.message, true)
     }
