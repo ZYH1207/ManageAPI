@@ -59,6 +59,8 @@ export async function createProvider({ name, baseUrl, kind = 'unknown', note = '
       baseUrl: normalized,
       kind,
       note,
+      // 排序号：站点卡的顺序（小的在前），新建的排到最后
+      sortOrder: db.providers.reduce((max, p) => Math.max(max, Number(p.sortOrder) || 0), 0) + 1,
       createdAt: nowIso(),
       updatedAt: nowIso(),
     }
@@ -83,18 +85,71 @@ export async function updateProvider(id, patch) {
     if (patch.baseUrl !== undefined) provider.baseUrl = normalizeBaseUrl(patch.baseUrl)
     if (patch.kind !== undefined) provider.kind = patch.kind
     if (patch.note !== undefined) provider.note = patch.note
+    // 暂停：站点留在网关里，但不接新请求、不探针、不进比价和决策
+    if (patch.paused !== undefined) provider.paused = Boolean(patch.paused)
     // 令牌与余额是站点级的：一个后台账号一套，跟下面挂几个 Key 无关
     if (encryptedAdmin !== undefined) {
       provider.adminToken = encryptedAdmin
       provider.adminTokenTail = encryptedAdmin ? String(patch.adminToken).trim().slice(-6) : null
+      // 换令牌就把上一次的失效结论清掉，重新判
+      provider.tokenStatus = encryptedAdmin ? null : null
+      provider.tokenStatusAt = null
     }
     if (patch.quotaRemaining !== undefined) {
       provider.quotaRemaining = patch.quotaRemaining === null ? null : Number(patch.quotaRemaining)
       provider.quotaUpdatedAt = nowIso()
     }
     if (patch.currency !== undefined) provider.currency = patch.currency
+    if (patch.sortOrder !== undefined) {
+      const n = Number(patch.sortOrder)
+      if (!Number.isFinite(n)) throw new Error('排序号必须是数字')
+      provider.sortOrder = n
+    }
     provider.updatedAt = nowIso()
     return provider
+  })
+}
+
+/**
+ * 按给定的 id 顺序重排站点卡片（拖拽用）。
+ * 只调整传进来的这些；没提到的保持原相对位置排在后面。
+ */
+export async function reorderProviders(ids = []) {
+  if (!Array.isArray(ids) || ids.length === 0) return { reordered: 0 }
+  return mutate((db) => {
+    const rank = new Map(ids.map((id, index) => [String(id), index]))
+    const rest = db.providers
+      .filter((p) => !rank.has(p.id))
+      .sort((a, b) => (Number(a.sortOrder) || 0) - (Number(b.sortOrder) || 0))
+    let next = rank.size
+    for (const provider of db.providers) {
+      if (rank.has(provider.id)) provider.sortOrder = rank.get(provider.id) + 1
+      else provider.sortOrder = ++next
+    }
+    return { reordered: ids.length, total: db.providers.length, rest: rest.length }
+  })
+}
+
+/**
+ * 记下「站点令牌还能不能用」的结论，卡片上直接标红。
+ *
+ * ok=true 只在真的拿令牌打通了接口时记；401/403 记 invalid；
+ * 网络超时之类不算令牌的错，传 null 表示「这次没结论」，保留上一次的。
+ */
+export async function setTokenStatus(id, { ok, message = null, status = null } = {}) {
+  return mutate((db) => {
+    const provider = db.providers.find((p) => p.id === id)
+    if (!provider) return null
+    if (ok === true) {
+      provider.tokenStatus = 'ok'
+      provider.tokenStatusAt = nowIso()
+      provider.tokenStatusMessage = null
+    } else if (ok === false) {
+      provider.tokenStatus = 'invalid'
+      provider.tokenStatusAt = nowIso()
+      provider.tokenStatusMessage = message || (status ? `HTTP ${status}` : '令牌不可用')
+    }
+    return { tokenStatus: provider.tokenStatus }
   })
 }
 

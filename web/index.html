@@ -27,12 +27,8 @@
           <span class="nav-text"><span class="nav-title" data-i18n="概览">概览</span><span class="nav-desc" data-i18n="状态与排名">状态与排名</span></span>
         </button>
         <button data-tab="monitor">
-          <svg viewBox="0 0 24 24"><path d="M3 3v18h18"/><polyline points="7 14 11 9 15 12 20 5"/></svg>
-          <span class="nav-text"><span class="nav-title" data-i18n="监控">监控</span><span class="nav-desc" data-i18n="余额与变动">余额与变动</span></span>
-        </button>
-        <button data-tab="providers">
-          <svg viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="7" rx="2"/><rect x="2" y="14" width="20" height="7" rx="2"/><line x1="6" y1="6.5" x2="6.01" y2="6.5"/><line x1="6" y1="17.5" x2="6.01" y2="17.5"/></svg>
-          <span class="nav-text"><span class="nav-title" data-i18n="站点">站点</span><span class="nav-desc" data-i18n="中转站与 Key">中转站与 Key</span></span>
+          <svg viewBox="0 0 24 24"><path d="M3 3v18h18"/><polyline points="7 14 11 8 15 12 20 4"/></svg>
+          <span class="nav-text"><span class="nav-title" data-i18n="站点">站点</span><span class="nav-desc" data-i18n="余额与分组">余额与分组</span></span>
         </button>
         <button data-tab="free">
           <svg viewBox="0 0 24 24"><polyline points="20 12 20 22 4 22 4 12"/><rect x="2" y="7" width="20" height="5"/><line x1="12" y1="22" x2="12" y2="7"/><path d="M12 7H7.5a2.5 2.5 0 0 1 0-5C11 2 12 7 12 7z"/><path d="M12 7h4.5a2.5 2.5 0 0 0 0-5C13 2 12 7 12 7z"/></svg>
@@ -100,6 +96,18 @@
               <div id="notify-list" class="notify-list"></div>
             </div>
           </div>
+          <button id="refresh-btn" class="top-btn refresh-btn" type="button" data-act="refresh-state" title="刷新" aria-label="刷新" data-i18n-title="刷新">
+            <svg viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-3-6.7"/><polyline points="21 4 21 10 15 10"/></svg>
+            <span data-i18n="刷新">刷新</span>
+          </button>
+          <button id="autorefresh-btn" class="top-btn autorefresh-btn" type="button" data-act="toggle-autorefresh" title="每 15 秒自动刷新一次" data-i18n-title="每 15 秒自动刷新一次">
+            <span class="dot green" id="autorefresh-dot"></span>
+            <span data-i18n="自动刷新">自动刷新</span>
+          </button>
+          <div class="cur-switch" id="cur-switch" role="group" aria-label="显示币种">
+            <button type="button" data-act="set-currency" data-cur="CNY" aria-pressed="false">¥ CNY</button>
+            <button type="button" data-act="set-currency" data-cur="USD" aria-pressed="true">$ USD</button>
+          </div>
           <button class="top-btn" type="button" data-act="show-help">
             <svg viewBox="0 0 24 24"><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H20v15.5H6.5A2.5 2.5 0 0 0 4 21z"/><path d="M4 18.5V5.5"/><path d="M8 7h8"/></svg>
             <span data-i18n="文档">文档</span>
@@ -128,7 +136,6 @@
       <div class="content">
         <section id="view-overview" class="view"></section>
         <section id="view-monitor" class="view" hidden></section>
-        <section id="view-providers" class="view" hidden></section>
         <section id="view-pricing" class="view" hidden></section>
         <section id="view-decision" class="view" hidden></section>
         <section id="view-probes" class="view" hidden></section>
@@ -808,6 +815,28 @@
         <button class="ghost" data-act="close-pf-accounts">关闭</button>
       </div>
       <div class="modal-body" id="pf-accounts-body"></div>
+    </div>
+  </div>
+
+  <div id="prov-modal" class="modal" hidden>
+    <div class="modal-backdrop" data-act="close-prov-panel"></div>
+    <div class="modal-panel" style="width:min(760px,calc(100vw - 40px))">
+      <div class="modal-head">
+        <h3 id="prov-modal-title">站点</h3>
+        <button class="ghost" data-act="close-prov-panel">关闭</button>
+      </div>
+      <div class="modal-body" id="prov-modal-body"></div>
+    </div>
+  </div>
+
+  <div id="add-provider-modal" class="modal" hidden>
+    <div class="modal-backdrop" data-act="close-add-provider"></div>
+    <div class="modal-panel" style="width:min(680px,calc(100vw - 40px))">
+      <div class="modal-head">
+        <h3>新增站点</h3>
+        <button class="ghost" data-act="close-add-provider">关闭</button>
+      </div>
+      <div class="modal-body" id="add-provider-body"></div>
     </div>
   </div>
 

@@ -10,6 +10,13 @@ document.documentElement.dataset.lang = getLang()
 
 let state = null
 let activeTab = 'providers'
+// 自动刷新：默认开，本地记住开关。轮询间隔 15s，页面在后台时暂停
+const AUTOREFRESH_MS = 15000
+const AUTOREFRESH_KEY = 'manageapi.autorefresh'
+let autoRefresh = localStorage.getItem(AUTOREFRESH_KEY) !== '0'
+let refreshTimer = null
+// 这两个页签要看评分/候选明细，轮询时走完整 state；其它页只要轻量那份省带宽
+const HEAVY_TABS = new Set(['pricing', 'decision'])
 
 // ------------------------------------------------------------------ 工具
 
@@ -24,6 +31,27 @@ function money(value) {
   if (value >= 100) return value.toFixed(0)
   if (value >= 1) return value.toFixed(2)
   return value.toFixed(3)
+}
+
+/**
+ * 显示币种：后端算出来的一律是人民币（$ = ¥ ÷ 汇率），这里按设置换成美元展示。
+ * 只影响渲染，不参与任何比较——比较走的是 core/pricing.js 的美元口径。
+ */
+function showUsd() {
+  return state?.settings?.displayCurrency === 'USD'
+}
+function priceSym() {
+  return showUsd() ? '$' : '¥'
+}
+function dispPrice(cny) {
+  if (cny === null || cny === undefined || !Number.isFinite(cny)) return null
+  if (!showUsd()) return cny
+  return cny / (Number(state?.settings?.fxUsdCny) || 7.2)
+}
+/** 价格文本，例：¥0.29 或 $0.041 */
+function priceText(cny) {
+  const v = dispPrice(cny)
+  return v === null ? '—' : `${priceSym()}${money(v)}`
 }
 
 let toastTimer = null
@@ -216,7 +244,6 @@ function openHelpModal() {
 function render() {
   renderOverview()
   renderMonitor()
-  renderProviders()
   renderFree()
   renderPricing()
   renderDecision()
@@ -247,7 +274,7 @@ function headlineHtml() {
   const sentence = t('{model} 目前 {provider} 最便宜，{price}/百万 token，比最贵的省 {pct}%', {
     model: esc(line.modelKey),
     provider: `<strong>${esc(line.providerName)}</strong>`,
-    price: `<strong>¥${money(line.price)}</strong>`,
+    price: `<strong>${priceText(line.price)}</strong>`,
     pct: `<strong>${line.spreadPct}%</strong>`,
   })
   return `
@@ -257,18 +284,75 @@ function headlineHtml() {
     </div>`
 }
 
+/**
+ * 一组线条图标，只给「统计卡 / 版块标题」用。
+ * 为什么不引图标库：全站只需要十来个形状，内联 SVG 比多一个 200KB 的依赖划算。
+ */
+const ICONS = {
+  'eye-off': '<path d="M3 3l18 18"/><path d="M10.6 6.2A10.9 10.9 0 0 1 12 6c5 0 9 4.5 9 6 0 .6-.8 1.9-2.2 3.2"/><path d="M6.2 7.6C3.9 9 3 11.2 3 12c0 1.5 4 6 9 6 1 0 1.9-.2 2.8-.5"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/>',
+  gift: '<rect x="3" y="8" width="18" height="13" rx="1.5"/><path d="M3 12h18M12 8v13"/><path d="M12 8c-2.5 0-4-1-4-2.6A1.9 1.9 0 0 1 12 5.4a1.9 1.9 0 0 1 4-.1C16 7 14.5 8 12 8z"/>',
+  pause: '<path d="M9 5v14M15 5v14"/>',
+  play: '<path d="M8 5.5v13l11-6.5z"/>',
+  grip: '<circle cx="9" cy="6" r="1"/><circle cx="15" cy="6" r="1"/><circle cx="9" cy="12" r="1"/><circle cx="15" cy="12" r="1"/><circle cx="9" cy="18" r="1"/><circle cx="15" cy="18" r="1"/>',
+  key: '<circle cx="8" cy="12" r="4"/><path d="M12 12h9M18 12v3M15 12v2"/>',
+  trash: '<path d="M4 7h16M9 7V5h6v2M6 7l1 13h10l1-13"/><path d="M10 11v6M14 11v6"/>',
+  plus: '<path d="M12 5v14M5 12h14"/>',
+  servers: '<rect x="3" y="4" width="18" height="6" rx="2"/><rect x="3" y="14" width="18" height="6" rx="2"/><path d="M7 7h.01M7 17h.01"/>',
+  layers: '<path d="M12 3l9 5-9 5-9-5 9-5Z"/><path d="M3 13l9 5 9-5"/>',
+  columns: '<rect x="3" y="5" width="5.5" height="14" rx="1.5"/><rect x="10" y="5" width="4" height="14" rx="1.5"/><rect x="16.5" y="5" width="4.5" height="14" rx="1.5"/>',
+  trend: '<path d="M4 16l5-5 3 3 6-7"/><path d="M18 7h3v3"/>',
+  table: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 10h18M9 10v10"/>',
+  alert: '<path d="M12 4l9 16H3L12 4Z"/><path d="M12 10v4M12 17h.01"/>',
+  chart: '<path d="M4 19V5M4 19h16"/><path d="M8 15l3-4 3 2 4-6"/>',
+  wallet: '<rect x="3" y="6" width="18" height="13" rx="2"/><path d="M3 10h18"/><circle cx="16.5" cy="14.5" r="1"/>',
+  receipt: '<path d="M6 3h12v18l-3-2-3 2-3-2-3 2V3Z"/><path d="M9 8h6M9 12h6"/>',
+  swap: '<path d="M7 20V4M7 4L4 7M17 4v16M17 20l3-3"/>',
+  external: '<path d="M14 4h6v6"/><path d="M20 4l-8 8"/><path d="M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/>',
+  'chevron-down': '<path d="M6 9l6 6 6-6"/>',
+  'chevron-up': '<path d="M6 15l6-6 6 6"/>',
+  refresh: '<path d="M20 12a8 8 0 1 1-2.6-5.9"/><path d="M20 4v5h-5"/>',
+  download: '<path d="M12 4v10"/><path d="M8 11l4 4 4-4"/><path d="M4 19h16"/>',
+}
+
+const ID_PROVIDER_KIND = { 'one-api': 'OneAPI', 'new-api': 'NewAPI', sub2api: 'Sub2API' }
+
+function icon(name, cls = '') {
+  const body = ICONS[name] || ''
+  return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"
+    stroke-linecap="round" stroke-linejoin="round"${cls ? ` class="${cls}"` : ''}>${body}</svg>`
+}
+
 function statsHtml() {
   const s = state.summary
   const items = [
-    ['站点', s.providerCount, ''],
-    ['模型供给', s.offerCount, '条'],
-    ['可横向比较', s.comparableCount, '个模型'],
-    ['最大价差', s.maxSpreadPct === null ? '—' : s.maxSpreadPct, s.maxSpreadPct === null ? '' : '%'],
+    ['站点', s.providerCount, '', 'servers', 'tint-muted'],
+    ['模型供给', s.offerCount, '条', 'layers', 'tint-accent'],
+    ['可横向比较', s.comparableCount, '个模型', 'columns', 'tint-muted'],
+    [
+      '最大价差',
+      s.maxSpreadPct === null ? '—' : s.maxSpreadPct,
+      s.maxSpreadPct === null ? '' : '%',
+      'trend',
+      'tint-warn',
+    ],
   ]
-  return `<div class="stats">${items.map(([k, v, unit]) => `
-    <div class="stat"><div class="k">${k}</div>
-    <div class="v">${esc(v)}${unit ? `<small>${unit}</small>` : ''}</div></div>`).join('')}</div>`
+  return `<div class="stats">${items
+    .map(
+      ([k, v, unit, ic, tint]) => `
+    <div class="stat">
+      <div class="stat-main">
+        <div class="k">${k}</div>
+        <div class="v">${esc(v)}${unit ? `<small>${unit}</small>` : ''}</div>
+      </div>
+      <div class="stat-icon ${tint}">${icon(ic)}</div>
+    </div>`,
+    )
+    .join('')}</div>`
 }
+
+// 概览「需要关注」默认只露前几条：站多了以后一屏全是红点，反而看不到下面的速览
+const OVERVIEW_ISSUE_PREVIEW = 4
+let overviewIssuesOpen = false
 
 function renderOverview() {
   const view = $('#view-overview')
@@ -306,29 +390,42 @@ function renderOverview() {
   }
   const issues = [...issueMap.values()]
 
-  const issueBlock =
-    issues.length === 0
-      ? `
-    <h3 class="section-title">需要关注</h3>
-    <div class="alert calm">
-      <span class="name">一切正常</span>
-      <span class="grow"></span>
-      <span class="desc">所有探测过的供给都在正常范围</span>
-    </div>`
-      : `
-    <h3 class="section-title">需要关注（${issues.length} 个站点）</h3>
-    <div class="alert-list">
-      ${issues
-        .map(
-          (issue) => `
-        <div class="alert ${issue.severe ? 'danger' : ''}">
+  const issueRows = (list) =>
+    list
+      .map(
+        (issue) => `
+        <div class="notice ${issue.severe ? 'danger' : ''}">
           <span class="name">${esc(issue.name)}</span>
           <span class="desc">${issue.count} 个模型</span>
           <span class="grow"></span>
           <span class="desc">${[...issue.reasons].join(' · ')}</span>
         </div>`,
-        )
-        .join('')}
+      )
+      .join('')
+
+  const hiddenCount = overviewIssuesOpen ? 0 : Math.max(0, issues.length - OVERVIEW_ISSUE_PREVIEW)
+  const issueBlock =
+    issues.length === 0
+      ? `
+    <h3 class="section-title"><span class="s-icon">${icon('alert')}</span>需要关注</h3>
+    <div class="notice-list">
+      <div class="notice calm">
+        <span class="name">一切正常</span>
+        <span class="grow"></span>
+        <span class="desc">所有探测过的供给都在正常范围</span>
+      </div>
+    </div>`
+      : `
+    <h3 class="section-title"><span class="s-icon">${icon('alert')}</span>需要关注（${issues.length} 个站点）</h3>
+    <div class="notice-list">
+      ${issueRows(overviewIssuesOpen ? issues : issues.slice(0, OVERVIEW_ISSUE_PREVIEW))}
+      ${
+        hiddenCount > 0
+          ? `<button class="notice-more" data-act="overview-issues-toggle">还有 ${hiddenCount} 个站点，展开全部</button>`
+          : issues.length > OVERVIEW_ISSUE_PREVIEW
+            ? `<button class="notice-more" data-act="overview-issues-toggle">收起</button>`
+            : ''
+      }
     </div>`
 
   const rankingMap = new Map((state.siteRanking || []).map((r) => [r.providerId, r]))
@@ -367,7 +464,7 @@ function renderOverview() {
         <td class="num">${scoreCell}</td>
         <td class="num">${offers.length}</td>
         <td class="num">${healthy ? `<span class="badge ok">${healthy}</span>` : '<span class="badge">0</span>'}</td>
-        <td class="num">${hasQuota ? `¥${money(quota)}` : '<span style="color:var(--faint)">未录入</span>'}</td>
+        <td class="num">${hasQuota ? `${provider.currency === 'USD' ? '$' : '¥'}${money(provider.quotaRemaining)}` : '<span style="color:var(--faint)">未录入</span>'}</td>
         <td class="num">${state.credentials.filter((c) => c.providerId === provider.id).length}</td>
       </tr>`
   }).join('')
@@ -381,7 +478,10 @@ function renderOverview() {
     ${headlineHtml()}
     ${statsHtml()}
     ${issueBlock}
-    <h3 class="section-title">站点速览</h3>
+    <h3 class="section-title">
+      <span class="s-icon">${icon('table')}</span>站点速览
+      <a class="link" data-goto="providers">全部站点 →</a>
+    </h3>
     <div class="table-wrap">
       <table>
         <thead><tr>
@@ -598,32 +698,44 @@ function renderUsageCheck(providerId) {
         <span class="grow"></span>
         <button class="ghost tiny" data-act="close-usage-check">关闭</button>
       </div>
+      ${check.error ? `<div class="hint" style="padding:2px 0 6px">没拉到站方数据：${esc(check.error)}</div>` : ''}
       <div style="font-size:12px;line-height:1.9;padding:2px 0 6px">
-        <div>我们的估算：<b>¥${est.cost ?? '—'}</b>
+        <div>我们的估算：<b>${priceText(est.cost)}</b>
           <span style="color:var(--faint)">（${est.requests || 0} 次请求 · 输入 ${formatTokens(est.input)} / 输出 ${formatTokens(est.output)} token）</span></div>
         <div style="color:var(--faint);margin-top:2px">下面是站方返回的原始数据，差异大说明倍率有水分或计费口径不同。</div>
-        <pre class="raw-box">${esc(JSON.stringify(check.raw, null, 2))}</pre>
+        <pre class="raw-box">${esc(JSON.stringify(check.raw ?? null, null, 2))}</pre>
       </div>
     </div>`
 }
 
-function renderProviders() {
-  const view = $('#view-providers')
-  const addForm = $('#tpl-add-provider').innerHTML
+/** 站点卡列表的 HTML（监控页专用；「站点」视图已并入监控页） */
+function providersHtml({ withForm = true, panel = '', actions = '' } = {}) {
+  const addForm = withForm ? $('#tpl-add-provider').innerHTML : ''
 
   if (state.providers.length === 0) {
-    view.innerHTML = `
+    return `
       <div class="empty">
         <h3>还没有站点</h3>
         <p>先添加一个中转站，填上它的地址和一个 Key，就能拉取模型列表开始比价。</p>
       </div>
       ${addForm}`
-    bindAddProviderForm()
-    return
   }
 
-  const cards = state.providers.map((p) => {
+  const query = siteQuery.trim().toLowerCase()
+  const matched = query
+    ? state.providers.filter(
+        (p) => p.name.toLowerCase().includes(query) || String(p.baseUrl || '').toLowerCase().includes(query),
+      )
+    : state.providers
+  const pageCount = Math.max(1, Math.ceil(matched.length / SITE_PAGE_SIZE))
+  sitePage = Math.min(Math.max(1, sitePage), pageCount)
+  const visibleProviders = matched.slice((sitePage - 1) * SITE_PAGE_SIZE, sitePage * SITE_PAGE_SIZE)
+
+  const cards = visibleProviders.map((p) => {
     const keys = state.credentials.filter((c) => c.providerId === p.id)
+    // 全局名次（不按当前分页/搜索算），上下移动就是和相邻名次换位
+    const rank = (state.providers || []).findIndex((item) => item.id === p.id) + 1
+    const total = (state.providers || []).length
     const offers = state.offers.filter((o) => o.providerId === p.id)
     const priced = offers.filter((o) => o.inPrice !== null || o.outPrice !== null || o.ratio !== null)
     // 余额是站点级的：一个后台账号一套，跟下面挂几个 Key 无关
@@ -674,42 +786,100 @@ function renderProviders() {
     }).join('')
     const hasCustom = offers.some((o) => o.ratioSource === 'custom')
 
+    // 默认收起：13 个站全展开时页面太长，翻起来比折叠还累
+    const collapsed = !collapsedPanels.has(`provider:${p.id}`)
+    const kindText = ID_PROVIDER_KIND[p.kind] || ''
+    // 这个站有多少模型落在免费池里（后端算好名字，这里只数）
+    const freeNames = Array.isArray(p.freeModels) ? p.freeModels : []
+    // 告警阈值是人民币；站点余额多为美元，比较和显示都要先换成站点币种
+    const fxRate = Number(state.settings.fxUsdCny) || 7.2
+    // 阈值设置里存的是美元，展示时换成站点币种
+    const warnUsd = Number(state.settings.balanceWarnUsd ?? state.settings.balanceWarnCny) || 0
+    const inUsd = p.currency === 'USD'
+    const warnLocal = warnUsd > 0 ? (inUsd ? warnUsd : warnUsd * fxRate) : 0
+    const warnSign = inUsd ? '$' : '¥'
+    const overThreshold = hasQuota && warnUsd > 0 && quota < warnLocal
+    const statusBadge = hasQuota
+      ? overThreshold
+        ? '<span class="badge warn">低于阈值</span>'
+        : '<span class="badge ok">正常</span>'
+      : '<span class="badge">余额未录入</span>'
+
     return `
-      <div class="card" data-provider="${esc(p.id)}">
-        <div class="card-head">
+      <div class="card prov-card${p.paused ? ' is-paused' : ''}" data-provider="${esc(p.id)}" data-has-token="${p.hasAdminToken ? '1' : '0'}">
+        <div class="prov-head">
+          <div class="prov-id">
+            <b>${esc(p.name)}</b>
+            ${p.baseUrl ? `<a class="icon-btn prov-open" href="${esc(p.baseUrl)}" target="_blank" rel="noreferrer" title="${t('打开站点后台')}">${icon('external')}</a>` : ''}
+            ${kindText ? `<span class="badge">${esc(kindText)}</span>` : ''}
+            ${
+              freeNames.length
+                ? `<span class="badge info prov-free" title="${esc(t('免费模型：{list}', { list: freeNames.join('、') }))}">${icon('gift')}${t('免费 {n}', { n: freeNames.length })}</span>`
+                : ''
+            }
+            ${p.paused ? `<span class="badge warn">${t('已暂停')}</span>` : ''}
+          </div>
+          <div class="prov-head-right">
+            <span class="hint">${p.quotaUpdatedAt ? agoText(p.quotaUpdatedAt) : '还没同步过'}</span>
+            <span class="prov-pri" draggable="true" data-provider="${esc(p.id)}" title="${t('拖动这张卡片调整顺序')}">
+              <span class="prov-pri-no">${rank}</span>
+              <span class="prov-pri-grip">${icon('grip')}</span>
+            </span>
+            <button class="icon-btn prov-pause" data-act="prov-toggle-pause" data-provider="${esc(p.id)}" title="${p.paused ? t('恢复这个站点') : t('暂停这个站点：不进比价、决策、探针和同步')}">${p.paused ? icon('play') : icon('pause')}</button>
+            <button class="icon-btn prov-del-icon" data-act="del-provider" title="${t('删除站点')}">${icon('trash')}</button>
+          </div>
+        </div>
+
+        <div class="prov-tiles">
+          <div data-provider="${esc(p.id)}">
+            <span class="k">余额</span>
+            <b>${hasQuota ? `${p.currency === 'CNY' ? '¥' : '$'}${money(p.quotaRemaining)}` : '—'}</b>
+          </div>
           <div>
-            <h3>${esc(p.name)}</h3>
-            <div class="meta">${esc(p.baseUrl)}</div>
+            <span class="k">已定价</span>
+            <b>${priced.length} <span class="of">/ ${offers.length}</span></b>
           </div>
-          <div class="card-actions">
-            <button class="ghost" data-act="toggle-provider">${collapsedPanels.has(`provider:${p.id}`) ? '展开' : '收起'}</button>
-            <button data-act="sync">同步模型</button>
-            <button data-act="open-group-picker" title="从站点读分组，选你买的那个，倍率自动填到下面所有模型">导入倍率</button>
-            <button data-act="detect-groups" title="需要先填「令牌」。从站点后台的令牌列表读出每把 Key 属于哪个分组，按各自的分组自动应用倍率">识别分组</button>
-            <button data-act="usage-check" title="用管理令牌拉站方用量，和我们的估算对比">用量核对</button>
-            <button data-act="balance">读余额</button>
-            <button class="ghost" data-act="set-admin-token" data-provider="${esc(p.id)}" title="站点后台的登录令牌，一次填好整站通用，用来读余额和用量">${p.hasAdminToken ? '令牌 ✓' : '令牌'}</button>
-            <button data-act="export">导出配置</button>
-            <button data-act="del-provider" class="danger">删除</button>
+          <div>
+            <span class="k">Key</span>
+            <b>${keys.length} <span class="of">把</span></b>
           </div>
         </div>
-        <div ${collapsedPanels.has(`provider:${p.id}`) ? 'hidden' : ''}>
-        <div class="badges">
-          <span class="badge">${keys.length} 个 Key</span>
-          <span class="badge">${offers.length} 个模型</span>
-          <span class="badge ${priced.length ? 'ok' : 'warn'}">${priced.length} 个已定价</span>
-          ${hasQuota ? `<span class="badge ok">余额 ≈ ¥${money(quota)}</span>` : '<span class="badge warn">余额未录入</span>'}
+
+        <div class="prov-tiles prov-tiles--2">
+          <div>
+            <span class="k">阈值 · 状态</span>
+            <b>${warnUsd > 0 ? `${warnSign}${money(warnLocal)} · ` : ''}${statusBadge}</b>
+          </div>
+          <div>
+            <span class="k">令牌</span>
+            <b>${p.hasAdminToken
+              ? (p.tokenStatus === 'invalid'
+                ? '<span class="badge danger">已失效</span>'
+                : `已填 <span class="tok-tail">…${esc(p.adminTokenTail || '')}</span>`)
+              : '未填'}</b>
+            <button class="ghost tiny" data-act="set-admin-token" data-provider="${esc(p.id)}" title="站点后台的登录令牌，一次填好整站通用，用来读余额和用量">${p.hasAdminToken ? '更换' : '填写'}</button>
+          </div>
         </div>
-        <div class="keyrow" style="border-top:none">
-          <span style="color:var(--muted);font-size:12px">站点余额</span>
-          <span style="color:var(--faint);font-size:11px">一个后台账号一套，整站通用</span>
-          <span class="grow"></span>
-          <input type="number" step="0.01" placeholder="余额" value="${p.quotaRemaining ?? ''}" data-act="quota" />
-          <select data-act="currency" style="width:74px">
-            <option value="CNY" ${(p.currency || 'CNY') === 'CNY' ? 'selected' : ''}>CNY</option>
-            <option value="USD" ${p.currency === 'USD' ? 'selected' : ''}>USD</option>
-          </select>
+
+        <div class="prov-groups">
+          <span class="k">${groupNames.length ? `${groupNames.length} 个分组` : '还没有分组'}</span>
+          <span class="prov-group-chips">
+            ${groupNames.slice(0, 6).map((g) => `<span class="group-chip">${g ? esc(g) : '未指定'}</span>`).join('')}
+            ${groupNames.length > 6 ? `<span class="group-chip">还有 ${groupNames.length - 6} 个</span>` : ''}
+          </span>
         </div>
+
+        <div class="prov-actions">
+          <button data-act="prov-sync-all" title="同步模型 + 读余额 + 识别分组，一次跑完">${icon('refresh')}一键同步</button>
+          <button data-act="prov-panel" data-panel="keys">${icon('key')}密钥</button>
+          <button data-act="prov-panel" data-panel="rates">${icon('columns')}分组倍率</button>
+          <button data-act="open-group-picker" title="从站点读分组，选你买的那个，倍率自动填到下面所有模型">${icon('columns')}导入倍率</button>
+          <button data-act="usage-check" title="用管理令牌拉站方用量，和我们的估算对比">${icon('receipt')}用量核对</button>
+          <button data-act="export">${icon('download')}导出配置</button>
+        </div>
+
+        <div class="prov-detail" hidden>
+        <div data-pane="keys">
         <div class="keylist">
           ${keys.length === 0 ? '<div class="hint">还没有 Key，加一个才能拉模型。</div>' : keys.map((k) => `
             <div class="keyrow" data-credential="${esc(k.id)}">
@@ -728,12 +898,17 @@ function renderProviders() {
             <input name="group" placeholder="分组（可选）" style="width:118px" title="这把 Key 属于站点的哪个分组，同步模型时会自动带上" />
             <button type="submit">添加 Key</button>
           </form>
-          <div class="hint" style="margin-top:2px">
+          ${
+            p.hasAdminToken
+              ? ''
+              : `<div class="hint" style="margin-top:2px">
             ${t('「令牌」在站点卡片上（不在 Key 上）——它是站点后台的登录凭证，一个后台账号填一次，整站通用。获取：登录后台 → F12 → Network → 点任意 <code>/api/v1/</code> 请求 → 复制 Request Headers 里的 <code>Authorization</code>（去掉 <code>Bearer </code> 前缀）。令牌会过期，失效后重新复制。')}
-          </div>
+          </div>`
+          }
+        </div>
         </div>
         ${groupRows ? `
-        <div class="keylist" style="border-top:1px solid var(--border);padding-top:10px">
+        <div data-pane="rates" class="keylist" style="border-top:1px solid var(--border);padding-top:10px">
           <div class="keyrow" style="border:none;padding-bottom:2px">
             <span style="color:var(--muted);font-size:12px">分组倍率</span>
             <span class="grow"></span>
@@ -745,15 +920,76 @@ function renderProviders() {
           </div>
           ${groupRows}
         </div>` : ''}
-        ${renderUsageCheck(p.id)}
+        <div data-pane="usage">${renderUsageCheck(p.id)}</div>
         </div>
       </div>`
   }).join('')
 
-  view.innerHTML = `
-    ${addForm}
-    ${cards}`
+  // 站点多了以后一屏放不下：搜索 + 分页（每页 9 张，和 upstream-ops 一样）
+  // 翻页信息跟着搜索框走，不单独占一行
+  const pager = `<span class="site-pager">
+      <span class="hint">${t('显示 {from}-{to}，共 {n} 个', {
+        from: matched.length ? (sitePage - 1) * SITE_PAGE_SIZE + 1 : 0,
+        to: Math.min(sitePage * SITE_PAGE_SIZE, matched.length),
+        n: matched.length,
+      })}</span>
+      <button class="ghost tiny" data-act="site-page" data-page="${sitePage - 1}" ${sitePage <= 1 ? 'disabled' : ''}>上一页</button>
+      <span class="hint">${t('{a} / {b}', { a: sitePage, b: pageCount })}</span>
+      <button class="ghost tiny" data-act="site-page" data-page="${sitePage + 1}" ${sitePage >= pageCount ? 'disabled' : ''}>下一页</button>
+    </span>`
+
+  // 2×2 网格：标题 | 设置面板，搜索+翻页 | 两个按钮——两行都被填满，不留空档
+  const header = state.providers.length > 0
+    ? `<div class="sites-head">
+        <div class="sites-title-block">
+          <h3>站点余额与分组</h3>
+          <span class="hint">分组倍率来自站点公布的可用渠道</span>
+        </div>
+        <div class="sites-head-right">${panel}</div>
+        <div class="sites-search">
+          <input id="site-search" type="search" placeholder="${t('搜索站点名或地址')}" value="${esc(siteQuery)}" />
+          ${pager}
+        </div>
+        <div class="sites-actions">${actions}</div>
+      </div>`
+    : ''
+
+  return `
+    ${header}
+    <div class="drop-zone" data-drop="prev" ${sitePage <= 1 ? 'hidden' : ''}>${t('放到上一页')}</div>
+    <div class="site-cards">${matched.length ? cards : `<div class="empty small"><p>${t('没有匹配的站点。')}</p></div>`}</div>
+    <div class="drop-zone" data-drop="next" ${sitePage >= pageCount ? 'hidden' : ''}>${t('放到下一页')}</div>
+    ${addForm}`
+}
+
+/** 「站点」视图（已并入监控页，这里保留给 #providers 直达链接用） */
+function renderProviders() {
+  const view = $('#view-providers')
+  if (!view) return
+  view.innerHTML = providersHtml()
   bindAddProviderForm()
+}
+
+/** 只重画监控页里的站点卡（搜索、翻页时用，不重新拉数据） */
+function refreshSiteCards() {
+  const host = $('#monitor-sites-host')
+  if (!host) return
+  host.innerHTML = providersHtml({ withForm: false })
+  bindSiteSearch()
+  translateDom(host)
+}
+
+function bindSiteSearch() {
+  const input = $('#site-search')
+  if (!input || input.dataset.bound) return
+  input.dataset.bound = '1'
+  input.addEventListener('input', () => {
+    siteQuery = input.value
+    sitePage = 1
+    refreshSiteCards()
+    const again = $('#site-search')
+    if (again) { again.focus(); again.setSelectionRange(again.value.length, again.value.length) }
+  })
 }
 
 function bindAddProviderForm() {
@@ -791,12 +1027,75 @@ function bindAddProviderForm() {
     delete data.preset
     try {
       state = await api('POST', '/api/providers', data)
+      closeAddProvider()
       render()
       toast('站点已添加')
     } catch (error) {
       toast(error.message, true)
     }
   })
+}
+
+/** 新增站点：把模板塞进弹窗，弹窗关掉再清空（避免旧输入残留） */
+function openAddProvider() {
+  const modal = $('#add-provider-modal')
+  const body = $('#add-provider-body')
+  const tpl = $('#tpl-add-provider')
+  if (!modal || !body || !tpl) return
+  body.innerHTML = ''
+  body.appendChild(tpl.content.cloneNode(true))
+  // 弹窗标题已经写了「新增站点」，里面那块卡片和重复标题都去掉
+  body.querySelector('#form-add-provider')?.classList.remove('card', 'form-card')
+  body.querySelector('#form-add-provider > h3')?.remove()
+  bindAddProviderForm()
+  modal.hidden = false
+  translateDom(modal)
+  setTimeout(() => body.querySelector('input[name="name"]')?.focus(), 60)
+}
+
+function closeAddProvider() {
+  const modal = $('#add-provider-modal')
+  const body = $('#add-provider-body')
+  if (modal) modal.hidden = true
+  if (body) body.innerHTML = ''
+}
+
+/** 卡片上的「密钥 / 分组倍率」：把卡片里藏着的详情按 pane 取出来放进弹窗 */
+function openProvPanel(button, pane) {
+  const card = button.closest('.prov-card')
+  const source = card?.querySelector('.prov-detail')
+  const modal = $('#prov-modal')
+  const body = $('#prov-modal-body')
+  const title = $('#prov-modal-title')
+  if (!source || !modal || !body) return
+  const name = card.querySelector('.prov-id b')?.textContent?.trim() || '站点'
+  const fragment = source.cloneNode(true)
+  // 源节点是 hidden 的（详情现在只在弹窗里出现），克隆品要显示出来
+  fragment.hidden = false
+  // 弹窗头部已经有关闭按钮，pane 里那个自带的「关闭」去掉
+  fragment.querySelectorAll('[data-act="close-usage-check"]').forEach((node) => node.remove())
+  for (const node of fragment.querySelectorAll('[data-pane]')) {
+    if (node.dataset.pane !== pane) node.remove()
+  }
+  // 分组倍率那一块只在读到倍率时才渲染；没有就明说怎么办，别给一个空弹窗
+  if (pane === 'rates' && !fragment.querySelector('[data-pane="rates"]')) {
+    fragment.innerHTML = `<div class="hint">${t('还没有读到分组倍率。点「导入倍率」从站点读一次，或在下面手动填。')}</div>`
+  }
+  // 分组倍率面板里不需要余额输入
+  if (pane === 'rates') fragment.querySelector('.keyrow[style*="border-top:none"]')?.remove()
+  body.innerHTML = ''
+  body.appendChild(fragment)
+  const paneTitle = { keys: '密钥', rates: '分组倍率', usage: '用量核对' }[pane] || '详情'
+  if (title) title.textContent = `${name} · ${paneTitle}`
+  modal.hidden = false
+  translateDom(modal)
+}
+
+function closeProvPanel() {
+  const modal = $('#prov-modal')
+  const body = $('#prov-modal-body')
+  if (modal) modal.hidden = true
+  if (body) body.innerHTML = ''
 }
 
 // --------------------------------------------------------------- 免费池视图
@@ -807,10 +1106,7 @@ function freeNoteHtml() {
   // 逐节点匹配翻不了，只能整段翻（和基准价页那三条说明同一个做法）。
   const inner =
     '<b>免费池独立于付费比价</b><span class="desc" style="display:block;margin-top:2px">这里的供给不参与「最便宜」判断和自动选站。只有你在客户端写 <code>free/</code> 前缀，或把地址换成 <code>/free/v1</code> 时才会用到。</span>'
-  return `
-    <div class="alert calm" style="margin-bottom:14px;align-items:flex-start">
-      <span class="grow" style="line-height:1.65">${t(inner)}</span>
-    </div>`
+  return `<div class="note-card">${t(inner)}</div>`
 }
 
 function freeSegHtml(relayCount, platformCount) {
@@ -1087,6 +1383,7 @@ function renderPricing() {
   const visibleGroups = state.ranked.filter(
     (group) => !filterText || group.modelKey.toLowerCase().includes(filterText),
   )
+  const ignoredCount = (state.settings?.ignoredModels || []).length
 
   const groups = visibleGroups.map((group) => {
     const panelKey = `pricing:${group.modelKey}`
@@ -1122,7 +1419,7 @@ function renderPricing() {
         </td>
         <td class="num"><input class="ratio" type="number" step="0.01" placeholder="倍率" value="${row.ratio ?? ''}" data-field="ratio" /></td>
         <td class="num">${row.ttftMs ? `${row.ttftMs}ms` : '—'}</td>
-        <td class="num">${row.blendedCnyPerMtok === null ? '—' : `¥${money(row.blendedCnyPerMtok)}`}${row.hasOffPeak && row.offPeakBlendedCnyPerMtok !== null ? `<div class="sub">空闲 ¥${money(row.offPeakBlendedCnyPerMtok)}</div>` : ''}</td>
+        <td class="num">${row.blendedCnyPerMtok === null ? '—' : priceText(row.blendedCnyPerMtok)}${row.hasOffPeak && row.offPeakBlendedCnyPerMtok !== null ? `<div class="sub">空闲 ${priceText(row.offPeakBlendedCnyPerMtok)}</div>` : ''}</td>
         <td class="num">${row.isCheapest ? '<span class="badge ok">最便宜</span>' : row.deltaPct === null ? '—' : `+${row.deltaPct}%`}</td>
       </tr>`
     }).join('')
@@ -1141,7 +1438,7 @@ function renderPricing() {
             <th>站点</th><th>上游模型名</th><th>分组</th>
             <th class="num">输入价</th><th class="num">输出价</th>
             <th>币种</th><th class="num">倍率</th>
-            <th class="num">首字</th><th class="num">¥/百万 token</th><th class="num">价差</th>
+            <th class="num">首字</th><th class="num">${priceSym()}/百万 token</th><th class="num">价差</th>
           </tr></thead>
           <tbody>${rows}</tbody>
         </table>`}
@@ -1152,11 +1449,261 @@ function renderPricing() {
     <div class="toolbar">
       <input id="pricing-search" class="search" type="search" placeholder="搜索模型名…" value="${esc(filters.pricing)}" />
       <span class="hint" style="margin:0">${visibleGroups.length} / ${state.ranked.length} 个模型</span>
+      <span class="grow"></span>
+      <button class="with-icon" data-act="ignored-models" title="${t('忽略后不再参与比价、智能决策、探针和网关')}">
+        ${icon('eye-off')}${t('忽略模型')}${ignoredCount ? ` ${ignoredCount}` : ''}
+      </button>
     </div>
-    <p class="hint">价格直接改，失焦即保存。「¥/百万 token」是综合成本：输入按 25%、输出按 75% 加权。美元标价的站按「基准价」页里的汇率换算。</p>
+    <p class="hint">价格直接改，失焦即保存。「${priceSym()}/百万 token」是综合成本：输入按 25%、输出按 75% 加权。人民币标价的站按「基准价」页里的汇率折算成美元比较。</p>
+    ${ignoredCount ? `<p class="hint">已忽略 ${ignoredCount} 个模型：它们不出现在比价、智能决策、探针和网关里。<button class="ghost tiny" data-act="ignored-models">管理</button></p>` : ''}
     ${groups}${unpricedBlock}`
 }
 
+
+// --------------------------------------------------------------- 刷新
+
+function paintAutoRefresh() {
+  const btn = $('#autorefresh-btn')
+  if (!btn) return
+  btn.classList.toggle('is-off', !autoRefresh)
+  const dot = $('#autorefresh-dot')
+  if (dot) dot.style.background = autoRefresh ? 'var(--success)' : 'var(--faint)'
+}
+
+/** 顶栏币种开关：只影响显示，比较口径永远是美元 */
+function paintCurrencySwitch() {
+  const box = $('#cur-switch')
+  if (!box) return
+  const cur = showUsd() ? 'USD' : 'CNY'
+  for (const button of box.querySelectorAll('button')) {
+    const on = button.dataset.cur === cur
+    button.classList.toggle('is-on', on)
+    button.setAttribute('aria-pressed', on ? 'true' : 'false')
+  }
+}
+
+/**
+ * 重新拉一次 state 并重绘。
+ * - 正在输入（焦点在表单元素里）时跳过，避免打断填写
+ * - 比价/决策页用完整 state，其它页用 ?light=1（省掉 scores / decisions 两个大块）
+ * - 重绘后恢复滚动位置
+ */
+async function refreshState({ silent = false } = {}) {
+  const focused = document.activeElement
+  if (focused && /^(INPUT|TEXTAREA|SELECT)$/.test(focused.tagName)) return
+  const scroller = $('.content')
+  const scrollTop = scroller ? scroller.scrollTop : 0
+  const light = !HEAVY_TABS.has(activeTab)
+  try {
+    const next = await api('GET', `/api/state${light ? '?light=1' : ''}`)
+    state = light && state ? { ...state, ...next } : next
+    render()
+    if (scroller) scroller.scrollTop = scrollTop
+  } catch (error) {
+    if (!silent) toast(String(error), true)
+  }
+}
+
+function scheduleRefresh() {
+  if (refreshTimer) clearInterval(refreshTimer)
+  refreshTimer = null
+  if (!autoRefresh) return
+  refreshTimer = setInterval(() => {
+    if (document.visibilityState === 'hidden') return
+    void refreshState({ silent: true })
+  }, AUTOREFRESH_MS)
+}
+
+function setAutoRefresh(next) {
+  autoRefresh = Boolean(next)
+  localStorage.setItem(AUTOREFRESH_KEY, autoRefresh ? '1' : '0')
+  paintAutoRefresh()
+  scheduleRefresh()
+}
+
+document.addEventListener('visibilitychange', () => {
+  // 回到前台立刻补一次，别让人盯着切走前的旧数据
+  if (document.visibilityState === 'visible' && autoRefresh) void refreshState({ silent: true })
+})
+
+// --------------------------------------------------------------- 忽略模型
+
+let ignoredQuery = ''
+// 分组名 → 该组下的模型名（渲染时登记，供「整组勾选」用）
+let igGroupNames = new Map()
+// 折叠起来的厂牌（记住，重开弹窗仍是折叠的）
+const igCollapsed = new Set()
+
+/** 前缀即厂牌：deepseek-v4-flash → deepseek；gpt-5.3 和 gpt-5.3-codex 同组 */
+const VENDOR_LABEL = {
+  gpt: 'OpenAI',
+  o1: 'OpenAI',
+  o3: 'OpenAI',
+  o4: 'OpenAI',
+  claude: 'Anthropic',
+  deepseek: 'DeepSeek',
+  glm: '智谱 GLM',
+  chatglm: '智谱 GLM',
+  qwen: '通义千问',
+  kimi: 'Moonshot',
+  moonshot: 'Moonshot',
+  doubao: '豆包',
+  gemini: 'Gemini',
+  grok: 'Grok',
+  codex: 'Codex',
+  llama: 'Llama',
+  mistral: 'Mistral',
+}
+
+function vendorOf(name) {
+  const prefix = String(name || '').toLowerCase().split(/[-_./:]/)[0]
+  return prefix || '其它'
+}
+
+function vendorLabel(prefix) {
+  return VENDOR_LABEL[prefix] || prefix
+}
+
+/** 当前所有出现过的模型名 + 覆盖站点数（含已被忽略的，来自后端 modelIndex） */
+function knownModels() {
+  const counts = new Map()
+  for (const row of state.modelIndex || []) counts.set(row.name, row.sites)
+  for (const offer of state.unpriced || []) {
+    const key = String(offer.modelKey || offer.upstreamName || '').trim()
+    if (key && !counts.has(key)) counts.set(key, 1)
+  }
+  for (const key of state.settings?.ignoredModels || []) if (!counts.has(key)) counts.set(key, 0)
+  return [...counts.entries()].sort((a, b) => a[0].localeCompare(b[0]))
+}
+
+/** 按厂牌分组，组内按名字排；组按「未忽略数量多的在前」排，方便先处理没管过的 */
+function groupModels(rows) {
+  const ignored = new Set(state.settings?.ignoredModels || [])
+  const groups = new Map()
+  for (const [name, sites] of rows) {
+    const key = vendorOf(name)
+    if (!groups.has(key)) groups.set(key, [])
+    groups.get(key).push([name, sites])
+  }
+  return [...groups.entries()]
+    .map(([key, items]) => ({
+      key,
+      label: vendorLabel(key),
+      items,
+      ignoredCount: items.filter(([name]) => ignored.has(name)).length,
+    }))
+    .sort((a, b) => b.items.length - a.items.length || a.label.localeCompare(b.label))
+}
+
+/** 组头和组内勾选状态对齐（全选 / 半选 / 未选） */
+function syncIgGroups() {
+  for (const [key, names] of igGroupNames) {
+    const head = document.querySelector(`[data-ig-group="${CSS.escape(key)}"]`)
+    if (!head) continue
+    const boxes = names
+      .map((name) => document.querySelector(`[data-ig="${CSS.escape(name)}"]`))
+      .filter(Boolean)
+    if (boxes.length === 0) continue
+    const checked = boxes.filter((box) => box.checked).length
+    head.checked = checked === boxes.length
+    head.indeterminate = checked > 0 && checked < boxes.length
+  }
+}
+
+function openIgnoredModels() {
+  const modal = $('#prov-modal')
+  const title = $('#prov-modal-title')
+  const body = $('#prov-modal-body')
+  if (!modal || !body) return
+  const ignored = new Set(state.settings?.ignoredModels || [])
+  const rows = knownModels()
+  const q = ignoredQuery.trim().toLowerCase()
+  const shown = rows.filter(([name]) => !q || name.toLowerCase().includes(q))
+  const groups = groupModels(shown)
+  igGroupNames = new Map(groups.map((g) => [g.key, g.items.map(([name]) => name)]))
+  title.textContent = t('忽略模型')
+  body.innerHTML = `
+    <p class="hint" style="margin:0 0 10px">
+      ${t('勾上的模型不再参与比价、智能决策、探针和网关；点厂牌可整组勾选，随时取消。')}
+    </p>
+    <div class="toolbar" style="margin-bottom:8px">
+      <input id="ig-search" class="search" type="search" placeholder="${t('搜索模型名…')}" value="${esc(ignoredQuery)}" />
+      <span class="hint" style="margin:0">${t('{n} / {total} 个模型', { n: shown.length, total: rows.length })}</span>
+    </div>
+    <div class="ig-list">
+      ${shown.length
+        ? groups
+            .map((group) => {
+              const folded = igCollapsed.has(group.key)
+              return `
+        <div class="ig-group">
+          <div class="ig-row ig-group-head">
+            <button class="ig-caret${folded ? ' is-collapsed' : ''}" type="button" data-ig-fold="${esc(group.key)}" title="${t('收起 / 展开')}">${icon('chevron-down')}</button>
+            <input type="checkbox" data-ig-group="${esc(group.key)}" ${group.ignoredCount === group.items.length ? 'checked' : ''} />
+            <span class="ig-vendor">${esc(group.label)}</span>
+            <span class="hint">${t('{n} 个模型', { n: group.items.length })}${
+              group.ignoredCount ? ` · ${t('已忽略 {n}', { n: group.ignoredCount })}` : ''
+            }</span>
+          </div>
+          <div class="ig-children" data-ig-children="${esc(group.key)}" ${folded ? 'hidden' : ''}>
+          ${group.items
+            .map(
+              ([name, count]) => `
+            <label class="ig-row ig-child">
+              <input type="checkbox" data-ig="${esc(name)}" ${ignored.has(name) ? 'checked' : ''} />
+              <span class="mono">${esc(name)}</span>
+              <span class="hint">${count ? t('{n} 个站', { n: count }) : t('已不在榜单里')}</span>
+            </label>`,
+            )
+            .join('')}
+          </div>
+        </div>`
+            })
+            .join('')
+        : `<p class="hint">${t('没有匹配的模型。')}</p>`}
+    </div>`
+  modal.hidden = false
+  syncIgGroups()
+}
+
+/** 把当前所有勾选状态一次性提交（整组勾选也走这里） */
+async function saveIgnoredFromModal() {
+  const names = [...document.querySelectorAll('[data-ig]')]
+    .filter((box) => box.checked)
+    .map((box) => box.dataset.ig)
+  try {
+    state = await api('PATCH', '/api/settings', { ignoredModels: names })
+    render()
+    syncIgGroups()
+  } catch (error) {
+    toast(String(error), true)
+  }
+}
+
+async function toggleIgnoredModel(name, checked) {
+  const current = new Set(state.settings?.ignoredModels || [])
+  if (checked) current.add(name)
+  else current.delete(name)
+  try {
+    state = await api('PATCH', '/api/settings', { ignoredModels: [...current] })
+    render()
+    // 不重画弹窗：勾选状态是浏览器自己维护的，重画会把列表滚回顶部
+    syncIgGroups()
+    toast(checked ? t('已忽略 {name}', { name }) : t('已恢复 {name}', { name }))
+  } catch (error) {
+    toast(String(error), true)
+  }
+}
+
+async function toggleVendorGroup(key, checked) {
+  const names = igGroupNames.get(key) || []
+  const boxes = names
+    .map((name) => document.querySelector(`[data-ig="${CSS.escape(name)}"]`))
+    .filter(Boolean)
+  for (const box of boxes) box.checked = checked
+  await saveIgnoredFromModal()
+  toast(checked ? t('已忽略「{name}」全部模型', { name: vendorLabel(key) }) : t('已恢复「{name}」全部模型', { name: vendorLabel(key) }))
+}
 
 // --------------------------------------------------------------- 决策视图
 
@@ -1219,9 +1766,9 @@ function renderDecision() {
               : ''
           }</td>
           <td>${candidate.group ? `<span class="badge">${esc(candidate.group)}</span>` : '<span style="color:var(--faint)">默认</span>'}</td>
-          <td class="num">${candidate.price === null ? '—' : `¥${money(candidate.price)}`}</td>
+          <td class="num">${candidate.price === null ? '—' : priceText(candidate.price)}</td>
           <td class="num">${candidate.quality === null ? '—' : candidate.quality.toFixed(2)}</td>
-          <td class="num">${candidate.effective === null ? '—' : `¥${money(candidate.effective)}`}</td>
+          <td class="num">${candidate.effective === null ? '—' : priceText(candidate.effective)}</td>
           <td class="num">${candidate.ttftMs === null ? '—' : `${candidate.ttftMs}ms`}</td>
           <td><span class="badge ${badge.cls}">${badge.label}</span>${candidate.statusReason ? `<div class="sub">${esc(candidate.statusReason)}</div>` : ''}</td>
         </tr>`
@@ -1717,6 +2264,27 @@ function renderUsage() {
 
 // ------------------------------------------------------------- 基准价视图
 
+/** 汇率状态：手动 / 自动 + 更新时间 */
+function fxState() {
+  const raw = state?.settings?.fx
+  return {
+    manual: Boolean(raw?.manual),
+    source: raw?.source || 'default',
+    updatedAt: raw?.updatedAt || null,
+    rates: raw?.rates || {},
+  }
+}
+
+function fxNoteHtml() {
+  const fx = fxState()
+  if (fx.manual) return `<span class="hint">${t('手动汇率')}</span>`
+  if (!fx.updatedAt) return `<span class="hint">${t('还没拉取过自动汇率')}</span>`
+  const days = (Date.now() - Date.parse(fx.updatedAt)) / 86400000
+  const when = agoText(fx.updatedAt)
+  const text = t('自动 · {ago}更新', { ago: when })
+  return `<span class="hint ${days > 7 ? 'warn-text' : ''}">${text}</span>`
+}
+
 function renderBenchmark() {
   const view = $('#view-benchmark')
   const filterText = filters.benchmark.trim().toLowerCase()
@@ -1773,10 +2341,22 @@ function renderBenchmark() {
       <input id="benchmark-search" class="search" type="search" placeholder="搜索模型名…" value="${esc(filters.benchmark)}" />
       <span class="hint" style="margin:0">${entries.length} / ${Object.keys(state.benchmarks).length} 条</span>
       <span style="flex:1"></span>
-      <label class="field-inline" title="只影响按美元标价的站点">
-        <span data-i18n="汇率 USD→CNY">汇率 USD→CNY</span>
-        <input id="fx-input" data-act="fx" type="number" step="0.01" min="1" value="${esc(state.settings.fxUsdCny)}" style="width:78px" />
+      <label class="field-inline" title="${t('只影响价格显示，不影响比较口径（比较一律按美元）')}">
+        <span>${t('显示币种')}</span>
+        <select id="display-currency" data-act="display-currency" style="width:78px">
+          <option value="USD" ${state.settings.displayCurrency === 'USD' ? 'selected' : ''}>USD $</option>
+          <option value="CNY" ${state.settings.displayCurrency === 'CNY' ? 'selected' : ''}>CNY ¥</option>
+        </select>
       </label>
+      <label class="field-inline" title="${t('只影响人民币标价/展示的折算')}">
+        <span data-i18n="汇率 USD→CNY">汇率 USD→CNY</span>
+        <input id="fx-input" data-act="fx" type="number" step="0.0001" min="1" value="${esc(state.settings.fxUsdCny)}" style="width:96px" />
+      </label>
+      <span class="fx-note">${fxNoteHtml()}</span>
+      <button class="ghost tiny" data-act="fx-refresh">${t('刷新汇率')}</button>
+      ${fxState().manual
+        ? `<button class="ghost tiny" data-act="fx-auto">${t('恢复自动')}</button>`
+        : ''}
     </div>
     <div class="table-wrap">
       <table>
@@ -1827,7 +2407,8 @@ function monitorChartSvg(balanceSeries = [], spendSeries = []) {
   const n = Math.max(balanceSeries.length, spendSeries.length)
   if (n === 0) return ''
 
-  const values = balanceSeries.map((d) => (typeof d.total === 'number' ? d.total : null))
+  // 后端给的是人民币口径的总额，按显示币种换算后再画，避免图例写 $ 而刻度是 ¥
+  const values = balanceSeries.map((d) => (typeof d.total === 'number' ? dispPrice(d.total) : null))
   const known = values.filter((v) => v !== null)
   const hasSpend = spendSeries.some((d) => (d.cny || 0) > 0)
   if (known.length === 0 && !hasSpend) return ''
@@ -1882,7 +2463,7 @@ function monitorChartSvg(balanceSeries = [], spendSeries = []) {
       const cny = d.cny || 0
       if (cny <= 0) return ''
       const height = Math.max((cny / spendMax) * innerH, 1)
-      return `<rect class="spend-bar" x="${(x(i) - barWidth / 2).toFixed(1)}" y="${(padT + innerH - height).toFixed(1)}" width="${barWidth.toFixed(1)}" height="${height.toFixed(1)}" rx="2"><title>${esc(d.day)} · ¥${cny}</title></rect>`
+      return `<rect class="spend-bar" x="${(x(i) - barWidth / 2).toFixed(1)}" y="${(padT + innerH - height).toFixed(1)}" width="${barWidth.toFixed(1)}" height="${height.toFixed(1)}" rx="2"><title>${esc(d.day)} · ${priceSym()}${money(dispPrice(cny))}</title></rect>`
     })
     .join('')
 
@@ -1997,40 +2578,61 @@ function renderMonitor() {
       k: '站点',
       v: `${kpi.withBalance ?? 0}/${kpi.providerCount ?? providers.length}`,
       sub: '有余额数据',
+      ic: 'servers',
+      tint: 'tint-muted',
     },
     {
       k: '总余额',
-      v: `¥${money(latestBalance?.total ?? null)}`,
-      sub: kpi.lowest
-        ? t('最低：{name} {amount}', {
-            name: kpi.lowest.name,
-            amount: `${kpi.lowest.currency || ''} ${money(kpi.lowest.balance)}`.trim(),
-          })
-        : '还没有余额数据',
+      // 后端给的 total 是人民币口径；主数字按显示币种渲染
+      v: latestBalance?.total == null
+        ? '—'
+        : `${priceSym()}${money(dispPrice(latestBalance.total))}`,
+      // 副标题给「另一个币种」的等值，方便对账；没有总额时才退回「最低」
+      sub: latestBalance?.total != null
+        ? (showUsd()
+            ? `≈ ¥${money(latestBalance.total)}（按汇率折算）`
+            : `≈ $${money(latestBalance.total / (Number(state.settings?.fxUsdCny) || 7.2))}（按汇率折算）`)
+        : (kpi.lowest
+            ? t('最低：{name} {amount}', {
+                name: kpi.lowest.name,
+                amount: `${kpi.lowest.currency || ''} ${money(kpi.lowest.balance)}`.trim(),
+              })
+            : '还没有余额数据'),
+      ic: 'wallet',
+      tint: 'tint-accent',
     },
     {
       k: '今日花费',
-      v: `¥${money(todaySpend?.cny ?? 0)}`,
+      v: `${priceSym()}${money(dispPrice(todaySpend?.cny ?? 0))}`,
       sub: '按当前价估算',
+      ic: 'receipt',
+      tint: 'tint-warn',
     },
     {
       k: '24 小时变动',
       v: kpi.rateChanges24h ?? 0,
       sub: '倍率 / 价格',
+      ic: 'swap',
+      tint: 'tint-muted',
     },
     {
       k: '未读告警',
       v: kpi.unreadAlerts ?? 0,
-      sub: t('上次采集 {ago}', { ago: agoText(kpi.lastRunAt) }),
+      sub: t('上次同步 {ago}', { ago: agoText(kpi.lastRunAt) }),
+      ic: 'alert',
+      tint: (kpi.unreadAlerts ?? 0) > 0 ? 'tint-warn' : 'tint-muted',
     },
   ]
 
   const kpiHtml = `<div class="stats monitor-kpi">${kpiItems
     .map(
       (item) => `<div class="stat">
-        <div class="k">${esc(item.k)}</div>
-        <div class="v">${esc(item.v)}</div>
-        <div class="sub">${esc(item.sub)}</div>
+        <div class="stat-main">
+          <div class="k">${esc(item.k)}</div>
+          <div class="v">${esc(item.v)}</div>
+          <div class="sub">${esc(item.sub)}</div>
+        </div>
+        <div class="stat-icon ${item.tint}">${icon(item.ic)}</div>
       </div>`,
     )
     .join('')}</div>`
@@ -2045,9 +2647,9 @@ function renderMonitor() {
     .map((row) => {
       const low = row.threshold !== null && row.balance !== null && row.balance <= row.threshold
       const dot = row.balance === null ? 'yellow' : low ? 'red' : 'green'
-      return `<button class="monitor-chip" data-monitor-provider="${esc(row.providerId)}" title="只采集这个站">
+      return `<button class="monitor-chip" data-monitor-provider="${esc(row.providerId)}" title="只同步这个站">
         <span class="dot ${dot}"></span>${esc(row.name)}
-        <span class="monitor-chip-value">${row.balance === null ? '无数据' : `¥${money(row.balance)}`}</span>
+        <span class="monitor-chip-value">${row.balance === null ? '无数据' : `${row.currency === 'CNY' ? '¥' : '$'}${money(row.balance)}`}</span>
       </button>`
     })
     .join('')
@@ -2058,9 +2660,9 @@ function renderMonitor() {
         <h3>余额概览</h3>
         ${seg}
       </div>
-      ${chart ? `<div class="chart-wrap">${chart}</div>` : '<div class="empty small"><p>还没有采集到余额。点右上角「立即采集」跑一轮。</p></div>'}
+      ${chart ? `<div class="chart-wrap">${chart}</div>` : '<div class="empty small"><p>还没有同步到余额。点右上角「立即同步」跑一轮。</p></div>'}
       <div class="chart-legend">
-        <span><i class="legend-line"></i>总余额（¥，美元站按汇率折算）</span>
+        <span><i class="legend-line"></i>总余额（${priceSym()}，其他币种按汇率折算）</span>
         <span><i class="legend-bar"></i>每日花费（估）</span>
       </div>
       <div class="monitor-chips">${chips}</div>
@@ -2092,50 +2694,83 @@ function renderMonitor() {
         <h3>最近倍率变动</h3>
         <span class="hint">${t('{n} 条', { n: (data.changes || []).length })}</span>
       </div>
-      ${changeRows || '<div class="empty small"><p>还没有变动。第一次采集只记基线，之后才开始比较。</p></div>'}
+      ${changeRows || '<div class="empty small"><p>还没有变动。第一次同步只记基线，之后才开始比较。</p></div>'}
     </div>`
 
   // ------------------------------------------------------------ 站点卡
+  // 版式照 upstream-ops 的渠道卡：头行（站名 + 类型 + 时间/外链）、三格统计、
+  // 两格「阈值·状态 / 上次同步」、分组 chips、底部动作按钮。
   const siteCards = (data.balanceByProvider || [])
     .map((row) => {
+      const prov = (state.providers || []).find((p) => p.id === row.providerId) || {}
+      const kindLabel = ID_PROVIDER_KIND[prov.kind]
       const low = row.threshold !== null && row.balance !== null && row.balance <= row.threshold
       const badge = row.balance === null
         ? '<span class="badge">无数据</span>'
         : low
-          ? `<span class="badge danger">${t('低于阈值 {amount}', { amount: `${row.currency || 'CNY'} ${money(row.threshold)}` })}</span>`
+          ? `<span class="badge danger">${t('低于阈值')}</span>`
           : '<span class="badge ok">正常</span>'
-      const groupChips = (row.groups || [])
-        .slice(0, 4)
+      const currency = row.currency || 'CNY'
+      const balanceText = row.balance === null ? '—' : `${esc(currency)} ${money(row.balance)}`
+      const thresholdText = row.threshold === null ? t('未设阈值') : `${esc(currency)} ${money(row.threshold)}`
+      const groups = row.groups || []
+      const groupChips = groups
+        .slice(0, 6)
         .map((g) => `<span class="group-chip static">${esc(g.name)}${typeof g.rate === 'number' ? ` ×${g.rate}` : ''}</span>`)
         .join('')
-      const more = (row.groups || []).length > 4
-        ? `<span class="hint">${t('还有 {n} 个', { n: row.groups.length - 4 })}</span>`
+      const more = groups.length > 6
+        ? `<span class="hint">${t('还有 {n} 个', { n: groups.length - 6 })}</span>`
         : ''
       return `<div class="monitor-site">
-        <div class="monitor-site-head">
-          <b>${esc(row.name)}</b>
-          ${badge}
+        <div class="prov-head">
+          <div class="prov-id">
+            <b>${esc(row.name)}</b>
+            ${kindLabel ? `<span class="badge">${esc(kindLabel)}</span>` : ''}
+          </div>
+          <div class="prov-head-right">
+            ${prov.baseUrl ? `<a class="icon-btn" href="${esc(prov.baseUrl)}" target="_blank" rel="noreferrer" title="${t('打开站点')}">${icon('external')}</a>` : ''}
+          </div>
         </div>
-        <div class="monitor-site-balance">
-          ${row.balance === null ? '—' : `${esc(row.currency || 'CNY')} ${money(row.balance)}`}
-          <span class="hint">${agoText(row.at)}</span>
+        <div class="prov-tiles">
+          <div><span class="k">${t('余额')}</span><b>${balanceText}</b></div>
+          <div><span class="k">${t('模型价')}</span><b>${row.modelCount === null ? '—' : row.modelCount}</b></div>
+          <div><span class="k">${t('分组')}</span><b>${groups.length}</b></div>
         </div>
-        <div class="monitor-site-meta">
-          <span>${row.modelCount === null ? '还没读到模型价' : t('{n} 个模型有官方价', { n: row.modelCount })}</span>
-          <button class="ghost tiny" data-monitor-provider="${esc(row.providerId)}">只采这个站</button>
+        <div class="prov-tiles prov-tiles--2">
+          <div><span class="k">${t('阈值 · 状态')}</span><b><span>${thresholdText}</span>${badge}</b></div>
+          <div><span class="k">${t('上次同步')}</span><b>${agoText(row.at)}</b></div>
         </div>
-        <div class="monitor-site-groups">${groupChips || '<span class="hint">还没读到分组倍率</span>'}${more}</div>
+        <div class="monitor-site-groups">${groupChips || `<span class="hint">${t('还没读到分组倍率')}</span>`}${more}</div>
+        <div class="prov-actions">
+          <button data-monitor-provider="${esc(row.providerId)}">${icon('refresh')} ${t('同步这个站')}</button>
+          ${prov.baseUrl ? `<a class="link-btn" href="${esc(prov.baseUrl)}" target="_blank" rel="noreferrer">${icon('external')} ${t('打开站点')}</a>` : ''}
+        </div>
       </div>`
     })
     .join('')
 
+  // 同步设置不单独占一行，挂在「站点余额与分组」的卡片头上——
+  // 它和下面那排站点卡是同一件事：改完间隔/阈值，顺手就在这儿点「立即同步」。
+  const syncPanel = `
+    <div class="sync-panel">
+      <label class="field">
+        <span title="0 = 关闭">同步间隔（分钟）</span>
+        <input type="number" min="0" step="5" id="monitor-interval" value="${data.settings?.monitorIntervalMinutes ?? 30}" />
+      </label>
+      <label class="field">
+        <span title="0 = 不告警。美元口径，人民币站按汇率折算后比较">告警阈值（$）</span>
+        <input type="number" min="0" step="0.5" id="monitor-warn" value="${data.settings?.balanceWarnUsd ?? 1.5}" />
+      </label>
+      <button class="primary" data-act="monitor-save-settings">保存</button>
+    </div>`
+
+  const syncActions = `
+    <button data-act="monitor-collect">${icon('refresh')}立即同步</button>
+    <button class="primary" data-act="add-provider">${icon('plus')}新增站点</button>`
+
   const sitesCard = `
-    <div class="card">
-      <div class="card-head">
-        <h3>站点余额与分组</h3>
-        <span class="hint">分组倍率来自站点公布的可用渠道</span>
-      </div>
-      <div class="monitor-sites">${siteCards || '<div class="empty small"><p>还没有站点。</p></div>'}</div>
+    <div class="sites-section">
+      <div class="monitor-sites" id="monitor-sites-host"></div>
     </div>`
 
   // -------------------------------------------------------- 告警 / 公告
@@ -2155,7 +2790,7 @@ function renderMonitor() {
       <div class="monitor-feed-scroll">
         ${allAlerts.length
           ? allAlerts.map(feedAlertRow).join('')
-          : '<div class="empty small"><p>还没有告警。余额低于阈值、倍率变化、采集失败都会记在这里。</p></div>'}
+          : '<div class="empty small"><p>还没有告警。余额低于阈值、倍率变化、同步失败都会记在这里。</p></div>'}
       </div>
     </div>`
 
@@ -2208,7 +2843,7 @@ function renderMonitor() {
       </div>
     </div>`
 
-  // ---------------------------------------------------------- 采集记录
+  // ---------------------------------------------------------- 同步记录
   const runRows = (data.runs || [])
     .map(
       (run) => `<tr>
@@ -2220,49 +2855,41 @@ function renderMonitor() {
     )
     .join('')
 
-  // 采集设置放最上面一行：它和「立即采集」是同一个动作的两半，
-  // 埋到页面最底下的话，改个间隔要先把公告滚完。
-  const toolbarCard = `
-    <div class="card monitor-toolbar">
-      <div class="monitor-settings">
-        <label class="field">
-          <span>采集间隔（分钟，0 = 关闭）</span>
-          <input type="number" min="0" step="5" id="monitor-interval" value="${data.settings?.monitorIntervalMinutes ?? 30}" />
-        </label>
-        <label class="field">
-          <span>余额告警阈值（¥，0 = 不告警）</span>
-          <input type="number" min="0" step="1" id="monitor-warn" value="${data.settings?.balanceWarnCny ?? 10}" />
-        </label>
-        <button class="primary" data-act="monitor-save-settings">保存</button>
-        <button class="ghost" data-act="monitor-collect">立即采集</button>
-      </div>
-      <div class="hint monitor-toolbar-hint">
-        采集只读站点公开/后台数据，不打真实对话请求，所以可以比探针勤。
-        余额要走站点后台接口，需要先在「站点」页填「令牌」。
-      </div>
-    </div>`
+  // 同步设置不单独占一行，挂在「站点余额与分组」的卡片头上——
+  // 它和下面那排站点卡是同一件事：改完间隔/阈值，顺手就在这儿点「立即同步」。
 
   const runsCard = runRows
     ? `<div class="card">
-        <div class="card-head"><h3>采集记录</h3><span class="hint">最近 ${data.runs.length} 次</span></div>
+        <div class="card-head"><h3>同步记录</h3><span class="hint">最近 ${data.runs.length} 次</span></div>
         <div class="table-wrap"><table>
           <thead><tr><th>时间</th><th>站点</th><th class="num">耗时</th><th>结果</th></tr></thead>
           <tbody>${runRows}</tbody>
         </table></div>
+        <p class="hint">
+          同步只读站点公开/后台数据，不打真实对话请求，所以可以比探针勤。
+          余额要走站点后台接口，需要先在「站点」页填「令牌」。
+        </p>
       </div>`
     : ''
 
   setPageSubFor(
     'monitor',
-    data.kpi?.lastRunAt ? t('上次采集 {ago}', { ago: agoText(data.kpi.lastRunAt) }) : '还没有采集过',
+    data.kpi?.lastRunAt ? t('上次同步 {ago}', { ago: agoText(data.kpi.lastRunAt) }) : '还没有同步过',
   )
   view.innerHTML = `
     ${kpiHtml}
-    ${toolbarCard}
     <div class="monitor-cols">${chartCard}${changesCard}</div>
     ${sitesCard}
     <div class="monitor-cols monitor-cols--feed">${alertsCard}${announcementsCard}</div>
     ${runsCard}`
+
+  // 站点卡与「添加站点」表单复用站点页的那一套，避免两处各写一份
+  const sitesHost = $('#monitor-sites-host')
+  if (sitesHost) sitesHost.innerHTML = providersHtml({ withForm: false, panel: syncPanel, actions: syncActions })
+  const addHost = $('#monitor-add-host')
+  if (addHost) addHost.innerHTML = $('#tpl-add-provider').innerHTML
+  bindAddProviderForm()
+  bindSiteSearch()
 }
 
 async function loadMonitor(days = monitorDays) {
@@ -2370,10 +2997,15 @@ const SIDEBAR_KEY = 'manageapi.sidebarCollapsed'
   }
 })()
 
-const TABS = ['overview', 'monitor', 'providers', 'free', 'pricing', 'decision', 'probes', 'gateway', 'usage', 'benchmark']
+const TABS = ['overview', 'monitor', 'free', 'pricing', 'decision', 'probes', 'gateway', 'usage', 'benchmark']
 
 /** 折叠状态：'provider:xxx' / 'pricing:模型名' / 'probe:站点id' */
 const collapsedPanels = new Set()
+
+/** 站点卡的搜索与分页（站点多了以后一屏放不下） */
+let siteQuery = ''
+let sitePage = 1
+const SITE_PAGE_SIZE = 9
 
 /** 免费页当前栏：'relay'（中转站免费模型）| 'platform'（平台积分） */
 let freePane = 'relay'
@@ -2391,8 +3023,7 @@ const filters = { pricing: '', decision: '', benchmark: '' }
 
 const TAB_META = {
   overview: { title: '概览', sub: '当前状态一眼看完' },
-  monitor: { title: '监控', sub: '余额趋势、倍率变动与上游公告' },
-  providers: { title: '站点', sub: '中转站、Key 与分组倍率' },
+  monitor: { title: '站点', sub: '余额趋势、倍率变动与站点管理' },
   free: { title: '免费', sub: '免费额度与平台积分，不参与付费比价' },
   pricing: { title: '比价', sub: '同一模型跨站对比' },
   decision: { title: '智能决策', sub: '候选排序与手动调整' },
@@ -2420,7 +3051,7 @@ function setTab(name) {
   // 支持二级 hash：#free/relay、#free/platform
   const [tabPart, panePart] = String(name || '').split('/')
   if (tabPart === 'free' && ['relay', 'platform'].includes(panePart)) freePane = panePart
-  name = tabPart
+  name = tabPart === 'providers' ? 'monitor' : tabPart // 旧书签 #providers 落到合并后的站点页
 
   // 「使用说明」不在侧边栏里，但 #help 要能直接打开（弹窗里那个「在新页面打开」链接）
   if (name === 'help') {
@@ -2493,7 +3124,7 @@ document.addEventListener('click', (event) => {
 document.addEventListener('keydown', (event) => {
   if (event.key !== 'Escape') return
   closeLangMenu()
-  for (const id of ['help-modal', 'contact-modal', 'group-modal', 'pf-accounts-modal']) {
+  for (const id of ['help-modal', 'contact-modal', 'group-modal', 'pf-accounts-modal', 'add-provider-modal']) {
     const modal = document.getElementById(id)
     if (modal && !modal.hidden) modal.hidden = true
   }
@@ -2631,6 +3262,39 @@ document.addEventListener('click', async (event) => {
     return
   }
 
+  // 站点卡分页
+  const sitePageBtn = event.target.closest('[data-act="site-page"]')
+  if (sitePageBtn) {
+    sitePage = Number(sitePageBtn.dataset.page) || 1
+    refreshSiteCards()
+    return
+  }
+
+  // 「新增站点」：弹窗里填（原来滚到底部表单，13 张卡之后要翻很久才找得到）
+  if (event.target.closest('[data-act="add-provider"]')) {
+    openAddProvider()
+    return
+  }
+  if (event.target.closest('[data-act="close-add-provider"]')) {
+    closeAddProvider()
+    return
+  }
+  const provPanelBtn = event.target.closest('[data-act="prov-panel"]')
+  if (provPanelBtn) {
+    openProvPanel(provPanelBtn, provPanelBtn.dataset.panel === 'rates' ? 'rates' : 'keys')
+    return
+  }
+  if (event.target.closest('[data-act="toggle-sync-settings"]')) {
+    const extra = document.querySelector('.sync-extra')
+    if (extra) extra.hidden = !extra.hidden
+    return
+  }
+
+  if (event.target.closest('[data-act="close-prov-panel"]')) {
+    closeProvPanel()
+    return
+  }
+
   // 「只采这个站」：顶部 chips 和站点卡都挂着这个属性
   const monitorProviderBtn = event.target.closest('[data-monitor-provider]')
   if (monitorProviderBtn) {
@@ -2670,6 +3334,12 @@ document.addEventListener('click', async (event) => {
   const card = actionButton.closest('[data-provider]')
   const providerId = card?.dataset.provider
 
+  if (action === 'overview-issues-toggle') {
+    overviewIssuesOpen = !overviewIssuesOpen
+    renderOverview()
+    return
+  }
+
   if (action === 'monitor-collect') {
     await withBusy(actionButton, async () => {
       const res = await api('POST', '/api/monitor/collect', { days: monitorDays })
@@ -2677,8 +3347,8 @@ document.addEventListener('click', async (event) => {
       renderMonitor()
       translateDom($('#view-monitor') || document.body)
       const failed = (res.results || []).filter((row) => !row.ok)
-      if (failed.length > 0) toast(t('采集完成，{n} 个站有问题：{error}', { n: failed.length, error: failed[0].error }), true)
-      else toast('采集完成')
+      if (failed.length > 0) toast(t('同步完成，{n} 个站有问题：{error}', { n: failed.length, error: failed[0].error }), true)
+      else toast('同步完成')
     })
     return
   }
@@ -2701,11 +3371,55 @@ document.addEventListener('click', async (event) => {
     return
   }
 
+  if (action === 'fx-refresh') {
+    try {
+      const result = await api('POST', '/api/fx/refresh', {})
+      if (result?.ok) {
+        state = await api('GET', '/api/state')
+        render()
+        toast(t('汇率已更新：1 美元 ≈ {rate} 元', { rate: money(result.fx.rates.CNY) }))
+      } else {
+        toast(t(result?.hint || '汇率没更新'), true)
+      }
+    } catch (error) {
+      toast(error.message, true)
+    }
+    return
+  }
+
+  if (action === 'fx-auto') {
+    try {
+      state = await api('PATCH', '/api/settings', { fxAuto: true })
+      render()
+      toast(t('已恢复自动汇率，下一轮会去拉取'))
+    } catch (error) {
+      toast(error.message, true)
+    }
+    return
+  }
+
+  if (action === 'set-currency') {
+    const next = actionButton.dataset.cur === 'CNY' ? 'CNY' : 'USD'
+    if ((state.settings.displayCurrency || 'USD') === next) return
+    try {
+      state = await api('PATCH', '/api/settings', { displayCurrency: next })
+      render()
+      paintCurrencySwitch()
+      toast(t('显示币种已切换'))
+    } catch (error) {
+      toast(error.message, true)
+    }
+    return
+  }
+
   if (action === 'monitor-save-settings') {
     const interval = Number($('#monitor-interval')?.value ?? 30)
-    const warn = Number($('#monitor-warn')?.value ?? 10)
+    const warnInput = $('#monitor-warn')
+    // 阈值输入框可能不在页面上（设置面板收起来了），此时不要用默认值覆盖用户设置
+    const patch = { monitorIntervalMinutes: interval }
+    if (warnInput) patch.balanceWarnUsd = Number(warnInput.value || 0)
     await withBusy(actionButton, async () => {
-      state = await api('PATCH', '/api/settings', { monitorIntervalMinutes: interval, balanceWarnCny: warn })
+      state = await api('PATCH', '/api/settings', patch)
       await loadMonitor(monitorDays)
       render()
       toast('已保存')
@@ -2941,6 +3655,39 @@ document.addEventListener('click', async (event) => {
     return
   }
 
+  // 一键同步：同步模型 → 读余额 →（有令牌时）识别分组，串着跑完再刷新
+  if (event.target.closest('[data-act="prov-sync-all"]')) {
+    const btn = event.target.closest('[data-act="prov-sync-all"]')
+    const card = btn.closest('.prov-card')
+    const providerId = card?.dataset.provider
+    const hasToken = card?.dataset.hasToken === '1'
+    if (!providerId) return
+    const failed = []
+    await withBusy(btn, async () => {
+      try {
+        await api('POST', `/api/providers/${providerId}/sync`, {})
+      } catch (error) {
+        failed.push(`同步：${error.message}`)
+      }
+      try {
+        await api('POST', `/api/providers/${providerId}/balance`, {})
+      } catch (error) {
+        failed.push(`余额：${error.message}`)
+      }
+      if (hasToken) {
+        try {
+          await api('POST', `/api/providers/${providerId}/detect-groups`, {})
+        } catch (error) {
+          failed.push(`分组：${error.message}`)
+        }
+      }
+      state = await api('GET', '/api/state')
+      render()
+    })
+    toast(failed.length ? `部分完成：${failed.join('；')}` : '已同步', failed.length > 0)
+    return
+  }
+
   if (action === 'sync') {
     await withBusy(actionButton, async () => {
       const result = await api('POST', `/api/providers/${providerId}/sync`, {})
@@ -3003,6 +3750,49 @@ document.addEventListener('click', async (event) => {
       state = await api('DELETE', `/api/providers/${providerId}`)
       render()
       toast('已删除')
+    })
+    return
+  }
+
+  // 站点卡顺序：和后一个/前一个交换 sortOrder，两张都写一次
+  if (action === 'prov-move') {
+    const dir = actionButton.dataset.dir
+    const id = actionButton.dataset.provider
+    const list = state.providers || []
+    const index = list.findIndex((p) => p.id === id)
+    const swapIndex = dir === 'up' ? index - 1 : index + 1
+    if (index < 0 || swapIndex < 0 || swapIndex >= list.length) return
+    const self = list[index]
+    const other = list[swapIndex]
+    const selfOrder = Number(self.sortOrder) || 0
+    const otherOrder = Number(other.sortOrder) || 0
+    // 老数据没设过排序号（都是 0）时，用 ±1 拉开差距，否则怎么换都回到原位
+    const nextSelf = otherOrder === selfOrder ? (dir === 'up' ? selfOrder - 1 : selfOrder + 1) : otherOrder
+    const nextOther = otherOrder === selfOrder ? selfOrder : selfOrder
+    await withBusy(actionButton, async () => {
+      await api('PATCH', `/api/providers/${self.id}`, { sortOrder: nextSelf })
+      await api('PATCH', `/api/providers/${other.id}`, { sortOrder: nextOther })
+      state = await api('GET', '/api/state')
+      render()
+      toast(`「${self.name}」已${dir === 'up' ? '上移' : '下移'}到第 ${swapIndex + 1} 位`)
+    })
+    return
+  }
+
+  if (action === 'prov-toggle-pause') {
+    const providerId = actionButton.dataset.provider
+    const provider = (state.providers || []).find((p) => p.id === providerId)
+    const next = !provider?.paused
+    await withBusy(actionButton, async () => {
+      try {
+        state = await api('PATCH', `/api/providers/${providerId}`, { paused: next })
+        render()
+        toast(next
+          ? `「${provider?.name || '站点'}」已暂停：不进比价、决策、探针和同步，随时可恢复`
+          : `「${provider?.name || '站点'}」已恢复`)
+      } catch (error) {
+        toast(error.message, true)
+      }
     })
     return
   }
@@ -3102,14 +3892,19 @@ document.addEventListener('click', async (event) => {
   if (action === 'usage-check') {
     const providerId = actionButton.closest('[data-provider]').dataset.provider
     await withBusy(actionButton, async () => {
+      let failure = ''
       try {
         const result = await api('POST', `/api/providers/${providerId}/usage-check`, {})
         usageCheckResults[providerId] = result
-        render()
-        toast('已拉取站方数据')
       } catch (error) {
-        toast(error.message, true)
+        // 失败也要把弹窗开出来，否则用户点了就是「什么都没发生」
+        usageCheckResults[providerId] = { error: error.message, estimate: {}, raw: null }
+        failure = error.message
       }
+      render()
+      const card = document.querySelector(`.prov-card[data-provider="${providerId}"]`)
+      if (card) openProvPanel(card, 'usage')
+      toast(failure ? `没拉到站方数据：${failure}` : '已拉取站方数据', Boolean(failure))
     })
     return
   }
@@ -3214,6 +4009,23 @@ document.addEventListener('click', async (event) => {
     } catch (error) {
       toast(error.message, true)
     }
+    return
+  }
+
+  if (action === 'refresh-state') {
+    await refreshState()
+    toast(t('已刷新'))
+    return
+  }
+
+  if (action === 'toggle-autorefresh') {
+    setAutoRefresh(!autoRefresh)
+    toast(autoRefresh ? t('自动刷新已打开（15 秒）') : t('自动刷新已关闭'))
+    return
+  }
+
+  if (action === 'ignored-models') {
+    openIgnoredModels()
     return
   }
 
@@ -3395,8 +4207,165 @@ document.addEventListener('submit', async (event) => {
 })
 
 // 搜索框：只重渲染当前页，然后恢复焦点与光标
+// ---------------------------------------------------------------- 拖拽排序
+// 只认卡片右上那颗「名次」作为把手：整卡可拖会让选文字、点按钮都变别扭。
+let dragProviderId = null
+
+function clearDropMarks() {
+  document.querySelectorAll('.prov-card.drop-before, .prov-card.drop-after, .prov-card.dragging')
+    .forEach((node) => node.classList.remove('drop-before', 'drop-after', 'dragging'))
+}
+
+document.addEventListener('dragstart', (event) => {
+  const handle = event.target.closest?.('.prov-pri')
+  if (!handle) return
+  const card = handle.closest('.prov-card')
+  if (!card) return
+  dragProviderId = handle.dataset.provider
+  card.classList.add('dragging')
+  // 分页时只有当前页的卡片在 DOM 里，拖不到别的页——给两个「放到最前 / 最后」的落点
+  document.body.classList.add('prov-dragging')
+  event.dataTransfer.effectAllowed = 'move'
+  // Firefox 必须 setData 才会真的开始拖
+  event.dataTransfer.setData('text/plain', dragProviderId)
+})
+
+document.addEventListener('dragover', (event) => {
+  if (!dragProviderId) return
+  const zone = event.target.closest?.('.drop-zone')
+  if (zone) {
+    event.preventDefault()
+    zone.classList.add('active')
+    return
+  }
+  document.querySelectorAll('.drop-zone.active').forEach((node) => node.classList.remove('active'))
+  // 拖动时靠边自动滚动：列表在 .content 里滚，浏览器的原生自动滚动不认它，
+  // 不自己滚的话第二页的卡片永远拖不到第一页。
+  const scroller = document.querySelector('.content')
+  if (scroller) {
+    const box = scroller.getBoundingClientRect()
+    const edge = 72
+    if (event.clientY < box.top + edge) scroller.scrollTop -= 18
+    else if (event.clientY > box.bottom - edge) scroller.scrollTop += 18
+  }
+  const card = event.target.closest?.('.prov-card')
+  if (!card) return
+  event.preventDefault()
+  event.dataTransfer.dropEffect = 'move'
+  const rect = card.getBoundingClientRect()
+  const after = event.clientY > rect.top + rect.height / 2
+  clearDropMarks()
+  document.querySelector(`.prov-pri[data-provider="${dragProviderId}"]`)?.closest('.prov-card')?.classList.add('dragging')
+  card.classList.add(after ? 'drop-after' : 'drop-before')
+})
+
+document.addEventListener('drop', async (event) => {
+  if (!dragProviderId) return
+  const zone = event.target.closest?.('.drop-zone')
+  if (zone) {
+    event.preventDefault()
+    const dragged = dragProviderId
+    clearDropMarks()
+    dragProviderId = null
+    document.body.classList.remove('prov-dragging')
+    // 「上一页」= 挪到上一页的最后一格；「下一页」= 挪到下一页的第一格
+    const totalPages = Math.max(1, Math.ceil((state.providers || []).length / SITE_PAGE_SIZE))
+    const toPrev = zone.dataset.drop === 'prev'
+    if (toPrev && sitePage <= 1) {
+      toast('已经是第一页了，没有上一页可以放', true)
+      return
+    }
+    if (!toPrev && sitePage >= totalPages) {
+      toast('已经是最后一页了，没有下一页可以放', true)
+      return
+    }
+    const order = (state.providers || []).map((p) => p.id).filter((id) => id !== dragged)
+    const targetIndex = toPrev
+      ? Math.max(0, (sitePage - 1) * SITE_PAGE_SIZE - 1)
+      : Math.min(order.length, sitePage * SITE_PAGE_SIZE)
+    order.splice(targetIndex, 0, dragged)
+    await persistOrder(order, dragged)
+    return
+  }
+  const card = event.target.closest?.('.prov-card')
+  if (!card) return
+  event.preventDefault()
+  const targetId = card.querySelector('.prov-pri')?.dataset.provider
+  const dragged = dragProviderId
+  const after = card.classList.contains('drop-after')
+  clearDropMarks()
+  dragProviderId = null
+  document.body.classList.remove('prov-dragging')
+  if (!targetId || targetId === dragged) return
+
+  const order = (state.providers || []).map((p) => p.id).filter((id) => id !== dragged)
+  const at = order.indexOf(targetId)
+  order.splice(after ? at + 1 : at, 0, dragged)
+  await persistOrder(order, dragged)
+})
+
+document.addEventListener('dragend', () => {
+  dragProviderId = null
+  document.body.classList.remove('prov-dragging')
+  clearDropMarks()
+})
+
+/** 落位后统一提交顺序：只在对话框/序列结束后调一次接口，避免中间态 */
+async function persistOrder(order, dragged) {
+  try {
+    state = await api('POST', '/api/providers/reorder', { ids: order })
+    // 落在哪一页就翻到哪一页，否则跨页拖完看起来像「没生效」
+    sitePage = Math.floor(order.indexOf(dragged) / SITE_PAGE_SIZE) + 1
+    render()
+    const name = (state.providers || []).find((p) => p.id === dragged)?.name || '站点'
+    toast(`「${name}」已移到第 ${order.indexOf(dragged) + 1} 位`)
+  } catch (error) {
+    toast(error.message, true)
+  }
+}
+
+document.addEventListener('click', (event) => {
+  const fold = event.target.closest?.('[data-ig-fold]')
+  if (!fold) return
+  const key = fold.dataset.igFold
+  const children = document.querySelector(`[data-ig-children="${CSS.escape(key)}"]`)
+  if (!children) return
+  const folded = !children.hidden
+  children.hidden = folded
+  fold.classList.toggle('is-collapsed', folded)
+  if (folded) igCollapsed.add(key)
+  else igCollapsed.delete(key)
+}, true)
+
+document.addEventListener('change', async (event) => {
+  const group = event.target.closest?.('[data-ig-group]')
+  if (group) {
+    await toggleVendorGroup(group.dataset.igGroup, group.checked)
+    return
+  }
+  const box = event.target.closest?.('[data-ig]')
+  if (!box) return
+  await toggleIgnoredModel(box.dataset.ig, box.checked)
+})
+
 document.addEventListener('input', (event) => {
   const id = event.target.id
+  // 忽略模型弹窗里的搜索：只重画弹窗，不动页面
+  if (id === 'ig-search') {
+    ignoredQuery = event.target.value
+    openIgnoredModels()
+    const input = $('#ig-search')
+    if (input) {
+      input.focus()
+      const len = input.value.length
+      try {
+        input.setSelectionRange(len, len)
+      } catch {
+        /* type=search 不支持选区，忽略 */
+      }
+    }
+    return
+  }
   const map = {
     'pricing-search': ['pricing', renderPricing],
     'decision-search': ['decision', renderDecision],
@@ -3589,12 +4558,24 @@ document.addEventListener('change', async (event) => {
 
 // 汇率输入框在「基准价」页里动态渲染，所以用事件委托而不是直接绑定
 document.addEventListener('change', async (event) => {
+  const currency = event.target.closest('[data-act="display-currency"]')
+  if (currency) {
+    try {
+      state = await api('PATCH', '/api/settings', { displayCurrency: currency.value })
+      render()
+      toast(t('显示币种已切换'))
+    } catch (error) {
+      toast(error.message, true)
+    }
+    return
+  }
   const input = event.target.closest('[data-act="fx"]')
   if (!input) return
   try {
+    // 手填 = 手动模式，自动任务不再覆盖
     state = await api('PATCH', '/api/settings', { fxUsdCny: Number(input.value) })
     render()
-    toast('汇率已更新')
+    toast(t('汇率已更新（手动）'))
   } catch (error) {
     toast(error.message, true)
   }
@@ -3732,8 +4713,11 @@ try {
   applyShellText()
   paintThemeButton()
   paintSidebarButton()
+  paintAutoRefresh()
+  paintCurrencySwitch()
+  scheduleRefresh()
   render()
-  setTab(location.hash.replace('#', '') || 'providers')
+  setTab(location.hash.replace('#', '') || 'monitor')
   // ?help=1 / ?contact=1 直接打开对应面板（方便分享链接）
   const params = new URLSearchParams(location.search)
   if (params.has('contact')) {

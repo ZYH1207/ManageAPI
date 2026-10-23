@@ -20,7 +20,8 @@ import { applySnapshot, recordRun } from '../core/monitor.js'
  */
 export async function collectProviderSnapshots({ providerId = null, logger = console } = {}) {
   const db = await store.readDb()
-  const targets = db.providers.filter((p) => !providerId || p.id === providerId)
+  // 暂停的站点不采：既不刷余额也不打后台接口
+  const targets = db.providers.filter((p) => !p.paused && (!providerId || p.id === providerId))
   const results = []
 
   for (const provider of targets) {
@@ -68,8 +69,13 @@ export async function collectProviderSnapshots({ providerId = null, logger = con
         })
         snap.groups = pricing.groups
         snap.models = pricing.models
+        await inv.setTokenStatus(provider.id, { ok: true })
       } catch (error) {
         errors.push(`倍率：${error.message}`)
+        // 401/403 才是令牌失效；超时、404、结构不对都不该给令牌判死刑
+        if (/HTTP (401|403)/.test(String(error?.message || ''))) {
+          await inv.setTokenStatus(provider.id, { ok: false, message: error.message })
+        }
       }
     }
 

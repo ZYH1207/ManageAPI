@@ -6,6 +6,7 @@
  * 也不会因为一次探测耗时较长而错过下一轮。
  */
 import * as store from '../core/store.js'
+import * as fxLib from '../core/fx.js'
 import { scoreOffers } from '../core/score.js'
 
 const MAX_PER_TICK = 10
@@ -15,6 +16,7 @@ const FIRST_RUN_DELAY_MS = 5000
 export function startProbeScheduler({ runProbes, collectMonitor = null, logger = console }) {
   let running = false
   let collecting = false
+  let refreshingFx = false
 
   async function tick() {
     if (running) return
@@ -25,6 +27,23 @@ export function startProbeScheduler({ runProbes, collectMonitor = null, logger =
     } catch (error) {
       logger.warn?.(`[定时探测] 读取数据失败：${error.message}`)
       return
+    }
+
+    // --------------------------------------------------------------- 汇率
+    // 12 小时一次；手动模式下 shouldRefresh 直接返回 false，不会覆盖用户填的值。
+    if (!refreshingFx) {
+      const fx = fxLib.ensureFx(db.settings)
+      if (fxLib.shouldRefresh(fx)) {
+        refreshingFx = true
+        try {
+          const result = await fxLib.refreshFx({ logger })
+          if (result.ok) logger.info?.(`[汇率] 已更新：1 USD = ${result.fx.rates.CNY} CNY（${result.fx.source}）`)
+        } catch (error) {
+          logger.warn?.(`[汇率] 刷新失败：${error.message}`)
+        } finally {
+          refreshingFx = false
+        }
+      }
     }
 
     // --------------------------------------------------------------- 监控采集

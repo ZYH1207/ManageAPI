@@ -40,6 +40,9 @@ export function emptyDb() {
     version: DB_VERSION,
     settings: {
       fxUsdCny: 7.2,
+      // 汇率的正式结构（见 core/fx.js）：base 恒为 USD，rates[XXX] = 1 美元换多少 XXX。
+      // fxUsdCny 只是给老代码留的镜像，每次写入都会同步。
+      fx: { base: 'USD', rates: { CNY: 7.2 }, updatedAt: null, source: 'default', manual: false },
       blendInputWeight: 0.25,
       probeTimeoutMs: 45000,
       // 0 = 关闭定时探测
@@ -61,8 +64,13 @@ export function emptyDb() {
       // 监控采集间隔（分钟），0 = 关闭。
       // 和探针是两个节奏：探针要打真实请求，成本高；采集只是读后台数据，可以更勤。
       monitorIntervalMinutes: 30,
-      // 余额低于这个人民币金额就告警（美元站按汇率折算）。0 = 不告警。
-      balanceWarnCny: 10,
+      // 余额低于这个美元金额就告警（人民币站按汇率折算后比）。0 = 不告警。
+      // 之所以用美元：中转站余额基本都是美元，用人民币要先折一次，多一层容易错。
+      balanceWarnUsd: 1.5,
+      // 价格展示币种：只影响渲染，不影响比较口径（比较一律用美元）。
+      displayCurrency: 'USD',
+    // 全局忽略的模型（归一化后的 key）：不参与比价、决策、探针、网关
+    ignoredModels: [],
     },
     providers: [],
     credentials: [],
@@ -186,10 +194,19 @@ export async function readDb() {
     throw new StorageError(`数据文件解析失败：${p}（${error.message}）`)
   }
   const base = emptyDb()
+  const rawSettings = raw.settings || {}
+  const settings = { ...base.settings, ...rawSettings }
+  // 阈值口径从人民币改成美元：老配置只存了 balanceWarnCny，这里折一次
+  // （判断依据是原始文件里有没有 balanceWarnUsd，否则默认值会盖掉迁移）
+  if (rawSettings.balanceWarnUsd === undefined) {
+    const fx = Number(settings.fxUsdCny) || 7.2
+    const oldCny = Number(rawSettings.balanceWarnCny)
+    if (Number.isFinite(oldCny) && oldCny > 0) settings.balanceWarnUsd = Math.round((oldCny / fx) * 100) / 100
+  }
   return migrate({
     ...base,
     ...raw,
-    settings: { ...base.settings, ...(raw.settings || {}) },
+    settings,
     providers: raw.providers || [],
     credentials: raw.credentials || [],
     offers: raw.offers || [],

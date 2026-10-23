@@ -76,16 +76,19 @@ function toMap(list, keyOf) {
   return map
 }
 
-/** 余额阈值：设置里统一用人民币，站点可能是美元，换算后再比。 */
+/**
+ * 余额阈值：设置里统一存美元（`balanceWarnUsd`），站点余额可能是人民币，换算后再比。
+ * 老配置只有 `balanceWarnCny`，按汇率折一次即可（迁移在 store.migrate 里做）。
+ */
 function lowBalanceThreshold(settings, currency) {
-  const warnCny = Number(settings.balanceWarnCny)
-  const thresholdCny = Number.isFinite(warnCny) && warnCny >= 0 ? warnCny : 10
-  if (thresholdCny === 0) return null
-  if (String(currency || 'CNY').toUpperCase() === 'USD') {
+  const rawUsd = Number(settings.balanceWarnUsd ?? settings.balanceWarnCny)
+  const thresholdUsd = Number.isFinite(rawUsd) && rawUsd >= 0 ? rawUsd : 10
+  if (thresholdUsd === 0) return null
+  if (String(currency || 'USD').toUpperCase() === 'CNY') {
     const fx = Number(settings.fxUsdCny) || 7.2
-    return thresholdCny / fx
+    return thresholdUsd * fx
   }
-  return thresholdCny
+  return thresholdUsd
 }
 
 function pushAlert(m, { providerId, code, level = 'warn', title, detail = '', at, cooldownMs = ALERT_COOLDOWN_MS }) {
@@ -494,6 +497,8 @@ export function buildMonitorView(db, { usageData = null, benchmarks = {}, days =
     runs: m.runs.slice(-10).reverse().map((run) => ({ ...run, providerName: nameOf(run.providerId) })),
     settings: {
       monitorIntervalMinutes: Number(settings.monitorIntervalMinutes) || 0,
+      // 阈值口径统一是美元；老字段留着给还没迁移的前端兜底
+      balanceWarnUsd: Number(settings.balanceWarnUsd ?? settings.balanceWarnCny) || 0,
       balanceWarnCny: Number(settings.balanceWarnCny) || 0,
     },
   }

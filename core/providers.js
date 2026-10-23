@@ -34,7 +34,12 @@ async function requestJson(url, { apiKey, timeoutMs = 15000, headers = {} } = {}
     throw new Error(`连接失败（${cause}）：${url}`)
   }
   const text = await response.text()
-  if (!response.ok) throw new Error(describeHttpError(response.status, text))
+  if (!response.ok) {
+    const error = new Error(describeHttpError(response.status, text))
+    // 调用方要区分「令牌失效」和「网络/结构问题」，所以把状态码挂到错误上
+    error.status = response.status
+    throw error
+  }
   try {
     return JSON.parse(text)
   } catch {
@@ -113,13 +118,14 @@ export async function tryBalance({ baseUrl, apiKey, adminToken, timeoutMs = 1000
         try {
           const payload = await requestJson(`${origin}${path}`, { apiKey: adminToken, timeoutMs })
           const data = payload?.data ?? payload
-          // Sub2API 这类直接给货币值
+          // Sub2API 这类直接给货币值；这类中转站几乎都按美元计价，
+          // 只有明确写了 currency 才当人民币
           const money = data?.balance ?? data?.credits
           if (typeof money === 'number') {
             return {
               ok: true,
               remaining: money,
-              currency: data?.currency === 'USD' ? 'USD' : 'CNY',
+              currency: String(data?.currency || '').toUpperCase() === 'CNY' ? 'CNY' : 'USD',
               via: 'admin-token',
             }
           }
@@ -163,7 +169,8 @@ export async function tryBalance({ baseUrl, apiKey, adminToken, timeoutMs = 1000
         return {
           ok: true,
           remaining: isQuota ? Math.round((remaining / 500000) * 100) / 100 : remaining,
-          currency: isQuota ? 'USD' : 'CNY',
+          // 裸 balance 字段多半是美元余额；只有站点显式声明 CNY 才算人民币
+          currency: isQuota || String(data?.currency || '').toUpperCase() !== 'CNY' ? 'USD' : 'CNY',
         }
       }
       return { ok: false, reason: '接口能访问，但返回里没有可识别的余额字段（quota / balance）' }
