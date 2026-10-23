@@ -215,6 +215,7 @@ function openHelpModal() {
 
 function render() {
   renderOverview()
+  renderMonitor()
   renderProviders()
   renderFree()
   renderPricing()
@@ -859,20 +860,27 @@ async function connectPlatform(platformId) {
   try {
     const result = await api(`POST`, `/api/free/platforms/${platformId}/connect`, {})
     const connect = result.connect
-    if (!connect?.authUrl) throw new Error('平台没有返回授权地址')
+    // 有些平台没有网页授权（ZCode 走桌面协议），连接器会标 local：读本机客户端即可，
+    // 这种情况下没有 authUrl 是正常的，别当成错误。
+    if (!connect?.authUrl && !connect?.local) throw new Error('平台没有返回授权地址')
     state = result
     // 记下等待状态：卡片上会显示「等待授权…已 N 秒」和服务端最近一次回应
     platformConnectPending = {
       platformId,
-      authUrl: connect.authUrl,
+      authUrl: connect.authUrl || '',
+      local: Boolean(connect.local),
       startedAt: Date.now(),
       elapsedMs: 0,
       reason: '',
     }
     connectCancelled = false
     render()
-    window.open(connect.authUrl, '_blank', 'noopener,noreferrer')
-    toast('已打开授权页，完成后会自动回来')
+    if (connect.authUrl) {
+      window.open(connect.authUrl, '_blank', 'noopener,noreferrer')
+      toast('已打开授权页，完成后会自动回来')
+    } else {
+      toast('正在读本机客户端里的登录态…')
+    }
     await waitForConnect(platformId, connect.state, connect.accountId)
   } catch (error) {
     finishConnect(error.message, true)
@@ -923,10 +931,87 @@ function finishConnect(message, isError, ok = false) {
   render()
   if (ok) {
     toast('已连接')
-    if (message) setTimeout(() => toast(message, true), 1500)
+    // 警告不是错误：连上了但昵称/额度暂时没读到，用普通提示而不是红色报错
+    if (message) setTimeout(() => toast(message), 1500)
   } else if (message) {
     toast(message, isError)
   }
+}
+
+// ------------------------------------------------------- 免费池 · 平台账号
+
+let pfAccountsPlatformId = null
+
+const PF_STATUS_TEXT = { ok: '正常', expired: '已过期', error: '异常' }
+
+function quotaSummary(quota) {
+  if (!quota) return '—'
+  const parts = []
+  // 本周期剩余才是现在能用的量，包内剩余只作补充，别把两个数并排摆着让人挑
+  const cycle = Number(quota.cycleRemaining)
+  const size = Number(quota.cycleSize)
+  if (Number.isFinite(cycle)) {
+    parts.push(Number.isFinite(size) && size > 0 ? `本周期 ${cycle}/${size}` : `本周期 ${cycle}`)
+  } else if (Number.isFinite(Number(quota.remaining))) {
+    parts.push(`剩 ${quota.remaining}`)
+  }
+  if (Number.isFinite(cycle) && Number.isFinite(Number(quota.remaining)) && quota.remaining !== cycle) {
+    parts.push(`套餐 ${quota.remaining}`)
+  }
+  if (quota.resetAt) parts.push(`重置 ${String(quota.resetAt).slice(0, 10)}`)
+  return parts.join(' · ') || '—'
+}
+
+function openPfAccounts(platformId) {
+  pfAccountsPlatformId = platformId
+  const modal = $('#pf-accounts-modal')
+  if (modal) modal.hidden = false
+  renderPfAccounts()
+}
+
+function closePfAccounts() {
+  const modal = $('#pf-accounts-modal')
+  if (modal) modal.hidden = true
+  pfAccountsPlatformId = null
+}
+
+function renderPfAccounts() {
+  const body = $('#pf-accounts-body')
+  if (!body) return
+  const platform = (state?.freePool?.platforms || []).find((p) => p.id === pfAccountsPlatformId)
+  if (!platform) {
+    body.innerHTML = '<p class="hint">平台已经删掉了。</p>'
+    return
+  }
+  const accounts = platform.accounts || []
+  const head = `<p class="hint" style="margin:0 0 10px">${esc(platform.label || platform.connectorId)} · ${accounts.length} 个账号</p>`
+  if (!accounts.length) {
+    body.innerHTML = `${head}<p class="hint">还没有账号。点「连接」授权成功后会自己建一个。</p>`
+    translateDom(body)
+    return
+  }
+  body.innerHTML = `
+    ${head}
+    <table class="table">
+      <thead>
+        <tr><th>账号</th><th>状态</th><th>额度</th><th>最近签到</th><th></th></tr>
+      </thead>
+      <tbody>
+        ${accounts
+          .map(
+            (account) => `
+          <tr>
+            <td>${esc(account.label || '—')}${account.hasSecret ? '' : ' <span class="badge warn">无凭据</span>'}</td>
+            <td>${esc(t(PF_STATUS_TEXT[account.status] || account.status || '—'))}</td>
+            <td>${esc(quotaSummary(account.quota))}</td>
+            <td>${esc(account.lastCheckinAt ? String(account.lastCheckinAt).slice(0, 10) : '—')}</td>
+            <td class="num"><button class="ghost danger" data-act="pf-account-delete" data-account="${esc(account.id)}">删除</button></td>
+          </tr>`,
+          )
+          .join('')}
+      </tbody>
+    </table>`
+  translateDom(body)
 }
 
 function renderFree() {
@@ -1705,6 +1790,496 @@ function renderBenchmark() {
     </div>`
 }
 
+// --------------------------------------------------------------- 监控视图
+
+let monitorData = null
+let monitorDays = 7
+let monitorLoading = false
+/** 公告面板当前选中的站点；'all' = 不分站。切站点只重渲染，不重新拉数据 */
+let noticeSite = 'all'
+
+/** 相对时间：监控页到处都是「3 分钟前」，比 ISO 串好读得多 */
+function agoText(iso) {
+  if (!iso) return t('还没采过')
+  const ms = Date.now() - new Date(iso).getTime()
+  if (!Number.isFinite(ms)) return '—'
+  if (ms < 60 * 1000) return t('刚刚')
+  const minutes = Math.floor(ms / 60000)
+  if (minutes < 60) return t('{n} 分钟前', { n: minutes })
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) return t('{n} 小时前', { n: hours })
+  return t('{n} 天前', { n: Math.floor(hours / 24) })
+}
+
+/**
+ * 余额概览：左轴余额折线（带面积），右轴每日花费柱。
+ * 两个量级差得远（余额几十块、花费几毛），共用一根轴的话柱子会贴地看不见。
+ */
+function monitorChartSvg(balanceSeries = [], spendSeries = []) {
+  const W = 760
+  const H = 240
+  const padL = 46
+  const padR = 46
+  const padT = 16
+  const padB = 28
+  const innerW = W - padL - padR
+  const innerH = H - padT - padB
+  const n = Math.max(balanceSeries.length, spendSeries.length)
+  if (n === 0) return ''
+
+  const values = balanceSeries.map((d) => (typeof d.total === 'number' ? d.total : null))
+  const known = values.filter((v) => v !== null)
+  const hasSpend = spendSeries.some((d) => (d.cny || 0) > 0)
+  if (known.length === 0 && !hasSpend) return ''
+
+  let min = known.length ? Math.min(...known) : 0
+  let max = known.length ? Math.max(...known) : 1
+  if (min === max) {
+    min = Math.max(0, min - 1)
+    max += 1
+  }
+  const headroom = (max - min) * 0.2
+  max += headroom
+  const spendMax = Math.max(1, ...spendSeries.map((d) => d.cny || 0))
+
+  const x = (i) => padL + (n === 1 ? innerW / 2 : (i / (n - 1)) * innerW)
+  const yBalance = (v) => padT + innerH - ((v - min) / (max - min)) * innerH
+  const ySpend = (v) => padT + innerH - (v / spendMax) * innerH
+
+  // 折线只连连续有效的点；中间断点就断开，别画一条假的斜线穿过去
+  const segments = []
+  let current = []
+  values.forEach((v, i) => {
+    if (v === null) {
+      if (current.length) segments.push(current)
+      current = []
+      return
+    }
+    current.push([x(i), yBalance(v)])
+  })
+  if (current.length) segments.push(current)
+
+  const linePaths = segments
+    .filter((seg) => seg.length > 1)
+    .map((seg) => `M${seg.map(([px, py]) => `${px.toFixed(1)} ${py.toFixed(1)}`).join('L')}`)
+    .join(' ')
+  const dots = segments
+    .flat()
+    .map(([px, py]) => `<circle cx="${px.toFixed(1)}" cy="${py.toFixed(1)}" r="2.4" />`)
+    .join('')
+
+  const longest = segments.reduce((best, seg) => (seg.length > best.length ? seg : best), [])
+  const areaPath =
+    longest.length > 1
+      ? `M${longest[0][0].toFixed(1)} ${(padT + innerH).toFixed(1)}L${longest
+          .map(([px, py]) => `${px.toFixed(1)} ${py.toFixed(1)}`)
+          .join('L')}L${longest[longest.length - 1][0].toFixed(1)} ${(padT + innerH).toFixed(1)}Z`
+      : ''
+
+  const barWidth = Math.min(22, (innerW / n) * 0.42)
+  const bars = spendSeries
+    .map((d, i) => {
+      const cny = d.cny || 0
+      if (cny <= 0) return ''
+      const height = Math.max((cny / spendMax) * innerH, 1)
+      return `<rect class="spend-bar" x="${(x(i) - barWidth / 2).toFixed(1)}" y="${(padT + innerH - height).toFixed(1)}" width="${barWidth.toFixed(1)}" height="${height.toFixed(1)}" rx="2"><title>${esc(d.day)} · ¥${cny}</title></rect>`
+    })
+    .join('')
+
+  const grid = Array.from({ length: 5 }, (_, i) => {
+    const py = padT + (innerH / 4) * i
+    const balanceLabel = max - ((max - min) / 4) * i
+    const spendLabel = spendMax - (spendMax / 4) * i
+    return `<line class="grid-line" x1="${padL}" y1="${py.toFixed(1)}" x2="${W - padR}" y2="${py.toFixed(1)}" />
+      <text class="axis-label" x="${padL - 8}" y="${(py + 3.5).toFixed(1)}" text-anchor="end">${money(balanceLabel)}</text>
+      <text class="axis-label" x="${W - padR + 8}" y="${(py + 3.5).toFixed(1)}">${money(spendLabel)}</text>`
+  }).join('')
+
+  const step = Math.max(1, Math.ceil(n / 7))
+  const dayLabels = balanceSeries
+    .map((d, i) => {
+      // 第一个点跳过：它的标签会压到左侧轴的数字上
+      const keep = (i > 0 && i % step === 0) || (i === n - 1 && n > 1)
+      if (!keep) return ''
+      const anchor = i === n - 1 ? 'end' : 'middle'
+      return `<text class="axis-label" x="${x(i).toFixed(1)}" y="${H - 8}" text-anchor="${anchor}">${esc(String(d.day).slice(5))}</text>`
+    })
+    .join('')
+
+  return `<svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(t('余额与花费趋势'))}">
+    <defs>
+      <linearGradient id="balance-fill" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0%" stop-color="var(--accent)" stop-opacity="0.22" />
+        <stop offset="100%" stop-color="var(--accent)" stop-opacity="0.02" />
+      </linearGradient>
+    </defs>
+    ${grid}
+    ${bars}
+    ${areaPath ? `<path class="area" d="${areaPath}" fill="url(#balance-fill)" />` : ''}
+    ${linePaths ? `<path class="line" d="${linePaths}" />` : ''}
+    <g class="dots">${dots}</g>
+    ${dayLabels}
+  </svg>`
+}
+
+function feedAlertRow(row) {
+  const dot = row.level === 'danger' ? 'red' : row.level === 'warn' ? 'yellow' : ''
+  return `<div class="monitor-feed-row ${row.readAt ? 'read' : ''}">
+    <span class="dot ${dot}"></span>
+    <div class="monitor-feed-body">
+      <div class="monitor-feed-title">${esc(row.title)}</div>
+      ${row.detail ? `<div class="monitor-feed-detail">${esc(row.detail)}</div>` : ''}
+      <div class="monitor-feed-meta">${esc(row.providerName || '')} · ${agoText(row.at)}</div>
+    </div>
+  </div>`
+}
+
+/**
+ * 上游公告大多是 Markdown：标题井号、加粗星号、链接、列表符号。
+ * 这里只做「去掉标记、保留文字」的降噪，不解析成 HTML——不引入渲染器，也不给自己找 XSS。
+ */
+function plainNotice(text) {
+  return String(text || '')
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, '')
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
+    .replace(/^\s{0,3}#{1,6}\s*/gm, '')
+    .replace(/\*\*([^*]+)\*\*/g, '$1')
+    .replace(/`([^`]+)`/g, '$1')
+    .replace(/^\s*[-*+]\s+/gm, '· ')
+    .replace(/^\s*>\s?/gm, '')
+    .replace(/\|/g, ' ')
+    .replace(/[ \t]+/g, ' ')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+}
+
+function feedAnnouncementRow(row) {
+  const content = plainNotice(row.content)
+  // 站点名已经在分组标题上了，行里不再重复，只留时间
+  return `<div class="monitor-feed-row ${row.readAt ? 'read' : ''}">
+    <div class="monitor-feed-body">
+      <div class="monitor-feed-title">${esc(row.title)}</div>
+      ${content ? `<div class="monitor-feed-detail">${esc(content)}</div>` : ''}
+      <div class="monitor-feed-meta">${agoText(row.publishedAt)}</div>
+    </div>
+  </div>`
+}
+
+function renderMonitor() {
+  const view = $('#view-monitor')
+  if (!view) return
+
+  if (!monitorData) {
+    if (!monitorLoading) void loadMonitor()
+    view.innerHTML = `<div class="empty"><h3>正在读取监控数据…</h3><p>第一次打开会现采一轮，稍等一下。</p></div>`
+    return
+  }
+
+  const data = monitorData
+  const kpi = data.kpi || {}
+  const providers = state?.providers || []
+
+  if (providers.length === 0) {
+    view.innerHTML = `
+      <div class="empty">
+        <h3>还没有中转站</h3>
+        <p>监控会定时读每个站的余额、倍率与公告。先去「站点」页添加一个。</p>
+        <button class="primary" data-goto="providers">去添加站点</button>
+      </div>`
+    return
+  }
+
+  // ---------------------------------------------------------------- KPI
+  const latestBalance = [...(data.balanceSeries || [])].reverse().find((d) => typeof d.total === 'number')
+  const todaySpend = [...(data.spendSeries || [])].reverse().find((d) => typeof d.cny === 'number')
+  const kpiItems = [
+    {
+      k: '站点',
+      v: `${kpi.withBalance ?? 0}/${kpi.providerCount ?? providers.length}`,
+      sub: '有余额数据',
+    },
+    {
+      k: '总余额',
+      v: `¥${money(latestBalance?.total ?? null)}`,
+      sub: kpi.lowest
+        ? t('最低：{name} {amount}', {
+            name: kpi.lowest.name,
+            amount: `${kpi.lowest.currency || ''} ${money(kpi.lowest.balance)}`.trim(),
+          })
+        : '还没有余额数据',
+    },
+    {
+      k: '今日花费',
+      v: `¥${money(todaySpend?.cny ?? 0)}`,
+      sub: '按当前价估算',
+    },
+    {
+      k: '24 小时变动',
+      v: kpi.rateChanges24h ?? 0,
+      sub: '倍率 / 价格',
+    },
+    {
+      k: '未读告警',
+      v: kpi.unreadAlerts ?? 0,
+      sub: t('上次采集 {ago}', { ago: agoText(kpi.lastRunAt) }),
+    },
+  ]
+
+  const kpiHtml = `<div class="stats monitor-kpi">${kpiItems
+    .map(
+      (item) => `<div class="stat">
+        <div class="k">${esc(item.k)}</div>
+        <div class="v">${esc(item.v)}</div>
+        <div class="sub">${esc(item.sub)}</div>
+      </div>`,
+    )
+    .join('')}</div>`
+
+  // -------------------------------------------------------------- 图表
+  const chart = monitorChartSvg(data.balanceSeries, data.spendSeries)
+  const seg = `<div class="seg">${[7, 14, 30]
+    .map((d) => `<button data-monitor-days="${d}" class="${d === monitorDays ? 'active' : ''}">${t('{n} 天', { n: d })}</button>`)
+    .join('')}</div>`
+
+  const chips = (data.balanceByProvider || [])
+    .map((row) => {
+      const low = row.threshold !== null && row.balance !== null && row.balance <= row.threshold
+      const dot = row.balance === null ? 'yellow' : low ? 'red' : 'green'
+      return `<button class="monitor-chip" data-monitor-provider="${esc(row.providerId)}" title="只采集这个站">
+        <span class="dot ${dot}"></span>${esc(row.name)}
+        <span class="monitor-chip-value">${row.balance === null ? '无数据' : `¥${money(row.balance)}`}</span>
+      </button>`
+    })
+    .join('')
+
+  const chartCard = `
+    <div class="card monitor-chart-card">
+      <div class="card-head">
+        <h3>余额概览</h3>
+        ${seg}
+      </div>
+      ${chart ? `<div class="chart-wrap">${chart}</div>` : '<div class="empty small"><p>还没有采集到余额。点右上角「立即采集」跑一轮。</p></div>'}
+      <div class="chart-legend">
+        <span><i class="legend-line"></i>总余额（¥，美元站按汇率折算）</span>
+        <span><i class="legend-bar"></i>每日花费（估）</span>
+      </div>
+      <div class="monitor-chips">${chips}</div>
+    </div>`
+
+  // ---------------------------------------------------------- 倍率变动
+  const changeRows = (data.changes || [])
+    .slice(0, 12)
+    .map((row) => {
+      const dir = typeof row.pct === 'number' ? (row.pct > 0 ? 'up' : row.pct < 0 ? 'down' : 'flat') : 'flat'
+      const label = typeof row.pct === 'number' ? `${row.pct > 0 ? '+' : ''}${row.pct}%` : '—'
+      return `<div class="monitor-flow-row">
+        <div class="monitor-flow-top">
+          <span class="monitor-flow-key">${esc(row.key)}</span>
+          <span class="badge ${dir === 'up' ? 'danger' : dir === 'down' ? 'ok' : ''}">${label}</span>
+        </div>
+        <div class="monitor-flow-meta">
+          <span>${esc(row.providerName || '')}</span>
+          <span>${money(row.from)} → ${money(row.to)}</span>
+          <span>${agoText(row.at)}</span>
+        </div>
+      </div>`
+    })
+    .join('')
+
+  const changesCard = `
+    <div class="card monitor-flow-card">
+      <div class="card-head">
+        <h3>最近倍率变动</h3>
+        <span class="hint">${t('{n} 条', { n: (data.changes || []).length })}</span>
+      </div>
+      ${changeRows || '<div class="empty small"><p>还没有变动。第一次采集只记基线，之后才开始比较。</p></div>'}
+    </div>`
+
+  // ------------------------------------------------------------ 站点卡
+  const siteCards = (data.balanceByProvider || [])
+    .map((row) => {
+      const low = row.threshold !== null && row.balance !== null && row.balance <= row.threshold
+      const badge = row.balance === null
+        ? '<span class="badge">无数据</span>'
+        : low
+          ? `<span class="badge danger">${t('低于阈值 {amount}', { amount: `${row.currency || 'CNY'} ${money(row.threshold)}` })}</span>`
+          : '<span class="badge ok">正常</span>'
+      const groupChips = (row.groups || [])
+        .slice(0, 4)
+        .map((g) => `<span class="group-chip static">${esc(g.name)}${typeof g.rate === 'number' ? ` ×${g.rate}` : ''}</span>`)
+        .join('')
+      const more = (row.groups || []).length > 4
+        ? `<span class="hint">${t('还有 {n} 个', { n: row.groups.length - 4 })}</span>`
+        : ''
+      return `<div class="monitor-site">
+        <div class="monitor-site-head">
+          <b>${esc(row.name)}</b>
+          ${badge}
+        </div>
+        <div class="monitor-site-balance">
+          ${row.balance === null ? '—' : `${esc(row.currency || 'CNY')} ${money(row.balance)}`}
+          <span class="hint">${agoText(row.at)}</span>
+        </div>
+        <div class="monitor-site-meta">
+          <span>${row.modelCount === null ? '还没读到模型价' : t('{n} 个模型有官方价', { n: row.modelCount })}</span>
+          <button class="ghost tiny" data-monitor-provider="${esc(row.providerId)}">只采这个站</button>
+        </div>
+        <div class="monitor-site-groups">${groupChips || '<span class="hint">还没读到分组倍率</span>'}${more}</div>
+      </div>`
+    })
+    .join('')
+
+  const sitesCard = `
+    <div class="card">
+      <div class="card-head">
+        <h3>站点余额与分组</h3>
+        <span class="hint">分组倍率来自站点公布的可用渠道</span>
+      </div>
+      <div class="monitor-sites">${siteCards || '<div class="empty small"><p>还没有站点。</p></div>'}</div>
+    </div>`
+
+  // -------------------------------------------------------- 告警 / 公告
+  // 两栏等高、各自内部滚动：公告动辄几百字，摊在页面流里会把下面所有卡片顶到几屏之外。
+  const allAlerts = data.alerts || []
+  const allAnnouncements = data.announcements || []
+
+  const alertsCard = `
+    <div class="card monitor-feed-card">
+      <div class="card-head">
+        <h3>告警动态</h3>
+        <div class="monitor-head-actions">
+          <span class="hint">${t('{n} 条未读', { n: kpi.unreadAlerts ?? 0 })}</span>
+          <button class="ghost tiny" data-act="monitor-read-alerts">全部已读</button>
+        </div>
+      </div>
+      <div class="monitor-feed-scroll">
+        ${allAlerts.length
+          ? allAlerts.map(feedAlertRow).join('')
+          : '<div class="empty small"><p>还没有告警。余额低于阈值、倍率变化、采集失败都会记在这里。</p></div>'}
+      </div>
+    </div>`
+
+  // 公告按站点分组：顶部一排站点胶囊，下面只显示这一家的公告
+  const noticeGroups = []
+  for (const row of allAnnouncements) {
+    let group = noticeGroups.find((item) => item.id === row.providerId)
+    if (!group) {
+      group = { id: row.providerId, name: row.providerName || row.providerId, rows: [], unread: 0 }
+      noticeGroups.push(group)
+    }
+    group.rows.push(row)
+    if (!row.readAt) group.unread += 1
+  }
+  if (noticeSite !== 'all' && !noticeGroups.some((group) => group.id === noticeSite)) noticeSite = 'all'
+
+  const noticeTabs = [
+    `<button class="monitor-notice-tab" data-act="monitor-notice-site" data-site="all" aria-pressed="${noticeSite === 'all'}">${t('全部站点')}（${allAnnouncements.length}）</button>`,
+    ...noticeGroups.map(
+      (group) =>
+        `<button class="monitor-notice-tab" data-act="monitor-notice-site" data-site="${esc(group.id)}" aria-pressed="${noticeSite === group.id}">${esc(group.name)}（${group.rows.length}）</button>`,
+    ),
+  ].join('')
+
+  const shownGroups = noticeSite === 'all' ? noticeGroups : noticeGroups.filter((group) => group.id === noticeSite)
+  const shownUnread = shownGroups.reduce((sum, group) => sum + group.unread, 0)
+  const noticeRows = shownGroups
+    .map(
+      (group) => `
+        <div class="monitor-feed-group">
+          <span>${esc(group.name)}</span>
+          <span class="hint">${t('{n} 条', { n: group.rows.length })}${group.unread ? ` · ${t('{n} 条未读', { n: group.unread })}` : ''}</span>
+        </div>
+        ${group.rows.map(feedAnnouncementRow).join('')}`,
+    )
+    .join('')
+
+  const announcementsCard = `
+    <div class="card monitor-feed-card">
+      <div class="card-head">
+        <h3>上游公告</h3>
+        <div class="monitor-head-actions">
+          <span class="hint">${t('{n} 条未读', { n: shownUnread })}</span>
+          <button class="ghost tiny" data-act="monitor-read-announcements">全部已读</button>
+        </div>
+      </div>
+      ${noticeGroups.length ? `<div class="monitor-notice-tabs">${noticeTabs}</div>` : ''}
+      <div class="monitor-feed-scroll">
+        ${noticeRows || '<div class="empty small"><p>还没有读到公告。多数站点是公共接口，加了站点就会自动拉。</p></div>'}
+      </div>
+    </div>`
+
+  // ---------------------------------------------------------- 采集记录
+  const runRows = (data.runs || [])
+    .map(
+      (run) => `<tr>
+        <td>${agoText(run.at)}</td>
+        <td>${esc(run.providerName || '')}</td>
+        <td class="num">${run.ms}ms</td>
+        <td>${run.ok ? '<span class="badge ok">成功</span>' : `<span class="badge danger">失败</span> <span class="hint">${esc(run.error || '')}</span>`}</td>
+      </tr>`,
+    )
+    .join('')
+
+  // 采集设置放最上面一行：它和「立即采集」是同一个动作的两半，
+  // 埋到页面最底下的话，改个间隔要先把公告滚完。
+  const toolbarCard = `
+    <div class="card monitor-toolbar">
+      <div class="monitor-settings">
+        <label class="field">
+          <span>采集间隔（分钟，0 = 关闭）</span>
+          <input type="number" min="0" step="5" id="monitor-interval" value="${data.settings?.monitorIntervalMinutes ?? 30}" />
+        </label>
+        <label class="field">
+          <span>余额告警阈值（¥，0 = 不告警）</span>
+          <input type="number" min="0" step="1" id="monitor-warn" value="${data.settings?.balanceWarnCny ?? 10}" />
+        </label>
+        <button class="primary" data-act="monitor-save-settings">保存</button>
+        <button class="ghost" data-act="monitor-collect">立即采集</button>
+      </div>
+      <div class="hint monitor-toolbar-hint">
+        采集只读站点公开/后台数据，不打真实对话请求，所以可以比探针勤。
+        余额要走站点后台接口，需要先在「站点」页填「令牌」。
+      </div>
+    </div>`
+
+  const runsCard = runRows
+    ? `<div class="card">
+        <div class="card-head"><h3>采集记录</h3><span class="hint">最近 ${data.runs.length} 次</span></div>
+        <div class="table-wrap"><table>
+          <thead><tr><th>时间</th><th>站点</th><th class="num">耗时</th><th>结果</th></tr></thead>
+          <tbody>${runRows}</tbody>
+        </table></div>
+      </div>`
+    : ''
+
+  setPageSubFor(
+    'monitor',
+    data.kpi?.lastRunAt ? t('上次采集 {ago}', { ago: agoText(data.kpi.lastRunAt) }) : '还没有采集过',
+  )
+  view.innerHTML = `
+    ${kpiHtml}
+    ${toolbarCard}
+    <div class="monitor-cols">${chartCard}${changesCard}</div>
+    ${sitesCard}
+    <div class="monitor-cols monitor-cols--feed">${alertsCard}${announcementsCard}</div>
+    ${runsCard}`
+}
+
+async function loadMonitor(days = monitorDays) {
+  if (monitorLoading) return
+  monitorLoading = true
+  try {
+    monitorData = await api('GET', `/api/monitor?days=${days}`)
+    monitorDays = Number(days) || 7
+  } catch (error) {
+    toast(error.message, true)
+  } finally {
+    monitorLoading = false
+  }
+  renderMonitor()
+  translateDom($('#view-monitor') || document.body)
+}
+
 // ------------------------------------------------------------------ 事件
 
 async function withBusy(button, fn) {
@@ -1795,7 +2370,7 @@ const SIDEBAR_KEY = 'manageapi.sidebarCollapsed'
   }
 })()
 
-const TABS = ['overview', 'providers', 'free', 'pricing', 'decision', 'probes', 'gateway', 'usage', 'benchmark']
+const TABS = ['overview', 'monitor', 'providers', 'free', 'pricing', 'decision', 'probes', 'gateway', 'usage', 'benchmark']
 
 /** 折叠状态：'provider:xxx' / 'pricing:模型名' / 'probe:站点id' */
 const collapsedPanels = new Set()
@@ -1816,6 +2391,7 @@ const filters = { pricing: '', decision: '', benchmark: '' }
 
 const TAB_META = {
   overview: { title: '概览', sub: '当前状态一眼看完' },
+  monitor: { title: '监控', sub: '余额趋势、倍率变动与上游公告' },
   providers: { title: '站点', sub: '中转站、Key 与分组倍率' },
   free: { title: '免费', sub: '免费额度与平台积分，不参与付费比价' },
   pricing: { title: '比价', sub: '同一模型跨站对比' },
@@ -1888,6 +2464,8 @@ function setTab(name) {
     // 重绘发生在 render() 的 translateDom 之后，得自己补一次翻译
     translateDom($('#view-free') || document.body)
   }
+  // 监控数据比 state 重，按需拉：第一次进这个页才请求
+  if (name === 'monitor' && !monitorData) void loadMonitor(monitorDays)
 }
 
 // 浏览器前进/后退只改 hash，不会触发任何渲染——没有这条监听，地址变了页面不动
@@ -1915,7 +2493,7 @@ document.addEventListener('click', (event) => {
 document.addEventListener('keydown', (event) => {
   if (event.key !== 'Escape') return
   closeLangMenu()
-  for (const id of ['help-modal', 'contact-modal', 'group-modal']) {
+  for (const id of ['help-modal', 'contact-modal', 'group-modal', 'pf-accounts-modal']) {
     const modal = document.getElementById(id)
     if (modal && !modal.hidden) modal.hidden = true
   }
@@ -2043,6 +2621,30 @@ document.addEventListener('click', async (event) => {
     return
   }
 
+  const monitorDaysBtn = event.target.closest('[data-monitor-days]')
+  if (monitorDaysBtn) {
+    const days = Number(monitorDaysBtn.dataset.monitorDays)
+    if (days === monitorDays && monitorData) return
+    await withBusy(monitorDaysBtn, async () => {
+      await loadMonitor(days)
+    })
+    return
+  }
+
+  // 「只采这个站」：顶部 chips 和站点卡都挂着这个属性
+  const monitorProviderBtn = event.target.closest('[data-monitor-provider]')
+  if (monitorProviderBtn) {
+    const providerId = monitorProviderBtn.dataset.monitorProvider
+    await withBusy(monitorProviderBtn, async () => {
+      const res = await api('POST', '/api/monitor/collect', { providerId, days: monitorDays })
+      monitorData = res
+      renderMonitor()
+      translateDom($('#view-monitor') || document.body)
+      toast('这个站采完了')
+    })
+    return
+  }
+
   const rangeBtn = event.target.closest('[data-range]')
   if (rangeBtn) {
     const days = Number(rangeBtn.dataset.range)
@@ -2067,6 +2669,49 @@ document.addEventListener('click', async (event) => {
   const action = actionButton.dataset.act
   const card = actionButton.closest('[data-provider]')
   const providerId = card?.dataset.provider
+
+  if (action === 'monitor-collect') {
+    await withBusy(actionButton, async () => {
+      const res = await api('POST', '/api/monitor/collect', { days: monitorDays })
+      monitorData = res
+      renderMonitor()
+      translateDom($('#view-monitor') || document.body)
+      const failed = (res.results || []).filter((row) => !row.ok)
+      if (failed.length > 0) toast(t('采集完成，{n} 个站有问题：{error}', { n: failed.length, error: failed[0].error }), true)
+      else toast('采集完成')
+    })
+    return
+  }
+
+  if (action === 'monitor-read-alerts' || action === 'monitor-read-announcements') {
+    const path = action === 'monitor-read-alerts' ? '/api/monitor/alerts/read' : '/api/monitor/announcements/read'
+    await withBusy(actionButton, async () => {
+      monitorData = await api('POST', path, {})
+      renderMonitor()
+      translateDom($('#view-monitor') || document.body)
+      toast('已全部标记为已读')
+    })
+    return
+  }
+
+  if (action === 'monitor-notice-site') {
+    noticeSite = actionButton.dataset.site || 'all'
+    renderMonitor()
+    translateDom($('#view-monitor') || document.body)
+    return
+  }
+
+  if (action === 'monitor-save-settings') {
+    const interval = Number($('#monitor-interval')?.value ?? 30)
+    const warn = Number($('#monitor-warn')?.value ?? 10)
+    await withBusy(actionButton, async () => {
+      state = await api('PATCH', '/api/settings', { monitorIntervalMinutes: interval, balanceWarnCny: warn })
+      await loadMonitor(monitorDays)
+      render()
+      toast('已保存')
+    })
+    return
+  }
 
   if (action === 'platform-add') {
     platformFormOpen = true
@@ -2097,10 +2742,13 @@ document.addEventListener('click', async (event) => {
     const window = $('#pf-window')?.value || 'day'
     await withBusy(actionButton, async () => {
       try {
-        // 先建平台，再挂一个账号——额度挂在账号上，一个平台可以多个账号
+        // 先建平台，再挂一个账号——额度挂在账号上，一个平台可以多个账号。
+        // 但自动连接的平台不手填额度：它的额度是登录后从平台读的，
+        // 先塞一个「剩余 100」进去，就会变成「没连上也显示有积分」。
         let result = await api('POST', '/api/free/platforms', { connectorId, label, presetId })
         const platformId = result.platformResult?.id
-        if (platformId && limit !== null && Number.isFinite(limit)) {
+        const manualQuota = connectorId === 'manual' && limit !== null && Number.isFinite(limit)
+        if (platformId && manualQuota) {
           result = await api('POST', '/api/free/accounts', {
             platformId,
             label: '主账号',
@@ -2111,6 +2759,9 @@ document.addEventListener('click', async (event) => {
         platformFormOpen = false
         render()
         toast(`已添加「${label}」`)
+        if (connectorId !== 'manual' && limit !== null) {
+          toast('这个平台支持自动连接，额度等连上后从平台读', true)
+        }
       } catch (error) {
         toast(error.message, true)
       }
@@ -2152,7 +2803,10 @@ document.addEventListener('click', async (event) => {
           : await api('GET', '/api/state')
         state = result
         render()
-        toast('已刷新')
+        // 多账号时可能部分失败：成功的照旧显示新数字，失败的要让人看见是哪把钥匙
+        const failed = (result.refreshResult?.results || []).filter((row) => !row.ok)
+        if (failed.length) toast(`有 ${failed.length} 个账号没刷到：${failed[0].error}`, true)
+        else toast('已刷新')
       } catch (error) {
         toast(error.message, true)
       }
@@ -2234,7 +2888,45 @@ document.addEventListener('click', async (event) => {
   }
 
   if (action === 'platform-accounts') {
-    toast('账号池还在做，先一个账号够用')
+    openPfAccounts(actionButton.dataset.platform)
+    return
+  }
+
+  if (action === 'close-pf-accounts') {
+    closePfAccounts()
+    return
+  }
+
+  if (action === 'platform-delete') {
+    const platformId = actionButton.dataset.platform
+    const platform = (state?.freePool?.platforms || []).find((p) => p.id === platformId)
+    const name = platform?.label || platform?.connectorId || '这个平台'
+    if (!confirm(`删除「${name}」？它的账号和额度流水会一起删掉。`)) return
+    await withBusy(actionButton, async () => {
+      try {
+        state = await api('DELETE', `/api/free/platforms/${platformId}`)
+        render()
+        toast('已删除')
+      } catch (error) {
+        toast(error.message, true)
+      }
+    })
+    return
+  }
+
+  if (action === 'pf-account-delete') {
+    const accountId = actionButton.dataset.account
+    if (!confirm('删除这个账号？它的额度流水会一起删掉。')) return
+    await withBusy(actionButton, async () => {
+      try {
+        state = await api('DELETE', `/api/free/accounts/${accountId}`)
+        render()
+        renderPfAccounts()
+        toast('已删除')
+      } catch (error) {
+        toast(error.message, true)
+      }
+    })
     return
   }
 

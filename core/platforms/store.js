@@ -121,11 +121,25 @@ function normalizeQuota(input) {
       : Number.isFinite(Number(rawRemain))
         ? Number(rawRemain)
         : null
+  // cycleRemaining：本周期还能用多少。WorkBuddy 的免费订阅会出现
+  // 「包内还剩 100、本周期已用满」的组合，真正能用的是这个数。
+  const optionalNumber = (value) => {
+    if (value === null || value === undefined || value === '') return null
+    const n = Number(value)
+    return Number.isFinite(n) ? n : null
+  }
   return {
     unit: ['credit', 'request', 'token'].includes(input.unit) ? input.unit : 'credit',
     limit: num(input.limit, 0),
     used: Math.max(0, num(input.used, 0)),
     remaining,
+    cycleRemaining: optionalNumber(input.cycleRemaining),
+    cycleSize: optionalNumber(input.cycleSize),
+    // 一次性赠量（ZCode 的 1024 活动那种）：没有用量桶，remaining 里算不到，
+    // 单独存一个数，界面上标注「另有赠量 N」而不是假装它不存在。
+    bonusTokens: optionalNumber(input.bonusTokens),
+    // 同一个租户可能有两张卡（国际版/国内版），上层靠它去重
+    tenantKey: input.tenantKey ? String(input.tenantKey) : '',
     window: input.window === 'month' ? 'month' : 'day',
     resetAt: input.resetAt || null,
   }

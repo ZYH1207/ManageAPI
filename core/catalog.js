@@ -112,17 +112,14 @@ export const PRESET_PLATFORMS = [
     connectorId: 'workbuddy',
     note: 'workbuddy.ai，登录后自动读积分与签到',
   },
-  {
-    id: 'workbuddy-cn',
-    label: 'WorkBuddy 国内版',
-    connectorId: 'workbuddy-cn',
-    note: '同一站点，国内客户端身份；模型权限可能不同',
-  },
+  // 国内版（workbuddy-cn）不再出现在推荐位：它和国际版是同一个站点（workbuddy.ai）、
+  // 同一套接口，只有客户端 UA 不同，两卡并存只是把同一份积分画两遍。
+  // 连接器本身仍注册着，需要时可以直接按 connectorId 'workbuddy-cn' 建平台。
   {
     id: 'codebuddy',
     label: 'CodeBuddy',
     connectorId: 'codebuddy',
-    note: '腾讯 copilot.tencent.com，接口同 WorkBuddy',
+    note: 'WorkBuddy 国内版：copilot.tencent.com，接口同国际版',
   },
   {
     id: 'trae',
@@ -147,6 +144,12 @@ export const PRESET_PLATFORMS = [
     label: '魔搭社区',
     connectorId: 'manual',
     note: '每日签到领 200 积分，先手动记',
+  },
+  {
+    id: 'zcode',
+    label: 'ZCode（智谱）',
+    connectorId: 'zcode',
+    note: 'zcode.z.ai，智谱的 AI 编程订阅；从本机 ZCode 客户端读额度',
   },
 ]
 

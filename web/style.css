@@ -1060,3 +1060,197 @@ html[data-lang='en'] .doc[data-lang-block='en'] { display: block; }
 .quota-fill.warn { background: var(--quota-warn); }
 .quota-fill.empty { background: var(--quota-empty); }
 .quota-text { font-size: 11.5px; color: var(--muted); white-space: nowrap; }
+
+/* ------------------------------------------------------------- 监控页 */
+
+.monitor-kpi { margin-bottom: 16px; }
+.monitor-kpi .stat { padding: 12px 14px; }
+.monitor-kpi .stat .v { font-size: 22px; }
+.monitor-kpi .stat .sub {
+  margin-top: 4px; font-size: 11px; color: var(--faint);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* 左图右列表：图要宽，变动流窄一点 */
+.monitor-cols {
+  display: grid;
+  grid-template-columns: minmax(0, 1.7fr) minmax(0, 1fr);
+  gap: 14px;
+  margin-bottom: 14px;
+  align-items: start;
+}
+/* 告警 / 公告这排：两栏同高，内容各自在卡片里滚，不用把页面拉长 */
+.monitor-cols--feed {
+  grid-auto-rows: 420px;
+  align-items: stretch;
+}
+@media (max-width: 1080px) {
+  .monitor-cols { grid-template-columns: minmax(0, 1fr); }
+}
+
+.monitor-chart-card .card-head { align-items: center; }
+.chart-wrap { margin-top: 10px; }
+/* height:auto + viewBox 等比：横轴拉满时文字不会被横向拉扁（不用 preserveAspectRatio="none"） */
+.chart { width: 100%; height: auto; max-height: 320px; display: block; }
+.chart .grid-line { stroke: var(--divider); stroke-width: 1; }
+.chart .axis-label { fill: var(--faint); font-size: 10px; }
+.chart .line {
+  fill: none; stroke: var(--accent); stroke-width: 2;
+  stroke-linejoin: round; stroke-linecap: round;
+}
+.chart .dots circle { fill: var(--surface); stroke: var(--accent); stroke-width: 1.6; }
+/* 别用 .bar：那是用量页柱图的类名，CSS 的 width:100% 会盖掉 rect 的 width 属性 */
+.chart .spend-bar { fill: var(--warn-strong); opacity: 0.35; }
+.chart-legend {
+  display: flex; gap: 16px; flex-wrap: wrap;
+  margin-top: 6px; font-size: 12px; color: var(--muted);
+}
+.chart-legend i { display: inline-block; vertical-align: 1px; margin-right: 6px; }
+.legend-line { width: 16px; height: 2px; background: var(--accent); }
+.legend-bar { width: 10px; height: 10px; border-radius: 2px; background: var(--warn-strong); opacity: 0.45; }
+
+.monitor-chips { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 12px; }
+.monitor-chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 4px 9px; font-size: 12px;
+  background: var(--surface-2); border: 1px solid var(--border);
+  border-radius: 999px; color: var(--text); cursor: pointer;
+}
+.monitor-chip:hover { border-color: var(--border-strong); background: var(--hover); }
+.monitor-chip .dot { margin-right: 0; }
+.monitor-chip-value { color: var(--muted); }
+
+/* 倍率变动流 */
+.monitor-flow-row {
+  padding: 9px 0;
+  border-bottom: 1px dashed var(--divider);
+}
+.monitor-flow-row:last-child { border-bottom: none; padding-bottom: 2px; }
+.monitor-flow-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.monitor-flow-key {
+  font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.monitor-flow-meta {
+  display: flex; gap: 10px; flex-wrap: wrap;
+  margin-top: 3px; font-size: 11px; color: var(--faint);
+}
+
+/* 站点卡网格 */
+.monitor-sites {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 12px;
+  margin-top: 12px;
+}
+.monitor-site {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px;
+  background: var(--surface-2);
+}
+.monitor-site-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+.monitor-site-head b { font-size: 13px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.monitor-site-balance {
+  display: flex; align-items: baseline; gap: 8px;
+  margin-top: 8px; font-size: 18px; font-weight: 500;
+}
+.monitor-site-balance .hint { margin: 0; }
+.monitor-site-meta {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  margin-top: 6px; font-size: 11px; color: var(--faint);
+}
+.monitor-site-groups { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 8px; }
+.monitor-site-groups .group-chip {
+  font-size: 11px; padding: 1px 6px; max-width: 100%;
+  background: var(--surface); border-color: var(--border);
+}
+
+/* 告警 / 公告 */
+.monitor-head-actions { display: flex; align-items: center; gap: 8px; }
+.monitor-head-actions .hint { margin: 0; }
+/* 卡片自己滚：高度由 .monitor-cols--feed 的 grid-auto-rows 定死，两栏永远一样高 */
+.monitor-feed-card {
+  display: flex; flex-direction: column;
+  min-height: 0; height: 100%; overflow: hidden;
+}
+.monitor-feed-card .card-head { flex: none; }
+.monitor-feed-scroll {
+  flex: 1; min-height: 0; overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-right: 4px;
+  margin-right: -4px;
+}
+.monitor-feed-row {
+  display: flex; gap: 8px;
+  padding: 10px 0;
+  border-bottom: 1px dashed var(--divider);
+}
+.monitor-feed-row:last-child { border-bottom: none; }
+.monitor-feed-row .dot { margin-top: 5px; flex: none; }
+.monitor-feed-row.read { opacity: 0.6; }
+.monitor-feed-body { min-width: 0; flex: 1; }
+.monitor-feed-title { font-size: 13px; line-height: 1.5; }
+.monitor-feed-detail {
+  margin-top: 2px; font-size: 12px; color: var(--muted); line-height: 1.55;
+  word-break: break-word;
+  white-space: pre-line;
+}
+.monitor-feed-meta { margin-top: 3px; font-size: 11px; color: var(--faint); }
+/* 站点分组小标题：滚动时吸在顶部，滚下去也知道自己在看哪家 */
+.monitor-feed-group {
+  position: sticky; top: 0; z-index: 1;
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 6px 0 5px;
+  font-size: 11px; font-weight: 600; color: var(--muted);
+  background: var(--surface);
+  border-bottom: 1px solid var(--divider);
+}
+.monitor-feed-group .hint { margin: 0; }
+/* 站点切换：横向胶囊，站点多了自己横滚 */
+.monitor-notice-tabs {
+  flex: none;
+  display: flex; gap: 6px;
+  padding-bottom: 8px;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+.monitor-notice-tab {
+  flex: none;
+  padding: 3px 10px;
+  font-size: 11.5px; line-height: 1.6;
+  color: var(--muted);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.monitor-notice-tab:hover { border-color: var(--border-strong); color: var(--text); }
+.monitor-notice-tab[aria-pressed="true"] {
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-color: transparent;
+  font-weight: 600;
+}
+
+/* 采集设置 */
+.monitor-settings {
+  display: flex; align-items: flex-end; gap: 12px; flex-wrap: wrap;
+  margin-top: 12px;
+}
+.monitor-settings .field {
+  display: flex; flex-direction: column; gap: 4px;
+  font-size: 12px; color: var(--muted);
+}
+.monitor-settings .field input { width: 150px; }
+
+/* 采集设置压在 KPI 下面一行：改间隔不用先把公告滚完 */
+.monitor-toolbar {
+  display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px 18px;
+  padding: 14px 18px;
+}
+.monitor-toolbar .monitor-settings { margin-top: 0; }
+.monitor-toolbar-hint { flex: 1 1 280px; min-width: 220px; font-size: 11.5px; line-height: 1.6; }
+
+.empty.small { padding: 18px 0; }
+.empty.small h3 { font-size: 13px; }

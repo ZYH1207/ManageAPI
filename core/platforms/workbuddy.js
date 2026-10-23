@@ -163,30 +163,56 @@ function pickCredential(json, nowMs) {
 }
 
 /**
- * 余额解析。
+ * 额度解析。
  *
- * 字段名是猜的：真实返回体没凭据看不到。所以按「常见命名 → 总数减已用」的
- * 顺序降级，宁可拿到一个偏保守的数字，也不要因为字段改名直接显示空。
+ * 腾讯云计费结构的实测语义（2026-10 抓的返回）：
+ *   TotalDosage        —— 各资源包「包内」剩余之和（买了多少还扣掉多少）
+ *   CapacityRemain     —— 单个包的包内剩余
+ *   CycleCapacityRemain—— 单个包「本周期」还剩多少（按天/月循环扣减的那份）
+ *   CycleCapacityUsed  —— 本周期已经扣掉多少
+ *   Status=3           —— 这个包已过期
+ *
+ * 这两个数不是一回事：免费订阅包可能「包内还剩 100，但本周期已用满 100」，
+ * 此时真实可用是 0。只报 TotalDosage 会让人以为还能用，所以两个都带出去，
+ * 由界面决定拿哪个数当「现在能用多少」。
  */
-function pickRemaining(data) {
-  // 腾讯云计费结构（实测）：data.Response.Data 里
-  //   TotalDosage —— 各套餐剩余额度之和，最省事也最准
-  //   Accounts[] —— 每个套餐一条，Status=3 表示已过期，CapacityRemain 是剩余
+function pickQuota(data) {
   const billing = data?.Response?.Data
   if (billing && typeof billing === 'object') {
-    const total = Number(billing.TotalDosage)
-    if (Number.isFinite(total)) return total
-    const accounts = Array.isArray(billing.Accounts) ? billing.Accounts : []
-    let sum = 0
-    let counted = 0
-    for (const account of accounts) {
-      if (Number(account?.Status) === 3) continue
-      const remain = Number(account?.CapacityRemain)
-      if (!Number.isFinite(remain)) continue
-      sum += remain
-      counted += 1
+    const accounts = (Array.isArray(billing.Accounts) ? billing.Accounts : []).filter(
+      (account) => Number(account?.Status) !== 3,
+    )
+    const sumOf = (key) => {
+      let sum = 0
+      let counted = 0
+      for (const account of accounts) {
+        const value = Number(account?.[key])
+        if (!Number.isFinite(value)) continue
+        sum += value
+        counted += 1
+      }
+      return counted > 0 ? sum : null
     }
-    if (counted > 0) return sum
+
+    let remaining = Number(billing.TotalDosage)
+    if (!Number.isFinite(remaining)) remaining = sumOf('CapacityRemain')
+    const cycleRemaining = sumOf('CycleCapacityRemain')
+    const cycleSize = sumOf('CycleCapacitySize')
+    // 同一个租户（AppId/Uin）下可能有多张卡（国际版/国内版是同一套账号），
+    // 带出去让上层能识别「这两张卡其实是同一个号」，避免把余额算两遍
+    const tenantKey =
+      firstString(billing.AppId, billing.Uin, billing.OwnerUin, billing.TenantId, accounts[0]?.AppId, accounts[0]?.Uin) ||
+      ''
+
+    if (Number.isFinite(remaining) || cycleRemaining !== null) {
+      return {
+        remaining: Number.isFinite(remaining) ? remaining : cycleRemaining,
+        cycleRemaining,
+        cycleSize,
+        resetAt: pickRefreshAt(data),
+        tenantKey,
+      }
+    }
   }
 
   const node = Array.isArray(data) ? data[0] : data
@@ -203,12 +229,26 @@ function pickRemaining(data) {
     'credit',
     'points',
   ])
-  if (direct !== null) return direct
+  const resetAt = pickRefreshAt(data)
+  if (direct !== null) {
+    return { remaining: direct, cycleRemaining: null, cycleSize: null, resetAt, tenantKey: '' }
+  }
 
   const total = pickNumber(node, ['total', 'totalCredits', 'quota', 'limit', 'amount'])
   const used = pickNumber(node, ['used', 'consumed', 'usage', 'usedCredits'])
-  if (total !== null && used !== null) return Math.max(0, total - used)
-  return total
+  if (total !== null && used !== null) {
+    return {
+      remaining: Math.max(0, total - used),
+      cycleRemaining: null,
+      cycleSize: null,
+      resetAt,
+      tenantKey: '',
+    }
+  }
+  if (total !== null) {
+    return { remaining: total, cycleRemaining: null, cycleSize: null, resetAt, tenantKey: '' }
+  }
+  return null
 }
 
 function pickRefreshAt(data) {
@@ -503,7 +543,8 @@ export function createWorkbuddyConnector(options = {}) {
     credential.product = product.id
 
     // 账号信息（昵称、企业 id）只是展示用，**不能因为它失败就丢掉已经拿到的 token**。
-    // 实测这一步会返回 500，而 token 本身是好的——那就先连上，昵称空着。
+    // 实测这一步会返回 500（code 10000 / EOF），而 token 本身是好的——那就先连上，昵称空着。
+    // 提示语不带原始 JSON：用户看不懂 code 10000，真要排查可以点「诊断」。
     let profile = { label: '', enterpriseId: '' }
     let profileWarning = ''
     try {
@@ -514,14 +555,14 @@ export function createWorkbuddyConnector(options = {}) {
       const profileCode = bodyCode(profileJson)
       if (profileCode === CODE_ACCOUNT_PENDING) {
         // 「还在读」是中间态，但也已经拿到 token 了，先连上再补
-        profileWarning = '账号信息还在读取，昵称暂时为空'
+        profileWarning = '平台还在读账号信息，昵称暂时为空（不影响使用）'
       } else {
         ensureBusinessOk(profileJson, '读取账号信息')
         profile = pickProfile(profileJson)
         if (profile.enterpriseId) credential.enterpriseId = profile.enterpriseId
       }
-    } catch (error) {
-      profileWarning = `已拿到登录凭据，但读取账号信息失败：${error.message || error}`
+    } catch {
+      profileWarning = '平台没返回账号信息，昵称留空（不影响使用）'
     }
 
     pending.delete(key)
@@ -555,15 +596,22 @@ export function createWorkbuddyConnector(options = {}) {
     })
     ensureBusinessOk(json, '读取积分余额')
     const data = payload(json)
-    const remaining = pickRemaining(data)
-    if (remaining === null) {
+    const parsed = pickQuota(data)
+    if (!parsed || !Number.isFinite(Number(parsed.remaining))) {
       // 接口通了但字段名对不上。把原始返回带出来——只说「读不到」等于没说，
       // 有了这段片段才能一次改对字段映射。
       throw new Error(
         `余额接口有响应，但没认出积分字段。返回片段：${JSON.stringify(json).slice(0, 400)}`,
       )
     }
-    return { remaining, unit: 'credit', refreshAt: pickRefreshAt(data) }
+    return {
+      remaining: parsed.remaining,
+      cycleRemaining: parsed.cycleRemaining,
+      cycleSize: parsed.cycleSize,
+      unit: 'credit',
+      refreshAt: parsed.resetAt,
+      tenantKey: parsed.tenantKey,
+    }
   }
 
   /**

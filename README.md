@@ -29,11 +29,12 @@ ManageAPI 针对这三点，分别做了**比价**、**探针**、**网关**。
 
 ## 界面
 
-左侧九页，每页一件事：
+左侧十页，每页一件事：
 
 | 页面 | 用途 |
 |---|---|
 | **概览** | 一句话结论、关键指标、需要关注的站、各站速览 |
+| **监控** | 余额曲线、倍率变动、上游公告与告警 |
 | **站点** | 录入站点与 Key，同步模型，导入分组倍率 |
 | **免费** | 中转站免费模型与平台积分，独立成页、不参与付费比价 |
 | **比价** | 同一模型跨站对比，行内改价 |
@@ -279,6 +280,12 @@ model = free/deepseek-v4.1-flash   # 免费池
 
 平台侧支持多账号、每日签到（幂等，同一天只成功一次）和额度倒计时。WorkBuddy / CodeBuddy 支持点「连接」后自动读积分，标了**实验性**——它走的是平台给自家 IDE 用的未公开接口，平台升级可能失效；失效时只是读不到数据，不影响别的功能。
 
+「剩余」显示的是**本周期还能用多少**，不是套餐总量：WorkBuddy 的免费订阅会同时给出「包内 100、本周期 0」，这个周期已经用满、要等重置，所以卡片写「剩余 0 积分 / 本周期已用满，N 小时后重置 / 套餐容量 100 积分」。连接成功才建账号，取消授权不会留下空账号；用不上的平台或账号可以直接删掉（连同它的额度记录）。
+
+ZCode（智谱）走的是另一条路：它的授权是桌面协议 `zcode://…`，只有客户端自己注册得动回跳地址，所以这里不模拟登录，而是**直接读本机 ZCode 客户端的登录态**——`~/.zcode/v2/credentials.json`（`enc:v1` 用 AES-256-GCM 加密，密钥由 `ZCODE_CREDENTIAL_SECRET` 或「平台+用户名」推导）拿到它的 JWT，再调 `zcode.z.ai` 的套餐接口（`/api/v1/zcode-plan/billing/current`）和用量。真凭据始终留在客户端，ManageAPI 只存一个「来自本机客户端」的标记；在客户端里换账号，卡片下次刷新就跟着变。
+
+ZCode 的额度分两种口径，卡片会分别写清楚：**本周期**（每天 0 点重置，`GLM-5.3` 300 万 + `GLM-5.3-Flash` 500 万）和**一次性赠量**（活动送的几亿 token，用一点少一点、不重置），后者单独一行「另有赠量 N token」——不并进「剩余」，否则会以为每天都有那么多。它的用量接口目前拿不到（服务端只认客户端本体的请求），所以用量从客户端日志 `~/.zcode/v2/logs/*.log` 里读最近一次结果，超过 12 小时就提示「等客户端自己刷新一次」。读不到额度只是卡片没数字，不影响别的功能；ZCode 也只在你装了客户端、登录过之后才有数据。
+
 站点页和平台页都内置了一份**常用目录**（硅基流动、魔搭、DeepSeek、Moonshot、智谱、百炼、火山方舟、OpenAI…），选中就自动填好名称和地址，只差一个 Key。拿不准地址的（AgentRouter、AnyRouter、PPIO）留空让人自己补，不猜。
 
 ---
@@ -340,13 +347,33 @@ model = free/deepseek-v4.1-flash   # 免费池
 
 ---
 
+## 监控
+
+比价和探针回答「现在哪家划算」，监控回答「这几天发生了什么」。
+
+![监控页](docs/screenshot-monitor.png)
+
+三样东西都是**定时采回来的**，默认每 30 分钟一轮（可关）。采集只读站点公开接口和后台接口，不花 token，所以可以比探针勤：
+
+- **余额**。走站点后台的 `/api/user/self`（one-api）或 `/api/v1/auth/me`（Sub2API），需要先在站点卡片填「令牌」。所以余额多半读不到——读不到就显示「无数据」，不猜数字。读到之后按天存点，画一条余额曲线，缺数据的日子沿用上一次的值。
+- **分组倍率**。来自站点公布的可用渠道 `/api/v1/channels/available`，顺便把模型官方价一起读回来。
+- **上游公告**。`/api/status` 和 `/api/v1/announcements`，按标题+发布时间去重，同一轮里重复的不会再记一遍。
+
+**告警按「站点 × 类型」冷却**，同样的余额过低六小时内只记一条，不然第一次接站就会被刷屏。第一次采集只记基线、不发变动——否则一接入就是满屏「新出现」，那不是变动，那是初始状态。
+
+曲线、告警、公告全在 `db.json` 的 `monitor` 字段里，各自有保留上限（余额 4000 点、变动 800 条、公告 300 条、告警 300 条），不会无限涨。
+
+「今日花费」按 token 用量 × 当前单价估算——它是**估算**，不是你账单上的数字：站上直接用的、别的客户端的，都不经过网关，这里看不见。
+
+---
+
 ## 数据与安全
 
 所有数据都在 `~/.manage-api/`：
 
 | 文件 | 内容 |
 |---|---|
-| `db.json` | 站点、凭据（密文）、模型供给、价格、探针记录 |
+| `db.json` | 站点、凭据（密文）、模型供给、价格、探针记录、监控历史（余额点 / 倍率变动 / 公告 / 告警） |
 | `master.key` | AES-256-GCM 密钥，首次启动自动生成，权限 0600 |
 | `benchmark.json` | 基准价表，可手工编辑 |
 | `usage.json` | 用量统计（按天聚合，会持续增长） |
@@ -388,14 +415,17 @@ core/              宿主无关的核心逻辑（不依赖任何运行时框架�
   quota.js           免费额度记账（按次 / token / 积分，日 / 月窗口）
   rank-free.js       免费池闸门与排序（质量只做闸门，不参与排序）
   platforms/         平台积分：connector 接口、手动连接器、额度账本、独立 free.json
+                     内置连接器：WorkBuddy / CodeBuddy（网页授权）、ZCode（读本机客户端）
   catalog.js         常用站点 / 平台预置目录（只填能确认的地址）
   balance.js         云厂商余额适配器（硅基流动 / DeepSeek / Moonshot）
+  monitor.js         监控数据：余额曲线、倍率变动、公告、告警与冷却
 
 daemon/            本地 HTTP 服务 + 网关（同一个端口）
   index.js           启动、端口选择、开浏览器
   server.js          HTTP 路由、网关转发、SSE 切分
   probe-runner.js    探测执行器（手动与定时共用）
-  scheduler.js       定时探测调度
+  monitor-runner.js  采集执行器：余额 / 分组倍率 / 公告
+  scheduler.js       定时探测与采集调度
 
 web/               前端（原生 JS，无构建，无框架）
   index.html         结构与使用说明正文（中英各一份）
@@ -413,6 +443,9 @@ web/               前端（原生 JS，无构建，无框架）
   check-lang.mjs     中英切换往返检查
   check-free-relay.mjs   免费池闸门与配额记账自检
   check-free-platform.mjs 平台侧 CRUD / 签到幂等 / 账本自检
+  check-workbuddy-quota.mjs 额度口径：包内剩余 vs 本周期剩余、同租户识别
+  check-free-quota-view.mjs 卡片上「剩余」显示的是本周期可用量
+  check-zcode.mjs    ZCode 连接器：凭据解密、套餐/用量换算、缺客户端时的提示
   dump-strings.mjs   把界面上所有中文文案抓成清单，加新文案时对照用
 
 docs/              README 用图 + 设计文档
@@ -430,15 +463,37 @@ docs/              README 用图 + 设计文档
 
 ### 跑测试
 
-```bash
-# 终端 1：起一个「好站」
-MODE=good PORT=5101 node .test/mock-upstream.mjs
+监控那套是自包含的——它自己起假上游、自己起服务、跑完自己退出：
 
-# 终端 2：指向它跑端到端
+```bash
+node .test/run-monitor.mjs
+```
+
+端到端探针测试需要三个假站和一个指向它们的实例（`run-e2e.mjs` 连的是 4399）：
+
+```bash
+# 终端 1/2/3：三个不同毛病的假站
+MODE=good PORT=5101 node .test/mock-upstream.mjs
+MODE=degraded PORT=5102 node .test/mock-upstream.mjs
+MODE=truncated PORT=5103 node .test/mock-upstream.mjs
+
+# 终端 4：另起一份数据目录，别污染你自己的
+MANAGE_API_HOME=/tmp/e2e node daemon/index.js --port 4399
+
+# 终端 5
 node .test/run-e2e.mjs
 ```
 
 `MODE` 可选 `good` / `degraded`（掉包 + 虚报）/ `truncated`（砍额度）/ `fail`（连不上）。
+
+免费池平台侧的两条自检不需要网络，直接跑：
+
+```bash
+node .test/check-free-platform.mjs   # 平台/账号 CRUD、签到幂等、账本级联
+node .test/check-workbuddy-quota.mjs # 额度口径：包内剩余 vs 本周期剩余、同租户识别
+node .test/check-free-quota-view.mjs # 卡片上「剩余」是否用本周期可用量
+node .test/check-zcode.mjs           # ZCode 连接器（不联网、不读真实客户端）
+```
 
 ### 检查中英切换
 

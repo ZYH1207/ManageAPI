@@ -181,6 +181,151 @@ for (let i = 0; i < 9; i += 1) {
   })
 }
 
+/**
+ * 监控：余额曲线、倍率变动、公告、告警。
+ * 云雀/星链/极光 有余额（苍穹 故意留空，好让页面显示「无数据」这条分支）。
+ */
+const monitor = { balance: [], rates: [], announcements: [], alerts: [], snapshot: {}, cooldowns: {}, runs: [] }
+
+const GROUPS_BY_PROVIDER = {
+  p_show01: [
+    { name: '特价池', rate: 0.1 },
+    { name: '默认分组', rate: 0.4 },
+    { name: 'Pro 号池', rate: 0.65 },
+  ],
+  p_show02: [{ name: '默认分组', rate: 0.6 }],
+  p_show03: [{ name: 'Pro 号池', rate: 0.65 }],
+  p_show04: [{ name: '默认分组', rate: 1 }],
+}
+
+for (const [providerId, groups] of Object.entries(GROUPS_BY_PROVIDER)) {
+  monitor.snapshot[providerId] = {
+    at: iso(20 * MIN),
+    groups: Object.fromEntries(groups.map((g) => [g.name, g])),
+    models: Object.fromEntries(
+      OFFERS.filter((o) => o.p === providerId).map((o) => [o.model, { name: o.model, inPrice: null, outPrice: null }]),
+    ),
+    modelCount: OFFERS.filter((o) => o.p === providerId).length,
+  }
+}
+
+const BALANCE_SCRIPT = {
+  p_show01: { from: 232.8, drift: 1.4, wave: 4.2, recharge: { day: 5, amount: 48 } },
+  p_show02: { from: 128.6, drift: 2.2, wave: 2.6, recharge: null },
+  p_show03: { from: 52.4, drift: 1.1, wave: 1.4, recharge: null },
+}
+for (let d = 13; d >= 0; d -= 1) {
+  const at = new Date(now - d * DAY).toISOString().replace(/T\d\d:\d\d:\d\d\.\d\d\dZ$/, 'T08:10:00.000Z')
+  for (const [providerId, script] of Object.entries(BALANCE_SCRIPT)) {
+    let value = script.from - (13 - d) * script.drift
+    // 加一点起伏，否则曲线上是一条一眼假的直线（真实余额波动来自零散请求）
+    value += Math.sin((13 - d) * 1.3 + script.from) * script.wave
+    if (script.recharge && 13 - d >= script.recharge.day) value += script.recharge.amount
+    monitor.balance.push({
+      providerId,
+      at,
+      balance: Math.round(value * 100) / 100,
+      currency: 'CNY',
+    })
+  }
+}
+
+monitor.rates = [
+  { providerId: 'p_show01', kind: 'group', key: 'Pro 号池', at: iso(3 * HOUR + 12 * MIN), from: 0.14, to: 0.11 },
+  { providerId: 'p_show02', kind: 'group', key: '默认分组', at: iso(9 * HOUR + 40 * MIN), from: 0.5, to: 0.4 },
+  { providerId: 'p_show03', kind: 'group', key: 'Pro 号池', at: iso(1 * DAY + 4 * HOUR), from: 0.7, to: 0.75 },
+  { providerId: 'p_show01', kind: 'group', key: '特价池', at: iso(2 * DAY + 6 * HOUR), from: 0.12, to: 0.1 },
+  { providerId: 'p_show02', kind: 'model-in', key: 'kimi-k3', at: iso(3 * DAY + 2 * HOUR), from: 21.5, to: 20 },
+]
+
+monitor.announcements = [
+  {
+    id: 'ann_show01',
+    providerId: 'p_show01',
+    sourceKey: 'show:pro-011',
+    title: 'Pro 号池倍率下调至 0.11',
+    content: '上游成本下降，Pro 号池（含 deepseek-v4-pro / glm-5.3）倍率从 0.14 调到 0.11，已生效。',
+    publishedAt: iso(3 * HOUR + 12 * MIN),
+    seenAt: iso(20 * MIN),
+    readAt: null,
+  },
+  {
+    id: 'ann_show02',
+    providerId: 'p_show02',
+    sourceKey: 'show:maintenance',
+    title: '周六凌晨机房维护',
+    content: '本周六 02:00–04:00 网络割接，期间可能出现 502 / 超时，重试即可。',
+    publishedAt: iso(1 * DAY + 3 * HOUR),
+    seenAt: iso(20 * MIN),
+    readAt: null,
+  },
+  {
+    id: 'ann_show03',
+    providerId: 'p_show03',
+    sourceKey: 'show:kimi',
+    title: 'kimi-k3 恢复供给',
+    content: '之前的上游限流已解除，kimi-k3 恢复正常，当前倍率 0.75。',
+    publishedAt: iso(2 * DAY + 5 * HOUR),
+    seenAt: iso(2 * DAY),
+    readAt: iso(1 * DAY),
+  },
+  {
+    id: 'ann_show04',
+    providerId: 'p_show01',
+    sourceKey: 'show:deepseek-price',
+    title: 'deepseek-v4.1-flash 官方降价',
+    content: '官方输入价从 2.2 降到 2.0 元/百万 token，本站倍率不变，实际价同步下调。',
+    publishedAt: iso(4 * DAY + 7 * HOUR),
+    seenAt: iso(4 * DAY),
+    readAt: iso(3 * DAY),
+  },
+]
+
+monitor.alerts = [
+  {
+    id: 'alert_show01',
+    providerId: 'p_show01',
+    code: 'rate_changed',
+    level: 'warn',
+    title: '检测到 1 项倍率/价格变动',
+    detail: 'Pro 号池 0.14 → 0.11',
+    at: iso(3 * HOUR + 12 * MIN),
+    readAt: null,
+  },
+  {
+    id: 'alert_show02',
+    providerId: 'p_show03',
+    code: 'balance_low',
+    level: 'warn',
+    title: '余额低于阈值（剩 CNY 38.1，阈值 50）',
+    detail: '',
+    at: iso(1 * DAY + 2 * HOUR),
+    readAt: null,
+  },
+  {
+    id: 'alert_show03',
+    providerId: 'p_show02',
+    code: 'collect_failed',
+    level: 'danger',
+    title: '采集失败',
+    detail: '读取余额超时（10000ms）',
+    at: iso(2 * DAY + 8 * HOUR),
+    readAt: iso(2 * DAY),
+  },
+]
+
+monitor.lastRunAt = iso(20 * MIN)
+for (const run of [
+  { providerId: 'p_show01', ok: true, ms: 412 },
+  { providerId: 'p_show02', ok: true, ms: 388 },
+  { providerId: 'p_show03', ok: true, ms: 356 },
+  { providerId: 'p_show04', ok: true, ms: 174 },
+  { providerId: 'p_show01', ok: true, ms: 430 },
+  { providerId: 'p_show02', ok: true, ms: 405 },
+]) {
+  monitor.runs.push({ ...run, at: iso(20 * MIN), error: '' })
+}
+
 const db = {
   version: 1,
   settings: {
@@ -190,6 +335,8 @@ const db = {
     probeIntervalMinutes: 0,
     scoreMaxAgeHours: 6,
     maxTtftMs: 0,
+    monitorIntervalMinutes: 30,
+    balanceWarnCny: 50,
     gateway: {
       enabled: true,
       keys: [
@@ -212,6 +359,7 @@ const db = {
   manualOrder: {},
   routing,
   traffic,
+  monitor,
 }
 
 const benchmarks = {}

@@ -19,6 +19,8 @@ import { splitOffers, resolvePool, FREE_PREFIX, FREE_BASE_PATH } from '../core/f
 import { rankFreePool } from '../core/rank-free.js'
 import * as platforms from '../core/platforms/index.js'
 import { recordUsage, usageSummary, tokensUsedByKey, resetUsage, readUsage } from '../core/usage.js'
+import { buildMonitorView, markAlertsRead, markAnnouncementsRead, applySnapshot } from '../core/monitor.js'
+import { collectProviderSnapshots } from './monitor-runner.js'
 import { runProbes } from './probe-runner.js'
 import { REFERENCE_AS_OF, listReference } from '../core/model-prices.js'
 import { listPresetSites, listPresetPlatforms } from '../core/catalog.js'
@@ -357,6 +359,16 @@ route('PATCH', /^\/api\/settings$/, async (ctx) => {
     }
     if (ctx.body.allowPaidFallback !== undefined) {
       db.settings.allowPaidFallback = Boolean(ctx.body.allowPaidFallback)
+    }
+    if (ctx.body.monitorIntervalMinutes !== undefined) {
+      const v = Number(ctx.body.monitorIntervalMinutes)
+      if (!Number.isFinite(v) || v < 0) throw new HttpError(400, '监控采集间隔不能为负')
+      db.settings.monitorIntervalMinutes = v
+    }
+    if (ctx.body.balanceWarnCny !== undefined) {
+      const v = Number(ctx.body.balanceWarnCny)
+      if (!Number.isFinite(v) || v < 0) throw new HttpError(400, '余额告警阈值不能为负')
+      db.settings.balanceWarnCny = v
     }
   })
   return buildState()
@@ -985,8 +997,52 @@ route('POST', /^\/api\/providers\/([\w-]+)\/balance$/, async (ctx) => {
       quotaRemaining: result.remaining,
       currency: result.currency,
     })
+    // 手动刷一次余额也进曲线——否则用户点了刷新，图上却没动静。
+    await store.mutate((current) =>
+      applySnapshot(current, {
+        providerId: provider.id,
+        at: new Date().toISOString(),
+        balance: result,
+      }),
+    )
   }
   return { ...(await buildState()), balance: result }
+})
+
+// -------------------------------------------------------------------- 监控
+//
+// 监控页一次要的东西比较多（余额曲线、变动流、公告、告警、采集记录），
+// 全部塞进 /api/state 会让每次进页面都变重，所以单独一个接口按需拉。
+
+/** 组装监控视图：唯一的入口，四个路由共用，保证口径一致。 */
+async function monitorView(days = 7) {
+  const db = await store.readDb()
+  const benchmarks = await bench.readBenchmarks()
+  return buildMonitorView(db, { usageData: await readUsage(), benchmarks, days })
+}
+
+route('GET', /^\/api\/monitor$/, async (ctx) => {
+  const days = Math.min(Math.max(Number(ctx.query.get('days')) || 7, 1), 90)
+  return monitorView(days)
+})
+
+route('POST', /^\/api\/monitor\/collect$/, async (ctx) => {
+  const providerId = ctx.body?.providerId || null
+  const results = await collectProviderSnapshots({ providerId })
+  const days = Math.min(Math.max(Number(ctx.body?.days) || 7, 1), 90)
+  return { ...(await monitorView(days)), results }
+})
+
+route('POST', /^\/api\/monitor\/alerts\/read$/, async (ctx) => {
+  const ids = Array.isArray(ctx.body?.ids) ? ctx.body.ids : []
+  await store.mutate((db) => markAlertsRead(db, ids))
+  return monitorView(7)
+})
+
+route('POST', /^\/api\/monitor\/announcements\/read$/, async (ctx) => {
+  const ids = Array.isArray(ctx.body?.ids) ? ctx.body.ids : []
+  await store.mutate((db) => markAnnouncementsRead(db, ids))
+  return monitorView(7)
 })
 
 // ------------------------------------------------------------------- 决策排序
@@ -1086,6 +1142,15 @@ route('DELETE', /^\/api\/free\/platforms\/([\w-]+)$/, async (ctx) => {
 })
 
 route('POST', /^\/api\/free\/accounts$/, async (ctx) => {
+  // 自动连接的平台必须带凭据才允许建账号：不然谁都能塞一个「剩余 100」的空账号，
+  // 让页面显示有额度、实际根本用不了（这也是「登录失败还能录入积分」的来源之一）。
+  const platformId = ctx.body?.platformId
+  const db = await platforms.readFreeDb()
+  const platform = db.platforms.find((p) => p.id === platformId)
+  if (!platform) throw new HttpError(404, '平台不存在')
+  if (platform.connectorId !== 'manual' && !ctx.body?.secret) {
+    throw new HttpError(400, '这个平台的账号要连上之后才建，先点「连接」')
+  }
   const account = await platforms.addAccount(ctx.body || {})
   const state = await buildState()
   return { ...state, accountResult: account }
@@ -1121,59 +1186,127 @@ async function platformConnector(platformId) {
   return { platform, connector }
 }
 
+/**
+ * 连接器只给「还剩多少」，窗口得从重置时间反推：
+ * 离重置还有好几天 → 月周期；一两天内 → 日周期。
+ * 原来固定写 'day'，配上月底的 resetAt，就成了「每天重置、下次重置在 10 天后」。
+ */
+function windowFromReset(resetAt, fallback = 'day') {
+  const at = Date.parse(resetAt || '')
+  if (!Number.isFinite(at)) return fallback
+  return (at - Date.now()) / 86400000 > 3 ? 'month' : 'day'
+}
+
+/**
+ * 把连接器读回来的额度整理成落库形状。
+ *
+ * 不编造 limit/used：连接器只读得到剩余量，硬造总量会画出「已用 0/113」这种假进度。
+ */
+function quotaPatch(quota, previous) {
+  const resetAt = quota.refreshAt || previous?.resetAt || null
+  return {
+    unit: quota.unit || previous?.unit || 'credit',
+    remaining: Number(quota.remaining),
+    cycleRemaining: quota.cycleRemaining ?? null,
+    cycleSize: quota.cycleSize ?? null,
+    bonusTokens: quota.bonusTokens ?? previous?.bonusTokens ?? null,
+    tenantKey: quota.tenantKey || previous?.tenantKey || '',
+    limit: null,
+    used: null,
+    window: windowFromReset(resetAt, previous?.window || 'day'),
+    resetAt,
+  }
+}
+
+/** 读一次额度并写回账号；读不到不算致命错误，卡片保持上一次的数字。 */
+async function refreshAccountQuota(connector, account) {
+  const quota = await connector.quota(account)
+  if (!quota || !Number.isFinite(Number(quota.remaining))) return null
+  await platforms.updateAccount(account.id, { quota: quotaPatch(quota, account.quota) })
+  return quota
+}
+
 route('POST', /^\/api\/free\/platforms\/([\w-]+)\/connect$/, async (ctx) => {
   const { platform, connector } = await platformConnector(ctx.params[0])
-  // 授权前先保证有账号挂 token，否则拿回来的凭据没处放
+  // 这里**不建账号**：授权可能被取消、可能超时，先落库就会留下一张
+  // 「连过但从没拿到 token」的空卡，还会被算进账号数与剩余额度。
+  // 账号等授权真的回来了再建（见下面的 connect/poll）。
   const existing = await platforms.listAccounts(platform.id)
-  const account =
-    existing.find((a) => a.status !== 'expired') ||
-    existing[0] ||
-    (await platforms.addAccount({ platformId: platform.id, label: '主账号' }))
+  const account = existing.find((a) => a.secret) || null
 
   const started = await connector.startConnect({ product: platform.connectorId })
   const state = await buildState()
-  return { ...state, connect: { ...started, accountId: account.id } }
+  return { ...state, connect: { ...started, accountId: account?.id || null } }
 })
 
 route('POST', /^\/api\/free\/platforms\/([\w-]+)\/connect\/poll$/, async (ctx) => {
   const { platform, connector } = await platformConnector(ctx.params[0])
+  const existing = await platforms.listAccounts(platform.id)
+  // 已有账号就顺手把凭据落上去；没有就只把凭据拿回来，等下面建号，
+  // 这样「轮询到一半关掉页面」不会在库里留下半张卡。
+  const accountId =
+    ctx.body?.accountId || existing.find((a) => a.secret)?.id || existing[0]?.id || null
   const result = await connector.pollConnect({
     state: ctx.body?.state,
     product: platform.connectorId,
-    accountId: ctx.body?.accountId,
+    accountId,
   })
+
+  let created = null
   if (result?.ready) {
-    await platforms.updateAccount(ctx.body.accountId, { status: 'ok' })
+    if (accountId) {
+      await platforms.updateAccount(accountId, {
+        status: 'ok',
+        ...(result.profile?.label ? { label: result.profile.label } : {}),
+      })
+    } else if (result.credential) {
+      // 授权成功才建账号。saveCredential 不传 id 时只返回密文，不落库。
+      const secret = await connector.saveCredential(result.credential)
+      created = await platforms.addAccount({
+        platformId: platform.id,
+        label: result.profile?.label || '主账号',
+        status: 'ok',
+        secret,
+      })
+    }
+    // 连上就顺手读一次额度：用户点完连接最想看到的就是「还剩多少」。
+    // 两条提示可能同时存在（昵称没读到 + 额度没读到），合并成一句给前端，不要互相覆盖。
+    const warnings = [result.warning].filter(Boolean)
+    const target = created || existing.find((a) => a.id === accountId)
+    if (target) {
+      try {
+        await refreshAccountQuota(connector, created || target)
+      } catch (error) {
+        warnings.push(`额度还没读到（${error?.message || error}），点「刷新」再试一次`)
+      }
+    }
+    if (warnings.length) result.warning = warnings.join('；')
   }
+
   const state = await buildState()
-  return { ...state, connectPoll: result }
+  return { ...state, connectPoll: result, connectAccount: created ? { id: created.id } : null }
 })
 
 route('POST', /^\/api\/free\/platforms\/([\w-]+)\/refresh$/, async (ctx) => {
   const { platform, connector } = await platformConnector(ctx.params[0])
   const accounts = await platforms.listAccounts(platform.id)
-  const account = accounts[0]
-  if (!account) throw new HttpError(400, '这个平台还没有账号')
-  if (!account.secret) throw new HttpError(400, '还没有连接，先点「连接」')
+  const connected = accounts.filter((a) => a.secret)
+  if (!connected.length) throw new HttpError(400, '还没有连接，先点「连接」')
 
-  // 只刷新余额：目录是锦上添花，失败了不该让整张卡片变成错误态
-  const quota = await connector.quota(account)
-  if (quota && Number.isFinite(Number(quota.remaining))) {
-    // 连接器读回来的是「还剩多少」，没有「总量」这个概念——套餐是平台侧的，
-    // 我们不编造 limit。界面据此显示「剩余 N 积分」而不是「已用 x/y」。
-    await platforms.updateAccount(account.id, {
-      quota: {
-        unit: quota.unit || account.quota?.unit || 'credit',
-        remaining: Number(quota.remaining),
-        limit: null,
-        used: null,
-        window: account.quota?.window || 'day',
-        resetAt: quota.refreshAt || account.quota?.resetAt || null,
-      },
-    })
+  // 平台可能有多个账号（同一租户的多把钥匙），只刷第一个会让其余卡片永远停在旧数字上
+  const results = []
+  for (const account of connected) {
+    try {
+      const quota = await refreshAccountQuota(connector, account)
+      results.push({ accountId: account.id, ok: true, quota })
+    } catch (error) {
+      results.push({ accountId: account.id, ok: false, error: error?.message || String(error) })
+    }
   }
+
   const state = await buildState()
-  return { ...state, refreshResult: { ok: true, quota } }
+  const quota = results.find((row) => row.ok)?.quota || null
+  return { ...state, refreshResult: { ok: results.some((row) => row.ok), quota, results } }
 })
 
 route('GET', /^\/api\/free\/ledger$/, async (ctx) => {

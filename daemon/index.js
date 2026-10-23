@@ -8,6 +8,7 @@ import { dataDir } from '../core/store.js'
 import { ensureGatewayKeys } from '../core/inventory.js'
 import { startProbeScheduler } from './scheduler.js'
 import { runProbes } from './probe-runner.js'
+import { collectProviderSnapshots } from './monitor-runner.js'
 import { spawn } from 'node:child_process'
 import { mkdir } from 'node:fs/promises'
 
@@ -58,7 +59,7 @@ async function listen(port, attemptsLeft = 10) {
 const { port } = await listen(preferredPort)
 const url = `http://${HOST}:${port}/`
 
-startProbeScheduler({ runProbes, logger: console })
+startProbeScheduler({ runProbes, collectMonitor: collectProviderSnapshots, logger: console })
 
 console.log('')
 console.log('  ManageAPI  已启动')

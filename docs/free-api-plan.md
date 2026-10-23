@@ -279,7 +279,7 @@ glm-5                   星链      1 个   100/月     50%   2.8s   ●可疑
 | T2b-1 | OAuth 授权流（`auth/state` → 轮询 `auth/token`） | ✅ 已实现 |
 | T2b-2 | token 用现有 AES-GCM 加密存储 + 自动 refresh | ✅ 已实现 |
 | T2b-3 | `catalog()` 拉模型目录、`quota()` 读积分、`checkin()` 签到 | ✅ 已实现 |
-| T2b-4 | `forward()` 转发 + 从 `usage` 回读消耗 | ⬜ 未做（平台侧目前不参与网关转发） |
+| T2b-4 | `forward()` 转发 + 从 `usage` 回读消耗 | ⬜ 未做（平台侧目前不参与网关转发；方案见下面「T2c」） |
 
 **协议来源**：`dsh-our-free-model` 的 `vendor/channel-pack`（MIT），其中 WorkBuddy / CodeBuddy
 共用一套接口：
@@ -304,6 +304,32 @@ glm-5                   星链      1 个   100/月     50%   2.8s   ●可疑
 
 **验收**：点「连接」→ 浏览器授权 → 回来显示已连接 → 读到积分 → 签到成功。
 （前三步已实测，后两步待有账号时验证。）
+
+#### T2c · 平台额度接入网关（下次迭代，暂缓）
+
+**状态**：2026-10-23 决定暂缓，先记录在这，下次迭代再做。
+
+**要解决的问题**：免费页平台栏的额度（WorkBuddy / CodeBuddy / ZCode）现在只是卡片上的数字，网关用不到它。
+期望是像中转站免费模型那样能被 `/v1/chat/completions` 用掉，用尽再换下一个来源。
+
+**参考项目**：[yetone/magpie](https://github.com/yetone/magpie)（MIT；Windows/macOS/Linux 菜单栏应用 +
+本地网关 `127.0.0.1:3425`）。它把「你已登录的 Claude / ChatGPT / Copilot / Gemini / Grok 订阅」和 API Key、
+本地模型一起当成供给，各种 agent CLI（Claude Code / Codex / Gemini CLI / OpenCode）只认一个本地地址；
+一个额度用完就**静默**换下一个账号或模型，调用方看不到错误。值得借鉴的三点：
+
+1. **routing group**：把多个模型/账号当成一个虚拟模型（如 `group/daily-coding`），网关在成员之间分摊请求；
+2. **选优策略**：其 `smart` 口径是「有额度的订阅里，挑最快重置的那个」，把快过期的额度先用掉——
+   与本项目免费池 `daysLeft` 降序同一思路，可以直接复用，不必新增优先级配置；
+3. **额度视角**：一条命令列出所有 key / plan / 账号的余额与重置窗口，并在窗口快重置而额度还没用完时提醒。
+
+**落到 ManageAPI 的最小版本**：平台栏每个账号就是一个可路由的「供给」，模型目录来自连接器
+（ZCode 已有 `GLM-5.3` / `GLM-5.3-Flash`），额度用「本周期剩余」做闸门，消耗用网关自己的 `usage`
+回写扣减（`ledger` 的 `consume()` 已经写好），平台额度与中转站免费模型进同一个池子排序
+（闸门 → 剩余天数 → 首字延迟），用尽自动落到下一个来源。
+
+**前置条件**：WorkBuddy / CodeBuddy 的连接器目前只有 `/v1/models`、billing、签到，没有对话端点，
+需要先抓一次客户端对话请求确认；ZCode 的 `https://zcode.z.ai/api/v1/zcode-plan` 本身就是 OpenAI 兼容基址，
+可以先只接它跑通，再讨论另外两个。
 
 ---
 

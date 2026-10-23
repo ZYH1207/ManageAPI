@@ -32,8 +32,9 @@ function defaultT(text, vars) {
 
 function fmt(value) {
   if (!Number.isFinite(value)) return '—'
-  if (Number.isInteger(value)) return String(value)
-  return value.toFixed(1)
+  // token 额度动辄七位数，不加千分位就是 8000000 这种没法一眼读的数
+  const shown = Number.isInteger(value) ? String(Math.round(value)).replace(/\B(?=(\d{3})+(?!\d))/g, ',') : value.toFixed(1)
+  return shown
 }
 
 /** 本地日期键，与 core/platforms/ledger.js 的 localDayKey 同一口径（前端不能 import node 模块，只能各写一份） */
@@ -44,9 +45,14 @@ function localDayKey(value = new Date()) {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
 }
 
-function remainingOf(account) {
+export function remainingOf(account) {
   const quota = account?.quota
   if (!quota) return 0
+  // 「本周期剩余」才是现在真能用的量。WorkBuddy 的免费订阅会出现
+  //   CapacityRemain（包内）= 100、CycleCapacityRemain（本周期）= 0
+  // 的情况：这个周期已经用满了，要等下个周期重置，只报 100 会让人以为还有额度。
+  const cycle = Number(quota.cycleRemaining)
+  if (Number.isFinite(cycle)) return Math.max(0, cycle)
   // 连接器只能读到「还剩多少」，读不到「总量是多少」——那就直接用剩余量，
   // 别硬造一个 limit 出来（会造成「已用 0/113」这种假进度）
   const remain = Number(quota.remaining)
@@ -62,7 +68,7 @@ function remainingOf(account) {
  * 不同单位不能相加——「3 次 + 20 积分 = 23」是纯粹的假数字，
  * 所以只按第一份额度的单位汇总，其余忽略。
  */
-function aggregateQuota(accounts) {
+export function aggregateQuota(accounts) {
   const rows = accounts
     .map((a) => a?.quota)
     .filter((q) => q && (Number(q.limit) > 0 || Number.isFinite(Number(q.remaining))))
@@ -75,6 +81,16 @@ function aggregateQuota(accounts) {
     .filter((at) => at && new Date(at).getTime() > now)
     .sort()
   const hasLimit = same.some((q) => Number(q.limit) > 0)
+  // 本周期还剩多少：WorkBuddy 的免费订阅会出现「包内还剩 100、本周期已用满」，
+  // 只报包内剩余会让人以为还能用，所以单独带一个数出去
+  const cycles = same
+    .map((q) => Number(q.cycleRemaining))
+    .filter((n) => Number.isFinite(n))
+  const cycleSizes = same
+    .map((q) => Number(q.cycleSize))
+    .filter((n) => Number.isFinite(n))
+  // 一次性赠量（活动送的 token）不在 remaining 里，单独汇总，卡片上补一句
+  const bonuses = same.map((q) => Number(q.bonusTokens)).filter((n) => Number.isFinite(n) && n > 0)
   return {
     unit,
     window: same[0].window === 'month' ? 'month' : 'day',
@@ -82,9 +98,35 @@ function aggregateQuota(accounts) {
     hasLimit,
     limit: same.reduce((sum, q) => sum + (Number(q.limit) || 0), 0),
     used: same.reduce((sum, q) => sum + (Number(q.used) || 0), 0),
+    // remaining = 现在能用多少（优先本周期剩余）
     remaining: same.reduce((sum, q) => sum + remainingOf({ quota: q }), 0),
+    // capacity = 套餐容量，只用来在下面补一句「套餐里一共 100」，不参与「还剩多少」
+    capacity: same.reduce((sum, q) => sum + (Number.isFinite(Number(q.remaining)) ? Number(q.remaining) : 0), 0),
+    cycleRemaining: cycles.length ? cycles.reduce((sum, n) => sum + n, 0) : null,
+    cycleSize: cycleSizes.length ? cycleSizes.reduce((sum, n) => sum + n, 0) : null,
+    bonusTokens: bonuses.length ? bonuses.reduce((sum, n) => sum + n, 0) : null,
     resetAt: resets[0] || null,
   }
+}
+
+/**
+ * 同一个租户下的多张卡不能重复计入总额。
+ *
+ * WorkBuddy 国际版/国内版是同一套账号（同一个 AppId），两张卡读回同一个余额，
+ * 直接相加会凭空多出一份。有 tenantKey 就按它去重，没有就各自算。
+ */
+function dedupeByTenant(accounts) {
+  const seen = new Set()
+  const out = []
+  for (const account of accounts) {
+    const key = account?.quota?.tenantKey
+    if (key) {
+      if (seen.has(key)) continue
+      seen.add(key)
+    }
+    out.push(account)
+  }
+  return out
 }
 
 /** 首字母色块：颜色由名字哈希决定，同一个平台每次渲染颜色都一样 */
@@ -228,8 +270,23 @@ export function renderFreePlatformPane({
       <div class="v">${esc(v)}${unit ? `<small>${esc(unit)}</small>` : ''}</div>
     </div>`
 
-  const creditAccounts = allAccounts.filter((a) => (a?.quota?.unit || 'credit') === 'credit')
-  const creditTotal = creditAccounts.reduce((sum, a) => sum + remainingOf(a), 0)
+  // 汇总只看「现在能用多少」，并按单位分开算：积分和 token 相加是无意义的数字。
+  // 只有一种单位时就只显示数字（原来那样），多种单位才把单位写出来。
+  const totals = new Map()
+  for (const account of dedupeByTenant(allAccounts)) {
+    const unit = account?.quota?.unit || 'credit'
+    const value = remainingOf(account)
+    if (!Number.isFinite(value)) continue
+    totals.set(unit, (totals.get(unit) || 0) + value)
+  }
+  const totalLabel =
+    totals.size === 0
+      ? '0'
+      : totals.size === 1
+        ? fmt([...totals.values()][0])
+        : [...totals.entries()]
+            .map(([unit, value]) => `${fmt(value)} ${t(UNIT_LABEL[unit] || '积分')}`)
+            .join(' · ')
   const today = localDayKey()
   const checkedToday = allAccounts.filter(
     (a) => a.lastCheckinAt && localDayKey(a.lastCheckinAt) === today,
@@ -239,7 +296,7 @@ export function renderFreePlatformPane({
     <div class="stats">
       ${statCard(t('已连接平台'), connected.length, t('个'))}
       ${statCard(t('账号'), allAccounts.length, t('个'))}
-      ${statCard(t('剩余额度'), fmt(creditTotal), '')}
+      ${statCard(t('剩余额度'), totalLabel, '')}
       ${statCard(t('今日已签'), `${checkedToday}/${allAccounts.length}`, '')}
     </div>`
 
@@ -260,10 +317,13 @@ export function renderFreePlatformPane({
         : ''
 
     const isPending = Boolean(pending) && pending.platformId === platform.id
+    // 余额已经在卡片正文里写了，meta 再写一遍会重复（「剩 100 积分」出现两行）
     const meta = isOn
-      ? t('{n} 个账号 · 剩 {r} {unit}', { n: pfAccounts.length, r: fmt(remaining), unit: unitLabel })
+      ? t('{n} 个账号', { n: pfAccounts.length })
       : isPending
-        ? t('等待授权… 已 {s} 秒', { s: Math.round((pending.elapsedMs || 0) / 1000) })
+        ? pending.local
+          ? t('正在读本机客户端里的登录态…')
+          : t('等待授权… 已 {s} 秒', { s: Math.round((pending.elapsedMs || 0) / 1000) })
         : t('尚未连接')
 
     let body = ''
@@ -290,17 +350,56 @@ export function renderFreePlatformPane({
       // resetAt 可能没填（手动建的平台就是这样），按 window 推一个下次重置点，
       // 否则「下次重置：—」等于没告诉用户任何信息
       const resetText = relativeHours(resetAtOf(quota), t)
+      // 包内剩余和本周期剩余不是一回事：免费订阅会出现「包里还有 100，本周期已用满」。
+      // 上面那行「剩余」用的是本周期剩余（真能用的量），这里把套餐容量单独说明，
+      // 不然用户会以为额度凭空少了一截。
+      const cycle = Number(quota?.cycleRemaining)
+      const capacity = Number(quota?.capacity)
+      const hasCycle = Number.isFinite(cycle)
+      const cycleLine = !hasCycle
+        ? ''
+        : cycle <= 0
+          ? `<div class="hint" style="color:var(--danger)">${esc(t('本周期已用满，{r}重置', { r: resetText }))}</div>`
+          : `<div class="hint">${esc(
+              Number.isFinite(capacity) && capacity > 0
+                ? t('本周期还剩 {n}/{total} {unit}', {
+                    n: fmt(cycle),
+                    total: fmt(capacity),
+                    unit: unitLabel,
+                  })
+                : t('本周期还剩 {n} {unit}', { n: fmt(cycle), unit: unitLabel }),
+            )}</div>`
+      const capacityLine =
+        hasCycle && Number.isFinite(capacity) && capacity > 0 && capacity !== cycle
+          ? `<div class="hint">${esc(t('套餐容量 {n} {unit}', { n: fmt(capacity), unit: unitLabel }))}</div>`
+          : ''
+      // 一次性赠量（活动送的 token）没有用量桶，不在「剩余」里，单独说一句
+      const bonusTokens = Number(quota?.bonusTokens)
+      const bonusLine =
+        Number.isFinite(bonusTokens) && bonusTokens > 0
+          ? `<div class="hint">${esc(t('另有赠量 {n} {unit}（按次消耗，不计入本周期）', { n: fmt(bonusTokens), unit: unitLabel }))}</div>`
+          : ''
+      const resetLine = hasCycle
+        ? ''
+        : `<div class="hint">${esc(t('下次重置：{v}', { v: resetText }))}</div>`
       body = `
         <div class="quota" style="margin-top:12px">
           ${hasLimit ? `<div class="quota-track"><div class="quota-fill${fillClass}" style="width:${pct}%"></div></div>` : ''}
           <span class="quota-text">${esc(quotaText)}</span>
         </div>
-        <div class="hint">${esc(t('下次重置：{v}', { v: resetText }))}</div>`
+        ${cycleLine}
+        ${capacityLine}
+        ${bonusLine}
+        ${resetLine}`
     } else if (isPending) {
       // 等待授权时把服务端每次轮询的回应也显示出来——不然用户只看到转圈，
       // 分不清是「还没登录完」还是「登录了但平台没把 token 给回来」
       body = `
-        <div class="hint">${esc(t('已打开授权页。在浏览器里登录，如果弹出「打开 WorkBuddy」，先点取消、留在网页上，直到页面显示授权成功。'))}</div>
+        <div class="hint">${
+          pending.local
+            ? esc(t('ZCode 额度就在本机客户端里，正在读取…读到就会自动出现在卡片上。'))
+            : esc(t('已打开授权页。在浏览器里登录，如果弹出「打开 WorkBuddy」，先点取消、留在网页上，直到页面显示授权成功。'))
+        }</div>
         ${
           pending.reason
             ? `<div class="hint" style="color:var(--faint)">${esc(t('最近状态：'))}${esc(pending.reason)}</div>`
@@ -310,16 +409,22 @@ export function renderFreePlatformPane({
       body = `<div class="hint">${esc(t('连接后自动读取模型目录、剩余积分与重置时间。'))}</div>`
     }
 
+    // 删除入口对三种状态都要有：连错平台、连失败留下的空卡、演示数据，都得能清掉
+    const deleteButton = `<button class="ghost danger" data-act="platform-delete" data-platform="${esc(platform.id)}" title="${esc(t('删掉这张卡和它的账号记录'))}">${esc(t('删除'))}</button>`
+
     const actions = isOn
       ? `<button class="ghost" data-act="platform-checkin" data-platform="${esc(platform.id)}">${esc(t('签到'))}</button>
          <button class="ghost" data-act="platform-accounts" data-platform="${esc(platform.id)}">${esc(t('账号'))}</button>
          <button class="ghost" data-act="platform-refresh" data-platform="${esc(platform.id)}">${esc(t('刷新'))}</button>
-         <button class="ghost" data-act="platform-diagnose" data-platform="${esc(platform.id)}" title="${esc(t('把平台接口的原始返回复制出来，字段对不上时用'))}">${esc(t('诊断'))}</button>`
+         <button class="ghost" data-act="platform-diagnose" data-platform="${esc(platform.id)}" title="${esc(t('把平台接口的原始返回复制出来，字段对不上时用'))}">${esc(t('诊断'))}</button>
+         ${deleteButton}`
       : isPending
         ? `<button class="ghost" data-act="platform-connect-reopen" data-platform="${esc(platform.id)}">${esc(t('重新打开授权页'))}</button>
-           <button class="ghost" data-act="platform-connect-cancel" data-platform="${esc(platform.id)}">${esc(t('取消'))}</button>`
+           <button class="ghost" data-act="platform-connect-cancel" data-platform="${esc(platform.id)}">${esc(t('取消'))}</button>
+           ${deleteButton}`
         : `<span class="badge">${esc(t('尚未连接'))}</span>
-           <button data-act="platform-connect" data-platform="${esc(platform.id || platform.connectorId)}">${esc(t('连接'))}</button>`
+           <button data-act="platform-connect" data-platform="${esc(platform.id || platform.connectorId)}">${esc(t('连接'))}</button>
+           ${deleteButton}`
 
     return `
       <div class="card" data-platform-card="${esc(platform.id || platform.connectorId)}">

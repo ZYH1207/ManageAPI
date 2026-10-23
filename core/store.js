@@ -12,8 +12,9 @@ import { join } from 'node:path'
 import { mkdir, readFile, writeFile, rename, chmod, access, unlink } from 'node:fs/promises'
 import { constants } from 'node:fs'
 import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto'
+import { defaultMonitor, ensureMonitor } from './monitor.js'
 
-const DB_VERSION = 2
+const DB_VERSION = 3
 
 /** 写盘串行链与临时文件名序号（见 mutate / writeDb） */
 let writeChain = Promise.resolve()
@@ -54,11 +55,18 @@ export function emptyDb() {
       freeCrossPane: 'remaining',
       // 免费池耗尽时是否允许回落付费。默认关闭——静默花钱比报错更糟。
       allowPaidFallback: false,
+      // 监控采集间隔（分钟），0 = 关闭。
+      // 和探针是两个节奏：探针要打真实请求，成本高；采集只是读后台数据，可以更勤。
+      monitorIntervalMinutes: 30,
+      // 余额低于这个人民币金额就告警（美元站按汇率折算）。0 = 不告警。
+      balanceWarnCny: 10,
     },
     providers: [],
     credentials: [],
     offers: [],
     probes: [],
+    // 监控时序数据（余额快照 / 倍率变动 / 公告 / 告警）
+    monitor: defaultMonitor(),
   }
 }
 
@@ -125,17 +133,22 @@ export async function decryptSecret(blob) {
 }
 
 /**
+ * 版本迁移。每段都必须是幂等的——用户可能从任意老版本跨级升上来。
+ *
  * v1 → v2：把「令牌 / 余额」从 Key 上挪到站点上。
+ *   原因：令牌是站点后台的登录凭证，余额是账号余额——两者都跟 Key 无关。
+ *   挂在 Key 上会导致「加第二个 Key 后余额显示 0」「换个 Key 就要重填令牌」。
+ *   迁移是就地提升：取该站第一个填过令牌的 Key，复制到站点上。
+ *   Key 上的旧字段保留不删，万一要回滚还能读。
  *
- * 原因：令牌是站点后台的登录凭证，余额是账号余额——两者都跟 Key 无关。
- * 挂在 Key 上会导致「加第二个 Key 后余额显示 0」「换个 Key 就要重填令牌」。
- *
- * 迁移是就地提升：取该站第一个填过令牌的 Key，复制到站点上。
- * Key 上的旧字段保留不删，万一要回滚还能读。
+ * v2 → v3：新增 monitor（余额快照 / 倍率变动 / 公告 / 告警），纯追加，补齐默认值即可。
  */
 function migrate(db) {
   const version = Number(db.version) || 1
-  if (version >= DB_VERSION) return db
+  if (version >= DB_VERSION) {
+    ensureMonitor(db)
+    return db
+  }
 
   for (const provider of db.providers || []) {
     const mine = (db.credentials || []).filter((c) => c.providerId === provider.id)
@@ -156,6 +169,7 @@ function migrate(db) {
     }
   }
   db.version = DB_VERSION
+  ensureMonitor(db)
   return db
 }
 

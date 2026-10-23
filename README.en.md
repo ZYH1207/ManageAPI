@@ -26,12 +26,14 @@ ManageAPI addresses these three separately: **price comparison**, **probing**, a
 
 ## Screens
 
-Eight pages on the left, one job each:
+Ten pages on the left, one job each:
 
 | Page | Purpose |
 |---|---|
 | **Overview** | Headline conclusion, key stats, sites needing attention, site ranking |
+| **Monitor** | Balance trend, ratio changes, upstream notices and alerts |
 | **Sites** | Record relays and keys, sync models, import group ratios |
+| **Free** | Free models and platform credits, kept out of paid comparison |
 | **Pricing** | The same model compared across sites, prices editable inline |
 | **Routing** | Candidate order for each model, with manual overrides |
 | **Probes** | Fingerprint / truncation / billing / cache checks |
@@ -382,12 +384,14 @@ core/              Host-agnostic core (no framework dependencies)
   platforms/         Platform credits: connector interface, manual connector, ledger, own free.json
   catalog.js         Preset catalogue of common sites / platforms
   balance.js         Vendor balance adapters (SiliconFlow / DeepSeek / Moonshot)
+  monitor.js         Monitor data: balance trend, ratio changes, notices, alerts, cooldowns
 
 daemon/            Local HTTP server + gateway (same port)
   index.js           Startup, port selection, open browser
   server.js          HTTP routes, gateway forwarding, SSE splitting
   probe-runner.js    Probe executor (manual and scheduled)
-  scheduler.js       Scheduled probing
+  monitor-runner.js  Collector: balance / group ratios / notices
+  scheduler.js       Scheduled probing and collection
 
 web/               Frontend (vanilla JS, no build, no framework)
   index.html         Structure and the help document (zh + en)
@@ -405,6 +409,7 @@ web/               Frontend (vanilla JS, no build, no framework)
   check-lang.mjs     Round-trip check for the language switch
   check-free-relay.mjs   Free-pool gates and quota self-check
   check-free-platform.mjs Platform CRUD / idempotent check-in / ledger self-check
+  check-workbuddy-quota.mjs Quota semantics: package vs per-cycle balance, same-tenant detection
   dump-strings.mjs   Dumps every Chinese string in the UI, as a translation checklist
 
 docs/              README images + design docs
@@ -422,11 +427,24 @@ No build step — edit and refresh. `daemon/index.js` has no file watcher, so re
 
 ### Running tests
 
-```bash
-# terminal 1: a healthy fake relay
-MODE=good PORT=5101 node .test/mock-upstream.mjs
+The monitor suite is self-contained — it starts its own fake upstreams and server, then exits:
 
-# terminal 2: end-to-end against it
+```bash
+node .test/run-monitor.mjs
+```
+
+The end-to-end probe test needs three fake relays and an instance pointing at them (`run-e2e.mjs` talks to port 4399):
+
+```bash
+# terminals 1-3: three fake relays with different defects
+MODE=good PORT=5101 node .test/mock-upstream.mjs
+MODE=degraded PORT=5102 node .test/mock-upstream.mjs
+MODE=truncated PORT=5103 node .test/mock-upstream.mjs
+
+# terminal 4: separate data dir, don't pollute your own
+MANAGE_API_HOME=/tmp/e2e node daemon/index.js --port 4399
+
+# terminal 5
 node .test/run-e2e.mjs
 ```
 

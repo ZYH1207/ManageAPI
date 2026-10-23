@@ -293,7 +293,9 @@ try {
     accountId: 'acc500',
   })
   assert.equal(polled.ready, true, '账号信息失败不该阻断连接')
-  assert.ok(polled.warning?.includes('500'), '要说明失败原因')
+  // 提示语要说清「不影响使用」，但不该把原始 JSON/code 10000 甩给用户
+  assert.ok(polled.warning?.includes('不影响使用'), '提示要说明不影响使用')
+  assert.ok(!polled.warning?.includes('{'), '不要把原始 JSON 拼进提示')
   assert.ok(savedSecrets.acc500?.secret, '凭据必须已经落库')
   console.log('   → ready =', polled.ready, '| warning =', polled.warning.slice(0, 40), '…')
 

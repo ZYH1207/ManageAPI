@@ -915,3 +915,93 @@ Object.assign(EN, {
 Object.assign(EN, {
   '剩余 {n} {unit}': '{n} {unit} left',
 })
+
+// 监控页
+Object.assign(EN, {
+  '监控': 'Monitor',
+  '余额与变动': 'Balance & changes',
+  '余额趋势、倍率变动与上游公告': 'Balance trend, rate changes and upstream notices',
+  '正在读取监控数据…': 'Loading monitor data…',
+  '第一次打开会现采一轮，稍等一下。': 'The first open runs one collection round — give it a moment.',
+  '还没有中转站': 'No upstream sites yet',
+  '监控会定时读每个站的余额、倍率与公告。先去「站点」页添加一个。':
+    'Monitoring periodically reads each site\u2019s balance, rates and notices. Add one on the Sites page first.',
+  '去添加站点': 'Add a site',
+  '有余额数据': 'with balance data',
+  '总余额': 'Total balance',
+  '今日花费': 'Spend today',
+  '按当前价估算': 'estimated at current prices',
+  '24 小时变动': 'Changes (24h)',
+  '倍率 / 价格': 'rates / prices',
+  '未读告警': 'Unread alerts',
+  '还没有余额数据': 'no balance yet',
+  '最低：{name} {amount}': 'Lowest: {name} {amount}',
+  '余额概览': 'Balance overview',
+  '还没有采集到余额。点右上角「立即采集」跑一轮。':
+    'No balance collected yet — hit "Collect now" to run a round.',
+  '总余额（¥，美元站按汇率折算）': 'Total balance (¥; USD sites converted at the current rate)',
+  '每日花费（估）': 'Daily spend (est.)',
+  '余额与花费趋势': 'Balance and spend trend',
+  '只采集这个站': 'Collect this site only',
+  '只采这个站': 'Collect this site',
+  '无数据': 'no data',
+  '最近倍率变动': 'Recent rate changes',
+  '还没有变动。第一次采集只记基线，之后才开始比较。':
+    'No changes yet — the first collection only records a baseline.',
+  '低于阈值 {amount}': 'below threshold {amount}',
+  '还没读到模型价': 'prices not read yet',
+  '{n} 个模型有官方价': '{n} models with published prices',
+  '还没读到分组倍率': 'no group rates yet',
+  '站点余额与分组': 'Site balances & groups',
+  '分组倍率来自站点公布的可用渠道': 'Group rates come from the channels the site publishes',
+  '告警动态': 'Alert feed',
+  '{n} 条未读': '{n} unread',
+  '还没有告警。余额低于阈值、倍率变化、采集失败都会记在这里。':
+    'No alerts yet — low balance, rate changes and failed collections are recorded here.',
+  '上游公告': 'Upstream notices',
+  '还没有读到公告。多数站点是公共接口，加了站点就会自动拉。':
+    'No notices yet — most sites expose them publicly, so they arrive once a site is added.',
+  '采集设置': 'Collection settings',
+  '立即采集': 'Collect now',
+  '采集间隔（分钟，0 = 关闭）': 'Interval (minutes, 0 = off)',
+  '余额告警阈值（¥，0 = 不告警）': 'Low-balance threshold (¥, 0 = off)',
+  '采集只读站点公开/后台数据，不打真实对话请求，所以可以比探针勤。 余额要走站点后台接口，需要先在「站点」页填「令牌」。':
+    'Collection only reads public or backend data and never sends a real chat request, so it can run more often than probes. Balances come from the site backend API — fill in the site token first.',
+  '耗时': 'Took',
+  '结果': 'Result',
+  '上次采集 {ago}': 'Last collection {ago}',
+  '还没有采集过': 'never collected',
+  '刚刚': 'just now',
+  '还没采过': 'never',
+  '{n} 分钟前': '{n} min ago',
+  '{n} 小时前': '{n} h ago',
+  '{n} 天前': '{n} d ago',
+  '{n} 天': '{n}d',
+  '{n} 条': '{n} entries',
+  '还有 {n} 个': '{n} more',
+  '{n} 个模型': '{n} models',
+  '正常': 'OK',
+  '这个站采完了': 'Site collected',
+  '采集完成': 'Collection finished',
+  '采集完成，{n} 个站有问题：{error}': 'Collection finished — {n} sites had problems: {error}',
+  '已全部标记为已读': 'Marked all as read',
+  '全部站点': 'All sites',
+  '还没有记录': 'Nothing yet',
+  // 免费池 · 平台账号与删除
+  '删掉这张卡和它的账号记录': 'Remove this card and its accounts',
+  '本周期还剩 {n} {unit}': '{n} {unit} left this cycle',
+  '本周期还剩 {n}/{total} {unit}': '{n}/{total} {unit} left this cycle',
+  '本周期已用满，{r}重置': 'This cycle is used up — resets {r}',
+  '套餐容量 {n} {unit}': 'Package capacity {n} {unit}',
+  '本周期已用满，{r}重置；包内还剩 {n} {unit}':
+    'This cycle is used up; resets {r}. Package still holds {n} {unit}',
+  '平台已经删掉了。': 'This platform was removed.',
+  '还没有账号。点「连接」授权成功后会自己建一个。':
+    'No accounts yet. One is created automatically once “Connect” finishes authorizing.',
+  // ZCode：额度在本机客户端里，没有网页授权
+  '正在读本机客户端里的登录态…': 'Reading the sign-in state from the local client…',
+  'ZCode 额度就在本机客户端里，正在读取…读到就会自动出现在卡片上。':
+    'ZCode keeps its quota in the local client. Reading it now — it will appear on the card.',
+  '另有赠量 {n} {unit}（按次消耗，不计入本周期）':
+    'Plus {n} {unit} in bonus grants (consumed per call, not part of this cycle)',
+})

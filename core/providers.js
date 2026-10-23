@@ -113,14 +113,24 @@ export async function tryBalance({ baseUrl, apiKey, adminToken, timeoutMs = 1000
         try {
           const payload = await requestJson(`${origin}${path}`, { apiKey: adminToken, timeoutMs })
           const data = payload?.data ?? payload
-          const remaining =
-            data?.balance ?? data?.quota ?? data?.credits ?? data?.remaining ?? data?.remain_quota
-          if (typeof remaining === 'number') {
+          // Sub2API 这类直接给货币值
+          const money = data?.balance ?? data?.credits
+          if (typeof money === 'number') {
             return {
               ok: true,
-              remaining,
+              remaining: money,
               currency: data?.currency === 'USD' ? 'USD' : 'CNY',
               via: 'admin-token',
+            }
+          }
+          // one-api / new-api 的 quota 是内部计费单位（1/500000 美元），不是钱
+          const quota = data?.quota ?? data?.remain_quota ?? data?.remaining
+          if (typeof quota === 'number') {
+            return {
+              ok: true,
+              remaining: Math.round((quota / 500000) * 100) / 100,
+              currency: 'USD',
+              via: 'admin-token-quota',
             }
           }
           return {
@@ -240,6 +250,70 @@ export async function fetchAvailableChannels({ baseUrl, adminToken, timeoutMs = 
   }
 
   return { groups, models, raw: payload }
+}
+
+/**
+ * 拉站点公告。多数站点是公共接口，不需要登录：
+ *   new-api / one-api 系  GET /api/status → announcements[]
+ *   sub2api                GET /api/v1/announcements → [{ id, title, content, ... }]
+ *
+ * 读不到就当没有——公告是锦上添花，不该让整轮采集失败。
+ *
+ * @returns {Promise<Array<{sourceKey:string, title:string, content:string, publishedAt:string|null}>>}
+ */
+export async function fetchAnnouncements({ baseUrl, apiKey, adminToken, timeoutMs = 8000 }) {
+  const origins = originCandidates(baseUrl)
+  const token = adminToken || apiKey
+  const out = []
+  const seen = new Set()
+
+  const push = (raw) => {
+    if (!raw) return
+    const title = String(raw.title || raw.subject || '').trim()
+    const content = String(raw.content || raw.body || raw.text || raw.message || '').trim()
+    if (!title && !content) return
+    const publishedAt =
+      raw.publishDate || raw.published_at || raw.starts_at || raw.created_at || raw.updated_at || null
+    // 没有 id 的站点用「标题 + 发布时间」当幂等键——用下标会在列表变化时重复入库
+    const key =
+      raw.id !== undefined && raw.id !== null
+        ? `id:${raw.id}`
+        : `t:${title.slice(0, 60)}|${publishedAt ? new Date(publishedAt).toISOString() : ''}`
+    if (seen.has(key)) return
+    seen.add(key)
+    out.push({
+      sourceKey: key,
+      title: title || content.slice(0, 60),
+      content,
+      publishedAt: publishedAt ? new Date(publishedAt).toISOString() : null,
+    })
+  }
+
+  for (const origin of origins) {
+    // 1) new-api 系：/api/status 里的 announcements 数组
+    try {
+      const payload = await requestJson(`${origin}/api/status`, { apiKey: token, timeoutMs })
+      const data = payload?.data ?? payload
+      const list = Array.isArray(data) ? data : data?.announcements
+      if (Array.isArray(list)) for (const item of list) push(item)
+      if (out.length > 0) return out
+    } catch {
+      /* 试下一个接口 */
+    }
+
+    // 2) sub2api：/api/v1/announcements
+    try {
+      const payload = await requestJson(`${origin}/api/v1/announcements`, { apiKey: token, timeoutMs })
+      const data = payload?.data ?? payload
+      const list = Array.isArray(data) ? data : Array.isArray(data?.items) ? data.items : []
+      for (const item of list) push(item)
+      if (out.length > 0) return out
+    } catch {
+      /* 试下一个主机 */
+    }
+  }
+
+  return out
 }
 export async function fetchSiteUsage({ baseUrl, adminToken, timeoutMs = 15000 }) {
   const origin = originOf(baseUrl, { stripApiPrefix: true })

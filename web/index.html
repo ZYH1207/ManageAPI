@@ -26,6 +26,10 @@
           <svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/></svg>
           <span class="nav-text"><span class="nav-title" data-i18n="概览">概览</span><span class="nav-desc" data-i18n="状态与排名">状态与排名</span></span>
         </button>
+        <button data-tab="monitor">
+          <svg viewBox="0 0 24 24"><path d="M3 3v18h18"/><polyline points="7 14 11 9 15 12 20 5"/></svg>
+          <span class="nav-text"><span class="nav-title" data-i18n="监控">监控</span><span class="nav-desc" data-i18n="余额与变动">余额与变动</span></span>
+        </button>
         <button data-tab="providers">
           <svg viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="7" rx="2"/><rect x="2" y="14" width="20" height="7" rx="2"/><line x1="6" y1="6.5" x2="6.01" y2="6.5"/><line x1="6" y1="17.5" x2="6.01" y2="17.5"/></svg>
           <span class="nav-text"><span class="nav-title" data-i18n="站点">站点</span><span class="nav-desc" data-i18n="中转站与 Key">中转站与 Key</span></span>
@@ -123,6 +127,7 @@
 
       <div class="content">
         <section id="view-overview" class="view"></section>
+        <section id="view-monitor" class="view" hidden></section>
         <section id="view-providers" class="view" hidden></section>
         <section id="view-pricing" class="view" hidden></section>
         <section id="view-decision" class="view" hidden></section>
@@ -792,6 +797,17 @@
         <button class="ghost" data-act="close-group-modal">关闭</button>
       </div>
       <div class="modal-body" id="group-modal-body"></div>
+    </div>
+  </div>
+
+  <div id="pf-accounts-modal" class="modal" hidden>
+    <div class="modal-backdrop" data-act="close-pf-accounts"></div>
+    <div class="modal-panel" style="width:min(560px,calc(100vw - 40px))">
+      <div class="modal-head">
+        <h3>账号</h3>
+        <button class="ghost" data-act="close-pf-accounts">关闭</button>
+      </div>
+      <div class="modal-body" id="pf-accounts-body"></div>
     </div>
   </div>
 

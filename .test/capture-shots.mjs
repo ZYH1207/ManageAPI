@@ -112,7 +112,7 @@ listeners.set('Fetch.requestPaused', async ({ requestId, request }) => {
 })
 await send('Fetch.enable', { patterns: [{ urlPattern: '*/api/providers/*' }] })
 
-const pages = ['overview', 'providers', 'pricing', 'decision', 'probes', 'gateway', 'usage', 'benchmark']
+const pages = ['overview', 'monitor', 'providers', 'pricing', 'decision', 'probes', 'gateway', 'usage', 'benchmark']
 for (const name of pages) {
   console.log(`抓 ${name}…`)
   await goto(`#${name}`)

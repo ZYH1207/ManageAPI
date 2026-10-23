@@ -12,8 +12,9 @@ const MAX_PER_TICK = 10
 const CHECK_INTERVAL_MS = 60000
 const FIRST_RUN_DELAY_MS = 5000
 
-export function startProbeScheduler({ runProbes, logger = console }) {
+export function startProbeScheduler({ runProbes, collectMonitor = null, logger = console }) {
   let running = false
+  let collecting = false
 
   async function tick() {
     if (running) return
@@ -24,6 +25,25 @@ export function startProbeScheduler({ runProbes, logger = console }) {
     } catch (error) {
       logger.warn?.(`[定时探测] 读取数据失败：${error.message}`)
       return
+    }
+
+    // --------------------------------------------------------------- 监控采集
+    // 和探针分开：探测要打真实请求（耗钱），采集只是读后台数据，节奏可以更勤。
+    if (collectMonitor && !collecting) {
+      const monitorMinutes = Number(db.settings.monitorIntervalMinutes) || 0
+      const lastRun = db.monitor?.lastRunAt ? new Date(db.monitor.lastRunAt).getTime() : 0
+      const due = monitorMinutes > 0 && db.providers.length > 0 && (!lastRun || Date.now() - lastRun >= monitorMinutes * 60000)
+      if (due) {
+        collecting = true
+        try {
+          const results = await collectMonitor({ logger })
+          logger.info?.(`[监控] 本轮采集 ${results.length} 个站点`)
+        } catch (error) {
+          logger.warn?.(`[监控] 采集失败：${error.message}`)
+        } finally {
+          collecting = false
+        }
+      }
     }
 
     const intervalMinutes = Number(db.settings.probeIntervalMinutes) || 0
