@@ -143,8 +143,12 @@ async function freePlatformState() {
       // 手动平台只要有账号就算——它本来就不发请求。
       const needsLogin = platform.connectorId && platform.connectorId !== 'manual'
       const connected = needsLogin ? mine.some((a) => a.hasSecret) : mine.length > 0
+      // 连接器有没有实现签到，决定前端显不显示「签到」按钮
+      const connector = platforms.getConnector(platform.connectorId)
+      const canCheckin = Boolean(connector && typeof connector.checkin === 'function')
       enriched.push({
         ...platform,
+        canCheckin,
         accounts: mine,
         activeAccountId: active?.id || null,
         daysLeft: left,
@@ -461,7 +465,8 @@ route('PATCH', /^\/api\/settings$/, async (ctx) => {
       // 阈值口径是美元；兼容老前端仍传人民币，按汇率折一次
       const rawUsd = ctx.body.balanceWarnUsd
       const rawCny = ctx.body.balanceWarnCny
-      const fx = Number(db.settings.fxUsdCny) || 7.2
+      // 汇率真源在 fx 模块；settings.fxUsdCny 只是兼容镜像
+      const fx = Number(fxLib.ensureFx(db.settings).rates.CNY) || 7.2
       const v = rawUsd !== undefined ? Number(rawUsd) : Number(rawCny) / fx
       if (!Number.isFinite(v) || v < 0) throw new HttpError(400, '余额告警阈值不能为负')
       db.settings.balanceWarnUsd = Math.round(v * 100) / 100
@@ -1224,10 +1229,12 @@ route('GET', /^\/api\/probes\/history$/, async (ctx) => {
 // ------------------------------------------------------------------- offers
 
 route('PATCH', /^\/api\/offers\/([\w-]+)$/, async (ctx) => {
+  const benchmarks = await bench.readBenchmarks()
   await store.mutate((db) => {
     const offer = db.offers.find((o) => o.id === ctx.params[0])
     if (!offer) throw new HttpError(404, '模型记录不存在')
     const b = ctx.body
+    const switchingToManual = b.pricingMode === 'manual' && offer.pricingMode !== 'manual'
     if (b.pricingMode !== undefined) {
       offer.pricingMode = b.pricingMode === 'ratio' ? 'ratio' : 'manual'
     }
@@ -1250,6 +1257,17 @@ route('PATCH', /^\/api\/offers\/([\w-]+)$/, async (ctx) => {
       )
       if (clash) throw new HttpError(400, `该站「${name || '默认'}」分组下已经有同名模型了`)
       offer.group = name
+    }
+    // 从「倍率」切到「价格」时，把当前算出来的价格种进手填字段：
+    // 否则这条供给瞬间变成「未定价」并从比价表消失，看着像切换没生效
+    if (switchingToManual && (offer.inPrice == null || offer.outPrice == null)) {
+      const asRatio = pricing.resolveOfferPrice({ ...offer, pricingMode: 'ratio' }, benchmarks)
+      if (asRatio && asRatio.source === 'ratio') {
+        offer.inPrice = asRatio.inPrice
+        offer.outPrice = asRatio.outPrice
+        offer.currency = asRatio.currency
+        offer.priceUnit = 'per_mtok'
+      }
     }
     offer.updatedAt = new Date().toISOString()
   })
@@ -1313,7 +1331,29 @@ route('DELETE', /^\/api\/free\/accounts\/([\w-]+)$/, async (ctx) => {
 })
 
 route('POST', /^\/api\/free\/accounts\/([\w-]+)\/checkin$/, async (ctx) => {
-  const result = await platforms.checkin(ctx.params[0])
+  const freeDb = await platforms.readFreeDb()
+  const account = freeDb.accounts.find((a) => a.id === ctx.params[0])
+  if (!account) throw new HttpError(404, '账号不存在')
+  const platform = freeDb.platforms.find((p) => p.id === account.platformId)
+  const connector = platform ? platforms.getConnector(platform.connectorId) : null
+
+  // 没有连接器、或连接器不会签到：只能说清楚「这里没有自动签到」，不能假装签成功
+  if (!connector || typeof connector.checkin !== 'function') {
+    throw new HttpError(400, '这个平台没有自动签到，只能手动记一笔')
+  }
+  if (!account.secret) {
+    throw new HttpError(400, '这个账号还没连上平台，先点「连接」授权')
+  }
+
+  // 真签到：打到平台接口，成功才写账本
+  const result = await connector.checkin(account)
+  const reward = Number(result?.reward) || 0
+  if (result?.ok !== false) {
+    await platforms.checkin(account.id, {
+      reward,
+      note: result?.alreadyToday ? '今日已签（重复触发）' : '每日签到',
+    })
+  }
   const state = await buildState()
   return { ...state, checkinResult: result }
 })

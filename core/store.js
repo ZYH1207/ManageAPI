@@ -199,7 +199,13 @@ export async function readDb() {
   // 阈值口径从人民币改成美元：老配置只存了 balanceWarnCny，这里折一次
   // （判断依据是原始文件里有没有 balanceWarnUsd，否则默认值会盖掉迁移）
   if (rawSettings.balanceWarnUsd === undefined) {
-    const fx = Number(settings.fxUsdCny) || 7.2
+    // 这里不能用 fx.js 的 ensureFx —— fx.js 反过来 import 了本文件，会成环。
+    // 所以按同样顺序取值：fx.rates.CNY → 兼容镜像 → 默认值。
+    const fx =
+      Number(rawSettings.fx?.rates?.CNY) ||
+      Number(settings.fx?.rates?.CNY) ||
+      Number(settings.fxUsdCny) ||
+      7.2
     const oldCny = Number(rawSettings.balanceWarnCny)
     if (Number.isFinite(oldCny) && oldCny > 0) settings.balanceWarnUsd = Math.round((oldCny / fx) * 100) / 100
   }

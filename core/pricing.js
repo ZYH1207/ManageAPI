@@ -8,6 +8,8 @@
  * 只有归一化之后，跨站横向比较才有意义。
  */
 
+import { ensureFx } from './fx.js'
+
 const UNIT_MULTIPLIER = {
   per_mtok: 1,
   per_1k: 1000,
@@ -21,11 +23,13 @@ export const DISPLAY_FX_DEFAULT = 7.2
  * @returns {{inPrice:number|null, outPrice:number|null, currency:string, source:string}|null}
  */
 export function resolveOfferPrice(offer, benchmarks = {}) {
-  // 填了倍率且基准价存在 → 走倍率换算；否则回落到手填单价。
+  // 定价模式是谁，就用谁：pricingMode 是权威，
+  // 不能拿「倍率有没有填」猜——否则切成手动后残留的倍率会继续把价格乘一遍。
   const key = offer.benchmarkKey || offer.modelKey || offer.upstreamName
   const base = benchmarks[key]
   const ratio = Number(offer.ratio)
-  if (Number.isFinite(ratio) && ratio > 0 && base) {
+  const wantsRatio = offer.pricingMode === 'ratio'
+  if (wantsRatio && Number.isFinite(ratio) && ratio > 0 && base) {
     const scale = (v) => (v === null || v === undefined ? null : Number(v) * ratio)
     return {
       inPrice: scale(base.in),
@@ -59,7 +63,8 @@ export function resolveOfferPrice(offer, benchmarks = {}) {
  *            complete:boolean}}
  */
 export function offerCost(offer, settings = {}, benchmarks = {}) {
-  const fx = Number(settings.fxUsdCny) || DISPLAY_FX_DEFAULT
+  // 汇率只有 fx 模块一个真源；settings.fxUsdCny 是兼容镜像，别再直接读
+  const fx = Number(ensureFx(settings).rates.CNY) || DISPLAY_FX_DEFAULT
   const rawWeight = Number(settings.blendInputWeight)
   const weight = Number.isFinite(rawWeight) ? Math.min(Math.max(rawWeight, 0), 1) : 0.25
   const mult = UNIT_MULTIPLIER[offer.priceUnit] ?? 1
@@ -253,7 +258,7 @@ export function summarize(offers, settings = {}, benchmarks = {}, isTrusted = ()
  * 否则它和路由的实际选择会自相矛盾。
  */
 export function headline(ranked, providers, isTrusted = () => true, focusModels = [], settings = {}) {
-  const fxFor = (s) => Number(s?.fxUsdCny) || DISPLAY_FX_DEFAULT
+  const fxFor = (s) => Number(ensureFx(s).rates.CNY) || DISPLAY_FX_DEFAULT
   const nameOf = (id) => providers.find((p) => p.id === id)?.name || '未知站'
 
   const groups = ranked
@@ -292,6 +297,7 @@ export function headline(ranked, providers, isTrusted = () => true, focusModels 
     price,
     priceUsd,
     spreadPct: best.spreadPct,
-    text: `${best.modelKey} 目前 ${providerName} 最便宜，¥${price.toFixed(2)}/百万 token，比最贵的省 ${best.spreadPct}%`,
+    // 一句人话，别写成「模型 X 目前站点 Y 最便宜」这种机器腔
+    text: `此刻 ${best.modelKey} 在 ${providerName} 最便宜，¥${price.toFixed(2)} / 百万 token，比最贵的一家省 ${best.spreadPct}%。`,
   }
 }

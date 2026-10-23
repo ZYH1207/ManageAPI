@@ -193,6 +193,8 @@ export function renderFreePlatformPane({
   presets = [],
   // 正在等待授权的平台：{ platformId, elapsedMs, reason }
   pending = null,
+  // 图标渲染器由 app.js 注入（内联 SVG），这里不自己造一套图标
+  icon = () => '',
 } = {}) {
   const list = Array.isArray(platforms) ? platforms : []
   const allAccounts = Array.isArray(accounts) ? accounts : []
@@ -209,25 +211,23 @@ export function renderFreePlatformPane({
   const presetBlock = available.length
     ? `
     <h3 class="section-title" style="margin-top:20px">内置平台</h3>
-    <div class="grid" style="grid-template-columns:repeat(auto-fill,minmax(260px,1fr))">
+    <div class="grid preset-grid">
       ${available
         .map(
           (p) => `
-        <div class="card" style="border-style:dashed">
-          <div class="card-head">
-            <div style="display:flex;align-items:center;gap:10px;min-width:0">
-              ${avatarHtml(p.label, esc)}
-              <div style="min-width:0">
-                <h3>${esc(p.label)}</h3>
-                <div class="meta">${esc(t(p.note || ''))}</div>
-              </div>
+        <div class="preset-card">
+          <div class="preset-main">
+            ${avatarHtml(p.label, esc)}
+            <div class="preset-text">
+              <h3>${esc(p.label)}</h3>
+              <div class="meta">${esc(t(p.note || ''))}</div>
             </div>
           </div>
-          <div class="card-actions" style="margin-top:12px">
-            <button class="ghost" data-act="add-preset-platform" data-preset="${esc(p.id)}">${esc(t('添加'))}</button>
+          <div class="preset-actions">
+            <button class="ghost tiny" data-act="add-preset-platform" data-preset="${esc(p.id)}">${esc(t('添加'))}</button>
             ${
               p.connectorId !== 'manual'
-                ? `<button data-act="add-preset-platform" data-preset="${esc(p.id)}" data-connect="1">${esc(t('添加并连接'))}</button>`
+                ? `<button class="tiny" data-act="add-preset-platform" data-preset="${esc(p.id)}" data-connect="1">${esc(t('添加并连接'))}</button>`
                 : ''
             }
           </div>
@@ -264,10 +264,14 @@ export function renderFreePlatformPane({
   const isConnected = (p) => Boolean(p?.connected)
   const connected = list.filter(isConnected)
 
-  const statCard = (k, v, unit) => `
+  // 与概览/监控同一套结构：左「标签 + 数字」、右一枚色调图标；数字太长时只在数字内部换行
+  const statCard = (k, v, unit, iconName, tint) => `
     <div class="stat">
-      <div class="k">${esc(k)}</div>
-      <div class="v">${esc(v)}${unit ? `<small>${esc(unit)}</small>` : ''}</div>
+      <div class="stat-main">
+        <div class="k">${esc(k)}</div>
+        <div class="v">${esc(v)}${unit ? `<small>${esc(unit)}</small>` : ''}</div>
+      </div>
+      ${iconName ? `<div class="stat-icon ${tint || 'tint-muted'}">${icon(iconName)}</div>` : ''}
     </div>`
 
   // 汇总只看「现在能用多少」，并按单位分开算：积分和 token 相加是无意义的数字。
@@ -288,16 +292,21 @@ export function renderFreePlatformPane({
             .map(([unit, value]) => `${fmt(value)} ${t(UNIT_LABEL[unit] || '积分')}`)
             .join(' · ')
   const today = localDayKey()
-  const checkedToday = allAccounts.filter(
+  // 只有「能签到的平台」的账号才计入分母：ZCode 这类没有签到能力，算进去永远签不满
+  const checkableAccounts = allAccounts.filter((a) => {
+    const owner = list.find((p) => p.id === a.platformId)
+    return owner ? owner.canCheckin !== false : false
+  })
+  const checkedToday = checkableAccounts.filter(
     (a) => a.lastCheckinAt && localDayKey(a.lastCheckinAt) === today,
   ).length
 
   const stats = `
     <div class="stats">
-      ${statCard(t('已连接平台'), connected.length, t('个'))}
-      ${statCard(t('账号'), allAccounts.length, t('个'))}
-      ${statCard(t('剩余额度'), totalLabel, '')}
-      ${statCard(t('今日已签'), `${checkedToday}/${allAccounts.length}`, '')}
+      ${statCard(t('已连接平台'), connected.length, t('个'), 'servers', 'tint-muted')}
+      ${statCard(t('账号'), allAccounts.length, t('个'), 'layers', 'tint-accent')}
+      ${statCard(t('剩余额度'), totalLabel, '', 'wallet', 'tint-muted')}
+      ${statCard(t('今日已签'), `${checkedToday}/${checkableAccounts.length}`, '', 'receipt', 'tint-warn')}
     </div>`
 
   const cards = list.map((platform) => {
@@ -412,8 +421,10 @@ export function renderFreePlatformPane({
     // 删除入口对三种状态都要有：连错平台、连失败留下的空卡、演示数据，都得能清掉
     const deleteButton = `<button class="ghost danger" data-act="platform-delete" data-platform="${esc(platform.id)}" title="${esc(t('删掉这张卡和它的账号记录'))}">${esc(t('删除'))}</button>`
 
+    // 能不能签到由服务端说了算：连接器没实现 checkin 的平台不显示这个按钮，省得点了报错
+    const canCheckin = platform.canCheckin !== false
     const actions = isOn
-      ? `<button class="ghost" data-act="platform-checkin" data-platform="${esc(platform.id)}">${esc(t('签到'))}</button>
+      ? `${canCheckin ? `<button class="ghost" data-act="platform-checkin" data-platform="${esc(platform.id)}">${esc(t('签到'))}</button>` : ''}
          <button class="ghost" data-act="platform-accounts" data-platform="${esc(platform.id)}">${esc(t('账号'))}</button>
          <button class="ghost" data-act="platform-refresh" data-platform="${esc(platform.id)}">${esc(t('刷新'))}</button>
          <button class="ghost" data-act="platform-diagnose" data-platform="${esc(platform.id)}" title="${esc(t('把平台接口的原始返回复制出来，字段对不上时用'))}">${esc(t('诊断'))}</button>

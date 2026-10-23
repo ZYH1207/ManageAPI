@@ -295,6 +295,15 @@ input:focus, select:focus {
   flex-shrink: 0;
 }
 .modal-head h3 { font-size: 15px; font-weight: 600; }
+/* 诊断信息只读文本框（剪贴板不可用时的兜底） */
+.diagnose-text {
+  width: 100%; resize: vertical;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; line-height: 1.55;
+  color: var(--text); background: var(--code-bg);
+  border: 1px solid var(--border); border-radius: 8px;
+  padding: 10px 12px;
+}
+
 .modal-body {
   padding: 18px 22px 26px;
   overflow-y: auto;
@@ -1247,6 +1256,44 @@ button.group-chip:hover { color: var(--accent); }
 }
 [data-theme='dark'] .cur-switch button.is-on { box-shadow: 0 1px 2px rgba(0, 0, 0, .5); }
 
+/* 比价表列多，把内边距和输入框压窄，12 列才放得下 */
+.pricing-table th, .pricing-table td { padding-left: 8px; padding-right: 8px; }
+.pricing-table td input[type='number'] { width: 64px; padding: 4px 6px; }
+.pricing-table td input.group-input { width: 84px; }
+.pricing-table .seg-mini button { padding: 0 6px; }
+.pricing-table .sub { font-size: 11px; }
+
+/* 比价表里的两段小切换（倍率 / 价格） */
+.seg-mini { display: inline-flex; padding: 2px; gap: 2px; background: var(--hover); border: 1px solid var(--border); border-radius: 7px; }
+.seg-mini button {
+  height: 22px; padding: 0 8px; border: none; background: none; border-radius: 5px;
+  font-size: 11px; color: var(--muted); cursor: pointer; white-space: nowrap; flex: none;
+}
+.seg-mini button:hover { color: var(--text); }
+.seg-mini button.is-on { background: var(--surface); color: var(--accent); font-weight: 600; box-shadow: 0 1px 2px rgba(0,0,0,.06); }
+.sub-cell { color: var(--faint); font-size: 12px; }
+
+/* 内置平台：两列，卡片横排（图标左、文案两行、按钮靠右），窄屏自动回落成一列 */
+.preset-grid { grid-template-columns: repeat(auto-fill, minmax(360px, 1fr)); }
+.preset-card {
+  display: flex; flex-direction: column; justify-content: space-between; gap: 12px;
+  min-height: 118px; padding: 14px 16px;
+  background: var(--surface);
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius);
+}
+.preset-main { display: flex; align-items: flex-start; gap: 10px; min-width: 0; }
+.preset-text { min-width: 0; }
+.preset-text h3 { margin: 0 0 3px; font-size: 13px; font-weight: 600; }
+.preset-text .meta { font-size: 12px; color: var(--muted); line-height: 1.55; }
+.preset-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; }
+
+@media (min-width: 1100px) {
+  .preset-card { flex-direction: row; align-items: center; min-height: 0; padding: 12px 16px; }
+  .preset-main { align-items: center; }
+  .preset-actions { flex: none; }
+}
+
 .top-btn {
   display: inline-flex; align-items: center; gap: 6px;
   height: 32px; padding: 0 9px;
@@ -1447,22 +1494,21 @@ html[data-lang='en'] .doc[data-lang-block='en'] { display: block; }
   display: flex; flex-direction: column; align-items: flex-end; gap: 6px;
   flex: 0 0 auto; margin-left: auto;
 }
-/* 间隔 + 阈值 + 保存 收进一块浅底面板，按钮单独一行放下面 */
-.monitor-sync-controls {
-  display: flex; flex-direction: column; align-items: flex-end; gap: 6px;
-  flex: 0 0 auto; margin-left: auto;
-}
-/* 设置面板 + 两个按钮纵向两行，靠右；搜索框只跟最后一行对齐 */
+/* 配置组：一个浅框把「两个输入 + 保存」包起来；标签用 placeholder 嵌在输入框里，
+   输入后自动消失，所以不需要额外的文字行、高度和其他控件一致 */
 .sync-panel {
-  display: flex; align-items: flex-end; gap: 8px;
-  padding: 6px 10px 7px;
-  background: var(--hover);
+  display: flex; align-items: center; gap: 8px;
+  height: 30px; padding: 2px 4px;
+  background: var(--bg);
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: 8px;
 }
-.sync-panel .field { margin: 0; flex: none; }
-.sync-panel .field > span { font-size: 11px; white-space: nowrap; color: var(--muted); }
-.sync-panel input[type='number'] { width: 76px; background: var(--surface); }
+.sync-panel input[type='number'] {
+  width: 100px; height: 24px; padding: 0 9px; border-radius: 7px;
+  font-size: 12px;
+}
+.sync-panel input[type='number']::placeholder { color: var(--faint); }
+.sync-panel button.primary { height: 24px; padding: 0 12px; border-radius: 7px; }
 .sync-actions { display: flex; gap: 8px; align-items: flex-end; }
 .sync-actions button { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
 .sync-actions button svg { width: 14px; height: 14px; opacity: .8; }
@@ -1472,23 +1518,61 @@ html[data-lang='en'] .doc[data-lang-block='en'] { display: block; }
 .monitor-sync-controls button { display: inline-flex; align-items: center; gap: 6px; }
 .monitor-sync-controls button svg { width: 14px; height: 14px; opacity: .75; }
 
-/* 2×2：标题 | 设置面板；搜索+翻页 | 两个按钮。两行都填满，没有空格子 */
+/* 站点页头部：两行。
+   第 1 行 只有标题 + 灰说明；
+   第 2 行 一条 flex：搜索 · 分页 · 弹性留白 · 配置组（间隔/阈值/保存）· 动作按钮（立即同步/新增站点）
+   全部垂直居中、同高，窗口变窄时只压缩搜索框，不换行 */
 .sites-head {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: end;
-  gap: 6px 12px;
-  margin-bottom: 8px;
+  display: flex; flex-direction: column; gap: 10px;
+  margin-bottom: 14px;
 }
-.sites-title-block { grid-column: 1; grid-row: 1; display: flex; align-items: baseline; gap: 10px; min-width: 0; }
-.sites-title-block h3 { margin: 0; font-size: 15px; font-weight: 600; }
-.sites-title-block .hint { margin: 0; }
-.sites-head-right { grid-column: 2; grid-row: 1; justify-self: end; }
-.sites-search { grid-column: 1; grid-row: 2; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.sites-search input[type='search'] { width: 220px; }
-.sites-actions { grid-column: 2; grid-row: 2; justify-self: end; display: flex; align-items: center; gap: 8px; }
-.sites-actions button { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.sites-title-block { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
+.sites-title-block h3 {
+  margin: 0; font-size: 16px; font-weight: 600; letter-spacing: -0.1px; white-space: nowrap;
+}
+.sites-title-block .hint {
+  margin: 0; font-size: 12px; color: var(--faint);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.sites-bar {
+  display: flex; align-items: center; gap: 10px;
+  flex-wrap: nowrap; min-width: 0;
+}
+.sites-bar .grow { flex: 1 1 auto; min-width: 8px; }
+/* 配置区与按钮组不参与压缩，宽度不够时只让搜索框收 */
+.sites-bar > .sync-panel { flex: none; }
+.sites-bar > input[type='search'] {
+  flex: 0 1 220px; min-width: 108px; height: 30px;
+}
+.sites-bar .site-pager {
+  display: inline-flex; align-items: center; gap: 8px;
+  flex: none; white-space: nowrap;
+}
+.sites-actions {
+  flex: none;
+  display: flex; align-items: center; gap: 8px; white-space: nowrap;
+}
+.sites-actions button { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; height: 30px; }
 .sites-actions button svg { width: 14px; height: 14px; opacity: .8; }
+
+/* 窄窗口：先收搜索框，其次收分页里的区间文字，配置与动作按钮永远完整 */
+@media (max-width: 1180px) {
+  .sites-bar > input[type='search'] { flex-basis: 170px; }
+}
+@media (max-width: 1100px) {
+  /* 窄屏把两个输入框收窄，占位提示仍完整可读（放不下时浏览器自己截断） */
+  .sites-bar > .sync-panel input[type='number'] { width: 92px; }
+}
+@media (max-width: 1040px) {
+  /* 只让「显示 1-9，共 13 个」让位，页码 1/2 必须留着 */
+  .sites-bar .site-pager .range { display: none; }
+  .sites-title-block .hint { display: none; }
+  /* 再把间距与配置输入压一档，保证最右侧按钮完整可见 */
+  .sites-bar { gap: 8px; }
+  .sites-bar > .sync-panel { padding: 4px 6px; gap: 6px; }
+  .sites-bar > .sync-panel input[type='number'] { width: 62px; }
+  .sites-bar .site-pager { gap: 6px; }
+}
 
 /* 拖拽时的「放到最前 / 最后」落点：分页时别的页卡片不在 DOM 里，靠它跨页。
    用绝对定位浮在卡片区上下沿，出现时不挤动布局（否则一按就整页跳一下）。 */
@@ -1680,7 +1764,7 @@ body.prov-dragging .drop-zone { display: flex; }
 .monitor-toolbar .monitor-settings { margin-top: 0; flex-direction: row; align-items: flex-end; gap: 10px 14px; flex-wrap: wrap; }
 .monitor-toolbar .monitor-settings .field { font-size: 11px; gap: 3px; }
 .monitor-toolbar .monitor-settings .field input { width: 92px; }
-.monitor-toolbar-hint { flex: 1 1 240px; min-width: 200px; font-size: 11.5px; line-height: 1.6; color: var(--faint); }
+.monitor-toolbar-hint { flex: 1 1 240px; min-width: 200px; font-size: 12px; line-height: 1.6; color: var(--faint); }
 
 .empty.small { padding: 18px 0; }
 .empty.small h3 { font-size: 13px; }

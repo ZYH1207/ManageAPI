@@ -488,6 +488,7 @@ Site names in the demo data (云雀 / 星链 / 极光 / 苍穹) are entirely fic
 ## Feedback
 
 - Issues: <https://github.com/ZYH1207/ManageAPI/issues>
+- QQ group: 361801207
 - Email: <2385377554@qq.com>
 - Blog: <https://zyh1207.github.io/>
 

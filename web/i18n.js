@@ -576,6 +576,8 @@ Object.assign(EN, {
   // 概览的一句话结论（带 <strong>）
   '{model} 目前 {provider} 最便宜，{price}/百万 token，比最贵的省 {pct}%':
     '{provider} is the cheapest for {model} at {price}/Mtok — {pct}% below the priciest',
+  '此刻 {model} 在 {provider} 最便宜，{price} / 百万 token，比最贵的一家省 {pct}%。':
+    'Right now {provider} is the cheapest for {model} — {price} / Mtok, {pct}% less than the priciest.',
 })
 
 // 第三遍：按真实渲染出来的原文校正（词典 key 必须是「空白已归一化」的原文）

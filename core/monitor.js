@@ -11,6 +11,7 @@
  */
 
 import { offerCost } from './pricing.js'
+import { ensureFx } from './fx.js'
 
 /** 各类时序数据的保留上限。按「每站每小时一个点」算，4000 点≈5 个站 1 个月。 */
 const KEEP = {
@@ -85,7 +86,8 @@ function lowBalanceThreshold(settings, currency) {
   const thresholdUsd = Number.isFinite(rawUsd) && rawUsd >= 0 ? rawUsd : 10
   if (thresholdUsd === 0) return null
   if (String(currency || 'USD').toUpperCase() === 'CNY') {
-    const fx = Number(settings.fxUsdCny) || 7.2
+    // 汇率真源在 fx 模块，别读兼容镜像
+    const fx = Number(ensureFx(settings).rates.CNY) || 7.2
     return thresholdUsd * fx
   }
   return thresholdUsd
@@ -335,7 +337,7 @@ function recentDays(count, now = new Date()) {
  * 美元站按汇率折成人民币再相加——不折算的话「$5 + ¥10」这种加法在图上没有意义。
  */
 function buildBalanceSeries(m, days, settings = {}) {
-  const fx = Number(settings.fxUsdCny) || 7.2
+  const fx = Number(ensureFx(settings).rates.CNY) || 7.2
   const byProvider = new Map()
   for (const point of m.balance) {
     if (!byProvider.has(point.providerId)) byProvider.set(point.providerId, [])

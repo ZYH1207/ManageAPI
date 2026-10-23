@@ -43,10 +43,17 @@ function showUsd() {
 function priceSym() {
   return showUsd() ? '$' : '¥'
 }
+/** 1 USD = ? CNY。真源是 settings.fx.rates.CNY，fxUsdCny 只是兼容镜像 */
+function rateCny() {
+  const fromFx = Number(state?.settings?.fx?.rates?.CNY)
+  if (Number.isFinite(fromFx) && fromFx > 0) return fromFx
+  const legacy = Number(state?.settings?.fxUsdCny)
+  return Number.isFinite(legacy) && legacy > 0 ? legacy : 7.2
+}
 function dispPrice(cny) {
   if (cny === null || cny === undefined || !Number.isFinite(cny)) return null
   if (!showUsd()) return cny
-  return cny / (Number(state?.settings?.fxUsdCny) || 7.2)
+  return cny / rateCny()
 }
 /** 价格文本，例：¥0.29 或 $0.041 */
 function priceText(cny) {
@@ -271,15 +278,15 @@ function headlineHtml() {
   const line = state.headline
   if (!line) return ''
   // 整句走 t()：中英语序不同，拆成片段翻会串行
-  const sentence = t('{model} 目前 {provider} 最便宜，{price}/百万 token，比最贵的省 {pct}%', {
+  const sentence = t('此刻 {model} 在 {provider} 最便宜，{price} / 百万 token，比最贵的一家省 {pct}%。', {
     model: esc(line.modelKey),
     provider: `<strong>${esc(line.providerName)}</strong>`,
     price: `<strong>${priceText(line.price)}</strong>`,
     pct: `<strong>${line.spreadPct}%</strong>`,
   })
+  // 不再挂「当前最优选择」小标题：一句话自己说清楚，标题交给页面头
   return `
     <div class="headline">
-      <div class="kicker">当前最优选择</div>
       <div class="line">${sentence}</div>
     </div>`
 }
@@ -441,7 +448,7 @@ function renderOverview() {
     const hasQuota = typeof provider.quotaRemaining === 'number'
     const quota = hasQuota
       ? provider.currency === 'USD'
-        ? provider.quotaRemaining * state.settings.fxUsdCny
+        ? provider.quotaRemaining * rateCny()
         : provider.quotaRemaining
       : 0
     const rank = rankingMap.get(provider.id)
@@ -742,7 +749,7 @@ function providersHtml({ withForm = true, panel = '', actions = '' } = {}) {
     const hasQuota = typeof p.quotaRemaining === 'number'
     const quota = hasQuota
       ? p.currency === 'USD'
-        ? p.quotaRemaining * state.settings.fxUsdCny
+        ? p.quotaRemaining * rateCny()
         : p.quotaRemaining
       : 0
 
@@ -792,7 +799,7 @@ function providersHtml({ withForm = true, panel = '', actions = '' } = {}) {
     // 这个站有多少模型落在免费池里（后端算好名字，这里只数）
     const freeNames = Array.isArray(p.freeModels) ? p.freeModels : []
     // 告警阈值是人民币；站点余额多为美元，比较和显示都要先换成站点币种
-    const fxRate = Number(state.settings.fxUsdCny) || 7.2
+    const fxRate = rateCny()
     // 阈值设置里存的是美元，展示时换成站点币种
     const warnUsd = Number(state.settings.balanceWarnUsd ?? state.settings.balanceWarnCny) || 0
     const inUsd = p.currency === 'USD'
@@ -928,7 +935,7 @@ function providersHtml({ withForm = true, panel = '', actions = '' } = {}) {
   // 站点多了以后一屏放不下：搜索 + 分页（每页 9 张，和 upstream-ops 一样）
   // 翻页信息跟着搜索框走，不单独占一行
   const pager = `<span class="site-pager">
-      <span class="hint">${t('显示 {from}-{to}，共 {n} 个', {
+      <span class="hint range">${t('显示 {from}-{to}，共 {n} 个', {
         from: matched.length ? (sitePage - 1) * SITE_PAGE_SIZE + 1 : 0,
         to: Math.min(sitePage * SITE_PAGE_SIZE, matched.length),
         n: matched.length,
@@ -938,19 +945,20 @@ function providersHtml({ withForm = true, panel = '', actions = '' } = {}) {
       <button class="ghost tiny" data-act="site-page" data-page="${sitePage + 1}" ${sitePage >= pageCount ? 'disabled' : ''}>下一页</button>
     </span>`
 
-  // 2×2 网格：标题 | 设置面板，搜索+翻页 | 两个按钮——两行都被填满，不留空档
+  // 头部两行：标题 + 说明 / 右侧「配置卡 + 按钮组」；第二行搜索框 + 分页
   const header = state.providers.length > 0
     ? `<div class="sites-head">
         <div class="sites-title-block">
           <h3>站点余额与分组</h3>
           <span class="hint">分组倍率来自站点公布的可用渠道</span>
         </div>
-        <div class="sites-head-right">${panel}</div>
-        <div class="sites-search">
+        <div class="sites-bar">
           <input id="site-search" type="search" placeholder="${t('搜索站点名或地址')}" value="${esc(siteQuery)}" />
           ${pager}
+          <span class="grow"></span>
+          ${panel}
+          <div class="sites-actions">${actions}</div>
         </div>
-        <div class="sites-actions">${actions}</div>
       </div>`
     : ''
 
@@ -1061,6 +1069,38 @@ function closeAddProvider() {
 }
 
 /** 卡片上的「密钥 / 分组倍率」：把卡片里藏着的详情按 pane 取出来放进弹窗 */
+/**
+ * 诊断信息只读框：剪贴板不可用时的兜底，让用户自己选中复制。
+ * 不走 console，避免把可能含站点信息的原文留在控制台。
+ */
+function showDiagnoseBox(text) {
+  const old = document.getElementById('diagnose-box')
+  if (old) old.remove()
+  const wrap = document.createElement('div')
+  wrap.id = 'diagnose-box'
+  wrap.className = 'modal'
+  wrap.innerHTML = `
+    <div class="modal-backdrop" data-act="close-diagnose"></div>
+    <div class="modal-panel" style="max-width:760px">
+      <div class="modal-head">
+        <b>${t('诊断信息')}</b>
+        <button class="ghost" data-act="close-diagnose">${t('关闭')}</button>
+      </div>
+      <div class="modal-body">
+        <p class="hint" style="margin:0 0 8px">${t('下面这段可以直接全选复制，发给开发者定位问题。')}</p>
+        <textarea class="diagnose-text" readonly rows="15"></textarea>
+      </div>
+    </div>`
+  wrap.querySelector('.diagnose-text').value = text
+  document.body.appendChild(wrap)
+  wrap.addEventListener('click', (event) => {
+    if (event.target.closest('[data-act="close-diagnose"]')) wrap.remove()
+  })
+  const area = wrap.querySelector('.diagnose-text')
+  area.focus()
+  area.select()
+}
+
 function openProvPanel(button, pane) {
   const card = button.closest('.prov-card')
   const source = card?.querySelector('.prov-detail')
@@ -1148,6 +1188,7 @@ function freePlatformPane(platforms) {
     formOpen: platformFormOpen,
     presets: state.catalog?.platforms || [],
     pending: platformConnectPending,
+    icon,
   })
 }
 
@@ -1398,26 +1439,34 @@ function renderPricing() {
         : score?.probeTrusted === false
           ? ' <span class="badge warn">可疑</span>'
           : ''
-      const cacheNote =
+      const cacheCell =
         row.cacheHitRate === null || row.cacheHitRate === undefined
-          ? ''
-          : row.cacheHitRate > 0
-            ? `<div class="sub">缓存 ${Math.round(row.cacheHitRate * 100)}%</div>`
-            : '<div class="sub">无缓存</div>'
+          ? '—'
+          : `${Math.round(row.cacheHitRate * 100)}%`
+      // 模式只看 offer.pricingMode，不能拿 row.ratio 推断：
+      // 切成「倍率」但还没填倍率时 ratio 是 null，会被误判成手动
+      const mode = row.pricingMode === 'ratio' ? 'ratio' : 'manual'
+      const modeCell = `
+        <div class="seg-mini">
+          <button class="${mode === 'ratio' ? 'is-on' : ''}" data-act="offer-mode" data-mode="ratio" title="按分组倍率折算">倍率</button>
+          <button class="${mode === 'manual' ? 'is-on' : ''}" data-act="offer-mode" data-mode="manual" title="直接填单价">价格</button>
+        </div>`
       return `
       <tr class="${row.isCheapest ? 'cheapest' : ''}" data-offer="${esc(row.offerId)}">
         <td>${esc(providerName(row.providerId))}</td>
-        <td class="mono">${esc(row.upstreamName)}${badge}${cacheNote}</td>
+        <td class="mono">${esc(row.upstreamName)}${badge}</td>
+        <td class="num sub-cell">${cacheCell}</td>
         <td><input class="group-input" type="text" placeholder="默认" value="${esc(row.group || '')}" data-field="group" /><button class="ghost tiny" data-act="dup-offer" title="按这个模型再建一个分组">＋</button></td>
-        <td class="num"><input type="number" step="0.001" placeholder="${row.ratio ? '按倍率' : '—'}" value="${row.inPrice ?? ''}" data-field="inPrice" /></td>
-        <td class="num"><input type="number" step="0.001" placeholder="${row.ratio ? '按倍率' : '—'}" value="${row.outPrice ?? ''}" data-field="outPrice" /></td>
+        <td>${modeCell}</td>
+        <td class="num"><input type="number" step="0.001" placeholder="—" value="${row.inPrice ?? ''}" data-field="inPrice" ${mode === 'ratio' ? 'disabled title="当前按倍率算，切到「价格」才能填"' : ''} /></td>
+        <td class="num"><input type="number" step="0.001" placeholder="—" value="${row.outPrice ?? ''}" data-field="outPrice" ${mode === 'ratio' ? 'disabled title="当前按倍率算，切到「价格」才能填"' : ''} /></td>
         <td>
           <select data-field="currency" style="width:70px">
             <option value="USD" ${row.currency === 'USD' ? 'selected' : ''}>USD</option>
             <option value="CNY" ${row.currency === 'CNY' ? 'selected' : ''}>CNY</option>
           </select>
         </td>
-        <td class="num"><input class="ratio" type="number" step="0.01" placeholder="倍率" value="${row.ratio ?? ''}" data-field="ratio" /></td>
+        <td class="num"><input class="ratio" type="number" step="0.01" placeholder="倍率" value="${row.ratio ?? ''}" data-field="ratio" ${mode === 'manual' ? 'disabled title="当前按手填单价算，切到「倍率」才能填"' : ''} /></td>
         <td class="num">${row.ttftMs ? `${row.ttftMs}ms` : '—'}</td>
         <td class="num">${row.blendedCnyPerMtok === null ? '—' : priceText(row.blendedCnyPerMtok)}${row.hasOffPeak && row.offPeakBlendedCnyPerMtok !== null ? `<div class="sub">空闲 ${priceText(row.offPeakBlendedCnyPerMtok)}</div>` : ''}</td>
         <td class="num">${row.isCheapest ? '<span class="badge ok">最便宜</span>' : row.deltaPct === null ? '—' : `+${row.deltaPct}%`}</td>
@@ -1433,9 +1482,10 @@ function renderPricing() {
           <span class="count">${group.providerCount} 个站 · ${group.rows.length} 条供给</span>
         </div>
         ${isCollapsed ? '' : `
-        <table>
+        <table class="pricing-table">
           <thead><tr>
-            <th>站点</th><th>上游模型名</th><th>分组</th>
+            <th>站点</th><th>上游模型名</th><th class="num">缓存</th><th>分组</th>
+            <th>模式</th>
             <th class="num">输入价</th><th class="num">输出价</th>
             <th>币种</th><th class="num">倍率</th>
             <th class="num">首字</th><th class="num">${priceSym()}/百万 token</th><th class="num">价差</th>
@@ -2350,7 +2400,7 @@ function renderBenchmark() {
       </label>
       <label class="field-inline" title="${t('只影响人民币标价/展示的折算')}">
         <span data-i18n="汇率 USD→CNY">汇率 USD→CNY</span>
-        <input id="fx-input" data-act="fx" type="number" step="0.0001" min="1" value="${esc(state.settings.fxUsdCny)}" style="width:96px" />
+        <input id="fx-input" data-act="fx" type="number" step="0.0001" min="1" value="${esc(rateCny())}" style="width:96px" />
       </label>
       <span class="fx-note">${fxNoteHtml()}</span>
       <button class="ghost tiny" data-act="fx-refresh">${t('刷新汇率')}</button>
@@ -2591,7 +2641,7 @@ function renderMonitor() {
       sub: latestBalance?.total != null
         ? (showUsd()
             ? `≈ ¥${money(latestBalance.total)}（按汇率折算）`
-            : `≈ $${money(latestBalance.total / (Number(state.settings?.fxUsdCny) || 7.2))}（按汇率折算）`)
+            : `≈ $${money(latestBalance.total / rateCny())}（按汇率折算）`)
         : (kpi.lowest
             ? t('最低：{name} {amount}', {
                 name: kpi.lowest.name,
@@ -2753,14 +2803,8 @@ function renderMonitor() {
   // 它和下面那排站点卡是同一件事：改完间隔/阈值，顺手就在这儿点「立即同步」。
   const syncPanel = `
     <div class="sync-panel">
-      <label class="field">
-        <span title="0 = 关闭">同步间隔（分钟）</span>
-        <input type="number" min="0" step="5" id="monitor-interval" value="${data.settings?.monitorIntervalMinutes ?? 30}" />
-      </label>
-      <label class="field">
-        <span title="0 = 不告警。美元口径，人民币站按汇率折算后比较">告警阈值（$）</span>
-        <input type="number" min="0" step="0.5" id="monitor-warn" value="${data.settings?.balanceWarnUsd ?? 1.5}" />
-      </label>
+      <input type="number" min="0" step="5" id="monitor-interval" placeholder="同步间隔（分钟）" title="同步间隔（分钟），0 = 关闭" value="${data.settings?.monitorIntervalMinutes ?? 30}" />
+      <input type="number" min="0" step="0.5" id="monitor-warn" placeholder="告警阈值（$）" title="余额告警阈值（美元），0 = 不告警" value="${data.settings?.balanceWarnUsd ?? 1.5}" />
       <button class="primary" data-act="monitor-save-settings">保存</button>
     </div>`
 
@@ -2927,9 +2971,9 @@ async function withBusy(button, fn) {
  * qq 和 email 点击是复制，其余点击是打开链接。value 留空则该项不显示。
  */
 const CONTACTS = [
-  { type: 'github', label: 'GitHub', value: 'https://github.com/ZYH1207', desc: '源码与更新' },
+  { type: 'github', label: 'GitHub', value: 'https://github.com/ZYH1207/ManageAPI', desc: '源码与更新' },
   { type: 'blog', label: '博客', value: 'https://zyh1207.github.io/', desc: '使用笔记与踩坑记录' },
-  { type: 'qq', label: 'QQ 群', value: '', desc: '问题交流' },
+  { type: 'qq', label: 'QQ 群', value: '361801207', desc: '问题交流' },
   { type: 'email', label: '邮箱', value: '2385377554@qq.com', desc: '合作与反馈' },
 ]
 
@@ -3549,8 +3593,10 @@ document.addEventListener('click', async (event) => {
           await navigator.clipboard.writeText(text)
           toast('诊断信息已复制，发给开发者就能定位')
         } catch {
-          console.log('[diagnose]', text)
-          toast('复制失败，诊断信息已打印到控制台', true)
+          // 剪贴板不可用时的兜底：弹一个只读文本框让用户自己复制，
+          // 不要把可能含站点信息的原文打到控制台
+          showDiagnoseBox(text)
+          toast('已打开诊断信息，手动复制一下')
         }
       } catch (error) {
         toast(error.message, true)
@@ -3815,6 +3861,18 @@ document.addEventListener('click', async (event) => {
       state = await api('DELETE', `/api/benchmarks/${encodeURIComponent(key)}`)
       render()
       toast('已删除')
+    })
+    return
+  }
+
+  if (action === 'offer-mode') {
+    const offerId = actionButton.closest('[data-offer]').dataset.offer
+    const mode = actionButton.dataset.mode === 'ratio' ? 'ratio' : 'manual'
+    await withBusy(actionButton, async () => {
+      // PATCH 的返回值就是完整 state，直接用它重绘
+      state = await api('PATCH', `/api/offers/${offerId}`, { pricingMode: mode })
+      render()
+      toast(mode === 'ratio' ? '已切成「按倍率」：价格 = 基准价 × 倍率' : '已切成「按价格」：直接填输入/输出单价')
     })
     return
   }

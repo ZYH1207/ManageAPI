@@ -112,19 +112,33 @@ listeners.set('Fetch.requestPaused', async ({ requestId, request }) => {
 })
 await send('Fetch.enable', { patterns: [{ urlPattern: '*/api/providers/*' }] })
 
-const pages = ['overview', 'monitor', 'providers', 'pricing', 'decision', 'probes', 'gateway', 'usage', 'benchmark']
-for (const name of pages) {
+// name 决定文件名，hash 决定抓哪一页（站点页已并入监控页，保留 providers 这个名字给 README 用）
+const pages = [
+  { name: 'overview', hash: '#overview' },
+  { name: 'monitor', hash: '#monitor' },
+  { name: 'providers', hash: '#monitor' },
+  { name: 'free', hash: '#free' },
+  { name: 'free-platform', hash: '#free/platform' },
+  { name: 'free-relay', hash: '#free/relay' },
+  { name: 'pricing', hash: '#pricing' },
+  { name: 'decision', hash: '#decision' },
+  { name: 'probes', hash: '#probes' },
+  { name: 'gateway', hash: '#gateway' },
+  { name: 'usage', hash: '#usage' },
+  { name: 'benchmark', hash: '#benchmark' },
+]
+for (const { name, hash } of pages) {
   console.log(`抓 ${name}…`)
-  await goto(`#${name}`)
+  await goto(hash)
   await shot(name)
 }
 
 console.log('抓分组弹窗…')
-await goto('#providers')
-await evalJs(`document.querySelector('[data-act="open-group-picker"]').click()`)
+await goto('#monitor')
+await evalJs(`document.querySelector('[data-act="prov-panel"][data-panel="rates"]').click()`)
 await sleep(1200)
 await shot('groups')
-await evalJs(`document.querySelector('[data-act="close-group-modal"]').click()`)
+await evalJs(`document.querySelector('[data-act="close-prov-panel"]').click()`)
 await sleep(300)
 
 console.log('抓使用说明…')
