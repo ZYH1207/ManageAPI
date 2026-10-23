@@ -794,3 +794,29 @@ Object.assign(EN, {
   '已刷新': 'Refreshed',
   '账号池与自动连接还在做，先用「手动添加」': 'Account pool and auto-connect are still in progress — use manual entry for now',
 })
+
+// 免费页 · 平台侧「手动添加」表单
+Object.assign(EN, {
+  '平台积分可以来自 WorkBuddy、Trae 等 Agent 平台。自动连接还在做，现在可以先手动记一个额度。':
+    'Platform credits can come from agents like WorkBuddy or Trae. Auto-connect is still in progress — you can record a quota manually for now.',
+  '手动添加': 'Add manually',
+  '连接平台': 'Connect platform',
+  'WorkBuddy / Trae 自动连接开发中': 'WorkBuddy / Trae auto-connect is in progress',
+  '添加一个平台': 'Add a platform',
+  '只记额度也能用：能算「还能撑几天」、到期前提醒你。自动读取模型目录要等连接器。':
+    'Recording just the quota is still useful: it estimates days left and warns you before it runs out. Reading the catalogue automatically needs a connector.',
+  '平台名': 'Platform name',
+  '额度上限': 'Quota limit',
+  '单位': 'Unit',
+  '积分': 'credits',
+  '窗口': 'Window',
+  '每天': 'Daily',
+  '每月': 'Monthly',
+  '先填一个平台名': 'Enter a platform name first',
+  '已添加「{name}」': 'Added "{name}"',
+})
+
+Object.assign(EN, {
+  // 额度单位可能不是积分（次 / token），所以标题用「剩余额度」而不是「剩余积分」
+  '剩余额度': 'Quota left',
+})

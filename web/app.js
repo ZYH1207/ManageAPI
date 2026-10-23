@@ -798,6 +798,7 @@ function freePlatformPane(platforms) {
     accounts: state.freePool?.accounts || [],
     esc,
     t,
+    formOpen: platformFormOpen,
   })
 }
 
@@ -808,25 +809,8 @@ function renderFree() {
   const relay = pool.relay || []
   const platforms = pool.platforms || []
 
-  // 两栏都没内容时给一个「两个来源」的引导，不落到某一栏的空态
-  if (relay.length === 0 && platforms.length === 0) {
-    view.innerHTML = `
-      ${freeNoteHtml()}
-      <div class="empty">
-        <h3>免费额度有两个来源</h3>
-        <p style="text-align:left;display:inline-block;line-height:1.9;margin:8px 0 16px">
-          <b>① 中转站的免费模型</b><br />
-          去「站点」页点「导入倍率」，实际价为 0 的模型会自动出现在这里<br /><br />
-          <b>② 平台的免费积分</b><br />
-          连接 WorkBuddy、Trae 等平台，或手动填一个额度
-        </p>
-        <div>
-          <button class="primary" data-goto="providers">去站点导入</button>
-        </div>
-      </div>`
-    return
-  }
-
+  // 分段控件永远显示：它是这一页的导航，藏起来会让用户以为「没有免费模型就没有平台栏」。
+  // 每栏各自处理空态，各给各的下一步动作。
   view.innerHTML = `
     ${freeNoteHtml()}
     ${freeSegHtml(relay.length, platforms.length)}
@@ -1691,6 +1675,9 @@ const collapsedPanels = new Set()
 /** 免费页当前栏：'relay'（中转站免费模型）| 'platform'（平台积分） */
 let freePane = 'relay'
 
+/** 平台侧「手动添加」表单是否展开 */
+let platformFormOpen = false
+
 /** 搜索框内容 */
 const filters = { pricing: '', decision: '', benchmark: '' }
 
@@ -1941,6 +1928,53 @@ document.addEventListener('click', async (event) => {
   const action = actionButton.dataset.act
   const card = actionButton.closest('[data-provider]')
   const providerId = card?.dataset.provider
+
+  if (action === 'platform-add') {
+    platformFormOpen = true
+    renderFree()
+    $('#pf-label')?.focus()
+    return
+  }
+
+  if (action === 'platform-cancel') {
+    platformFormOpen = false
+    renderFree()
+    return
+  }
+
+  if (action === 'platform-save') {
+    const label = ($('#pf-label')?.value || '').trim()
+    if (!label) {
+      toast('先填一个平台名', true)
+      $('#pf-label')?.focus()
+      return
+    }
+    const limitRaw = $('#pf-limit')?.value ?? ''
+    const limit = limitRaw === '' ? null : Number(limitRaw)
+    const unit = $('#pf-unit')?.value || 'credit'
+    const window = $('#pf-window')?.value || 'day'
+    await withBusy(actionButton, async () => {
+      try {
+        // 先建平台，再挂一个账号——额度挂在账号上，一个平台可以多个账号
+        let result = await api('POST', '/api/free/platforms', { connectorId: 'manual', label })
+        const platformId = result.platformResult?.id
+        if (platformId && limit !== null && Number.isFinite(limit)) {
+          result = await api('POST', '/api/free/accounts', {
+            platformId,
+            label: '主账号',
+            quota: { unit, limit, used: 0, window },
+          })
+        }
+        state = result
+        platformFormOpen = false
+        render()
+        toast(`已添加「${label}」`)
+      } catch (error) {
+        toast(error.message, true)
+      }
+    })
+    return
+  }
 
   if (action === 'platform-checkin') {
     const platformId = actionButton.dataset.platform

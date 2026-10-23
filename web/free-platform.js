@@ -86,17 +86,65 @@ function avatarHtml(label, esc) {
   return `<span style="width:34px;height:34px;border-radius:9px;flex:none;display:flex;align-items:center;justify-content:center;font-size:15px;font-weight:600;color:#fff;background:hsl(${hash} 46% 45%)">${esc(initial)}</span>`
 }
 
-export function renderFreePlatformPane({ platforms = [], accounts = [], esc = escapeHtml, t = defaultT } = {}) {
+function emptyPaneHtml(esc, t) {
+  return `
+    <div class="empty">
+      <h3>${esc(t('还没有连接平台'))}</h3>
+      <p>${esc(t('平台积分可以来自 WorkBuddy、Trae 等 Agent 平台。自动连接还在做，现在可以先手动记一个额度。'))}</p>
+      <div style="display:flex;gap:8px;justify-content:center">
+        <button class="primary" data-act="platform-add">${esc(t('手动添加'))}</button>
+        <button class="ghost" data-act="platform-connect" title="${esc(t('WorkBuddy / Trae 自动连接开发中'))}">${esc(t('连接平台'))}</button>
+      </div>
+    </div>`
+}
+
+/** 手动建一个平台：只记额度，不依赖任何连接器 */
+function manualFormHtml(esc, t) {
+  return `
+    <div class="form-card">
+      <h3 style="margin:0 0 4px">${esc(t('添加一个平台'))}</h3>
+      <p class="hint" style="margin:0 0 14px">${esc(t('只记额度也能用：能算「还能撑几天」、到期前提醒你。自动读取模型目录要等连接器。'))}</p>
+      <div class="inline-form" style="flex-wrap:wrap;gap:12px">
+        <label class="field-inline">${esc(t('平台名'))}
+          <input id="pf-label" type="text" placeholder="Trae" style="width:140px" />
+        </label>
+        <label class="field-inline">${esc(t('额度上限'))}
+          <input id="pf-limit" type="number" min="0" step="1" placeholder="100" style="width:90px" />
+        </label>
+        <label class="field-inline">${esc(t('单位'))}
+          <select id="pf-unit" style="width:88px">
+            <option value="credit">${esc(t('积分'))}</option>
+            <option value="request">${esc(t('次'))}</option>
+            <option value="token">token</option>
+          </select>
+        </label>
+        <label class="field-inline">${esc(t('窗口'))}
+          <select id="pf-window" style="width:88px">
+            <option value="day">${esc(t('每天'))}</option>
+            <option value="month">${esc(t('每月'))}</option>
+          </select>
+        </label>
+      </div>
+      <div class="form-actions">
+        <button class="primary" data-act="platform-save">${esc(t('保存'))}</button>
+        <button class="ghost" data-act="platform-cancel">${esc(t('取消'))}</button>
+      </div>
+    </div>`
+}
+
+export function renderFreePlatformPane({
+  platforms = [],
+  accounts = [],
+  esc = escapeHtml,
+  t = defaultT,
+  formOpen = false,
+} = {}) {
   const list = Array.isArray(platforms) ? platforms : []
   const allAccounts = Array.isArray(accounts) ? accounts : []
 
   if (list.length === 0) {
-    return `
-      <div class="empty">
-        <h3>${t('还没有连接平台')}</h3>
-        <p>${t('平台积分可以来自 WorkBuddy、Trae 等 Agent 平台。连接后能自动读模型目录、剩余积分与重置时间。')}</p>
-        <span class="badge">${t('连接功能开发中')}</span>
-      </div>`
+    // 空态必须自带「添加」入口：否则没有任何免费模型时，用户根本没法开始用平台栏
+    return formOpen ? manualFormHtml(esc, t) : emptyPaneHtml(esc, t)
   }
 
   // 「已连接」= 有落库 id 且没被显式标成未连接。
@@ -121,7 +169,7 @@ export function renderFreePlatformPane({ platforms = [], accounts = [], esc = es
     <div class="stats">
       ${statCard(t('已连接平台'), connected.length, t('个'))}
       ${statCard(t('账号'), allAccounts.length, t('个'))}
-      ${statCard(t('剩余积分'), fmt(creditTotal), '')}
+      ${statCard(t('剩余额度'), fmt(creditTotal), '')}
       ${statCard(t('今日已签'), `${checkedToday}/${allAccounts.length}`, '')}
     </div>`
 

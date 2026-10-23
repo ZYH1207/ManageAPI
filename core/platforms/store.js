@@ -140,9 +140,13 @@ export async function upsertPlatform(input = {}) {
 
   return mutateFree((db) => {
     const id = input.id ? String(input.id) : ''
+    // 真实连接器一个平台只有一个实例，重复 upsert 视为更新；
+    // 手动连接器允许建多个（Trae、WorkBuddy、别的），所以不去重。
     const existing = id
       ? db.platforms.find((p) => p.id === id)
-      : db.platforms.find((p) => p.connectorId === connectorId)
+      : connectorId === 'manual'
+        ? null
+        : db.platforms.find((p) => p.connectorId === connectorId)
 
     if (existing) {
       if (input.connectorId !== undefined) existing.connectorId = connectorId

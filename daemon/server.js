@@ -760,8 +760,9 @@ route('POST', /^\/api\/offers\/([\w-]+)\/free-quota$/, async (ctx) => {
 // ------------------------------------------------------------ 免费池 · 平台侧
 
 route('POST', /^\/api\/free\/platforms$/, async (ctx) => {
-  await platforms.upsertPlatform(ctx.body || {})
-  return buildState()
+  const platform = await platforms.upsertPlatform(ctx.body || {})
+  const state = await buildState()
+  return { ...state, platformResult: platform }
 })
 
 route('DELETE', /^\/api\/free\/platforms\/([\w-]+)$/, async (ctx) => {
@@ -770,8 +771,9 @@ route('DELETE', /^\/api\/free\/platforms\/([\w-]+)$/, async (ctx) => {
 })
 
 route('POST', /^\/api\/free\/accounts$/, async (ctx) => {
-  await platforms.addAccount(ctx.body || {})
-  return buildState()
+  const account = await platforms.addAccount(ctx.body || {})
+  const state = await buildState()
+  return { ...state, accountResult: account }
 })
 
 route('PATCH', /^\/api\/free\/accounts\/([\w-]+)$/, async (ctx) => {
