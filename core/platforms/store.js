@@ -112,10 +112,20 @@ function normalizeQuota(input) {
     const n = Number(value)
     return Number.isFinite(n) ? n : fallback
   }
+  // remaining：连接器读回来的「还剩多少」。平台侧套餐没有「总量」这个概念，
+  // 所以这个字段允许独立存在，limit/used 可以是 null。
+  const rawRemain = input.remaining
+  const remaining =
+    rawRemain === null || rawRemain === undefined || rawRemain === ''
+      ? null
+      : Number.isFinite(Number(rawRemain))
+        ? Number(rawRemain)
+        : null
   return {
     unit: ['credit', 'request', 'token'].includes(input.unit) ? input.unit : 'credit',
     limit: num(input.limit, 0),
     used: Math.max(0, num(input.used, 0)),
+    remaining,
     window: input.window === 'month' ? 'month' : 'day',
     resetAt: input.resetAt || null,
   }

@@ -47,6 +47,10 @@ function localDayKey(value = new Date()) {
 function remainingOf(account) {
   const quota = account?.quota
   if (!quota) return 0
+  // 连接器只能读到「还剩多少」，读不到「总量是多少」——那就直接用剩余量，
+  // 别硬造一个 limit 出来（会造成「已用 0/113」这种假进度）
+  const remain = Number(quota.remaining)
+  if (Number.isFinite(remain)) return Math.max(0, remain)
   const limit = Number(quota.limit)
   if (!Number.isFinite(limit)) return 0
   return Math.max(0, limit - (Number(quota.used) || 0))
@@ -59,7 +63,9 @@ function remainingOf(account) {
  * 所以只按第一份额度的单位汇总，其余忽略。
  */
 function aggregateQuota(accounts) {
-  const rows = accounts.map((a) => a?.quota).filter((q) => q && Number(q.limit) > 0)
+  const rows = accounts
+    .map((a) => a?.quota)
+    .filter((q) => q && (Number(q.limit) > 0 || Number.isFinite(Number(q.remaining))))
   if (rows.length === 0) return null
   const unit = rows[0].unit || 'credit'
   const same = rows.filter((q) => (q.unit || 'credit') === unit)
@@ -68,11 +74,15 @@ function aggregateQuota(accounts) {
     .map((q) => q.resetAt)
     .filter((at) => at && new Date(at).getTime() > now)
     .sort()
+  const hasLimit = same.some((q) => Number(q.limit) > 0)
   return {
     unit,
     window: same[0].window === 'month' ? 'month' : 'day',
+    // hasLimit=false 表示只知道剩余量、不知道总量：界面据此换一种说法
+    hasLimit,
     limit: same.reduce((sum, q) => sum + (Number(q.limit) || 0), 0),
     used: same.reduce((sum, q) => sum + (Number(q.used) || 0), 0),
+    remaining: same.reduce((sum, q) => sum + remainingOf({ quota: q }), 0),
     resetAt: resets[0] || null,
   }
 }
@@ -240,7 +250,7 @@ export function renderFreePlatformPane({
     const name = platform.label || platform.connectorId || '—'
     const unitLabel = t(UNIT_LABEL[quota?.unit] || '积分')
     // 剩余量跟着额度单位走：请求次数说成「积分」会让人误以为还有钱没用
-    const remaining = quota ? Math.max(0, quota.limit - quota.used) : 0
+    const remaining = quota ? remainingOf({ quota }) : 0
 
     const dot = `<span title="${esc(isOn ? t('已连接') : t('未连接'))}" style="display:inline-block;width:7px;height:7px;border-radius:50%;margin-left:7px;vertical-align:middle;background:${isOn ? 'var(--accent)' : 'var(--faint)'}"></span>`
     // 自动连接走的是平台未公开的接口，字段名有猜的成分，标出来免得用户以为是官方支持
@@ -259,26 +269,30 @@ export function renderFreePlatformPane({
     let body = ''
     if (isOn) {
       const when = t(quota?.window === 'month' ? '本月' : '今日')
-      const pct = quota && quota.limit > 0
+      // 只知道「还剩多少」时没有分母，画不出百分比进度——那就别画，直接报数
+      const hasLimit = Boolean(quota?.hasLimit)
+      const pct = hasLimit
         ? Math.min(100, Math.round((quota.used / quota.limit) * 100))
         : 0
       // 80% 变黄、100% 变红：额度和钱一样，快见底时要能一眼看出来
       const fillClass = pct >= 100 ? ' empty' : pct >= 80 ? ' warn' : ''
-      const quotaText = quota
-        ? t('{when}已用 {used}/{limit} {unit}', {
-            when,
-            used: fmt(quota.used),
-            limit: fmt(quota.limit),
-            unit: unitLabel,
-          })
-        : '—'
+      const quotaText = !quota
+        ? '—'
+        : hasLimit
+          ? t('{when}已用 {used}/{limit} {unit}', {
+              when,
+              used: fmt(quota.used),
+              limit: fmt(quota.limit),
+              unit: unitLabel,
+            })
+          : t('剩余 {n} {unit}', { n: fmt(quota.remaining), unit: unitLabel })
 
       // resetAt 可能没填（手动建的平台就是这样），按 window 推一个下次重置点，
       // 否则「下次重置：—」等于没告诉用户任何信息
       const resetText = relativeHours(resetAtOf(quota), t)
       body = `
         <div class="quota" style="margin-top:12px">
-          <div class="quota-track"><div class="quota-fill${fillClass}" style="width:${pct}%"></div></div>
+          ${hasLimit ? `<div class="quota-track"><div class="quota-fill${fillClass}" style="width:${pct}%"></div></div>` : ''}
           <span class="quota-text">${esc(quotaText)}</span>
         </div>
         <div class="hint">${esc(t('下次重置：{v}', { v: resetText }))}</div>`
@@ -299,7 +313,8 @@ export function renderFreePlatformPane({
     const actions = isOn
       ? `<button class="ghost" data-act="platform-checkin" data-platform="${esc(platform.id)}">${esc(t('签到'))}</button>
          <button class="ghost" data-act="platform-accounts" data-platform="${esc(platform.id)}">${esc(t('账号'))}</button>
-         <button class="ghost" data-act="platform-refresh" data-platform="${esc(platform.id)}">${esc(t('刷新'))}</button>`
+         <button class="ghost" data-act="platform-refresh" data-platform="${esc(platform.id)}">${esc(t('刷新'))}</button>
+         <button class="ghost" data-act="platform-diagnose" data-platform="${esc(platform.id)}" title="${esc(t('把平台接口的原始返回复制出来，字段对不上时用'))}">${esc(t('诊断'))}</button>`
       : isPending
         ? `<button class="ghost" data-act="platform-connect-reopen" data-platform="${esc(platform.id)}">${esc(t('重新打开授权页'))}</button>
            <button class="ghost" data-act="platform-connect-cancel" data-platform="${esc(platform.id)}">${esc(t('取消'))}</button>`

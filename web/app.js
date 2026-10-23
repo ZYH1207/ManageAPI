@@ -2170,6 +2170,27 @@ document.addEventListener('click', async (event) => {
     return
   }
 
+  if (action === 'platform-diagnose') {
+    const platformId = actionButton.dataset.platform
+    await withBusy(actionButton, async () => {
+      try {
+        const result = await api('POST', `/api/free/platforms/${platformId}/diagnose`, {})
+        const text = JSON.stringify(result.diagnose, null, 2)
+        // 诊断信息是给人看的（发给开发者定位字段），复制比弹窗实用
+        try {
+          await navigator.clipboard.writeText(text)
+          toast('诊断信息已复制，发给开发者就能定位')
+        } catch {
+          console.log('[diagnose]', text)
+          toast('复制失败，诊断信息已打印到控制台', true)
+        }
+      } catch (error) {
+        toast(error.message, true)
+      }
+    })
+    return
+  }
+
   if (action === 'platform-connect-reopen') {
     if (platformConnectPending?.authUrl) {
       window.open(platformConnectPending.authUrl, '_blank', 'noopener,noreferrer')

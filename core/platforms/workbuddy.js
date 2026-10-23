@@ -169,6 +169,26 @@ function pickCredential(json, nowMs) {
  * 顺序降级，宁可拿到一个偏保守的数字，也不要因为字段改名直接显示空。
  */
 function pickRemaining(data) {
+  // 腾讯云计费结构（实测）：data.Response.Data 里
+  //   TotalDosage —— 各套餐剩余额度之和，最省事也最准
+  //   Accounts[] —— 每个套餐一条，Status=3 表示已过期，CapacityRemain 是剩余
+  const billing = data?.Response?.Data
+  if (billing && typeof billing === 'object') {
+    const total = Number(billing.TotalDosage)
+    if (Number.isFinite(total)) return total
+    const accounts = Array.isArray(billing.Accounts) ? billing.Accounts : []
+    let sum = 0
+    let counted = 0
+    for (const account of accounts) {
+      if (Number(account?.Status) === 3) continue
+      const remain = Number(account?.CapacityRemain)
+      if (!Number.isFinite(remain)) continue
+      sum += remain
+      counted += 1
+    }
+    if (counted > 0) return sum
+  }
+
   const node = Array.isArray(data) ? data[0] : data
   if (!node || typeof node !== 'object') return null
 
@@ -192,6 +212,21 @@ function pickRemaining(data) {
 }
 
 function pickRefreshAt(data) {
+  // 套餐的 CycleEndTime 才是「什么时候刷新」，ExpiredTime 是这条套餐自己的失效时间。
+  // 取未过期账号里最近的一个未来时间点。
+  const billing = data?.Response?.Data
+  if (billing && typeof billing === 'object') {
+    const now = Date.now()
+    let best = null
+    for (const account of Array.isArray(billing.Accounts) ? billing.Accounts : []) {
+      if (Number(account?.Status) === 3) continue
+      const at = Date.parse(String(account?.CycleEndTime || '').replace(' ', 'T'))
+      if (!Number.isFinite(at) || at <= now) continue
+      if (best === null || at < best) best = at
+    }
+    if (best !== null) return new Date(best).toISOString()
+  }
+
   const node = Array.isArray(data) ? data[0] : data
   if (!node || typeof node !== 'object') return null
   return toIso(
@@ -520,7 +555,15 @@ export function createWorkbuddyConnector(options = {}) {
     })
     ensureBusinessOk(json, '读取积分余额')
     const data = payload(json)
-    return { remaining: pickRemaining(data), unit: 'credit', refreshAt: pickRefreshAt(data) }
+    const remaining = pickRemaining(data)
+    if (remaining === null) {
+      // 接口通了但字段名对不上。把原始返回带出来——只说「读不到」等于没说，
+      // 有了这段片段才能一次改对字段映射。
+      throw new Error(
+        `余额接口有响应，但没认出积分字段。返回片段：${JSON.stringify(json).slice(0, 400)}`,
+      )
+    }
+    return { remaining, unit: 'credit', refreshAt: pickRefreshAt(data) }
   }
 
   /**
@@ -561,6 +604,35 @@ export function createWorkbuddyConnector(options = {}) {
     return { ok: true, alreadyToday: false, reward, message: message || '签到成功' }
   }
 
+  /**
+   * 诊断：把几个只读接口的原始返回原样带出来。
+   *
+   * 这个平台的字段名是我从别处反推的，对不上时只能靠看真实返回来改。
+   * 比反复问「你看到什么」高效得多。
+   */
+  async function diagnose(account) {
+    const { credential, product } = await prepare(account)
+    const headers = authHeaders(credential, product)
+    const targets = {
+      userResource: ['/v2/billing/meter/get-user-resource', 'POST'],
+      checkinStatus: ['/v2/billing/meter/checkin-activity-status', 'POST'],
+      models: ['/v1/models', 'GET'],
+    }
+    const out = { product: product.id, endpoints: {} }
+    for (const [key, [path, method]] of Object.entries(targets)) {
+      try {
+        out.endpoints[key] = await request(`${product.endpoint}${path}`, {
+          method,
+          headers,
+          body: method === 'POST' ? {} : undefined,
+        })
+      } catch (error) {
+        out.endpoints[key] = { __error: error.message || String(error) }
+      }
+    }
+    return out
+  }
+
   return {
     id: connectorId,
     label: connectorLabel,
@@ -578,6 +650,7 @@ export function createWorkbuddyConnector(options = {}) {
     catalog,
     quota,
     checkin,
+    diagnose,
     saveCredential,
   }
 }

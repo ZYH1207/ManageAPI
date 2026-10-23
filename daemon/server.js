@@ -1156,12 +1156,14 @@ route('POST', /^\/api\/free\/platforms\/([\w-]+)\/refresh$/, async (ctx) => {
   // 只刷新余额：目录是锦上添花，失败了不该让整张卡片变成错误态
   const quota = await connector.quota(account)
   if (quota && Number.isFinite(Number(quota.remaining))) {
-    const limit = Number(account.quota?.limit)
+    // 连接器读回来的是「还剩多少」，没有「总量」这个概念——套餐是平台侧的，
+    // 我们不编造 limit。界面据此显示「剩余 N 积分」而不是「已用 x/y」。
     await platforms.updateAccount(account.id, {
       quota: {
         unit: quota.unit || account.quota?.unit || 'credit',
-        limit: Number.isFinite(limit) && limit > 0 ? limit : Number(quota.remaining),
-        used: Number.isFinite(limit) && limit > 0 ? Math.max(0, limit - Number(quota.remaining)) : 0,
+        remaining: Number(quota.remaining),
+        limit: null,
+        used: null,
         window: account.quota?.window || 'day',
         resetAt: quota.refreshAt || account.quota?.resetAt || null,
       },
@@ -1174,6 +1176,35 @@ route('POST', /^\/api\/free\/platforms\/([\w-]+)\/refresh$/, async (ctx) => {
 route('GET', /^\/api\/free\/ledger$/, async (ctx) => {
   const accountId = ctx.query?.get('accountId') || null
   return { ledger: await platforms.listLedger({ accountId, limit: 100 }) }
+})
+
+/** 把疑似凭据的字段打码，诊断信息要能直接贴给人看 */
+function redactSecrets(value, depth = 0) {
+  if (depth > 6 || value === null || typeof value !== 'object') return value
+  if (Array.isArray(value)) return value.map((v) => redactSecrets(v, depth + 1))
+  const out = {}
+  for (const [k, v] of Object.entries(value)) {
+    out[k] = /token|secret|password|authorization|cookie/i.test(k) ? '***' : redactSecrets(v, depth + 1)
+  }
+  return out
+}
+
+/**
+ * 诊断：把平台只读接口的原始返回带出来。
+ *
+ * 连接器里那些字段名是反推的，对不上时唯一可靠的解法是看真实响应。
+ * 前端点「诊断」后会把结果复制到剪贴板，用户贴给我就能一次改对。
+ */
+route('POST', /^\/api\/free\/platforms\/([\w-]+)\/diagnose$/, async (ctx) => {
+  const { platform, connector } = await platformConnector(ctx.params[0])
+  if (typeof connector.diagnose !== 'function') {
+    throw new HttpError(400, '这个平台的连接器没有诊断接口')
+  }
+  const accounts = await platforms.listAccounts(platform.id)
+  const account = accounts.find((a) => a.secret) || accounts[0]
+  if (!account?.secret) throw new HttpError(400, '还没有连接，先点「连接」')
+  const data = await connector.diagnose(account)
+  return { diagnose: redactSecrets(data) }
 })
 
 // -------------------------------------------------------------- benchmarks

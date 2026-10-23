@@ -903,3 +903,15 @@ Object.assign(EN, {
   '已重新打开授权页': 'Authorisation page reopened',
   '已取消等待': 'Stopped waiting',
 })
+
+Object.assign(EN, {
+  '诊断': 'Diagnose',
+  '把平台接口的原始返回复制出来，字段对不上时用':
+    'Copies the raw platform responses so field mismatches can be diagnosed',
+  '诊断信息已复制，发给开发者就能定位': 'Diagnostics copied — send it over to get this fixed',
+  '复制失败，诊断信息已打印到控制台': 'Copy failed — diagnostics printed to the console',
+})
+
+Object.assign(EN, {
+  '剩余 {n} {unit}': '{n} {unit} left',
+})
