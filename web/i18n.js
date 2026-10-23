@@ -894,3 +894,12 @@ Object.assign(EN, {
   '额度是平台给的总量，用完自己更新；想自动读就点「连接」。':
     'The quota is the total the platform gives — update it yourself as it drains. Use Connect if you want it read automatically.',
 })
+
+Object.assign(EN, {
+  '等待授权… 已 {s} 秒': 'Waiting for authorisation… {s}s',
+  '已打开授权页，完成后这里会自动更新。': 'Authorisation page opened — this updates automatically when you finish.',
+  '最近状态：': 'Latest status: ',
+  '重新打开授权页': 'Reopen authorisation page',
+  '已重新打开授权页': 'Authorisation page reopened',
+  '已取消等待': 'Stopped waiting',
+})

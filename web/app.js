@@ -850,49 +850,78 @@ function freePlatformPane(platforms) {
     t,
     formOpen: platformFormOpen,
     presets: state.catalog?.platforms || [],
+    pending: platformConnectPending,
   })
 }
 
 /** 发起一次平台授权：拿 authUrl → 开浏览器 → 轮询结果 */
 async function connectPlatform(platformId) {
   try {
-    const result = await api('POST', `/api/free/platforms/${platformId}/connect`, {})
+    const result = await api(`POST`, `/api/free/platforms/${platformId}/connect`, {})
     const connect = result.connect
     if (!connect?.authUrl) throw new Error('平台没有返回授权地址')
     state = result
+    // 记下等待状态：卡片上会显示「等待授权…已 N 秒」和服务端最近一次回应
+    platformConnectPending = {
+      platformId,
+      authUrl: connect.authUrl,
+      startedAt: Date.now(),
+      elapsedMs: 0,
+      reason: '',
+    }
+    connectCancelled = false
     render()
-    // 授权在浏览器里完成，我们在这边轮询——用户不用手动回来点「我已登录」
     window.open(connect.authUrl, '_blank', 'noopener,noreferrer')
     toast('已打开授权页，完成后会自动回来')
     await waitForConnect(platformId, connect.state, connect.accountId)
   } catch (error) {
-    toast(error.message, true)
+    finishConnect(error.message, true)
   }
 }
 
 /** 轮询授权结果：服务端说 ready 之前一直等，最长 5 分钟（与连接器的超时一致） */
 async function waitForConnect(platformId, authState, accountId) {
   const deadline = Date.now() + 5 * 60 * 1000
+  let ticks = 0
   while (Date.now() < deadline) {
+    if (connectCancelled) return finishConnect(null, false)
     await new Promise((resolve) => setTimeout(resolve, 1500))
+    if (connectCancelled) return finishConnect(null, false)
+
     let result
     try {
-      result = await api('POST', `/api/free/platforms/${platformId}/connect/poll`, {
+      result = await api(`POST`, `/api/free/platforms/${platformId}/connect/poll`, {
         state: authState,
         accountId,
       })
     } catch (error) {
-      toast(error.message, true)
-      return
+      return finishConnect(error.message, true)
     }
+
     if (result.connectPoll?.ready) {
       state = result
-      render()
-      toast('已连接')
-      return
+      return finishConnect(null, false, true)
+    }
+
+    // 把服务端每次的回应显示出来：到底是「等浏览器授权」还是「正在读账号信息」
+    if (platformConnectPending) {
+      platformConnectPending.elapsedMs = Date.now() - platformConnectPending.startedAt
+      platformConnectPending.reason = result.connectPoll?.reason || ''
+      // 每 4 次（约 6 秒）重绘一次，避免每 1.5 秒重建 DOM 造成闪烁
+      ticks += 1
+      if (ticks % 4 === 0) render()
     }
   }
-  toast('授权超时，重新点一次「连接」', true)
+  finishConnect('授权超时，重新点一次「连接」', true)
+}
+
+/** 收尾：清掉等待状态并重绘 */
+function finishConnect(message, isError, ok = false) {
+  platformConnectPending = null
+  connectCancelled = false
+  render()
+  if (ok) toast('已连接')
+  else if (message) toast(message, isError)
 }
 
 function renderFree() {
@@ -1772,6 +1801,11 @@ let freePane = 'relay'
 /** 平台侧「手动添加」表单是否展开 */
 let platformFormOpen = false
 
+/** 正在等待授权的平台：{ platformId, authUrl, startedAt, elapsedMs, reason } */
+let platformConnectPending = null
+/** 取消标记：点「取消」后让轮询循环自己退出 */
+let connectCancelled = false
+
 /** 搜索框内容 */
 const filters = { pricing: '', decision: '', benchmark: '' }
 
@@ -2128,6 +2162,21 @@ document.addEventListener('click', async (event) => {
       return
     }
     await withBusy(actionButton, () => connectPlatform(platformId))
+    return
+  }
+
+  if (action === 'platform-connect-reopen') {
+    if (platformConnectPending?.authUrl) {
+      window.open(platformConnectPending.authUrl, '_blank', 'noopener,noreferrer')
+      toast('已重新打开授权页')
+    }
+    return
+  }
+
+  if (action === 'platform-connect-cancel') {
+    // 让轮询循环下一轮自己退出，不在这里硬清状态——否则 waitForConnect 收尾时会重复 toast
+    connectCancelled = true
+    toast('已取消等待')
     return
   }
 

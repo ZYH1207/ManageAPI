@@ -139,6 +139,8 @@ export function renderFreePlatformPane({
   t = defaultT,
   formOpen = false,
   presets = [],
+  // 正在等待授权的平台：{ platformId, elapsedMs, reason }
+  pending = null,
 } = {}) {
   const list = Array.isArray(platforms) ? platforms : []
   const allAccounts = Array.isArray(accounts) ? accounts : []
@@ -247,9 +249,12 @@ export function renderFreePlatformPane({
         ? `<span class="badge" style="margin-left:7px" title="${esc(t('自动连接使用平台未公开接口，可能随平台升级失效'))}">${esc(t('实验性'))}</span>`
         : ''
 
+    const isPending = Boolean(pending) && pending.platformId === platform.id
     const meta = isOn
       ? t('{n} 个账号 · 剩 {r} {unit}', { n: pfAccounts.length, r: fmt(remaining), unit: unitLabel })
-      : t('尚未连接')
+      : isPending
+        ? t('等待授权… 已 {s} 秒', { s: Math.round((pending.elapsedMs || 0) / 1000) })
+        : t('尚未连接')
 
     let body = ''
     if (isOn) {
@@ -277,6 +282,16 @@ export function renderFreePlatformPane({
           <span class="quota-text">${esc(quotaText)}</span>
         </div>
         <div class="hint">${esc(t('下次重置：{v}', { v: resetText }))}</div>`
+    } else if (isPending) {
+      // 等待授权时把服务端每次轮询的回应也显示出来——不然用户只看到转圈，
+      // 分不清是「还没登录完」还是「登录了但平台没把 token 给回来」
+      body = `
+        <div class="hint">${esc(t('已打开授权页。在浏览器里登录，如果弹出「打开 WorkBuddy」，先点取消、留在网页上，直到页面显示授权成功。'))}</div>
+        ${
+          pending.reason
+            ? `<div class="hint" style="color:var(--faint)">${esc(t('最近状态：'))}${esc(pending.reason)}</div>`
+            : ''
+        }`
     } else {
       body = `<div class="hint">${esc(t('连接后自动读取模型目录、剩余积分与重置时间。'))}</div>`
     }
@@ -285,8 +300,11 @@ export function renderFreePlatformPane({
       ? `<button class="ghost" data-act="platform-checkin" data-platform="${esc(platform.id)}">${esc(t('签到'))}</button>
          <button class="ghost" data-act="platform-accounts" data-platform="${esc(platform.id)}">${esc(t('账号'))}</button>
          <button class="ghost" data-act="platform-refresh" data-platform="${esc(platform.id)}">${esc(t('刷新'))}</button>`
-      : `<span class="badge">${esc(t('尚未连接'))}</span>
-         <button data-act="platform-connect" data-platform="${esc(platform.id || platform.connectorId)}">${esc(t('连接'))}</button>`
+      : isPending
+        ? `<button class="ghost" data-act="platform-connect-reopen" data-platform="${esc(platform.id)}">${esc(t('重新打开授权页'))}</button>
+           <button class="ghost" data-act="platform-connect-cancel" data-platform="${esc(platform.id)}">${esc(t('取消'))}</button>`
+        : `<span class="badge">${esc(t('尚未连接'))}</span>
+           <button data-act="platform-connect" data-platform="${esc(platform.id || platform.connectorId)}">${esc(t('连接'))}</button>`
 
     return `
       <div class="card" data-platform-card="${esc(platform.id || platform.connectorId)}">
