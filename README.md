@@ -277,7 +277,9 @@ model = free/deepseek-v4.1-flash   # 免费池
 
 ![免费页 · 平台侧](docs/screenshot-free-platform.png)
 
-平台侧支持多账号、每日签到（幂等，同一天只成功一次）和额度倒计时。目前内置「手动」连接器，WorkBuddy 这类需要 OAuth 的连接器还在做，见 [`docs/free-api-plan.md`](docs/free-api-plan.md) 的 T2b。
+平台侧支持多账号、每日签到（幂等，同一天只成功一次）和额度倒计时。WorkBuddy / CodeBuddy 支持点「连接」后自动读积分，标了**实验性**——它走的是平台给自家 IDE 用的未公开接口，平台升级可能失效；失效时只是读不到数据，不影响别的功能。
+
+站点页和平台页都内置了一份**常用目录**（硅基流动、魔搭、DeepSeek、Moonshot、智谱、百炼、火山方舟、OpenAI…），选中就自动填好名称和地址，只差一个 Key。拿不准地址的（AgentRouter、AnyRouter、PPIO）留空让人自己补，不猜。
 
 ---
 
@@ -386,6 +388,8 @@ core/              宿主无关的核心逻辑（不依赖任何运行时框架�
   quota.js           免费额度记账（按次 / token / 积分，日 / 月窗口）
   rank-free.js       免费池闸门与排序（质量只做闸门，不参与排序）
   platforms/         平台积分：connector 接口、手动连接器、额度账本、独立 free.json
+  catalog.js         常用站点 / 平台预置目录（只填能确认的地址）
+  balance.js         云厂商余额适配器（硅基流动 / DeepSeek / Moonshot）
 
 daemon/            本地 HTTP 服务 + 网关（同一个端口）
   index.js           启动、端口选择、开浏览器

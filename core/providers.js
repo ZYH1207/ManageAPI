@@ -5,6 +5,7 @@
  * 拉不到就如实返回原因，绝不猜一个数字填进台账。
  */
 import { fetchModelPlaza, flattenPlaza } from './model-plaza.js'
+import { readVendorBalance } from './balance.js'
 
 function describeHttpError(status, bodyText) {
   const snippet = String(bodyText || '').slice(0, 180).replace(/\s+/g, ' ').trim()
@@ -80,6 +81,10 @@ export async function listModels({ baseUrl, apiKey, timeoutMs = 15000 }) {
  * @returns {{ok:boolean, remaining?:number, currency?:string, reason?:string}}
  */
 export async function tryBalance({ baseUrl, apiKey, adminToken, timeoutMs = 10000 }) {
+  // 模型厂商有专用余额接口，先试它——这类接口不认 one-api 的 /api/user/self
+  const vendor = await readVendorBalance({ baseUrl, apiKey, timeoutMs, requestJson })
+  if (vendor) return vendor
+
   const hostMatch = String(baseUrl).match(/^https?:\/\/([^/]+)/i)
   const host = hostMatch ? hostMatch[1] : ''
   const hosts = [host, host.replace(/^api\./, '')].filter((v, i, a) => v && a.indexOf(v) === i)

@@ -1,6 +1,6 @@
 # 免费 API 开发计划
 
-> 状态：**T0 / T1 / T2a 已实现**，T2b（WorkBuddy OAuth connector）未开始。
+> 状态：**T0 / T1 / T2a / T2b 已实现**。T2b 的 WorkBuddy 连接器标为实验性（协议来自未公开接口）。
 >
 > 目标：新增一个「免费」页，页内用顶部切换放两个视图 —— **中转站免费模型** 与 **平台积分**。
 > 两个视图共享同一套隔离规则：免费供给不参与付费比价，也不参与自动选站。
@@ -12,7 +12,7 @@
 > | M1 · T0 共用底座 | ✅ 已上线（`4ee5333`） |
 > | M2 · T1 中转站侧 | ✅ 已上线 |
 > | M3 · T2a 平台侧（纯本地） | ✅ 已上线 |
-> | M4 · T2b WorkBuddy OAuth | ⬜ 未开始 |
+> | M4 · T2b WorkBuddy OAuth | ✅ 已上线，**实验性** |
 
 ---
 
@@ -274,16 +274,36 @@ glm-5                   星链      1 个   100/月     50%   2.8s   ●可疑
 
 #### T2b · WorkBuddy OAuth connector（约 2-3 天，风险最高）
 
-| # | 任务 |
+| # | 任务 | 状态 |
+|---|---|---|
+| T2b-1 | OAuth 授权流（`auth/state` → 轮询 `auth/token`） | ✅ 已实现 |
+| T2b-2 | token 用现有 AES-GCM 加密存储 + 自动 refresh | ✅ 已实现 |
+| T2b-3 | `catalog()` 拉模型目录、`quota()` 读积分、`checkin()` 签到 | ✅ 已实现 |
+| T2b-4 | `forward()` 转发 + 从 `usage` 回读消耗 | ⬜ 未做（平台侧目前不参与网关转发） |
+
+**协议来源**：`dsh-our-free-model` 的 `vendor/channel-pack`（MIT），其中 WorkBuddy / CodeBuddy
+共用一套接口：
+
+| 用途 | 路径 |
 |---|---|
-| T2b-1 | OAuth 授权流（拿 code → 换 token） |
-| T2b-2 | token 用现有 AES-GCM 加密存储 + 自动 refresh |
-| T2b-3 | `catalog()` 拉模型目录与积分倍率 |
-| T2b-4 | `forward()` 转发 + 从 `usage` 回读消耗 |
+| 开始授权 | `POST /v2/plugin/auth/state?platform={platform}` |
+| 轮询 token | `GET /v2/plugin/auth/token?state={state}`（业务码 11217 = 还没好） |
+| 账号信息 | `POST /v2/plugin/login/account?state={state}`（业务码 12151 = 还没好） |
+| 刷新 token | `POST /v2/plugin/auth/token/refresh` |
+| 积分余额 | `POST /v2/billing/meter/get-user-resource` |
+| 每日签到 | `POST /v2/billing/meter/daily-checkin` |
 
-**单独拎出来是因为它可能失败。** OAuth 端点不是公开协议，最坏情况拿不到授权流程 —— 那就退化成「用户手动粘贴 token」，功能仍然成立。
+**为什么标「实验性」**：这套接口是平台给自家 IDE 用的，没有公开文档。
 
-**验收**：点「连接」→ 浏览器授权 → 回来显示已连接 → 拉到模型目录与积分 → 真实调用成功 → 积分按实际用量减少。
+- 已实测确认：`auth/state` 能返回真实的 `authUrl`（`https://www.workbuddy.ai/login?...`）
+- **未经真实凭据验证**：响应体里各字段的位置与命名（`data.*`）、成功业务码、签到「已签」的真实码、
+  `X-Tenant-Id` 是否等于 `enterpriseId`、`/v1/models` 是否需要额外参数
+
+所以 UI 上给这类平台加了「实验性」标记。平台一升级就可能失效，失效时表现为「连接后读不到数据」，
+不会影响其它功能。
+
+**验收**：点「连接」→ 浏览器授权 → 回来显示已连接 → 读到积分 → 签到成功。
+（前三步已实测，后两步待有账号时验证。）
 
 ---
 

@@ -99,14 +99,26 @@ function emptyPaneHtml(esc, t) {
 }
 
 /** 手动建一个平台：只记额度，不依赖任何连接器 */
-function manualFormHtml(esc, t) {
+function manualFormHtml(esc, t, presets = []) {
+  const options = presets
+    .map(
+      (p) =>
+        `<option value="${esc(p.id)}" data-label="${esc(p.label)}" data-connector="${esc(p.connectorId)}">${esc(p.label)}</option>`,
+    )
+    .join('')
   return `
     <div class="form-card">
       <h3 style="margin:0 0 4px">${esc(t('添加一个平台'))}</h3>
       <p class="hint" style="margin:0 0 14px">${esc(t('只记额度也能用：能算「还能撑几天」、到期前提醒你。自动读取模型目录要等连接器。'))}</p>
       <div class="inline-form" style="flex-wrap:wrap;gap:12px">
-        <label class="field-inline">${esc(t('平台名'))}
-          <input id="pf-label" type="text" placeholder="Trae" style="width:140px" />
+        <label class="field-inline">${esc(t('常用平台'))}
+          <select id="pf-preset" style="width:160px">
+            <option value="">${esc(t('自定义'))}</option>
+            ${options}
+          </select>
+        </label>
+        <label class="field-inline">${esc(t('名称'))}
+          <input id="pf-label" type="text" placeholder="Trae" style="width:130px" />
         </label>
         <label class="field-inline">${esc(t('额度上限'))}
           <input id="pf-limit" type="number" min="0" step="1" placeholder="100" style="width:90px" />
@@ -138,18 +150,19 @@ export function renderFreePlatformPane({
   esc = escapeHtml,
   t = defaultT,
   formOpen = false,
+  presets = [],
 } = {}) {
   const list = Array.isArray(platforms) ? platforms : []
   const allAccounts = Array.isArray(accounts) ? accounts : []
 
   if (list.length === 0) {
     // 空态必须自带「添加」入口：否则没有任何免费模型时，用户根本没法开始用平台栏
-    return formOpen ? manualFormHtml(esc, t) : emptyPaneHtml(esc, t)
+    return formOpen ? manualFormHtml(esc, t, presets) : emptyPaneHtml(esc, t)
   }
 
-  // 「已连接」= 有落库 id 且没被显式标成未连接。
-  // T2b 之后未连接的平台也会出现在列表里（由 connector 目录带过来），靠这个标志区分。
-  const isConnected = (p) => Boolean(p?.id) && p.connected !== false
+  // 「已连接」由服务端算：需要登录的平台必须有 token，手动平台有账号即可。
+  // 前端不再自己推断——判断依据放在两处迟早会不一致。
+  const isConnected = (p) => Boolean(p?.connected)
   const connected = list.filter(isConnected)
 
   const statCard = (k, v, unit) => `
@@ -183,6 +196,11 @@ export function renderFreePlatformPane({
     const remaining = quota ? Math.max(0, quota.limit - quota.used) : 0
 
     const dot = `<span title="${esc(isOn ? t('已连接') : t('未连接'))}" style="display:inline-block;width:7px;height:7px;border-radius:50%;margin-left:7px;vertical-align:middle;background:${isOn ? 'var(--accent)' : 'var(--faint)'}"></span>`
+    // 自动连接走的是平台未公开的接口，字段名有猜的成分，标出来免得用户以为是官方支持
+    const betaTag =
+      platform.connectorId && platform.connectorId !== 'manual'
+        ? `<span class="badge" style="margin-left:7px" title="${esc(t('自动连接使用平台未公开接口，可能随平台升级失效'))}">${esc(t('实验性'))}</span>`
+        : ''
 
     const meta = isOn
       ? t('{n} 个账号 · 剩 {r} {unit}', { n: pfAccounts.length, r: fmt(remaining), unit: unitLabel })
@@ -231,7 +249,7 @@ export function renderFreePlatformPane({
           <div style="display:flex;align-items:center;gap:10px;min-width:0">
             ${avatarHtml(name, esc)}
             <div style="min-width:0">
-              <h3 style="display:flex;align-items:center">${esc(name)}${dot}</h3>
+              <h3 style="display:flex;align-items:center">${esc(name)}${dot}${betaTag}</h3>
               <div class="meta">${esc(meta)}</div>
             </div>
           </div>

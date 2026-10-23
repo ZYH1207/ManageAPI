@@ -820,3 +820,26 @@ Object.assign(EN, {
   // 额度单位可能不是积分（次 / token），所以标题用「剩余额度」而不是「剩余积分」
   '剩余额度': 'Quota left',
 })
+
+Object.assign(EN, {
+  '常用站点': 'Common sites',
+  '常用平台': 'Common platforms',
+  '先选一个平台或填个名称': 'Pick a platform or enter a name first',
+  '（手动填写）': '(fill in manually)',
+})
+
+// 平台连接（OAuth 轮询）
+Object.assign(EN, {
+  '先添加一个平台': 'Add a platform first',
+  '平台没有返回授权地址': 'The platform did not return an authorisation URL',
+  '已打开授权页，完成后会自动回来': 'Authorisation page opened — this will update automatically',
+  '已连接': 'Connected',
+  '授权超时，重新点一次「连接」': 'Authorisation timed out — click Connect again',
+  '账号池还在做，先一个账号够用': 'Account pool is still in progress — one account is enough for now',
+})
+
+Object.assign(EN, {
+  '实验性': 'Experimental',
+  '自动连接使用平台未公开接口，可能随平台升级失效':
+    'Auto-connect uses an undocumented platform API and may break when the platform updates',
+})

@@ -735,9 +735,35 @@ function bindAddProviderForm() {
   const form = $('#form-add-provider')
   if (!form || form.dataset.bound) return
   form.dataset.bound = '1'
+
+  // 预置站点：选中就填好名称和地址，省掉手打；地址留空的（拿不准的厂商）不填，让人自己补
+  const preset = $('#preset-site', form)
+  const sites = state.catalog?.sites || []
+  if (preset && sites.length) {
+    preset.innerHTML =
+      `<option value="">（手动填写）</option>` +
+      sites
+        .map(
+          (s) =>
+            `<option value="${esc(s.id)}" data-name="${esc(s.name)}" data-url="${esc(s.baseUrl)}">${esc(s.name)}${s.baseUrl ? '' : ' · 地址待填'}</option>`,
+        )
+        .join('')
+    preset.addEventListener('change', () => {
+      const opt = preset.selectedOptions[0]
+      if (!opt || !opt.value) return
+      const nameInput = form.elements.name
+      const urlInput = form.elements.baseUrl
+      if (nameInput) nameInput.value = opt.dataset.name || ''
+      if (urlInput && opt.dataset.url) urlInput.value = opt.dataset.url
+      if (urlInput && !opt.dataset.url) urlInput.focus()
+    })
+  }
+
   form.addEventListener('submit', async (event) => {
     event.preventDefault()
     const data = Object.fromEntries(new FormData(form))
+    // preset 只用于填表，不是站点字段
+    delete data.preset
     try {
       state = await api('POST', '/api/providers', data)
       render()
@@ -799,7 +825,33 @@ function freePlatformPane(platforms) {
     esc,
     t,
     formOpen: platformFormOpen,
+    presets: state.catalog?.platforms || [],
   })
+}
+
+/** 轮询授权结果：服务端说 ready 之前一直等，最长 5 分钟（与连接器的超时一致） */
+async function waitForConnect(platformId, authState, accountId) {
+  const deadline = Date.now() + 5 * 60 * 1000
+  while (Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 1500))
+    let result
+    try {
+      result = await api('POST', `/api/free/platforms/${platformId}/connect/poll`, {
+        state: authState,
+        accountId,
+      })
+    } catch (error) {
+      toast(error.message, true)
+      return
+    }
+    if (result.connectPoll?.ready) {
+      state = result
+      render()
+      toast('已连接')
+      return
+    }
+  }
+  toast('授权超时，重新点一次「连接」', true)
 }
 
 function renderFree() {
@@ -1757,6 +1809,12 @@ function setTab(name) {
   }
 }
 
+// 浏览器前进/后退只改 hash，不会触发任何渲染——没有这条监听，地址变了页面不动
+window.addEventListener('hashchange', () => {
+  const next = location.hash.replace('#', '') || 'providers'
+  if (next !== activeTab && next !== `free/${freePane}`) setTab(next)
+})
+
 // 点语言菜单以外的地方收起它
 document.addEventListener('click', (event) => {
   const menu = $('#lang-menu')
@@ -1943,9 +2001,12 @@ document.addEventListener('click', async (event) => {
   }
 
   if (action === 'platform-save') {
-    const label = ($('#pf-label')?.value || '').trim()
+    const presetOpt = $('#pf-preset')?.selectedOptions?.[0]
+    const presetId = presetOpt?.value || ''
+    const connectorId = presetOpt?.dataset?.connector || 'manual'
+    const label = ($('#pf-label')?.value || presetOpt?.dataset?.label || '').trim()
     if (!label) {
-      toast('先填一个平台名', true)
+      toast('先选一个平台或填个名称', true)
       $('#pf-label')?.focus()
       return
     }
@@ -1956,7 +2017,7 @@ document.addEventListener('click', async (event) => {
     await withBusy(actionButton, async () => {
       try {
         // 先建平台，再挂一个账号——额度挂在账号上，一个平台可以多个账号
-        let result = await api('POST', '/api/free/platforms', { connectorId: 'manual', label })
+        let result = await api('POST', '/api/free/platforms', { connectorId, label, presetId })
         const platformId = result.platformResult?.id
         if (platformId && limit !== null && Number.isFinite(limit)) {
           result = await api('POST', '/api/free/accounts', {
@@ -2001,9 +2062,14 @@ document.addEventListener('click', async (event) => {
   }
 
   if (action === 'platform-refresh') {
+    const platformId = actionButton.dataset.platform
     await withBusy(actionButton, async () => {
       try {
-        state = await api('GET', '/api/state')
+        // 有连接器的平台去平台拉一次余额；手动平台只是重读本地状态
+        const result = platformId
+          ? await api('POST', `/api/free/platforms/${platformId}/refresh`, {})
+          : await api('GET', '/api/state')
+        state = result
         render()
         toast('已刷新')
       } catch (error) {
@@ -2013,8 +2079,32 @@ document.addEventListener('click', async (event) => {
     return
   }
 
-  if (action === 'platform-accounts' || action === 'platform-connect') {
-    toast('账号池与自动连接还在做，先用「手动添加」')
+  if (action === 'platform-connect') {
+    const platformId = actionButton.dataset.platform
+    if (!platformId) {
+      toast('先添加一个平台', true)
+      return
+    }
+    await withBusy(actionButton, async () => {
+      try {
+        const result = await api('POST', `/api/free/platforms/${platformId}/connect`, {})
+        const connect = result.connect
+        if (!connect?.authUrl) throw new Error('平台没有返回授权地址')
+        state = result
+        render()
+        // 授权在浏览器里完成，我们在这边轮询——用户不用手动回来点「我已登录」
+        window.open(connect.authUrl, '_blank', 'noopener,noreferrer')
+        toast('已打开授权页，完成后会自动回来')
+        await waitForConnect(platformId, connect.state, connect.accountId)
+      } catch (error) {
+        toast(error.message, true)
+      }
+    })
+    return
+  }
+
+  if (action === 'platform-accounts') {
+    toast('账号池还在做，先一个账号够用')
     return
   }
 
@@ -2427,6 +2517,14 @@ document.addEventListener('input', (event) => {
 
 document.addEventListener('change', async (event) => {
   const input = event.target
+
+  // 选预置平台 → 自动填名称，省掉手打
+  if (input.id === 'pf-preset') {
+    const opt = input.selectedOptions?.[0]
+    const labelInput = $('#pf-label')
+    if (labelInput && opt?.value) labelInput.value = opt.dataset.label || ''
+    return
+  }
 
   if (input.id === 'probe-interval') {
     const minutes = Number(input.value)

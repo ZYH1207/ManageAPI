@@ -797,6 +797,11 @@
     <form class="card form-card" id="form-add-provider">
       <h3>添加站点</h3>
       <div class="grid">
+        <label>常用站点
+          <select name="preset" id="preset-site">
+            <option value="">（手动填写）</option>
+          </select>
+        </label>
         <label>名称<input name="name" placeholder="例如：XX 中转站" required /></label>
         <label>地址<input name="baseUrl" placeholder="https://api.example.com/v1" required /></label>
         <label>类型

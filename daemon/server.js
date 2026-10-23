@@ -21,6 +21,7 @@ import * as platforms from '../core/platforms/index.js'
 import { recordUsage, usageSummary, tokensUsedByKey, resetUsage, readUsage } from '../core/usage.js'
 import { runProbes } from './probe-runner.js'
 import { REFERENCE_AS_OF, listReference } from '../core/model-prices.js'
+import { listPresetSites, listPresetPlatforms } from '../core/catalog.js'
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url))
 const WEB_DIR = resolve(__dirname, '../web')
@@ -85,19 +86,26 @@ function scoresFor(db) {
 async function freePlatformState() {
   try {
     const [list, accounts] = await Promise.all([platforms.listPlatforms(), platforms.listAccounts()])
+    // secret 是加密后的 token，绝不该出现在前端状态里；只给一个「有没有」的布尔
+    const safeAccounts = accounts.map(({ secret, ...rest }) => ({ ...rest, hasSecret: Boolean(secret) }))
     const enriched = []
     for (const platform of list) {
-      const mine = accounts.filter((a) => a.platformId === platform.id)
+      const mine = safeAccounts.filter((a) => a.platformId === platform.id)
       const active = await platforms.getActiveAccount(platform.id)
       const left = await platforms.daysLeft(active?.id || mine[0]?.id || '')
+      // 需要登录的平台（connector 不是 manual）必须有 token 才算「已连接」；
+      // 手动平台只要有账号就算——它本来就不发请求。
+      const needsLogin = platform.connectorId && platform.connectorId !== 'manual'
+      const connected = needsLogin ? mine.some((a) => a.hasSecret) : mine.length > 0
       enriched.push({
         ...platform,
         accounts: mine,
         activeAccountId: active?.id || null,
         daysLeft: left,
+        connected,
       })
     }
-    return { platforms: enriched, accounts }
+    return { platforms: enriched, accounts: safeAccounts }
   } catch (error) {
     return { platforms: [], accounts: [], platformError: error.message || String(error) }
   }
@@ -264,6 +272,8 @@ async function buildState() {
     },
     benchmarks,
     reference: { asOf: REFERENCE_AS_OF, list: listReference() },
+    // 预置目录：只是「省打字」的辅助，不参与逻辑
+    catalog: { sites: listPresetSites(), platforms: listPresetPlatforms() },
     ranked: rankedWithCache,
     unpriced,
     decisions,
@@ -790,6 +800,73 @@ route('POST', /^\/api\/free\/accounts\/([\w-]+)\/checkin$/, async (ctx) => {
   const result = await platforms.checkin(ctx.params[0])
   const state = await buildState()
   return { ...state, checkinResult: result }
+})
+
+// ------------------------------------------------- 免费池 · 平台连接（OAuth 轮询）
+
+/** 取平台 + 它的连接器；连接器缺失说明这个平台只能手动记账 */
+async function platformConnector(platformId) {
+  const db = await platforms.readFreeDb()
+  const platform = db.platforms.find((p) => p.id === platformId)
+  if (!platform) throw new HttpError(404, '平台不存在')
+  const connector = platforms.getConnector(platform.connectorId)
+  if (!connector || typeof connector.startConnect !== 'function') {
+    throw new HttpError(400, '这个平台不支持自动连接，先手动记额度')
+  }
+  return { platform, connector }
+}
+
+route('POST', /^\/api\/free\/platforms\/([\w-]+)\/connect$/, async (ctx) => {
+  const { platform, connector } = await platformConnector(ctx.params[0])
+  // 授权前先保证有账号挂 token，否则拿回来的凭据没处放
+  const existing = await platforms.listAccounts(platform.id)
+  const account =
+    existing.find((a) => a.status !== 'expired') ||
+    existing[0] ||
+    (await platforms.addAccount({ platformId: platform.id, label: '主账号' }))
+
+  const started = await connector.startConnect({ product: platform.connectorId })
+  const state = await buildState()
+  return { ...state, connect: { ...started, accountId: account.id } }
+})
+
+route('POST', /^\/api\/free\/platforms\/([\w-]+)\/connect\/poll$/, async (ctx) => {
+  const { platform, connector } = await platformConnector(ctx.params[0])
+  const result = await connector.pollConnect({
+    state: ctx.body?.state,
+    product: platform.connectorId,
+    accountId: ctx.body?.accountId,
+  })
+  if (result?.ready) {
+    await platforms.updateAccount(ctx.body.accountId, { status: 'ok' })
+  }
+  const state = await buildState()
+  return { ...state, connectPoll: result }
+})
+
+route('POST', /^\/api\/free\/platforms\/([\w-]+)\/refresh$/, async (ctx) => {
+  const { platform, connector } = await platformConnector(ctx.params[0])
+  const accounts = await platforms.listAccounts(platform.id)
+  const account = accounts[0]
+  if (!account) throw new HttpError(400, '这个平台还没有账号')
+  if (!account.secret) throw new HttpError(400, '还没有连接，先点「连接」')
+
+  // 只刷新余额：目录是锦上添花，失败了不该让整张卡片变成错误态
+  const quota = await connector.quota(account)
+  if (quota && Number.isFinite(Number(quota.remaining))) {
+    const limit = Number(account.quota?.limit)
+    await platforms.updateAccount(account.id, {
+      quota: {
+        unit: quota.unit || account.quota?.unit || 'credit',
+        limit: Number.isFinite(limit) && limit > 0 ? limit : Number(quota.remaining),
+        used: Number.isFinite(limit) && limit > 0 ? Math.max(0, limit - Number(quota.remaining)) : 0,
+        window: account.quota?.window || 'day',
+        resetAt: quota.refreshAt || account.quota?.resetAt || null,
+      },
+    })
+  }
+  const state = await buildState()
+  return { ...state, refreshResult: { ok: true, quota } }
 })
 
 route('GET', /^\/api\/free\/ledger$/, async (ctx) => {

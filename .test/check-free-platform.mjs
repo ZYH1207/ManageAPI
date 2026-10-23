@@ -106,8 +106,10 @@ try {
   console.log('   →', left, '(剩余 97 积分 ÷ 3/7 日均)')
 
   // 渲染层跑一遍，确保不抛异常且关键动作都在（不传 esc/t，走模块自带的兜底）
+  // 「已连接」现在由服务端在 freePool 里算好（需要登录的平台看有没有 token），
+  // 这里补上这个字段，模拟服务端组装后的数据。
   const html = renderFreePlatformPane({
-    platforms: await listPlatforms(),
+    platforms: (await listPlatforms()).map((p) => ({ ...p, connected: true })),
     accounts: await listAccounts(),
   })
   assert.ok(html.includes('data-act="platform-checkin"'))

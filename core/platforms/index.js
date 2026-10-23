@@ -8,3 +8,5 @@ export * from './store.js'
 export * from './connector.js'
 export * from './ledger.js'
 export { manualConnector } from './manual.js'
+// 导入即注册（connector.js 的约定）；放在 index 里是为了让服务端只 import 一个入口
+export { workbuddyConnector } from './workbuddy.js'

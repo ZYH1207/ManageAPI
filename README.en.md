@@ -269,7 +269,9 @@ A prefix can only *upgrade* a request into the free pool, never downgrade it bac
 
 ![Free page · platform pane](docs/screenshot-free-platform.png)
 
-The platform pane supports multiple accounts, a daily check-in (idempotent — only one success per day) and reset countdowns. Only the built-in "manual" connector ships today; OAuth connectors such as WorkBuddy are still in progress — see T2b in [`docs/free-api-plan.md`](docs/free-api-plan.md).
+The platform pane supports multiple accounts, a daily check-in (idempotent — only one success per day) and reset countdowns. WorkBuddy / CodeBuddy can be connected with one click to read credits automatically, marked **experimental** — it uses the undocumented API the vendor ships to its own IDE, so a platform update may break it. When it breaks you just stop seeing numbers; nothing else is affected.
+
+Both the Sites page and the Platforms pane ship a **preset catalogue** (SiliconFlow, ModelScope, DeepSeek, Moonshot, Zhipu, DashScope, Volcengine, OpenAI…). Pick one and the name and base URL are filled in — you only add a key. Vendors whose URL we could not confirm (AgentRouter, AnyRouter, PPIO) are left blank rather than guessed.
 
 ---
 
@@ -378,6 +380,8 @@ core/              Host-agnostic core (no framework dependencies)
   quota.js           Free-quota ledger (requests / tokens / credits, day / month windows)
   rank-free.js       Free-pool gates and ordering (quality gates, never sorts)
   platforms/         Platform credits: connector interface, manual connector, ledger, own free.json
+  catalog.js         Preset catalogue of common sites / platforms
+  balance.js         Vendor balance adapters (SiliconFlow / DeepSeek / Moonshot)
 
 daemon/            Local HTTP server + gateway (same port)
   index.js           Startup, port selection, open browser
