@@ -347,6 +347,10 @@ core/              宿主无关的核心逻辑（不依赖任何运行时框架�
   score.js           短期评分（含有效期）、长期评分（时间衰减）
   router.js          候选筛选与排序
   usage.js           用量聚合（天 × Key × 站点 × 模型）
+  free.js            免费池判定：实际价 = 0、free/ 前缀、入口解析
+  quota.js           免费额度记账（按次 / token / 积分，日 / 月窗口）
+  rank-free.js       免费池闸门与排序（质量只做闸门，不参与排序）
+  platforms/         平台积分：connector 接口、手动连接器、额度账本、独立 free.json
 
 daemon/            本地 HTTP 服务 + 网关（同一个端口）
   index.js           启动、端口选择、开浏览器
@@ -358,6 +362,8 @@ web/               前端（原生 JS，无构建，无框架）
   index.html         结构与使用说明正文（中英各一份）
   app.js             全部渲染与交互
   i18n.js            语言切换与英文词典
+  free-relay.js      免费页 · 中转站栏
+  free-platform.js   免费页 · 平台栏
   style.css          CSS 变量双主题
 
 .test/             测试与截图工具
@@ -366,6 +372,8 @@ web/               前端（原生 JS，无构建，无框架）
   seed-showcase.mjs  生成 README 用的展示数据
   capture-shots.mjs  无头 Chrome 抓截图（SHOT_LANG=en 出英文图）
   check-lang.mjs     中英切换往返检查
+  check-free-relay.mjs   免费池闸门与配额记账自检
+  check-free-platform.mjs 平台侧 CRUD / 签到幂等 / 账本自检
   dump-strings.mjs   把界面上所有中文文案抓成清单，加新文案时对照用
 
 docs/              README 用图 + 设计文档

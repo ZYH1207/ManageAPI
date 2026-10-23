@@ -1,5 +1,7 @@
 /** 前端：无框架，全量状态 + 重渲染。 */
 import { getLang, onLangChange, restoreDom, setLang, t, translateDom } from './i18n.js'
+import { renderFreeRelayPane } from './free-relay.js'
+import { renderFreePlatformPane } from './free-platform.js'
 
 const $ = (sel, root = document) => root.querySelector(sel)
 
@@ -273,7 +275,7 @@ function renderOverview() {
   const providers = state.providers
 
   if (providers.length === 0) {
-    setPageSub('还没有数据')
+    setPageSubFor('overview', '还没有数据')
     view.innerHTML = `
       <div class="empty">
         <h3>从添加一个中转站开始</h3>
@@ -369,7 +371,8 @@ function renderOverview() {
       </tr>`
   }).join('')
 
-  setPageSub(
+  setPageSubFor(
+    'overview',
     `${state.summary.providerCount} 个站点 · ${state.summary.offerCount} 条模型供给 · ${state.probeTotal} 次探测`,
   )
 
@@ -777,86 +780,25 @@ function freeStats(items) {
     .join('')}</div>`
 }
 
-/** 中转站侧：一行一个模型，同一模型的多个来源合并 */
+/** 中转站侧：交给 web/free-relay.js 渲染（闸门与排序在 core/rank-free.js） */
 function freeRelayPane(offers) {
-  if (offers.length === 0) {
-    return `
-      <div class="empty">
-        <h3>还没有免费模型</h3>
-        <p>去「站点」页点「导入倍率」，实际价为 0 的模型会自动出现在这里。</p>
-        <button class="primary" data-goto="providers">去站点导入</button>
-      </div>`
-  }
-
-  const providerName = (id) => state.providers.find((p) => p.id === id)?.name || '—'
-  const routable = offers.filter((o) => o.score?.routable).length
-  const withFp = offers.filter((o) => typeof o.score?.fingerprintRate === 'number')
-  const avgFp = withFp.length
-    ? withFp.reduce((s, o) => s + o.score.fingerprintRate, 0) / withFp.length
-    : null
-  const withTtft = offers.filter((o) => typeof o.score?.ttftMs === 'number')
-  const avgTtft = withTtft.length
-    ? withTtft.reduce((s, o) => s + o.score.ttftMs, 0) / withTtft.length
-    : null
-
-  const stats = freeStats([
-    ['可用供给', `${routable}/${offers.length}`, '条'],
-    ['平均指纹', avgFp === null ? '—' : Math.round(avgFp * 100), avgFp === null ? '' : '%'],
-    ['平均首字', avgTtft === null ? '—' : Math.round(avgTtft), avgTtft === null ? '' : 'ms'],
-    ['剩余额度', '—', ''], // 配额在 T1-3 实现
-  ])
-
-  const rows = offers
-    .map((offer) => {
-      const score = offer.score || {}
-      const status = !score.samples
-        ? { label: '未探测', cls: '' }
-        : score.routable
-          ? { label: '可用', cls: 'ok' }
-          : { label: '可疑', cls: 'warn' }
-      const fp = typeof score.fingerprintRate === 'number' ? `${Math.round(score.fingerprintRate * 100)}%` : '—'
-      const ttft = typeof score.ttftMs === 'number' ? `${Math.round(score.ttftMs)}ms` : '—'
-      return `
-        <tr>
-          <td class="mono">${esc(offer.upstreamName)}</td>
-          <td>${esc(providerName(offer.providerId))}</td>
-          <td>${offer.group ? esc(offer.group) : '<span style="color:var(--faint)">默认</span>'}</td>
-          <td class="mono">—</td>
-          <td class="mono">${fp}</td>
-          <td class="mono">${ttft}</td>
-          <td><span class="badge ${status.cls}">${status.label}</span></td>
-        </tr>`
-    })
-    .join('')
-
-  return `
-    ${stats}
-    <div class="table-wrap">
-      <table>
-        <thead><tr>
-          <th>模型</th><th>站点</th><th>分组</th><th>配额</th>
-          <th>指纹</th><th>首字</th><th>状态</th>
-        </tr></thead>
-        <tbody>${rows}</tbody>
-      </table>
-    </div>
-    <p class="hint" style="margin-top:10px">
-      免费模型是探针最有价值的场景：没人会白送，最常见的偷工方式是拿小模型冒充大模型。
-      指纹低于 100% 的那几行值得点开看看。
-    </p>`
+  return renderFreeRelayPane({
+    offers,
+    providers: state.providers,
+    crossPane: state.freePool?.crossPane || 'remaining',
+    esc,
+    t,
+  })
 }
 
-/** 平台侧：卡片网格。T2 阶段接入 connector 后填充。 */
+/** 平台侧：交给 web/free-platform.js 渲染 */
 function freePlatformPane(platforms) {
-  if (platforms.length === 0) {
-    return `
-      <div class="empty">
-        <h3>还没有连接平台</h3>
-        <p>平台积分可以来自 WorkBuddy、Trae 等 Agent 平台。连接后能自动读模型目录、剩余积分与重置时间。</p>
-        <span class="badge">连接功能开发中</span>
-      </div>`
-  }
-  return ''
+  return renderFreePlatformPane({
+    platforms,
+    accounts: state.freePool?.accounts || [],
+    esc,
+    t,
+  })
 }
 
 function renderFree() {
@@ -1461,7 +1403,7 @@ function renderUsage() {
   const dayEntries = Object.entries(usage.byDay || {}).sort((a, b) => a[0].localeCompare(b[0]))
 
   if (!totals.requests) {
-    setPageSub('还没有请求经过网关')
+    setPageSubFor('gateway', '还没有请求经过网关')
     view.innerHTML = `
       <div class="empty">
         <h3>暂无用量数据</h3>
@@ -1531,7 +1473,8 @@ function renderUsage() {
   const emptyRow = (cols) =>
     `<tr><td colspan="${cols}" style="text-align:center;color:var(--faint);padding:20px">无数据</td></tr>`
 
-  setPageSub(
+  setPageSubFor(
+    'usage',
     `最近 ${usageRange} 天 · ${totals.requests} 次请求 · ${formatTokens(tokenTotal(totals))} token`,
   )
 
@@ -1768,6 +1711,15 @@ function setPageSub(text) {
   if (el) el.textContent = text || ''
 }
 
+/**
+ * 只有当前页才能改顶栏副标题。
+ * render() 会把所有页面重画一遍，如果各页都无条件 setPageSub，
+ * 最后跑的那个（用量页）会抢走别人的副标题。
+ */
+function setPageSubFor(tab, text) {
+  if (activeTab === tab) setPageSub(text)
+}
+
 function setTab(name) {
   // 支持二级 hash：#free/relay、#free/platform
   const [tabPart, panePart] = String(name || '').split('/')
@@ -1989,6 +1941,48 @@ document.addEventListener('click', async (event) => {
   const action = actionButton.dataset.act
   const card = actionButton.closest('[data-provider]')
   const providerId = card?.dataset.provider
+
+  if (action === 'platform-checkin') {
+    const platformId = actionButton.dataset.platform
+    const platform = state.freePool?.platforms?.find((p) => p.id === platformId)
+    const accountId = platform?.activeAccountId || platform?.accounts?.[0]?.id
+    if (!accountId) {
+      toast('这个平台还没有账号', true)
+      return
+    }
+    await withBusy(actionButton, async () => {
+      try {
+        const result = await api('POST', `/api/free/accounts/${accountId}/checkin`, {})
+        state = result
+        render()
+        const r = result.checkinResult
+        if (r?.alreadyToday) toast('今天已经签过了')
+        else if (r?.ok) toast(r.reward ? `签到成功，+${r.reward}` : '签到成功')
+        else toast(r?.message || '签到失败', true)
+      } catch (error) {
+        toast(error.message, true)
+      }
+    })
+    return
+  }
+
+  if (action === 'platform-refresh') {
+    await withBusy(actionButton, async () => {
+      try {
+        state = await api('GET', '/api/state')
+        render()
+        toast('已刷新')
+      } catch (error) {
+        toast(error.message, true)
+      }
+    })
+    return
+  }
+
+  if (action === 'platform-accounts' || action === 'platform-connect') {
+    toast('账号池与自动连接还在做，先用「手动添加」')
+    return
+  }
 
   if (action === 'free-pane') {
     const pane = actionButton.dataset.pane
@@ -2441,6 +2435,31 @@ document.addEventListener('change', async (event) => {
       state = await api('PATCH', '/api/settings', { allowUntrusted: input.checked })
       render()
       toast(input.checked ? '已放行可疑供给，它们会正常参与选站' : '已恢复：可疑供给只作为最后兜底')
+    } catch (error) {
+      toast(error.message, true)
+    }
+    return
+  }
+
+  if (input.dataset.act === 'free-quota-limit') {
+    const offerId = input.dataset.offer
+    const limit = input.value === '' ? null : Number(input.value)
+    if (!offerId) return
+    try {
+      const current = state.freePool?.relay?.find((o) => o.id === offerId)?.freeQuota || {}
+      // limit 清空 = 取消配额；否则沿用现有单位与窗口，只改上限
+      const quota =
+        limit === null
+          ? null
+          : {
+              unit: current.unit || 'request',
+              limit,
+              used: current.used || 0,
+              window: current.window || 'day',
+            }
+      state = await api('POST', `/api/offers/${offerId}/free-quota`, { quota })
+      render()
+      toast(limit === null ? '已取消这个模型的配额' : `配额上限改为 ${limit}`)
     } catch (error) {
       toast(error.message, true)
     }

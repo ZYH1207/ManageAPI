@@ -4,6 +4,8 @@
  */
 import { randomUUID, randomBytes } from 'node:crypto'
 import { readDb, mutate, encryptSecret, decryptSecret } from './store.js'
+// quota.js 只依赖内置类型，不回头 import 本文件，不会形成循环
+import { normalizeQuota } from './quota.js'
 
 export function newId(prefix) {
   return `${prefix}_${randomUUID().slice(0, 8)}`
@@ -486,6 +488,35 @@ export async function restoreSiteRatio(providerId, group) {
     }
     return { restored, noSiteValue }
   })
+}
+
+// --------------------------------------------------------------- 免费配额
+
+/**
+ * 给一条免费供给设置额度上限。
+ *
+ * 传 null 表示「没有配额」（不限量），和「额度为 0」是两件事：
+ * 前者在界面上显示「—」，后者是「已用尽」。
+ *
+ * 归一化放在 mutate 外面——mutate 的回调是同步的，校验失败时不该已经落盘。
+ */
+export async function setFreeQuota(offerId, rawQuota) {
+  const clearing = rawQuota === null || rawQuota === undefined
+  const quota = clearing ? null : normalizeQuota(rawQuota)
+  if (!clearing && quota === null) throw new Error('配额需要包含一个不小于 0 的上限')
+
+  return mutate((db) => {
+    const offer = db.offers.find((o) => o.id === offerId)
+    if (!offer) throw new Error(`模型记录不存在：${offerId}`)
+    offer.freeQuota = quota
+    offer.updatedAt = nowIso()
+    return offer
+  })
+}
+
+/** 清掉配额，回到「不限量」。 */
+export async function clearFreeQuota(offerId) {
+  return setFreeQuota(offerId, null)
 }
 
 // --------------------------------------------------------------- 手动排序

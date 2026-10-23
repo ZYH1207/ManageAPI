@@ -16,6 +16,8 @@ import * as providers from '../core/providers.js'
 import { scoreOffers, isRoutable, longTermScores } from '../core/score.js'
 import { selectCandidates, listPublicModels, explain } from '../core/router.js'
 import { splitOffers, resolvePool, FREE_PREFIX, FREE_BASE_PATH } from '../core/free.js'
+import { rankFreePool } from '../core/rank-free.js'
+import * as platforms from '../core/platforms/index.js'
 import { recordUsage, usageSummary, tokensUsedByKey, resetUsage, readUsage } from '../core/usage.js'
 import { runProbes } from './probe-runner.js'
 import { REFERENCE_AS_OF, listReference } from '../core/model-prices.js'
@@ -74,6 +76,31 @@ function scoresFor(db) {
   return scoreOffers(db.probes, db.traffic, {
     maxAgeMs: (Number(db.settings.scoreMaxAgeHours) || 6) * 3600 * 1000,
   })
+}
+
+/**
+ * 平台侧视图：把平台、账号、额度、预计剩余天数拼在一起给前端。
+ * 读失败（比如 free.json 被手改坏）不能让整个页面挂掉，所以整体包一层 try。
+ */
+async function freePlatformState() {
+  try {
+    const [list, accounts] = await Promise.all([platforms.listPlatforms(), platforms.listAccounts()])
+    const enriched = []
+    for (const platform of list) {
+      const mine = accounts.filter((a) => a.platformId === platform.id)
+      const active = await platforms.getActiveAccount(platform.id)
+      const left = await platforms.daysLeft(active?.id || mine[0]?.id || '')
+      enriched.push({
+        ...platform,
+        accounts: mine,
+        activeAccountId: active?.id || null,
+        daysLeft: left,
+      })
+    }
+    return { platforms: enriched, accounts }
+  } catch (error) {
+    return { platforms: [], accounts: [], platformError: error.message || String(error) }
+  }
 }
 
 /** 组装前端需要的全量视图。 */
@@ -216,14 +243,22 @@ async function buildState() {
     })),
     offers: db.offers,
     // 免费池：与付费侧完全隔离。两栏数据分开给，前端不用自己筛。
+    // relay 已经由 rankFreePool 排好序并带上 gate / daysLeft——
+    // 服务端和前端共用同一份判定，避免两套阈值漂移。
     freePool: {
-      relay: freeOffers.map((o) => ({
-        ...o,
-        score: scores[o.id] ?? null,
+      relay: rankFreePool({
+        offers: freeOffers,
+        scores: scoreMap,
+        benchmarks,
+        crossPane: db.settings.freeCrossPane || 'remaining',
+      }).map((row) => ({
+        ...row.offer,
+        score: row.score,
+        gate: row.gate,
+        daysLeft: row.daysLeft,
       })),
-      // 平台侧（T2）先留空数组，前端按空态处理
-      platforms: [],
-      accounts: [],
+      // 平台侧数据来自 core/platforms（独立文件 free.json）
+      ...(await freePlatformState()),
       crossPane: db.settings.freeCrossPane || 'remaining',
       allowPaidFallback: Boolean(db.settings.allowPaidFallback),
     },
@@ -714,6 +749,52 @@ route('DELETE', /^\/api\/offers\/([\w-]+)$/, async (ctx) => {
   return buildState()
 })
 
+// -------------------------------------------------------------- 免费池 · 配额
+
+route('POST', /^\/api\/offers\/([\w-]+)\/free-quota$/, async (ctx) => {
+  const quota = ctx.body?.quota ?? ctx.body ?? null
+  await inv.setFreeQuota(ctx.params[0], quota)
+  return buildState()
+})
+
+// ------------------------------------------------------------ 免费池 · 平台侧
+
+route('POST', /^\/api\/free\/platforms$/, async (ctx) => {
+  await platforms.upsertPlatform(ctx.body || {})
+  return buildState()
+})
+
+route('DELETE', /^\/api\/free\/platforms\/([\w-]+)$/, async (ctx) => {
+  await platforms.deletePlatform(ctx.params[0])
+  return buildState()
+})
+
+route('POST', /^\/api\/free\/accounts$/, async (ctx) => {
+  await platforms.addAccount(ctx.body || {})
+  return buildState()
+})
+
+route('PATCH', /^\/api\/free\/accounts\/([\w-]+)$/, async (ctx) => {
+  await platforms.updateAccount(ctx.params[0], ctx.body || {})
+  return buildState()
+})
+
+route('DELETE', /^\/api\/free\/accounts\/([\w-]+)$/, async (ctx) => {
+  await platforms.deleteAccount(ctx.params[0])
+  return buildState()
+})
+
+route('POST', /^\/api\/free\/accounts\/([\w-]+)\/checkin$/, async (ctx) => {
+  const result = await platforms.checkin(ctx.params[0])
+  const state = await buildState()
+  return { ...state, checkinResult: result }
+})
+
+route('GET', /^\/api\/free\/ledger$/, async (ctx) => {
+  const accountId = ctx.query?.get('accountId') || null
+  return { ledger: await platforms.listLedger({ accountId, limit: 100 }) }
+})
+
 // -------------------------------------------------------------- benchmarks
 
 route('PUT', /^\/api\/benchmarks$/, async (ctx) => {
@@ -1108,7 +1189,18 @@ async function handleChatCompletions(req, res, db, keyRecord, isFree = false) {
   const scores = scoresFor(db)
   // 免费池只在自己的供给里选；付费池永远看不到免费项。两者不互相回落。
   const split = splitOffers(db.offers, benchmarks)
-  const poolOffers = isFree ? split.free : split.paid
+  // 免费池先过闸门（额度 / 指纹 / 截断 / 过期），过了才交给路由排序。
+  // 闸门是硬排除——免费成本恒为 0，不能靠「便宜但烂」的加权把它排下去。
+  const poolOffers = isFree
+    ? rankFreePool({
+        offers: split.free,
+        scores,
+        benchmarks,
+        crossPane: db.settings.freeCrossPane || 'remaining',
+      })
+        .filter((row) => !row.gate)
+        .map((row) => row.offer)
+    : split.paid
   const candidates = selectCandidates({
     offers: poolOffers,
     providers: db.providers,

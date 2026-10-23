@@ -340,6 +340,10 @@ core/              Host-agnostic core (no framework dependencies)
   score.js           Short-term scores (with TTL) and long-term scores (time decay)
   router.js          Candidate filtering and ordering
   usage.js           Usage aggregation (day × key × site × model)
+  free.js            Free-pool detection: actual price = 0, free/ prefix, entry parsing
+  quota.js           Free-quota ledger (requests / tokens / credits, day / month windows)
+  rank-free.js       Free-pool gates and ordering (quality gates, never sorts)
+  platforms/         Platform credits: connector interface, manual connector, ledger, own free.json
 
 daemon/            Local HTTP server + gateway (same port)
   index.js           Startup, port selection, open browser
@@ -351,6 +355,8 @@ web/               Frontend (vanilla JS, no build, no framework)
   index.html         Structure and the help document (zh + en)
   app.js             All rendering and interaction
   i18n.js            Language switch and the English dictionary
+  free-relay.js      Free page · relay pane
+  free-platform.js   Free page · platform pane
   style.css          CSS-variable dual theme
 
 .test/             Tests and screenshot tooling
@@ -359,6 +365,8 @@ web/               Frontend (vanilla JS, no build, no framework)
   seed-showcase.mjs  Generates the demo data used for README screenshots
   capture-shots.mjs  Headless Chrome screenshots (SHOT_LANG=en for English)
   check-lang.mjs     Round-trip check for the language switch
+  check-free-relay.mjs   Free-pool gates and quota self-check
+  check-free-platform.mjs Platform CRUD / idempotent check-in / ledger self-check
   dump-strings.mjs   Dumps every Chinese string in the UI, as a translation checklist
 
 docs/              README images + design docs

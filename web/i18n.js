@@ -734,3 +734,63 @@ Object.assign(EN, {
   '连接 WorkBuddy、Trae 等平台，或手动填一个额度':
     'Connect WorkBuddy, Trae and similar platforms, or enter a quota manually',
 })
+
+// 免费页 · 闸门原因与平台卡片（web/free-relay.js、web/free-platform.js、core/rank-free.js）
+Object.assign(EN, {
+  '超出配额': 'Over quota',
+  '额度用尽': 'Quota used up',
+  '未探测': 'Not probed',
+  '评分过期': 'Score expired',
+  '指纹不符': 'Fingerprint mismatch',
+  '输出截断': 'Output truncated',
+  '低于门槛': 'below the 80% floor',
+  '未截断': 'not truncated',
+  '未设置配额': 'No quota set',
+  '每天重置': 'Resets daily',
+  '每月重置': 'Resets monthly',
+  '即将重置': 'Resetting soon',
+  '默认': 'Default',
+
+  '用量已经超过这个窗口的上限，等重置后再用': 'Usage already exceeds this window — wait for the reset',
+  '这个窗口的免费额度已经用完': 'The free quota for this window is used up',
+  '还没有探测记录，免费站不能靠猜': 'Never probed — a free site is not worth guessing about',
+  '上次探测太久远，先重新探测再放行': 'Last probe is too old — probe again before routing',
+
+  '已连接平台': 'Connected',
+  '账号': 'Accounts',
+  '剩余积分': 'Credits left',
+  '今日已签': 'Checked in today',
+  '已连接': 'Connected',
+  '未连接': 'Not connected',
+  '尚未连接': 'Not connected yet',
+  '签到': 'Check in',
+  '刷新': 'Refresh',
+  '连接': 'Connect',
+  '连接后自动读取模型目录、剩余积分与重置时间。':
+    'Once connected, the catalogue, remaining credits and reset time are read automatically.',
+})
+
+// 免费页 · 带变量的模板与两处长句
+Object.assign(EN, {
+  '预计撑最久': 'Lasts longest',
+  '免费模型是探针最有价值的场景：没人会白送，最常见的偷工方式是拿小模型冒充大模型。指纹不到 100% 的那几行值得点开看看。':
+    'Free models are where probing matters most: nobody gives things away for free, and the usual trick is serving a smaller model. Rows below 100% fingerprint are worth a look.',
+  '{n} 个账号 · 剩 {r} {unit}': '{n} account(s) · {r} {unit} left',
+  '{when}已用 {used}/{limit} {unit}': '{used}/{limit} {unit} used {when}',
+  '下次重置：{v}': 'Next reset: {v}',
+  '{n} 分钟后': 'in {n} min',
+  '{n} 小时后': 'in {n} h',
+  '本月': 'this month',
+  '今日': 'today',
+})
+
+// 免费页 · 平台侧提示
+Object.assign(EN, {
+  '这个平台还没有账号': 'This platform has no account yet',
+  '今天已经签过了': 'Already checked in today',
+  '签到成功': 'Checked in',
+  '签到成功，+{n}': 'Checked in, +{n}',
+  '签到失败': 'Check-in failed',
+  '已刷新': 'Refreshed',
+  '账号池与自动连接还在做，先用「手动添加」': 'Account pool and auto-connect are still in progress — use manual entry for now',
+})
