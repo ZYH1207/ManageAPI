@@ -239,6 +239,40 @@ Relays typically charge 10–20% for cached input tokens. Detection sends the sa
 
 ---
 
+## Free tier: a separate pool
+
+Free relay models and free credits from agent platforms live on their own page, **excluded from paid comparison and from automatic routing**.
+
+![Free page · relay pane](docs/screenshot-free-relay.png)
+
+Two panes behind a top switcher:
+
+| Pane | What it shows | Gates |
+|---|---|---|
+| **Free relay models** | Models whose actual price is 0, with a quota bar | fingerprint / truncation / quota used up / score expired |
+| **Platform credits** | Accounts and remaining credits on WorkBuddy, Trae, … | quota used up / session expired |
+
+**Why they stay separate**: paid supplies share one comparable metric — effective cost. On the free side the price is always 0, so `0 ÷ quality` is always 0 and any weighted ranking collapses. The free side therefore uses **gates + a single sort key**: fail a gate and you are out entirely — no room for "cheap but bad".
+
+**How to use it**:
+
+```bash
+# free only, for the whole client
+base_url = http://127.0.0.1:4319/free/v1
+
+# or mix, distinguished by model prefix
+model = deepseek-v4.1-flash        # paid pool
+model = free/deepseek-v4.1-flash   # free pool
+```
+
+A prefix can only *upgrade* a request into the free pool, never downgrade it back to paid, so the two entries never conflict. When the free pool runs dry the gateway returns `402 free_pool_exhausted` with each source's reset time and **never silently falls back to paid** — that would spend your money behind your back.
+
+![Free page · platform pane](docs/screenshot-free-platform.png)
+
+The platform pane supports multiple accounts, a daily check-in (idempotent — only one success per day) and reset countdowns. Only the built-in "manual" connector ships today; OAuth connectors such as WorkBuddy are still in progress — see T2b in [`docs/free-api-plan.md`](docs/free-api-plan.md).
+
+---
+
 ## Gateway: one key for every site
 
 In your client:
