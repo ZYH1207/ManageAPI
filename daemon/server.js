@@ -660,9 +660,8 @@ route('POST', /^\/api\/providers\/([\w-]+)\/apply-group$/, async (ctx) => {
   const providerId = ctx.params[0]
   const group = String(ctx.body.group ?? '').trim()
   const credentialId = String(ctx.body.credentialId || '')
-  const { provider, credential, credentials, pricing, offers, match, benchTable } = await loadProviderPricing(
-    providerId,
-  )
+  const { provider, credential, credentials, pricing, offers, match, benchTable, byGroupModel } =
+    await loadProviderPricing(providerId)
 
   // 分组是 Key 的属性，必须作用在「你点的那把 Key」上，不能默认第一把
   const target = credentials.find((c) => c.id === credentialId) || credential
@@ -705,7 +704,24 @@ route('POST', /^\/api\/providers\/([\w-]+)\/apply-group$/, async (ctx) => {
 
       const key = offer.benchmarkKey || offer.modelKey || offer.upstreamName
 
-      if (benchTable[key] && rate) {
+      // 站点自己把模型标成 0 价：不管分组倍率是多少，这条就是免费。
+      // 「免费模型」这类分组往往倍率写 1（等于原价），真正免费体现在模型原价上，
+      // 先判这一条，否则会被「基准价 × 倍率」算成原价。
+      //
+      // 只认「本分组精确命中」：match() 在分组里找不到时会回落到全站同名模型，
+      // 那拿到的是别的分组的价格，用它判断免费会误伤。
+      const exact = byGroupModel.get(`${group}::${offer.modelKey}`)
+      const siteSaysFree = Boolean(exact) && exact.inPrice === 0 && exact.outPrice === 0
+
+      if (siteSaysFree) {
+        offer.pricingMode = 'manual'
+        offer.ratio = null
+        offer.inPrice = 0
+        offer.outPrice = 0
+        offer.currency = 'CNY'
+        offer.siteRatio = rate ?? null
+        offer.ratioSource = 'site'
+      } else if (benchTable[key] && rate) {
         offer.ratio = rate
         offer.siteRatio = rate
         offer.ratioSource = 'site'
@@ -779,12 +795,14 @@ route('POST', /^\/api\/providers\/([\w-]+)\/detect-groups$/, async (ctx) => {
   // 价格表读不到不影响「认分组」——令牌列表本身就带倍率（Sub2API），够用了
   let pricing = { groups: [] }
   let match = () => null
+  let byGroupModel = new Map()
   let benchTable = {}
   let pricingError = null
   try {
     const loaded = await loadProviderPricing(providerId)
     pricing = loaded.pricing
     match = loaded.match
+    byGroupModel = loaded.byGroupModel
     benchTable = loaded.benchTable
   } catch (error) {
     pricingError = error.message || String(error)
@@ -833,7 +851,20 @@ route('POST', /^\/api\/providers\/([\w-]+)\/detect-groups$/, async (ctx) => {
         // 分组名先写上——这一步不依赖价格表，读不到广场也该记住「你属于哪个分组」
         offer.group = row.group
 
-        if (typeof row.rate === 'number' && benchTable[key]) {
+        // 站点自己标 0 价 → 就是免费，倍率写多少都不影响（「免费模型」分组常见倍率 1）。
+        // 只认本分组精确命中，不用 match() 的全站回落——那是别的分组的价格。
+        const exact = byGroupModel.get(`${row.group}::${offer.modelKey}`)
+        const siteSaysFree = Boolean(exact) && exact.inPrice === 0 && exact.outPrice === 0
+
+        if (siteSaysFree) {
+          offer.pricingMode = 'manual'
+          offer.ratio = null
+          offer.inPrice = 0
+          offer.outPrice = 0
+          offer.currency = 'CNY'
+          offer.siteRatio = typeof row.rate === 'number' ? row.rate : null
+          offer.ratioSource = 'site'
+        } else if (typeof row.rate === 'number' && benchTable[key]) {
           // 倍率模式：只要基准价 + 倍率，不需要广场给的绝对价。
           // 站慢或没开广场时这条路仍然能走通，是它最重要的价值。
           offer.ratio = row.rate
