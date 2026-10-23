@@ -853,6 +853,23 @@ function freePlatformPane(platforms) {
   })
 }
 
+/** 发起一次平台授权：拿 authUrl → 开浏览器 → 轮询结果 */
+async function connectPlatform(platformId) {
+  try {
+    const result = await api('POST', `/api/free/platforms/${platformId}/connect`, {})
+    const connect = result.connect
+    if (!connect?.authUrl) throw new Error('平台没有返回授权地址')
+    state = result
+    render()
+    // 授权在浏览器里完成，我们在这边轮询——用户不用手动回来点「我已登录」
+    window.open(connect.authUrl, '_blank', 'noopener,noreferrer')
+    toast('已打开授权页，完成后会自动回来')
+    await waitForConnect(platformId, connect.state, connect.accountId)
+  } catch (error) {
+    toast(error.message, true)
+  }
+}
+
 /** 轮询授权结果：服务端说 ready 之前一直等，最长 5 分钟（与连接器的超时一致） */
 async function waitForConnect(platformId, authState, accountId) {
   const deadline = Date.now() + 5 * 60 * 1000
@@ -2110,17 +2127,30 @@ document.addEventListener('click', async (event) => {
       toast('先添加一个平台', true)
       return
     }
+    await withBusy(actionButton, () => connectPlatform(platformId))
+    return
+  }
+
+  if (action === 'add-preset-platform') {
+    const presetId = actionButton.dataset.preset
+    const preset = state.catalog?.platforms?.find((p) => p.id === presetId)
+    if (!preset) return
+    const wantsConnect = actionButton.dataset.connect === '1'
     await withBusy(actionButton, async () => {
       try {
-        const result = await api('POST', `/api/free/platforms/${platformId}/connect`, {})
-        const connect = result.connect
-        if (!connect?.authUrl) throw new Error('平台没有返回授权地址')
+        const result = await api('POST', '/api/free/platforms', {
+          connectorId: preset.connectorId,
+          label: preset.label,
+          presetId: preset.id,
+        })
         state = result
         render()
-        // 授权在浏览器里完成，我们在这边轮询——用户不用手动回来点「我已登录」
-        window.open(connect.authUrl, '_blank', 'noopener,noreferrer')
-        toast('已打开授权页，完成后会自动回来')
-        await waitForConnect(platformId, connect.state, connect.accountId)
+        toast(`已添加「${preset.label}」`)
+        // 「添加并连接」：建完直接走授权，省一次点击
+        if (wantsConnect && preset.connectorId !== 'manual') {
+          const platformId = result.platformResult?.id
+          if (platformId) await connectPlatform(platformId)
+        }
       } catch (error) {
         toast(error.message, true)
       }

@@ -86,18 +86,6 @@ function avatarHtml(label, esc) {
   return `<span style="width:34px;height:34px;border-radius:9px;flex:none;display:flex;align-items:center;justify-content:center;font-size:15px;font-weight:600;color:#fff;background:hsl(${hash} 46% 45%)">${esc(initial)}</span>`
 }
 
-function emptyPaneHtml(esc, t) {
-  return `
-    <div class="empty">
-      <h3>${esc(t('还没有连接平台'))}</h3>
-      <p>${esc(t('平台积分可以来自 WorkBuddy、Trae 等 Agent 平台。自动连接还在做，现在可以先手动记一个额度。'))}</p>
-      <div style="display:flex;gap:8px;justify-content:center">
-        <button class="primary" data-act="platform-add">${esc(t('手动添加'))}</button>
-        <button class="ghost" data-act="platform-connect" title="${esc(t('WorkBuddy / Trae 自动连接开发中'))}">${esc(t('连接平台'))}</button>
-      </div>
-    </div>`
-}
-
 /** 手动建一个平台：只记额度，不依赖任何连接器 */
 function manualFormHtml(esc, t, presets = []) {
   const options = presets
@@ -155,9 +143,66 @@ export function renderFreePlatformPane({
   const list = Array.isArray(platforms) ? platforms : []
   const allAccounts = Array.isArray(accounts) ? accounts : []
 
+  // 内置平台里「还没添加」的那些，作为卡片直接摆出来——用户不用先知道自己要加什么
+  const addedPresetIds = new Set(list.map((p) => p.presetId).filter(Boolean))
+  const addedConnectors = new Set(
+    list.filter((p) => p.connectorId && p.connectorId !== 'manual').map((p) => p.connectorId),
+  )
+  const available = (Array.isArray(presets) ? presets : []).filter(
+    (p) => !addedPresetIds.has(p.id) && !(p.connectorId !== 'manual' && addedConnectors.has(p.connectorId)),
+  )
+
+  const presetBlock = available.length
+    ? `
+    <h3 class="section-title" style="margin-top:20px">内置平台</h3>
+    <div class="grid" style="grid-template-columns:repeat(auto-fill,minmax(260px,1fr))">
+      ${available
+        .map(
+          (p) => `
+        <div class="card" style="border-style:dashed">
+          <div class="card-head">
+            <div style="display:flex;align-items:center;gap:10px;min-width:0">
+              ${avatarHtml(p.label, esc)}
+              <div style="min-width:0">
+                <h3>${esc(p.label)}</h3>
+                <div class="meta">${esc(t(p.note || ''))}</div>
+              </div>
+            </div>
+          </div>
+          <div class="card-actions" style="margin-top:12px">
+            <button class="ghost" data-act="add-preset-platform" data-preset="${esc(p.id)}">${esc(t('添加'))}</button>
+            ${
+              p.connectorId !== 'manual'
+                ? `<button data-act="add-preset-platform" data-preset="${esc(p.id)}" data-connect="1">${esc(t('添加并连接'))}</button>`
+                : ''
+            }
+          </div>
+        </div>`,
+        )
+        .join('')}
+    </div>`
+    : ''
+
+  const helpBlock = `
+    <div class="alert calm" style="margin-top:18px;align-items:flex-start">
+      <span class="grow" style="line-height:1.75">
+        <b>${esc(t('参数怎么填'))}</b>
+        <span class="desc" style="display:block;margin-top:2px">
+          · <b>${esc(t('额度上限'))}</b> —— ${esc(t('平台给的总量，写数字就行（20、100、500000）'))}<br />
+          · <b>${esc(t('单位'))}</b> —— ${esc(t('平台按「次」给就选次，按积分就选积分，按 token 就选 token；拿不准选积分'))}<br />
+          · <b>${esc(t('窗口'))}</b> —— ${esc(t('每天重置选「每天」，每月重置选「每月」'))}<br />
+          · <b>${esc(t('平台名'))}</b> —— ${esc(t('随便起，只用于你自己识别'))}<br />
+          · <b>${esc(t('连接'))}</b> —— ${esc(t('想让程序自动读额度就用「连接」（WorkBuddy / CodeBuddy 支持）；其余平台先手动记，用完了自己更新'))}
+        </span>
+      </span>
+    </div>`
+
   if (list.length === 0) {
-    // 空态必须自带「添加」入口：否则没有任何免费模型时，用户根本没法开始用平台栏
-    return formOpen ? manualFormHtml(esc, t, presets) : emptyPaneHtml(esc, t)
+    // 没有任何平台时也要把「内置卡片 + 参数说明」摆出来，而不是一句「还没有连接平台」
+    return `
+      ${presetBlock}
+      ${helpBlock}
+      ${formOpen ? manualFormHtml(esc, t, presets) : `<div style="margin-top:14px"><button data-act="platform-add">${esc(t('手动添加一个不在列表里的平台'))}</button></div>`}`
   }
 
   // 「已连接」由服务端算：需要登录的平台必须有 token，手动平台有账号即可。
@@ -262,9 +307,17 @@ export function renderFreePlatformPane({
   // 卡片比表单字段宽：.grid 默认 minmax(190px) 在这个场景下会把配额文字挤换行
   return `
     ${stats}
-    <div class="grid" style="grid-template-columns:repeat(auto-fill,minmax(280px,1fr));margin-top:16px">
+    <div class="toolbar" style="margin:0 0 10px">
+      <span class="hint" style="margin:0">${esc(t('额度是平台给的总量，用完自己更新；想自动读就点「连接」。'))}</span>
+      <span class="grow"></span>
+      <button data-act="platform-add">${esc(t('手动添加'))}</button>
+    </div>
+    <div class="grid" style="grid-template-columns:repeat(auto-fill,minmax(280px,1fr))">
       ${cards}
-    </div>`
+    </div>
+    ${formOpen ? manualFormHtml(esc, t, presets) : ''}
+    ${presetBlock}
+    ${helpBlock}`
 }
 
 /** 有 resetAt 就用它；没有就按窗口推下一个重置点（本地时区） */

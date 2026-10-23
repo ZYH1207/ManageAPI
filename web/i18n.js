@@ -874,3 +874,23 @@ Object.assign(EN, {
   '把输入/输出价都设为 0，这条就进免费池（不进比价和自动选站）':
     'Sets input and output price to 0 — this supply moves to the free pool and leaves paid comparison.',
 })
+
+// 平台侧内置卡片与参数说明
+Object.assign(EN, {
+  '添加': 'Add',
+  '添加并连接': 'Add & connect',
+  '参数怎么填': 'How to fill the fields',
+  '平台给的总量，写数字就行（20、100、500000）': 'Total amount the platform gives — just the number (20, 100, 500000)',
+  '平台按「次」给就选次，按积分就选积分，按 token 就选 token；拿不准选积分':
+    'Pick the unit the platform uses — requests, credits or tokens. When unsure, use credits.',
+  '每天重置选「每天」，每月重置选「每月」': 'Choose Daily if it resets every day, Monthly if it resets every month',
+  '随便起，只用于你自己识别': 'Any name — it only helps you recognise the card',
+  '想让程序自动读额度就用「连接」（WorkBuddy / CodeBuddy 支持）；其余平台先手动记，用完了自己更新':
+    'Use Connect when you want the tool to read the quota automatically (WorkBuddy / CodeBuddy). For the rest, record it manually and update it when it runs out.',
+  '手动添加一个不在列表里的平台': 'Add a platform that is not listed',
+})
+
+Object.assign(EN, {
+  '额度是平台给的总量，用完自己更新；想自动读就点「连接」。':
+    'The quota is the total the platform gives — update it yourself as it drains. Use Connect if you want it read automatically.',
+})

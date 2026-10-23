@@ -152,12 +152,16 @@ export async function upsertPlatform(input = {}) {
       if (input.connectorId !== undefined) existing.connectorId = connectorId
       if (input.label !== undefined) existing.label = String(input.label).trim() || existing.label
       if (input.enabled !== undefined) existing.enabled = Boolean(input.enabled)
+      if (input.presetId !== undefined) existing.presetId = String(input.presetId || '')
       return existing
     }
 
     const platform = {
       id: newId('pf'),
       connectorId,
+      // 记住它是从哪个内置卡片建出来的：界面据此把内置卡片标成「已添加」，
+      // 也让手动连接器可以按预设建多个（Trae、Qoder 各一张）
+      presetId: input.presetId ? String(input.presetId) : '',
       label: String(input.label || connectorId).trim() || connectorId,
       enabled: input.enabled === undefined ? true : Boolean(input.enabled),
       createdAt: nowIso(),
