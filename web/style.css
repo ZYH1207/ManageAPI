@@ -431,6 +431,15 @@ input:focus, select:focus {
 }
 .doc-steps { margin: 0 0 10px; padding-left: 22px; }
 .doc-steps li { margin-bottom: 6px; }
+.doc-note {
+  margin: 12px 0;
+  padding: 8px 12px;
+  border-left: 2px solid var(--accent);
+  background: var(--accent-soft);
+  border-radius: 0 6px 6px 0;
+  color: var(--muted);
+}
+.doc-note a { color: var(--accent); }
 
 /* ------------------------------------------------------ 使用说明弹窗（带目录） */
 .help-panel {

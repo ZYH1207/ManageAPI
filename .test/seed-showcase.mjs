@@ -50,6 +50,9 @@ const OFFERS = [
   { p: 'p_show04', model: 'deepseek-v4.1-flash', group: '默认分组', ratio: 1 },
   { p: 'p_show04', model: 'kimi-k3', group: '默认分组', ratio: 1 },
   { p: 'p_show04', model: 'qwen3.8-max', group: '默认分组', ratio: 1 },
+  // 倍率 0 且基准价存在 → 免费池（不参与付费比价），给免费页截图用
+  { p: 'p_show02', model: 'glm-5.3', group: '免费池', ratio: 0 },
+  { p: 'p_show03', model: 'qwen3.8-max', group: '免费池', ratio: 0 },
 ]
 
 /** 探测剧本：ok / fp（指纹挂）/ trunc（截断） */
@@ -400,10 +403,102 @@ for (let d = 0; d < 30; d += 1) {
   days[day] = bucket
 }
 
+/**
+ * 免费页平台侧：三张卡覆盖三种形态，方便截出「能签到 / 手动 / 本机客户端」的差异。
+ * 数据是编的，secret 只是为了让服务端把平台标成「已连接」。
+ */
+const quota = (extra) => ({
+  unit: 'credit',
+  limit: 0,
+  used: 0,
+  remaining: null,
+  cycleRemaining: null,
+  cycleSize: null,
+  bonusTokens: null,
+  tenantKey: '',
+  window: 'day',
+  resetAt: new Date(now + 10 * HOUR).toISOString(),
+  ...extra,
+})
+
+const free = {
+  version: 1,
+  platforms: [
+    {
+      id: 'pf_show01',
+      connectorId: 'workbuddy',
+      presetId: 'workbuddy',
+      label: 'WorkBuddy',
+      enabled: true,
+      createdAt: iso(12 * DAY),
+    },
+    {
+      id: 'pf_show02',
+      connectorId: 'manual',
+      presetId: 'trae',
+      label: 'TraeWork AI',
+      enabled: true,
+      createdAt: iso(9 * DAY),
+    },
+    {
+      id: 'pf_show03',
+      connectorId: 'zcode',
+      presetId: 'zcode',
+      label: 'ZCode',
+      enabled: true,
+      createdAt: iso(6 * DAY),
+    },
+  ],
+  accounts: [
+    {
+      id: 'pa_show01',
+      platformId: 'pf_show01',
+      label: 'Primary',
+      status: 'ok',
+      lastCheckinAt: iso(2 * HOUR),
+      secret: 'showcase-encrypted',
+      createdAt: iso(12 * DAY),
+      quota: quota({ limit: 100, used: 42, remaining: 58, cycleRemaining: 58, cycleSize: 100 }),
+    },
+    {
+      id: 'pa_show02',
+      platformId: 'pf_show02',
+      label: 'Primary',
+      status: 'ok',
+      lastCheckinAt: null,
+      secret: null,
+      createdAt: iso(9 * DAY),
+      quota: quota({ limit: 200, used: 80, remaining: 120, cycleRemaining: 120, cycleSize: 200 }),
+    },
+    {
+      id: 'pa_show03',
+      platformId: 'pf_show03',
+      label: 'Personal',
+      status: 'ok',
+      lastCheckinAt: null,
+      secret: 'showcase-encrypted',
+      createdAt: iso(6 * DAY),
+      quota: quota({
+        unit: 'token',
+        limit: null,
+        used: 0,
+        remaining: 2_800_000,
+        cycleRemaining: 2_800_000,
+        cycleSize: 3_000_000,
+        bonusTokens: 12_000_000,
+      }),
+    },
+  ],
+  activeAccount: { pf_show01: 'pa_show01', pf_show02: 'pa_show02', pf_show03: 'pa_show03' },
+  ledger: [],
+}
+
 await mkdir(dir, { recursive: true })
 await writeFile(join(dir, 'db.json'), JSON.stringify(db, null, 2), 'utf8')
 await writeFile(join(dir, 'benchmark.json'), JSON.stringify(benchmarks, null, 2), 'utf8')
 await writeFile(join(dir, 'usage.json'), JSON.stringify({ version: 1, days }, null, 2), 'utf8')
+await writeFile(join(dir, 'free.json'), JSON.stringify(free, null, 2), 'utf8')
 
 console.log(`展示数据已写入 ${dir}`)
 console.log(`  站点 ${providers.length} · 供给 ${offers.length} · 探针 ${probes.length} · 基准价 ${Object.keys(benchmarks).length}`)
+console.log(`  平台 ${free.platforms.length} · 账号 ${free.accounts.length}`)

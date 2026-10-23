@@ -1488,7 +1488,7 @@ function renderPricing() {
             <th>模式</th>
             <th class="num">输入价</th><th class="num">输出价</th>
             <th>币种</th><th class="num">倍率</th>
-            <th class="num">首字</th><th class="num">${priceSym()}/百万 token</th><th class="num">价差</th>
+            <th class="num">首字</th><th class="num">${t('{sym}/百万 token', { sym: priceSym() })}</th><th class="num">价差</th>
           </tr></thead>
           <tbody>${rows}</tbody>
         </table>`}
@@ -1504,7 +1504,7 @@ function renderPricing() {
         ${icon('eye-off')}${t('忽略模型')}${ignoredCount ? ` ${ignoredCount}` : ''}
       </button>
     </div>
-    <p class="hint">价格直接改，失焦即保存。「${priceSym()}/百万 token」是综合成本：输入按 25%、输出按 75% 加权。人民币标价的站按「基准价」页里的汇率折算成美元比较。</p>
+    <p class="hint">${t('价格直接改，失焦即保存。「{sym}/百万 token」是综合成本：输入按 25%、输出按 75% 加权。人民币标价的站按「基准价」页里的汇率折算成美元比较。', { sym: priceSym() })}</p>
     ${ignoredCount ? `<p class="hint">已忽略 ${ignoredCount} 个模型：它们不出现在比价、智能决策、探针和网关里。<button class="ghost tiny" data-act="ignored-models">管理</button></p>` : ''}
     ${groups}${unpricedBlock}`
 }

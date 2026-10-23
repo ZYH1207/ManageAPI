@@ -26,13 +26,12 @@ ManageAPI addresses these three separately: **price comparison**, **probing**, a
 
 ## Screens
 
-Ten pages on the left, one job each:
+Nine pages on the left, one job each:
 
 | Page | Purpose |
 |---|---|
 | **Overview** | Headline conclusion, key stats, sites needing attention, site ranking |
-| **Monitor** | Balance trend, ratio changes, upstream notices and alerts |
-| **Sites** | Record relays and keys, sync models, import group ratios |
+| **Sites** | Balance trend, ratio changes, upstream notices; relay and key management (layout inspired by [bejix/upstream-ops](https://github.com/bejix/upstream-ops)) |
 | **Free** | Free models and platform credits, kept out of paid comparison |
 | **Pricing** | The same model compared across sites, prices editable inline |
 | **Routing** | Candidate order for each model, with manual overrides |
@@ -40,6 +39,8 @@ Ten pages on the left, one job each:
 | **Gateway** | One endpoint for all traffic, with a routing log |
 | **Usage** | Tokens by day / key / model / site |
 | **Benchmarks** | The baseline that ratios convert against |
+
+> The site-card layout (channel cards, group chips, toolbar) is inspired by [bejix/upstream-ops](https://github.com/bejix/upstream-ops): only the layout is borrowed; data and interactions are implemented here. Thanks to the author.
 
 The top bar holds notifications, the docs entry and the language dropdown; the sidebar bottom has three fixed entries: Contact, Dark mode, Collapse.
 
@@ -83,8 +84,8 @@ The first run creates `~/.manage-api/` with an encryption key.
 ### Five steps
 
 1. On **Sites**, add a relay (the base URL must end with `/v1`) and paste its key
-2. Click **Sync models** to fetch what it sells
-3. Click **Import ratios** and pick the group you actually bought — ratios fill in automatically
+2. Click **One-click sync**: models, balance and group detection run in sequence (without a token group detection is skipped)
+3. If no group was detected, click **Import ratios** and pick the group you actually bought
 4. For models without an official price, add one on **Benchmarks**, or load the built-in list
 5. Run a probe on **Probes** so the tool knows which sites to trust
 
@@ -128,6 +129,17 @@ On the group ratio rows:
 - **Restore** appears once you customise; **Restore all to site values** resets the whole site
 
 Custom ratios have a real use: if a site claims 0.15 but a usage check shows you are effectively paying what 0.18 would cost, set 0.18 so comparisons stay honest.
+
+### Pricing table: ratio or price
+
+Every supply row has a **Mode** column, one of two:
+
+- **Ratio** — actual price = benchmark × ratio; the input/output price boxes are disabled so the two rules cannot fight
+- **Price** — enter input/output unit prices directly; the ratio box is disabled
+
+Switching from Ratio to Price seeds the current effective price into the price boxes, so the row does not turn "unpriced" and disappear.
+
+Cache hit rate is its own column, taken from the latest probe; rows never probed show "—". The small text under blended cost is the off-peak price.
 
 ### Benchmarks
 
@@ -252,7 +264,7 @@ Two panes behind a top switcher:
 | Pane | What it shows | Gates |
 |---|---|---|
 | **Free relay models** | Models whose actual price is 0, with a quota bar | fingerprint / truncation / quota used up / score expired |
-| **Platform credits** | Accounts and remaining credits on WorkBuddy, Trae, … | quota used up / session expired |
+| **Platform credits** | Accounts and remaining credits on WorkBuddy / CodeBuddy / ZCode, … | quota used up / session expired |
 
 **Why they stay separate**: paid supplies share one comparable metric — effective cost. On the free side the price is always 0, so `0 ÷ quality` is always 0 and any weighted ranking collapses. The free side therefore uses **gates + a single sort key**: fail a gate and you are out entirely — no room for "cheap but bad".
 
@@ -271,7 +283,7 @@ A prefix can only *upgrade* a request into the free pool, never downgrade it bac
 
 ![Free page · platform pane](docs/screenshot-free-platform.png)
 
-The platform pane supports multiple accounts, a daily check-in (idempotent — only one success per day) and reset countdowns. WorkBuddy / CodeBuddy can be connected with one click to read credits automatically, marked **experimental** — it uses the undocumented API the vendor ships to its own IDE, so a platform update may break it. When it breaks you just stop seeing numbers; nothing else is affected.
+The platform pane supports multiple accounts, a daily check-in (idempotent — only one success per day) and reset countdowns. **The Check-in button only appears for platforms that implement automatic check-in**: WorkBuddy / CodeBuddy call the real endpoint and only write the ledger on success; manual platforms and ZCode have no automatic check-in, so no button appears. WorkBuddy / CodeBuddy can be connected with one click to read credits automatically, marked **experimental** — it uses the undocumented API the vendor ships to its own IDE, so a platform update may break it. When it breaks you just stop seeing numbers; nothing else is affected.
 
 Both the Sites page and the Platforms pane ship a **preset catalogue** (SiliconFlow, ModelScope, DeepSeek, Moonshot, Zhipu, DashScope, Volcengine, OpenAI…). Pick one and the name and base URL are filled in — you only add a key. Vendors whose URL we could not confirm (AgentRouter, AnyRouter, PPIO) are left blank rather than guessed.
 

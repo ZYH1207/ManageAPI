@@ -116,7 +116,8 @@ await send('Fetch.enable', { patterns: [{ urlPattern: '*/api/providers/*' }] })
 const pages = [
   { name: 'overview', hash: '#overview' },
   { name: 'monitor', hash: '#monitor' },
-  { name: 'providers', hash: '#monitor' },
+  // 站点卡已经并入监控页：README 的「站点页」那张要滚到卡片区，不然和监控页完全重复
+  { name: 'providers', hash: '#monitor', scroll: '.sites-head' },
   { name: 'free', hash: '#free' },
   { name: 'free-platform', hash: '#free/platform' },
   { name: 'free-relay', hash: '#free/relay' },
@@ -127,9 +128,20 @@ const pages = [
   { name: 'usage', hash: '#usage' },
   { name: 'benchmark', hash: '#benchmark' },
 ]
-for (const { name, hash } of pages) {
+for (const { name, hash, scroll } of pages) {
   console.log(`抓 ${name}…`)
   await goto(hash)
+  if (scroll) {
+    // 页面滚的是 .content 这个容器，不是 window
+    await evalJs(`(() => {
+      const el = document.querySelector(${JSON.stringify(scroll)})
+      const box = document.querySelector('.content')
+      if (!el || !box) return
+      const top = el.getBoundingClientRect().top - box.getBoundingClientRect().top + box.scrollTop - 10
+      box.scrollTo(0, top)
+    })()`)
+    await sleep(450)
+  }
   await shot(name)
 }
 
@@ -142,7 +154,10 @@ await evalJs(`document.querySelector('[data-act="close-prov-panel"]').click()`)
 await sleep(300)
 
 console.log('抓使用说明…')
-await goto('#help')
+// README 说的是顶栏「文档」打开的弹窗（带左侧目录），不是 #help 整页
+await goto('#overview')
+await evalJs(`document.querySelector('[data-act="show-help"]').click()`)
+await sleep(900)
 await shot('help')
 
 console.log('抓语言菜单…')

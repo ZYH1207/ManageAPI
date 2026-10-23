@@ -303,6 +303,7 @@ const EN = {
   '模型key': 'Model key',
   '模型 key': 'Model key',
   '上游模型名': 'Upstream model',
+  '模式': 'Mode',
   '输入价': 'Input',
   '输出价': 'Output',
   '输入': 'Input',
@@ -543,6 +544,9 @@ Object.assign(EN, {
   // 比价
   '价格直接改，失焦即保存。「¥/百万 token」是综合成本：输入按 25%、输出按 75% 加权（权重可在左下角汇率旁调）。':
     'Edit prices inline; saved on blur. ¥/Mtok is a blended cost: 25% input, 75% output (weight sits next to the FX box).',
+  '价格直接改，失焦即保存。「{sym}/百万 token」是综合成本：输入按 25%、输出按 75% 加权。人民币标价的站按「基准价」页里的汇率折算成美元比较。':
+    'Edit prices inline; saved on blur. {sym}/Mtok is a blended cost: 25% input, 75% output. CNY-priced sites convert at the rate on the Benchmarks page.',
+  '{sym}/百万 token': '{sym}/Mtok',
 
   // 探针
   '主动探测': 'Active probing',

@@ -156,9 +156,8 @@
             <h3 class="doc-h3">快速开始</h3>
             <ol class="doc-steps">
               <li><b>站点</b> 页添加中转站（地址结尾要带 <code>/v1</code>），粘贴它的 Key</li>
-              <li>点 <b>同步模型</b>，拉取该站有哪些模型</li>
-              <li>点 <b>识别分组</b>，程序会去站点后台读「每把 Key 属于哪个分组」，连倍率一起填好（推荐）</li>
-              <li>读不到就退回 <b>导入倍率</b>，在分组列表里手动选你买的那个</li>
+              <li>点 <b>一键同步</b>：拉模型、读余额、识别分组一次跑完；没填「令牌」时跳过识别分组</li>
+              <li>同步没认出分组，就点 <b>导入倍率</b>，在分组列表里手动选你买的那个</li>
               <li>缺官方价的模型，去 <b>基准价</b> 页补上，或者载入内置参考价</li>
               <li>去 <b>探针</b> 页跑一次检测，让程序知道哪些站可信</li>
               <li>程序会按评分体系自动决定用哪个站，也可以在 <b>智能决策</b> 页手动调整先后</li>
@@ -179,7 +178,8 @@
 
             <h4 class="doc-h4">站点</h4>
             <p>
-              录入中转站和 Key 的地方。一个站可以挂多个 Key。<br />
+              录入中转站和 Key 的地方，同时也是监控页：上方是余额曲线、倍率变动和上游公告，下方是站点卡。
+              一个站可以挂多个 Key。<br />
               · <b>名称</b> —— 随便填，只用于你自己识别<br />
               · <b>地址</b> —— 中转站给你的 API 地址，<b>结尾必须带 <code>/v1</code></b>
               （如 <code>https://api.example.com/v1</code>）<br />
@@ -188,19 +188,24 @@
             </p>
             <p>每个站点卡片上有一排按钮：</p>
             <p>
-              · <b>同步模型</b> —— 拉取该站 <code>/v1/models</code> 的列表。只是「有哪些模型」，不含价格。<br />
-              · <b>识别分组</b> —— 从站点后台的「令牌列表」读出每把 Key 属于哪个分组，按各自的分组把倍率填好。需要先填「令牌」，推荐用这个。<br />
-              · <b>导入倍率</b> —— 读不到后台时的手动方案：列出该站所有分组，你选一个。详见下面「分组」一节。<br />
+              · <b>一键同步</b> —— 同步模型 → 读余额 →（有「令牌」时）识别分组，串着跑完；某一步失败不影响其他步骤。<br />
+              · <b>密钥</b> —— 展开这个站的 Key 列表：加 Key、删 Key、看每把 Key 绑的分组。<br />
+              · <b>分组倍率</b> —— 展开分组倍率，改倍率或恢复站点值。详见下面「分组」一节。<br />
+              · <b>导入倍率</b> —— 读不到后台时的手动方案：列出该站所有分组，你选一个。<br />
               · <b>用量核对</b> —— 用管理令牌拉站方记录的消费，和我们的估算对比。<br />
-              · <b>读余额</b> —— 尝试自动读余额。多数站读不到，读不到会说明原因。<br />
               · <b>导出配置</b> —— 生成 OpenAI 兼容的配置片段，方便复制到客户端。<br />
-              · <b>令牌</b>（在站点卡片上）—— 站点后台的登录令牌，用来读余额和用量。一个后台账号填一次，整站通用；不参与对话。<br />
+              · <b>令牌</b>（在站点卡片上）—— 站点后台的登录令牌，用来读余额、用量和识别分组。一个后台账号填一次，整站通用；不参与对话。<br />
               · <b>分组</b>（在 Key 那一行）—— 显示这把 Key 属于哪个分组，点它也能打开选分组。
             </p>
             <p>
               <b>令牌怎么拿</b>：浏览器登录站点后台 → F12 → Network → 点任意 <code>/api/v1/</code> 开头的请求 →
               复制 Request Headers 里的 <code>Authorization</code> 值（去掉 <code>Bearer </code> 前缀）。
               令牌会过期（一般 7-30 天），失效后重新复制。
+            </p>
+            <p class="doc-note">
+              界面致谢：站点卡的版式（渠道卡、分组胶囊、工具栏）参考了
+              <a href="https://github.com/bejix/upstream-ops" target="_blank" rel="noopener">bejix/upstream-ops</a>
+              的设计，只借版式；数据与交互都是本项目自己实现的。
             </p>
 
             <h4 class="doc-h4">分组</h4>
@@ -234,24 +239,54 @@
               · 出现「恢复」按钮时点一下，回到站点公布的值；顶部「全部恢复为站点值」是整个站一起还原
             </p>
             <p>
-              自己调倍率有实际用处：比如站方标的 0.15 你觉得有水分，按「扣费核对」算出来实际是 0.18，
+              自己调倍率有实际用处：比如站方标的 0.15 你觉得有水分，按「用量核对」算出来实际是 0.18，
               就手动改成 0.18，比价结果才准。
+            </p>
+
+            <h4 class="doc-h4">免费</h4>
+            <p>
+              中转站的免费模型和 Agent 平台的免费积分，单独收在一页，<b>不参与付费比价，也不参与自动选站</b>。
+              页内分两栏：<b>中转站免费模型</b> 和 <b>平台积分</b>。
+            </p>
+            <p>
+              <b>中转站免费模型</b>：实际价为 0 的模型，按指纹 / 未截断 / 额度耗尽 / 评分过期做闸门，
+              质量不达标就整个排除，不给「便宜但烂」留位置。
+            </p>
+            <p>
+              <b>平台积分</b>：WorkBuddy / CodeBuddy / ZCode 这类 Agent 产品的免费额度。<br />
+              · <b>连接</b> —— WorkBuddy / CodeBuddy 点「连接」授权后自动读积分。接口是平台给自家 IDE 用的，
+              标了「实验性」，平台升级后可能失效；失效只是读不到数据，不影响其他功能<br />
+              · <b>签到</b> —— 只有实现了自动签到的平台才显示这个按钮；签到会真实请求平台接口，成功才写账本，
+              同一天重复点只算一次。手动平台和 ZCode 没有自动签到，不会显示这个按钮<br />
+              · <b>账号</b> —— 一个平台可以挂多个账号，卡片上能切换活跃账号、删除账号<br />
+              · <b>刷新 / 诊断</b> —— 重新读额度；字段对不上时，把平台原始返回复制出来定位<br />
+              · <b>剩余</b> 指本周期还能用多少，不是套餐总量；重置时间与一次性赠量分开写
+            </p>
+            <p>
+              免费池只有显式使用时才会被调用：地址换成 <code>http://127.0.0.1:4319/free/v1</code>，
+              或者模型名前缀 <code>free/</code>。免费池用尽返回 402，<b>不会静默回落到付费</b>。
             </p>
 
             <h4 class="doc-h4">比价</h4>
             <p>
               同一个模型在不同站的价格横向对比。<br />
               · <b>搜索框</b> —— 输入模型名过滤，右边显示「N / M 个模型」<br />
-              · <b>输入价 / 输出价</b> —— 直接改，失焦即保存<br />
-              · <b>倍率</b> —— 更省事的填法：实际价 = 基准价 × 倍率。填了倍率就不用填单价<br />
+              · <b>缓存</b> —— 单独一列：最近一次探测的缓存命中率，没探过显示「—」<br />
+              · <b>模式</b> —— 「倍率 / 价格」二选一，决定这一行按哪种方式计价<br />
+              · <b>输入价 / 输出价</b> —— 「价格」模式下直接填单价，失焦即保存<br />
+              · <b>倍率</b> —— 「倍率」模式下填：实际价 = 基准价 × 倍率，不用再填单价<br />
               · <b>「＋」</b> —— 按当前行复制一条，用来给同一个模型建新分组<br />
               · <b>¥/百万 token</b> —— 综合成本，输入按 25%、输出按 75% 加权（权重可在左下角调）<br />
               · <b>价差</b> —— 比最便宜的贵多少百分比
             </p>
             <p>
+              模式是显式开关，只有当前模式的输入框可编辑。从「倍率」切到「价格」时，程序会把当前折算价
+              种进输入框，不会因为切模式让这条供给变成「未定价」而消失。
+            </p>
+            <p>
               行里的标记：<b>「最便宜」</b>是该模型当前最低价；<b>「可疑」</b>是探针判定不可信的站，
               价格照常显示但不参与推荐；<b>「超时」</b>是首字延迟超过你设的上限。
-              模型名下方的小字是缓存命中率和空闲时段价。
+              缓存命中率在单独的「缓存」列；综合成本下方的小字是空闲时段价。
             </p>
             <p>
               一个站挂了多个分组时，同一个模型会出现在同一列的多行里，行内标着是哪个分组。
@@ -450,8 +485,8 @@
             <h3 class="doc-h3">Quick start</h3>
             <ol class="doc-steps">
               <li>On <b>Sites</b>, add a relay (the base URL must end with <code>/v1</code>) and paste its key</li>
-              <li>Click <b>Sync models</b> to fetch what it sells</li>
-              <li>Click <b>Import ratios</b> and pick the group you actually bought — ratios fill in automatically</li>
+              <li>Click <b>One-click sync</b>: models, balance and group detection run in sequence; without a token group detection is skipped</li>
+              <li>If no group was detected, click <b>Import ratios</b> and pick the group you actually bought</li>
               <li>For models without an official price, add one on <b>Benchmarks</b>, or load the built-in list</li>
               <li>Run a probe on the <b>Probes</b> page so the tool knows which sites to trust</li>
               <li>Routing picks a site automatically; you can override the order on <b>Routing</b></li>
@@ -472,7 +507,8 @@
 
             <h4 class="doc-h4">Sites</h4>
             <p>
-              Where you record relays and keys. One site can hold several keys.<br />
+              Where you record relays and keys — and the monitor page too: balance curve, ratio changes and upstream
+              announcements on top, site cards below. One site can hold several keys.<br />
               · <b>Name</b> — anything you like, only for your own reference<br />
               · <b>Base URL</b> — the API endpoint the relay gave you, <b>it must end with <code>/v1</code></b>
               (e.g. <code>https://api.example.com/v1</code>)<br />
@@ -481,19 +517,27 @@
             </p>
             <p>Each site card has a row of buttons:</p>
             <p>
-              · <b>Sync models</b> — pulls <code>/v1/models</code>. It tells you which models exist, not their price.<br />
-              · <b>Import ratios</b> — lists the site's groups first, you pick one, ratios apply to every model below.
+              · <b>One-click sync</b> — models → balance → (with a token) group detection, run in sequence; one failing
+              step does not stop the others.<br />
+              · <b>Keys</b> — expands this site's key list: add or remove keys, see the group bound to each.<br />
+              · <b>Group ratios</b> — expands the ratio rows so you can edit a ratio or restore site values.
               See the Groups section.<br />
+              · <b>Import ratios</b> — the manual path when detection fails: list the site's groups and pick one.<br />
               · <b>Usage check</b> — pulls the site's own recorded spend and compares it with our estimate.<br />
-              · <b>Read balance</b> — tries to read the balance. Most sites do not allow it and will say why.<br />
               · <b>Export config</b> — generates an OpenAI-compatible snippet you can paste into a client.<br />
-              · <b>Token</b> (on the key row) — the site's login token, used to read balance and usage. Never used for chat.<br />
+              · <b>Token</b> (on the site card) — the site's login token, used to read balance, usage and groups.
+              One token per backend account; never used for chat.<br />
               · <b>Group</b> (on the key row) — shows which group this key belongs to; click it to change.
             </p>
             <p>
               <b>Getting the token</b>: log in to the site → F12 → Network → click any <code>/api/v1/</code> request →
               copy the <code>Authorization</code> value from Request Headers (drop the <code>Bearer </code> prefix).
               Tokens expire in 7–30 days; copy a fresh one when they do.
+            </p>
+            <p class="doc-note">
+              Credit where it is due: the site-card layout (channel cards, group chips, toolbar) is inspired by
+              <a href="https://github.com/bejix/upstream-ops" target="_blank" rel="noopener">bejix/upstream-ops</a>.
+              Only the layout is borrowed; data and interactions are implemented here.
             </p>
 
             <h4 class="doc-h4">Groups</h4>
@@ -533,20 +577,58 @@
               what 0.18 would cost, set 0.18 so the comparison stays honest.
             </p>
 
+            <h4 class="doc-h4">Free</h4>
+            <p>
+              Free relay models and free agent-platform credits live on their own page —
+              <b>not part of paid comparison and not part of automatic routing</b>. The page has two tabs:
+              <b>relay free models</b> and <b>platform credits</b>.
+            </p>
+            <p>
+              <b>Relay free models</b>: models whose effective price is 0. Fingerprint / truncation / quota / score
+              expiry act as gates — anything that fails is excluded outright, so "cheap but bad" gets no slot.
+            </p>
+            <p>
+              <b>Platform credits</b>: free allowance from agent products such as WorkBuddy, CodeBuddy and ZCode.<br />
+              · <b>Connect</b> — WorkBuddy / CodeBuddy authorise once and then read credits automatically. The endpoint
+              belongs to the vendor's own IDE, so it is marked experimental: a platform update may break it, and a
+              broken reader only means no numbers, nothing else.<br />
+              · <b>Check in</b> — only platforms that implement automatic check-in show this button. It calls the real
+              endpoint and only writes the ledger on success; clicking twice the same day counts once. Manual platforms
+              and ZCode have no automatic check-in, so no button appears.<br />
+              · <b>Accounts</b> — one platform can hold several accounts; switch the active one or delete an account
+              from the card.<br />
+              · <b>Refresh / Diagnose</b> — re-read the quota, or copy the platform's raw response when a field does
+              not line up.<br />
+              · <b>Remaining</b> means what is usable this cycle, not the plan's total; reset time and one-off bonus
+              credits are reported separately.
+            </p>
+            <p>
+              The free pool is used only when you ask for it: point the client at
+              <code>http://127.0.0.1:4319/free/v1</code>, or prefix a model with <code>free/</code>.
+              When it runs dry it returns 402 — <b>it never silently falls back to paid</b>.
+            </p>
+
             <h4 class="doc-h4">Pricing</h4>
             <p>
               The same model compared across sites.<br />
               · <b>Search</b> — filter by model name; the right side shows "N / M models"<br />
-              · <b>Input / Output</b> — edit inline, saves on blur<br />
-              · <b>Ratio</b> — the easier way: price = benchmark × ratio. With a ratio you can leave unit prices empty<br />
+              · <b>Cache</b> — its own column: hit rate from the latest probe, "—" when never probed<br />
+              · <b>Mode</b> — "Ratio / Price": decides how this row is priced<br />
+              · <b>Input / Output</b> — in Price mode, type unit prices directly; saves on blur<br />
+              · <b>Ratio</b> — in Ratio mode: price = benchmark × ratio, no unit price needed<br />
               · <b>+</b> — duplicates the row, for giving one model a second group<br />
               · <b>¥/Mtok</b> — blended cost: 25% input, 75% output (the weight is adjustable next to the FX box)<br />
               · <b>Spread</b> — how much more expensive than the cheapest
             </p>
             <p>
+              Mode is explicit: only the active mode's inputs are editable. Switching from Ratio to Price seeds the
+              current effective price into the inputs, so the row does not turn "unpriced" and vanish.
+            </p>
+            <p>
               Row markers: <b>Cheapest</b> is the lowest price for that model; <b>Suspicious</b> means the probes do not
               trust the site — the price is still shown but it is not recommended; <b>Too slow</b> means first-token
-              latency exceeded your limit. The small text under a model name shows cache hit rate and off-peak price.
+              latency exceeded your limit. Cache hit rate has its own column; the small text under blended cost is the
+              off-peak price.
             </p>
             <p>
               When a site has several groups, the same model appears on several rows, each tagged with its group.
