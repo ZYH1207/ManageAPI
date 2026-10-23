@@ -135,7 +135,9 @@ async function buildState() {
 
   // 免费供给在**数据入口**就切断：比价、概览结论、智能决策一律只看 paid。
   // 不靠渲染层过滤——漏一个分支就会污染「最便宜」的结论。
-  const { paid: paidOffers, free: freeOffers } = splitOffers(db.offers, benchmarks)
+  // 已下线（delistedAt 有值）的供给保留在库里，但不参与任何展示与路由
+  const liveOffers = db.offers.filter((o) => !o.delistedAt)
+  const { paid: paidOffers, free: freeOffers } = splitOffers(liveOffers, benchmarks)
 
   const { ranked, unpriced } = pricing.rankByModel(paidOffers, db.settings, benchmarks, isTrusted)
   const summary = pricing.summarize(paidOffers, db.settings, benchmarks, isTrusted)
@@ -252,7 +254,7 @@ async function buildState() {
       tail: c.tail,
       expiresAt: c.expiresAt,
     })),
-    offers: db.offers,
+    offers: liveOffers,
     // 免费池：与付费侧完全隔离。两栏数据分开给，前端不用自己筛。
     // relay 已经由 rankFreePool 排好序并带上 gate / daysLeft——
     // 服务端和前端共用同一份判定，避免两套阈值漂移。
@@ -442,6 +444,7 @@ route('POST', /^\/api\/providers\/([\w-]+)\/sync$/, async (ctx) => {
   const failures = []
   const perKey = []
   let added = 0
+  let removedTotal = 0
 
   for (const row of fetched) {
     if (row.error) {
@@ -454,13 +457,21 @@ route('POST', /^\/api\/providers\/([\w-]+)\/sync$/, async (ctx) => {
       row.models,
       row.credential.group || '',
     )
+    // 拉到了模型才敢标：空响应多半是站点抽风，不是「模型全下线了」
+    const pruned =
+      row.models.length > 0
+        ? await inv.markDelisted(provider.id, row.credential.id, row.models)
+        : { delisted: 0, revived: 0 }
     added += saved.added
+    removedTotal += pruned.delisted
     for (const name of row.models) allModels.add(name)
     perKey.push({
       credentialId: row.credential.id,
       label: row.credential.label,
       group: row.credential.group || '',
       count: row.models.length,
+      removed: pruned.delisted,
+      revived: pruned.revived,
     })
   }
 
@@ -483,6 +494,7 @@ route('POST', /^\/api\/providers\/([\w-]+)\/sync$/, async (ctx) => {
       fetched: list.length,
       added,
       removed: [...previous].filter((name) => !current.has(name)),
+      pruned: removedTotal,
       elapsedMs,
       keysUsed: perKey.length,
       keysTotal: targets.length,
@@ -1525,7 +1537,7 @@ async function handleChatCompletions(req, res, db, keyRecord, isFree = false) {
   const benchmarks = await bench.readBenchmarks()
   const scores = scoresFor(db)
   // 免费池只在自己的供给里选；付费池永远看不到免费项。两者不互相回落。
-  const split = splitOffers(db.offers, benchmarks)
+  const split = splitOffers(db.offers.filter((o) => !o.delistedAt), benchmarks)
   // 免费池先过闸门（额度 / 指纹 / 截断 / 过期），过了才交给路由排序。
   // 闸门是硬排除——免费成本恒为 0，不能靠「便宜但烂」的加权把它排下去。
   const poolOffers = isFree
@@ -1667,7 +1679,7 @@ async function handleProxy(req, res, url) {
   if (pathname === '/v1/models') {
     const scores = scoresFor(db)
     const benchmarks = await bench.readBenchmarks()
-    const split = splitOffers(db.offers, benchmarks)
+    const split = splitOffers(db.offers.filter((o) => !o.delistedAt), benchmarks)
     const shape = (m, ownedBy, prefix = '') => ({
       id: `${prefix}${m.id}`,
       object: 'model',

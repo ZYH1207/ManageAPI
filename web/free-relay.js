@@ -166,8 +166,12 @@ export function renderFreeRelayPane({ offers = [], providers = [], crossPane = '
     return `
       <div class="empty">
         <h3>${esc(t('还没有免费模型'))}</h3>
-        <p>${esc(t('去「站点」页点「导入倍率」，实际价为 0 的模型会自动出现在这里。'))}</p>
-        <button class="primary" data-goto="providers">${esc(t('去站点导入'))}</button>
+        <p>${esc(t('免费池只收「实际价为 0」的模型。分组名叫「免费」但价格没填的，不算——空不等于 0。'))}</p>
+        <p class="hint" style="margin:0 0 14px">${esc(t('去「比价」页把它的输入/输出价填 0，或直接点「标为免费」；也可以先「导入倍率」，实际价算下来是 0 的会自动进来。'))}</p>
+        <div style="display:flex;gap:8px;justify-content:center">
+          <button class="primary" data-goto="pricing">${esc(t('去比价页标免费'))}</button>
+          <button class="ghost" data-goto="providers">${esc(t('去站点导入倍率'))}</button>
+        </div>
       </div>`
   }
 

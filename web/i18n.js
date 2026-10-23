@@ -862,3 +862,15 @@ Object.assign(EN, {
   '需要先填「令牌」。从站点后台的令牌列表读出每把 Key 属于哪个分组，按各自的分组自动应用倍率':
     'Needs a site token first. Reads each key\u2019s group from the site token list and applies that group\u2019s rate.',
 })
+
+Object.assign(EN, {
+  '免费池只收「实际价为 0」的模型。分组名叫「免费」但价格没填的，不算——空不等于 0。':
+    'The free pool only takes models whose actual price is 0. A group named "free" with an empty price does not count — blank is not zero.',
+  '去「比价」页把它的输入/输出价填 0，或直接点「标为免费」；也可以先「导入倍率」，实际价算下来是 0 的会自动进来。':
+    'Set its input/output price to 0 on the Pricing page, or click "Mark free". You can also import ratios first — anything that works out to 0 lands here automatically.',
+  '去比价页标免费': 'Mark free on Pricing',
+  '去站点导入倍率': 'Import ratios on Sites',
+  '标为免费': 'Mark free',
+  '把输入/输出价都设为 0，这条就进免费池（不进比价和自动选站）':
+    'Sets input and output price to 0 — this supply moves to the free pool and leaves paid comparison.',
+})

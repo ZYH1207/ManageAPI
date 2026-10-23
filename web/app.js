@@ -903,12 +903,12 @@ function renderPricing() {
   // 未定价的供给：不管有没有已定价的，都要给出来填——否则新用户进来是一片空白
   const unpricedBlock = state.unpriced.length === 0 ? '' : `
     <h3 class="section-title">还没定价的供给（${state.unpriced.length}）</h3>
-    <p class="hint">填「倍率」最省事：实际价 = 基准价 × 倍率。不知道倍率就直接填输入/输出单价。</p>
+    <p class="hint">填「倍率」最省事：实际价 = 基准价 × 倍率。不知道倍率就直接填输入/输出单价。站上真的白送就点「标为免费」。</p>
     <div class="table-wrap">
       <table>
         <thead><tr>
           <th>站点</th><th>上游模型名</th><th class="num">基准价</th>
-          <th class="num">输入价</th><th class="num">输出价</th><th class="num">倍率</th>
+          <th class="num">输入价</th><th class="num">输出价</th><th class="num">倍率</th><th></th>
         </tr></thead>
         <tbody>
           ${state.unpriced.map((offer) => {
@@ -925,6 +925,7 @@ function renderPricing() {
               <td class="num"><input type="number" step="0.001" placeholder="—" value="${offer.inPrice ?? ''}" data-field="inPrice" /></td>
               <td class="num"><input type="number" step="0.001" placeholder="—" value="${offer.outPrice ?? ''}" data-field="outPrice" /></td>
               <td class="num"><input class="ratio" type="number" step="0.01" placeholder="倍率" value="${offer.ratio ?? ''}" data-field="ratio" /></td>
+              <td><button class="ghost tiny" data-act="mark-free" data-offer="${esc(offer.id)}" title="把输入/输出价都设为 0，这条就进免费池（不进比价和自动选站）">标为免费</button></td>
             </tr>`
           }).join('')}
         </tbody>
@@ -2409,6 +2410,29 @@ document.addEventListener('click', async (event) => {
     } catch (error) {
       toast(error.message, true)
     }
+    return
+  }
+
+  if (action === 'mark-free') {
+    const offerId = actionButton.dataset.offer
+    await withBusy(actionButton, async () => {
+      try {
+        // 免费池的判据是「实际价 = 0」，不是分组名里带「免费」两个字。
+        // 价格留空是 null（没填），和 0 不是一回事，所以这里显式写 0。
+        const result = await api('PATCH', `/api/offers/${offerId}`, {
+          pricingMode: 'manual',
+          ratio: null,
+          inPrice: 0,
+          outPrice: 0,
+          currency: 'CNY',
+        })
+        state = result
+        render()
+        toast('已标为免费，去「免费」页看看')
+      } catch (error) {
+        toast(error.message, true)
+      }
+    })
     return
   }
 

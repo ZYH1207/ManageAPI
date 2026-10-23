@@ -301,6 +301,36 @@ export async function deleteOffer(id) {
   })
 }
 
+/**
+ * 标记「这次同步没再返回」的模型为已下线，而不是直接删。
+ *
+ * 硬删会把用户手填的价格一起抹掉——万一站点只是暂时抽风，或者你换了分组
+ * 又换回来，价格就白填了。所以只打 `delistedAt` 标记，读的时候过滤掉；
+ * 下次它再出现，标记清掉、价格还在。
+ *
+ * 只按 credentialId 处理，不碰别的 Key 的行。
+ */
+export async function markDelisted(providerId, credentialId, keepNames) {
+  const keep = new Set(keepNames)
+  return mutate((db) => {
+    let delisted = 0
+    let revived = 0
+    for (const offer of db.offers) {
+      if (offer.providerId !== providerId) continue
+      if (credentialId && offer.credentialId !== credentialId) continue
+      const alive = keep.has(offer.upstreamName)
+      if (!alive && !offer.delistedAt) {
+        offer.delistedAt = nowIso()
+        delisted += 1
+      } else if (alive && offer.delistedAt) {
+        offer.delistedAt = null
+        revived += 1
+      }
+    }
+    return { delisted, revived }
+  })
+}
+
 // --------------------------------------------------------------- 网关凭据
 
 function newGatewayKeyRecord(name) {
