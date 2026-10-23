@@ -42,8 +42,26 @@ async function requestJson(url, { apiKey, timeoutMs = 15000, headers = {} } = {}
   }
 }
 
-/** 兼容几种常见返回形态，抽出模型 id 列表。 */
-function extractModelIds(payload) {
+/**
+ * 从 baseUrl 里取「协议 + 主机」。
+ *
+ * 协议必须跟着用户填的走：自建/内网站点多半是纯 http（常带端口），硬拼 https 连都连不上。
+ * 之前这几处都写死了 https，导致这类站的「识别分组」「令牌列表」「余额」全部失败。
+ */
+function originOf(baseUrl, { stripApiPrefix = false } = {}) {
+  const match = String(baseUrl || '').match(/^(https?):\/\/([^/]+)/i)
+  if (!match) return ''
+  const host = stripApiPrefix ? match[2].replace(/^api\./i, '') : match[2]
+  return `${match[1].toLowerCase()}://${host}`
+}
+
+/** 同一站点可能有 api. 前缀，两种主机都值得试一次（去重、保持顺序） */
+function originCandidates(baseUrl, { stripApiPrefix = true } = {}) {
+  const list = [originOf(baseUrl), stripApiPrefix ? originOf(baseUrl, { stripApiPrefix: true }) : '']
+  return [...new Set(list.filter(Boolean))]
+}
+
+/** 兼容几种常见返回形态，抽出模型 id 列表。 */function extractModelIds(payload) {
   const list = Array.isArray(payload) ? payload : payload?.data || payload?.models || []
   const ids = []
   for (const item of list) {
@@ -85,17 +103,15 @@ export async function tryBalance({ baseUrl, apiKey, adminToken, timeoutMs = 1000
   const vendor = await readVendorBalance({ baseUrl, apiKey, timeoutMs, requestJson })
   if (vendor) return vendor
 
-  const hostMatch = String(baseUrl).match(/^https?:\/\/([^/]+)/i)
-  const host = hostMatch ? hostMatch[1] : ''
-  const hosts = [host, host.replace(/^api\./, '')].filter((v, i, a) => v && a.indexOf(v) === i)
+  const origins = originCandidates(baseUrl)
 
   // 有管理令牌时优先走账户接口：Sub2API 用 /api/v1/user/profile，one-api 系用 /api/user/self
   if (adminToken) {
     let lastError = null
-    for (const h of hosts) {
+    for (const origin of origins) {
       for (const path of ['/api/v1/user/profile', '/api/user/self']) {
         try {
-          const payload = await requestJson(`https://${h}${path}`, { apiKey: adminToken, timeoutMs })
+          const payload = await requestJson(`${origin}${path}`, { apiKey: adminToken, timeoutMs })
           const data = payload?.data ?? payload
           const remaining =
             data?.balance ?? data?.quota ?? data?.credits ?? data?.remaining ?? data?.remain_quota
@@ -175,9 +191,9 @@ export async function tryBalance({ baseUrl, apiKey, adminToken, timeoutMs = 1000
  * @returns {Promise<{groups:Array, models:Array, raw:any}>}
  */
 export async function fetchAvailableChannels({ baseUrl, adminToken, timeoutMs = 10000 }) {
-  const hostMatch = String(baseUrl).match(/^https?:\/\/([^/]+)/i)
-  const host = (hostMatch ? hostMatch[1] : '').replace(/^api\./, '')
-  const payload = await requestJson(`https://${host}/api/v1/channels/available`, {
+  const origin = originOf(baseUrl, { stripApiPrefix: true })
+  if (!origin) throw new Error(`站点地址无法解析：${baseUrl}`)
+  const payload = await requestJson(`${origin}/api/v1/channels/available`, {
     apiKey: adminToken,
     timeoutMs,
   })
@@ -226,14 +242,14 @@ export async function fetchAvailableChannels({ baseUrl, adminToken, timeoutMs = 
   return { groups, models, raw: payload }
 }
 export async function fetchSiteUsage({ baseUrl, adminToken, timeoutMs = 15000 }) {
-  const hostMatch = String(baseUrl).match(/^https?:\/\/([^/]+)/i)
-  const host = (hostMatch ? hostMatch[1] : '').replace(/^api\./, '')
+  const origin = originOf(baseUrl, { stripApiPrefix: true })
+  if (!origin) throw new Error(`站点地址无法解析：${baseUrl}`)
   const paths = ['/api/v1/usage/summary', '/api/v1/usage/stats', '/api/v1/user/profile']
 
   const results = {}
   for (const path of paths) {
     try {
-      results[path] = await requestJson(`https://${host}${path}`, { apiKey: adminToken, timeoutMs })
+      results[path] = await requestJson(`${origin}${path}`, { apiKey: adminToken, timeoutMs })
     } catch (error) {
       results[path] = { __error: error.message }
     }
@@ -254,9 +270,7 @@ export async function fetchSiteUsage({ baseUrl, adminToken, timeoutMs = 15000 })
  * @returns {Promise<{items:Array<{name,key,group,rate}>, raw:any, source:string}>}
  */
 export async function fetchTokenList({ baseUrl, adminToken, timeoutMs = 15000 }) {
-  const hostMatch = String(baseUrl).match(/^https?:\/\/([^/]+)/i)
-  const host = hostMatch ? hostMatch[1] : ''
-  const hosts = [host, host.replace(/^api\./, '')].filter((v, i, a) => v && a.indexOf(v) === i)
+  const origins = originCandidates(baseUrl)
 
   const attempts = [
     { path: '/api/v1/keys', source: 'sub2api' },
@@ -272,10 +286,10 @@ export async function fetchTokenList({ baseUrl, adminToken, timeoutMs = 15000 })
   let firstError = null
 
   for (const attempt of attempts) {
-    for (const h of hosts) {
-      const where = `${h}${attempt.path}`
+    for (const origin of origins) {
+      const where = `${origin}${attempt.path}`
       try {
-        const payload = await requestJson(`https://${where}`, { apiKey: adminToken, timeoutMs })
+        const payload = await requestJson(where, { apiKey: adminToken, timeoutMs })
         const raw = pickTokenArray(payload)
         if (raw.length === 0) {
           shapeError = `接口有响应但没认出列表结构：${JSON.stringify(payload).slice(0, 120)}`

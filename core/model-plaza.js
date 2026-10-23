@@ -9,10 +9,11 @@
 import { normalizeModelKey } from './inventory.js'
 
 function plazaUrl(baseUrl) {
-  const match = String(baseUrl).match(/^https?:\/\/([^/]+)/i)
-  const host = match ? match[1] : ''
-  const bare = host.replace(/^api\./, '')
-  return `https://${bare}/api/v1/model-plaza`
+  // 协议跟着用户填的走：内网/自建站常是 http，硬拼 https 会连不上
+  const match = String(baseUrl).match(/^(https?):\/\/([^/]+)/i)
+  if (!match) return ''
+  const bare = match[2].replace(/^api\./i, '')
+  return `${match[1].toLowerCase()}://${bare}/api/v1/model-plaza`
 }
 
 /**

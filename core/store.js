@@ -9,11 +9,15 @@
  */
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import { mkdir, readFile, writeFile, rename, chmod, access } from 'node:fs/promises'
+import { mkdir, readFile, writeFile, rename, chmod, access, unlink } from 'node:fs/promises'
 import { constants } from 'node:fs'
 import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto'
 
 const DB_VERSION = 2
+
+/** 写盘串行链与临时文件名序号（见 mutate / writeDb） */
+let writeChain = Promise.resolve()
+let tmpSeq = 0
 
 export function dataDir() {
   return process.env.MANAGE_API_HOME || join(homedir(), '.manage-api')
@@ -179,15 +183,51 @@ export async function readDb() {
 export async function writeDb(db) {
   await mkdir(dataDir(), { recursive: true })
   const p = dbPath()
-  const tmp = `${p}.${process.pid}.tmp`
+  // 临时名带自增序号：同一进程内并发写不会互相覆盖同一个 tmp
+  const tmp = `${p}.${process.pid}.${++tmpSeq}.tmp`
   await writeFile(tmp, JSON.stringify(db, null, 2), 'utf8')
-  await rename(tmp, p)
+  await renameWithRetry(tmp, p)
 }
 
-/** 读 → 改 → 原子写。回调直接修改传入的 db 对象。 */
+/**
+ * Windows 上 rename 覆盖一个正被别的句柄打开的目标会抛 EPERM/EBUSY（不是权限问题，是 Windows 的文件语义）。
+ * 这类错误重试几次基本都能过去；重试到底还不行就清掉 tmp 再把错抛出去，别把垃圾文件留在数据目录里。
+ */
+async function renameWithRetry(from, to, attempts = 8) {
+  for (let i = 0; i < attempts; i += 1) {
+    try {
+      await rename(from, to)
+      return
+    } catch (error) {
+      const retryable = error.code === 'EPERM' || error.code === 'EBUSY' || error.code === 'EACCES'
+      if (!retryable || i === attempts - 1) {
+        await unlink(from).catch(() => {})
+        throw error
+      }
+      await new Promise((resolve) => setTimeout(resolve, 5 * (i + 1)))
+    }
+  }
+}
+
+/**
+ * 读 → 改 → 原子写。回调直接修改传入的 db 对象。
+ *
+ * 必须串行：HTTP 服务会并发进 mutate，每个请求都「读同一份 → 各自写回」，
+ * 后写的会把先写的结果整份覆盖掉（丢数据），并发 rename 还会在 Windows 上互相打 EPERM。
+ * usage.js 里的 writeChain 是同一个思路。
+ */
 export async function mutate(fn) {
-  const db = await readDb()
-  const result = await fn(db)
-  await writeDb(db)
-  return result
+  const run = async () => {
+    const db = await readDb()
+    const result = await fn(db)
+    await writeDb(db)
+    return result
+  }
+  const pending = writeChain.then(run, run)
+  // 链尾吞掉异常，否则一次失败会把后续所有写操作都带成 reject
+  writeChain = pending.then(
+    () => {},
+    () => {},
+  )
+  return pending
 }

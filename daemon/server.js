@@ -44,6 +44,9 @@ class HttpError extends Error {
   }
 }
 
+/** 文件系统层的 errno：出现这些说明是服务端自己的问题，应当回 500 而不是 400 */
+const IO_ERROR_CODES = new Set(['EPERM', 'EACCES', 'EBUSY', 'ENOENT', 'ENOSPC', 'EIO', 'EMFILE', 'ENFILE'])
+
 function json(res, status, payload) {
   const body = JSON.stringify(payload)
   res.writeHead(status, {
@@ -1423,7 +1426,7 @@ function authorizeGateway(req, db) {
  * 关键在流式的提交边界：必须读到第一个 chunk 并确认它不是错误，才向客户端
  * writeHead。在这之前失败都可以静默换站；一旦提交，就只能收尾，不能重试。
  */
-async function forwardToUpstream({ candidate, body, res, attemptIndex }) {
+async function forwardToUpstream({ candidate, body, res, attemptIndex, pool = 'paid' }) {
   const apiKey = await inv.revealSecret(candidate.credential.id)
   if (!apiKey) return { committed: false, error: 'Key 解密失败' }
 
@@ -1466,6 +1469,9 @@ async function forwardToUpstream({ candidate, body, res, attemptIndex }) {
     'X-ManageAPI-Provider': encodeURIComponent(candidate.provider.name),
     'X-ManageAPI-Attempts': String(attemptIndex + 1),
     'X-ManageAPI-Quality': candidate.quality === null ? 'unknown' : candidate.quality.toFixed(2),
+    // 这次到底是免费池、付费池，还是免费池不够用后回落到的付费池——
+    // 回落是显式开关（settings.allowPaidFallback），但客户端仍应能看出来
+    'X-ManageAPI-Pool': pool || 'paid',
   }
 
   if (!isStream) {
@@ -1575,12 +1581,15 @@ async function forwardToUpstream({ candidate, body, res, attemptIndex }) {
   return { committed: true, usage, ttftMs }
 }
 
-async function handleChatCompletions(req, res, db, keyRecord, isFree = false) {
+async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = false) {
   const body = await readBody(req)
   const rawModel = body?.model
   if (!rawModel) return openaiError(res, 400, '请求体缺少 model 字段')
-  // 剥掉 free/ 前缀；是否走免费池由调用方（handleProxy）按「前缀 or 入口」决定
-  const model = resolvePool({ pathname: '', model: rawModel }).model
+  // 两条路都能进免费池：入口路径（/free/v1）或模型名带 free/ 前缀。
+  // 前缀必须在这里判——body 是在这个函数里才读出来的，调用方看不到 model。
+  const parsed = resolvePool({ pathname: '', model: rawModel })
+  const model = parsed.model
+  const isFree = isFreeEntry || parsed.isFree
 
   // 月度 token 上限（可选，Key 上配置）
   if (keyRecord?.monthlyTokenLimit) {
@@ -1598,42 +1607,77 @@ async function handleChatCompletions(req, res, db, keyRecord, isFree = false) {
 
   const benchmarks = await bench.readBenchmarks()
   const scores = scoresFor(db)
-  // 免费池只在自己的供给里选；付费池永远看不到免费项。两者不互相回落。
+  // 免费池只在自己的供给里选；付费池永远看不到免费项。
+  // 默认两边互不回落（免费用不了就明确报错，别偷偷扣钱），
+  // 只有 settings.allowPaidFallback 显式打开时才允许「免费不够用 → 付费顶上」。
   const split = splitOffers(db.offers.filter((o) => !o.delistedAt), benchmarks)
+  const manualOrder = db.manualOrder?.[inv.normalizeModelKey(model)] || null
+  const pick = (offers) =>
+    selectCandidates({
+      offers,
+      providers: db.providers,
+      credentials: db.credentials,
+      scores,
+      benchmarks,
+      settings: db.settings,
+      model,
+      order: manualOrder,
+    })
+
   // 免费池先过闸门（额度 / 指纹 / 截断 / 过期），过了才交给路由排序。
   // 闸门是硬排除——免费成本恒为 0，不能靠「便宜但烂」的加权把它排下去。
-  const poolOffers = isFree
+  const freeRows = isFree
     ? rankFreePool({
         offers: split.free,
         scores,
         benchmarks,
         crossPane: db.settings.freeCrossPane || 'remaining',
       })
-        .filter((row) => !row.gate)
-        .map((row) => row.offer)
-    : split.paid
-  const candidates = selectCandidates({
-    offers: poolOffers,
-    providers: db.providers,
-    credentials: db.credentials,
-    scores,
-    benchmarks,
-    settings: db.settings,
-    model,
-    order: db.manualOrder?.[inv.normalizeModelKey(model)] || null,
-  })
+    : []
+  const gateOf = new Map(freeRows.map((row) => [row.offer.id, row.gate]))
 
-  if (candidates.length === 0) {
-    const available = listPublicModels({ offers: poolOffers, scores }).map((m) => m.id)
-    // 免费池里没有这个模型 → 明确告诉用户，不静默回落付费
-    if (isFree) {
+  let pool = isFree ? 'free' : 'paid'
+  let candidates = pick(isFree ? freeRows.filter((row) => !row.gate).map((row) => row.offer) : split.paid)
+
+  // 免费池一个都挑不出来时，先弄清是「池里没这个模型」还是「有但全被闸门挡住」；
+  // 开了 allowPaidFallback 就在这一步回落到付费池。
+  if (isFree && candidates.length === 0) {
+    const inPool = pick(split.free) // 不过闸门，只为判断「有没有这个模型」
+    if (db.settings.allowPaidFallback) {
+      const paid = pick(split.paid)
+      if (paid.length > 0) {
+        candidates = paid
+        pool = 'paid-fallback'
+      }
+    }
+    if (candidates.length === 0) {
+      if (inPool.length > 0) {
+        const reasons = inPool
+          .map((c) => {
+            const gate = gateOf.get(c.offer.id)
+            return `${c.offer.upstreamName}${gate ? `（${gate.label}）` : ''}`
+          })
+          .join('、')
+        const tail = db.settings.allowPaidFallback ? '；付费池里也没有可用的同款模型' : ''
+        return openaiError(
+          res,
+          402,
+          `免费池里的 ${model} 现在都用不了：${reasons}${tail}。可去「免费」页补额度或换模型`,
+          'free_pool_exhausted',
+        )
+      }
+      const available = listPublicModels({ offers: split.free, scores }).map((m) => m.id)
       return openaiError(
         res,
         404,
-        `免费池里没有可用的 ${model}。免费模型：${available.slice(0, 20).join(', ') || '（无，去「免费」页看看）'}`,
+        `免费池里没有 ${model}。免费模型：${available.slice(0, 20).join(', ') || '（无，去「免费」页看看）'}`,
         'model_not_in_free_pool',
       )
     }
+  }
+
+  if (candidates.length === 0) {
+    const available = listPublicModels({ offers: split.paid, scores }).map((m) => m.id)
     return openaiError(
       res,
       404,
@@ -1649,11 +1693,12 @@ async function handleChatCompletions(req, res, db, keyRecord, isFree = false) {
     const candidate = candidates[index]
     const attemptStarted = Date.now()
     try {
-      const result = await forwardToUpstream({ candidate, body, res, attemptIndex: index })
+      const result = await forwardToUpstream({ candidate, body, res, attemptIndex: index, pool })
       if (result.committed) {
         const latencyMs = Date.now() - started
         await inv.recordRouting({
           model,
+          pool,
           keyId: keyRecord?.id ?? null,
           keyName: keyRecord?.name ?? null,
           chosenOfferId: candidate.offer.id,
@@ -1703,6 +1748,7 @@ async function handleChatCompletions(req, res, db, keyRecord, isFree = false) {
 
   await inv.recordRouting({
     model,
+    pool,
     keyId: keyRecord?.id ?? null,
     keyName: keyRecord?.name ?? null,
     chosenOfferId: null,
@@ -1846,7 +1892,10 @@ export function createAppServer() {
       }
       json(res, 404, { error: `没有这个接口：${method} ${pathname}` })
     } catch (error) {
-      const status = error instanceof HttpError ? error.status : 400
+      // HttpError 是业务校验失败；带 errno 的是磁盘/文件系统层的故障，得报 500，
+      // 否则「db.json 写不进去」会被当成「你参数填错了」。
+      const status = error instanceof HttpError ? error.status : IO_ERROR_CODES.has(error?.code) ? 500 : 400
+      if (status >= 500) console.error(`[api] ${method} ${pathname} 失败：`, error)
       if (!res.writableEnded) json(res, status, { error: error.message || String(error) })
     }
   })
