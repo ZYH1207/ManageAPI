@@ -497,6 +497,10 @@ Site names in the demo data (云雀 / 星链 / 极光 / 苍穹) are entirely fic
 
 ---
 
+## Acknowledgements
+
+- [bejix/upstream-ops](https://github.com/bejix/upstream-ops) — the site-card layout (channel cards, group chips, toolbar) is inspired by it; only the layout is borrowed, data and interactions are implemented here. Thanks to the author.
+
 ## Feedback
 
 - Issues: <https://github.com/ZYH1207/ManageAPI/issues>

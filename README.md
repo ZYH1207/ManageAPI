@@ -562,6 +562,10 @@ node .test/capture-shots.mjs
 
 ---
 
+## 致谢
+
+- [bejix/upstream-ops](https://github.com/bejix/upstream-ops) —— 站点页的卡片式布局（渠道卡、分组胶囊、工具栏）参考了它的设计；只借版式，数据与交互都是本项目自己实现的。谢谢作者。
+
 ## 反馈
 
 - 提 Issue：<https://github.com/ZYH1207/ManageAPI/issues>
