@@ -302,7 +302,14 @@ export function createWorkbuddyConnector(options = {}) {
       throw new Error('这个平台没有这个接口')
     }
     if (!response.ok) {
-      throw new Error(`平台返回 HTTP ${response.status}`)
+      // 把响应体带上：500 时服务端通常会写一句原因，只报状态码等于什么都没说
+      let snippet = ''
+      try {
+        snippet = (await response.text()).slice(0, 160).replace(/\s+/g, ' ').trim()
+      } catch {
+        /* 读不出来就算了 */
+      }
+      throw new Error(`平台返回 HTTP ${response.status}${snippet ? `：${snippet}` : ''}`)
     }
 
     try {
@@ -460,23 +467,32 @@ export function createWorkbuddyConnector(options = {}) {
     if (!credential) return { ready: false, reason: '等待授权结果' }
     credential.product = product.id
 
-    // 拿到 token 只代表「登录成功」，账号信息（昵称、企业 id）还要再问一次；
-    // 这一步失败会让卡片显示成无名账号，所以不跳过。
-    const profileJson = await request(
-      `${product.endpoint}/v2/plugin/login/account?state=${encodeURIComponent(key)}`,
-      { method: 'POST', headers: authHeaders(credential, product) },
-    )
-    const profileCode = bodyCode(profileJson)
-    if (profileCode === CODE_ACCOUNT_PENDING) return { ready: false, reason: '正在读取账号信息' }
-    ensureBusinessOk(profileJson, '读取账号信息')
-
-    const profile = pickProfile(profileJson)
-    if (profile.enterpriseId) credential.enterpriseId = profile.enterpriseId
+    // 账号信息（昵称、企业 id）只是展示用，**不能因为它失败就丢掉已经拿到的 token**。
+    // 实测这一步会返回 500，而 token 本身是好的——那就先连上，昵称空着。
+    let profile = { label: '', enterpriseId: '' }
+    let profileWarning = ''
+    try {
+      const profileJson = await request(
+        `${product.endpoint}/v2/plugin/login/account?state=${encodeURIComponent(key)}`,
+        { method: 'POST', headers: authHeaders(credential, product) },
+      )
+      const profileCode = bodyCode(profileJson)
+      if (profileCode === CODE_ACCOUNT_PENDING) {
+        // 「还在读」是中间态，但也已经拿到 token 了，先连上再补
+        profileWarning = '账号信息还在读取，昵称暂时为空'
+      } else {
+        ensureBusinessOk(profileJson, '读取账号信息')
+        profile = pickProfile(profileJson)
+        if (profile.enterpriseId) credential.enterpriseId = profile.enterpriseId
+      }
+    } catch (error) {
+      profileWarning = `已拿到登录凭据，但读取账号信息失败：${error.message || error}`
+    }
 
     pending.delete(key)
     if (accountId) await saveCredential(accountId, credential)
 
-    return { ready: true, credential, profile }
+    return { ready: true, credential, profile, warning: profileWarning }
   }
 
   // ------------------------------------------------------------- 账号能力

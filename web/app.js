@@ -900,7 +900,8 @@ async function waitForConnect(platformId, authState, accountId) {
 
     if (result.connectPoll?.ready) {
       state = result
-      return finishConnect(null, false, true)
+      // 连上了但账号信息没读到：把原因带出去，别让用户以为一切完美
+      return finishConnect(result.connectPoll.warning || null, false, true)
     }
 
     // 把服务端每次的回应显示出来：到底是「等浏览器授权」还是「正在读账号信息」
@@ -920,8 +921,12 @@ function finishConnect(message, isError, ok = false) {
   platformConnectPending = null
   connectCancelled = false
   render()
-  if (ok) toast('已连接')
-  else if (message) toast(message, isError)
+  if (ok) {
+    toast('已连接')
+    if (message) setTimeout(() => toast(message, true), 1500)
+  } else if (message) {
+    toast(message, isError)
+  }
 }
 
 function renderFree() {

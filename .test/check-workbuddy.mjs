@@ -262,7 +262,42 @@ try {
   assert.equal(again.alreadyToday, true)
   console.log('   →', JSON.stringify(again))
 
-  console.log('\n全部 9 步通过')
+  // 10 --------------------------------------------------------------------
+  step(10, '账号信息接口 500 → 凭据仍然算连上（只是没有昵称）')
+  const savedSecrets = {}
+  const profileBroken = createWorkbuddyConnector({
+    fetch: async (url) => {
+      const u = String(url)
+      if (u.includes('/auth/state')) {
+        return reply({ code: 0, data: { state: 'S500', authUrl: 'https://x/login?state=S500' } })
+      }
+      if (u.includes('/auth/token')) {
+        return reply({
+          code: 0,
+          data: { accessToken: 'AT500', refreshToken: 'RT500', expiresAt: String(Date.now() + 3600e3) },
+        })
+      }
+      if (u.includes('/login/account')) return new Response('internal error', { status: 500 })
+      return reply({ code: 0, data: {} })
+    },
+    store: {
+      updateAccount: async (id, patch) => {
+        savedSecrets[id] = patch
+      },
+    },
+  })
+  const started500 = await profileBroken.startConnect({ product: 'workbuddy' })
+  const polled = await profileBroken.pollConnect({
+    state: started500.state,
+    product: 'workbuddy',
+    accountId: 'acc500',
+  })
+  assert.equal(polled.ready, true, '账号信息失败不该阻断连接')
+  assert.ok(polled.warning?.includes('500'), '要说明失败原因')
+  assert.ok(savedSecrets.acc500?.secret, '凭据必须已经落库')
+  console.log('   → ready =', polled.ready, '| warning =', polled.warning.slice(0, 40), '…')
+
+  console.log('\n全部 10 步通过')
 } finally {
   await rm(home, { recursive: true, force: true })
 }
