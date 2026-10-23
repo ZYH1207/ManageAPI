@@ -5,7 +5,7 @@
 import { randomUUID, randomBytes } from 'node:crypto'
 import { readDb, mutate, encryptSecret, decryptSecret } from './store.js'
 // quota.js 只依赖内置类型，不回头 import 本文件，不会形成循环
-import { normalizeQuota } from './quota.js'
+import { normalizeQuota, resetIfDue, consumeQuota } from './quota.js'
 
 export function newId(prefix) {
   return `${prefix}_${randomUUID().slice(0, 8)}`
@@ -364,13 +364,23 @@ export async function ensureGatewayKeys() {
   })
 }
 
+/**
+ * 月度 token 上限必须是正整数。
+ * 之前 Number() 直通，填 -1 会变成「已用 0 >= -1」→ 这把 Key 立刻 429，而且界面上看不出来。
+ */
+function normalizeTokenLimit(value) {
+  if (value === null || value === undefined || value === '') return null
+  const n = Number(value)
+  if (!Number.isFinite(n) || n < 0) throw new Error('月度 token 上限必须是非负数')
+  return Math.floor(n)
+}
+
 export async function createGatewayKey({ name, monthlyTokenLimit = null, note = '' }) {
   return mutate((db) => {
     const gateway = db.settings.gateway
     if (!gateway?.keys) throw new Error('网关尚未初始化')
     const record = newGatewayKeyRecord(name)
-    record.monthlyTokenLimit =
-      monthlyTokenLimit === null || monthlyTokenLimit === '' ? null : Number(monthlyTokenLimit)
+    record.monthlyTokenLimit = normalizeTokenLimit(monthlyTokenLimit)
     record.note = note
     gateway.keys.push(record)
     return record
@@ -385,10 +395,7 @@ export async function updateGatewayKey(id, patch) {
     if (patch.enabled !== undefined) record.enabled = Boolean(patch.enabled)
     if (patch.note !== undefined) record.note = patch.note
     if (patch.monthlyTokenLimit !== undefined) {
-      record.monthlyTokenLimit =
-        patch.monthlyTokenLimit === null || patch.monthlyTokenLimit === ''
-          ? null
-          : Number(patch.monthlyTokenLimit)
+      record.monthlyTokenLimit = normalizeTokenLimit(patch.monthlyTokenLimit)
     }
     return record
   })
@@ -431,6 +438,10 @@ export async function findGatewayKey(value) {
 
 // ------------------------------------------------------------------- probes
 
+/** 探针记录的保留窗口：长期评分用 14 天半衰期，留 30 天足够，再老的数据只是占体积 */
+const PROBE_KEEP_DAYS = 30
+const PROBE_KEEP_MAX = 5000
+
 export async function recordProbe(record) {
   return mutate((db) => {
     const entry = {
@@ -439,8 +450,15 @@ export async function recordProbe(record) {
       ...record,
     }
     db.probes.push(entry)
-    // 保留最近 5000 条（约一个月的定时探测），长期评分要用
-    if (db.probes.length > 5000) db.probes = db.probes.slice(-5000)
+    // 先按条数截断，再按时间淘汰——只按条数的话，闲时一个月也涨不到 5000，
+    // 老记录会一直躺着把 db.json 撑大。
+    if (db.probes.length > PROBE_KEEP_MAX) db.probes = db.probes.slice(-PROBE_KEEP_MAX)
+    const cutoff = Date.now() - PROBE_KEEP_DAYS * 86400000
+    const kept = db.probes.filter((p) => {
+      const ts = new Date(p.ts).getTime()
+      return !Number.isFinite(ts) || ts >= cutoff
+    })
+    if (kept.length !== db.probes.length) db.probes = kept
     return entry
   })
 }
@@ -549,6 +567,26 @@ export async function clearFreeQuota(offerId) {
   return setFreeQuota(offerId, null)
 }
 
+/**
+ * 真实调用后扣减免费额度。
+ *
+ * 单位口径沿用 quota.js：request 记次数，token / credit 记 token 数。
+ * 跨窗口的先归零再记（resetIfDue），否则昨天的 used 会算进今天。
+ * 没有配额的供给直接跳过——「不限量」不该被写成 0 上限。
+ */
+export async function consumeFreeQuota(offerId, { tokens = 0, requests = 1 } = {}) {
+  if (!offerId) return null
+  return mutate((db) => {
+    const offer = db.offers.find((o) => o.id === offerId)
+    if (!offer?.freeQuota) return null
+    const current = resetIfDue(normalizeQuota(offer.freeQuota), Date.now())
+    if (!current) return null
+    offer.freeQuota = consumeQuota(current, { tokens, requests })
+    offer.updatedAt = nowIso()
+    return offer.freeQuota
+  })
+}
+
 // --------------------------------------------------------------- 手动排序
 
 /**
@@ -605,12 +643,23 @@ export async function addTraffic(entries, windowMs = TRAFFIC_WINDOW_MS) {
 // ------------------------------------------------------------ 路由决策日志
 
 export async function recordRouting(entry) {
+  return recordRoutingBatch([entry])
+}
+
+/**
+ * 批量写决策日志。
+ *
+ * 每个网关请求都单独 mutate 一次的话，等于每请求把 1MB 的 db.json 读一遍再整份重写，
+ * 高峰期写放大非常吓人。调用方（server.js）攒几秒再一起写，语义不变。
+ */
+export async function recordRoutingBatch(entries = []) {
+  if (!entries.length) return []
   return mutate((db) => {
     if (!Array.isArray(db.routing)) db.routing = []
-    const record = { id: newId('g'), ts: nowIso(), ...entry }
-    db.routing.push(record)
+    const records = entries.map((entry) => ({ id: newId('g'), ts: nowIso(), ...entry }))
+    db.routing.push(...records)
     if (db.routing.length > 500) db.routing = db.routing.slice(-500)
-    return record
+    return records
   })
 }
 

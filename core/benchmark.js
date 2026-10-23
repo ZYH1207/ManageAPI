@@ -11,8 +11,9 @@
  * 文件存在 ~/.manage-api/benchmark.json，可手工编辑。
  */
 import { join } from 'node:path'
-import { readFile, writeFile, rename, mkdir } from 'node:fs/promises'
+import { readFile, mkdir } from 'node:fs/promises'
 import { dataDir } from './store.js'
+import { writeJsonAtomic } from './fsx.js'
 import { resolveReference } from './model-prices.js'
 
 function filePath() {
@@ -42,10 +43,7 @@ export async function readBenchmarks() {
 
 export async function writeBenchmarks(table) {
   await mkdir(dataDir(), { recursive: true })
-  const p = filePath()
-  const tmp = `${p}.${process.pid}.tmp`
-  await writeFile(tmp, JSON.stringify(table, null, 2), 'utf8')
-  await rename(tmp, p)
+  await writeJsonAtomic(filePath(), table, 2)
   return table
 }
 

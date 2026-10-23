@@ -56,10 +56,31 @@ async function listen(port, attemptsLeft = 10) {
   })
 }
 
-const { port } = await listen(preferredPort)
+const { server, port } = await listen(preferredPort)
 const url = `http://${HOST}:${port}/`
 
+/**
+ * 兜底：定时器、探针、监控采集里漏掉的 rejection 不该让整个守护进程消失。
+ * 以前一个没 catch 的 Promise 会让进程直接退出，界面就「连不上本地服务」了。
+ */
+process.on('unhandledRejection', (reason) => {
+  console.error('[daemon] 未处理的 Promise 异常：', reason)
+})
+
+/** Ctrl+C / 系统关机时先停服务再退出，避免请求写了一半 */
+let closing = false
+function shutdown(signal) {
+  if (closing) return
+  closing = true
+  console.log(`\n  收到 ${signal}，正在停止…`)
+  server.close(() => process.exit(0))
+  // 有长连接（比如正在流式返回）时 close 会等很久，5 秒后强退
+  setTimeout(() => process.exit(0), 5000).unref()
+}
+
 startProbeScheduler({ runProbes, collectMonitor: collectProviderSnapshots, logger: console })
+
+for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => shutdown(signal))
 
 console.log('')
 console.log('  ManageAPI  已启动')

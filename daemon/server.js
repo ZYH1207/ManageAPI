@@ -5,7 +5,7 @@
 import { createServer } from 'node:http'
 import { once } from 'node:events'
 import { readFile } from 'node:fs/promises'
-import { join, extname, resolve } from 'node:path'
+import { join, extname, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import * as store from '../core/store.js'
@@ -39,11 +39,27 @@ const MIME = {
 
 const MAX_BODY = 1024 * 1024
 
+/** 流式转发的空闲超时：连续这么久没收到上游任何字节，才判定卡死 */
+const STREAM_IDLE_MS = 120000
+
 class HttpError extends Error {
   constructor(status, message) {
     super(message)
     this.status = status
   }
+}
+
+/**
+ * 价格、倍率、限额这类入参必须是非负有限数。
+ * 光用 Number() 会把 '' 变成 0、把 'abc' 变成 NaN —— NaN 排进价格排序会让
+ * 这个模型莫名其妙变成「最便宜」（比较结果永远是 false），负数同理。
+ */
+function nonNegative(value, field) {
+  if (value === null || value === undefined || value === '') return null
+  const n = Number(value)
+  if (!Number.isFinite(n)) throw new HttpError(400, `${field}必须是数字`)
+  if (n < 0) throw new HttpError(400, `${field}不能是负数`)
+  return n
 }
 
 /** 文件系统层的 errno：出现这些说明是服务端自己的问题，应当回 500 而不是 400 */
@@ -64,7 +80,11 @@ async function readBody(req) {
   let size = 0
   for await (const chunk of req) {
     size += chunk.length
-    if (size > MAX_BODY) throw new HttpError(413, '请求体过大')
+    if (size > MAX_BODY) {
+      // 超限后要先把剩下的数据读掉，否则连接会被直接掐断，客户端看不到 413
+      req.resume()
+      throw new HttpError(413, '请求体过大')
+    }
     chunks.push(chunk)
   }
   if (chunks.length === 0) return {}
@@ -1086,11 +1106,11 @@ route('PATCH', /^\/api\/offers\/([\w-]+)$/, async (ctx) => {
       offer.pricingMode = b.pricingMode === 'ratio' ? 'ratio' : 'manual'
     }
     if (b.ratio !== undefined) {
-      offer.ratio = b.ratio === null || b.ratio === '' ? null : Number(b.ratio)
+      offer.ratio = nonNegative(b.ratio, '分组倍率')
     }
     if (b.benchmarkKey !== undefined) offer.benchmarkKey = b.benchmarkKey || null
-    if (b.inPrice !== undefined) offer.inPrice = b.inPrice === null || b.inPrice === '' ? null : Number(b.inPrice)
-    if (b.outPrice !== undefined) offer.outPrice = b.outPrice === null || b.outPrice === '' ? null : Number(b.outPrice)
+    if (b.inPrice !== undefined) offer.inPrice = nonNegative(b.inPrice, '输入单价')
+    if (b.outPrice !== undefined) offer.outPrice = nonNegative(b.outPrice, '输出单价')
     if (b.currency !== undefined) offer.currency = b.currency === 'CNY' ? 'CNY' : 'USD'
     if (b.priceUnit !== undefined) offer.priceUnit = b.priceUnit === 'per_1k' ? 'per_1k' : 'per_mtok'
     if (b.group !== undefined) {
@@ -1485,6 +1505,10 @@ route('GET', /^\/api\/export\/backup$/, async () => {
 route('GET', /^\/api\/export\/config$/, async (ctx) => {
   const providerId = ctx.query.get('providerId')
   const includeKey = ctx.query.get('includeKey') === '1'
+  if (includeKey && ctx.req.headers['x-manage-api-intent'] !== 'reveal-secret') {
+    // 明文 Key 只给页面自己的「导出」按钮：跨站请求拿不到这个自定义头（预检会被拒）
+    throw new HttpError(403, '导出明文 Key 需要页面内的确认操作')
+  }
   const db = await store.readDb()
   const provider = db.providers.find((p) => p.id === providerId)
   if (!provider) throw new HttpError(404, '站点不存在')
@@ -1507,6 +1531,27 @@ route('GET', /^\/api\/export\/config$/, async (ctx) => {
 })
 
 // ------------------------------------------------------------------ 网关
+
+// 决策日志攒批写：每个请求都单独 mutate 等于把 1MB 的 db.json 整份重写一遍，
+// 高峰期写放大很吓人。攒 2 秒一起落盘，界面最多晚 2 秒看到。
+const routingBuffer = []
+let routingTimer = null
+
+function flushRouting() {
+  if (routingTimer) {
+    clearTimeout(routingTimer)
+    routingTimer = null
+  }
+  if (!routingBuffer.length) return
+  const batch = routingBuffer.splice(0, routingBuffer.length)
+  inv.recordRoutingBatch(batch).catch((error) => console.error('[网关] 决策日志写盘失败：', error))
+}
+
+function queueRouting(entry) {
+  routingBuffer.push(entry)
+  if (routingBuffer.length >= 200) flushRouting() // 上游一直失败时别把内存堆爆
+  if (!routingTimer) routingTimer = setTimeout(flushRouting, 2000)
+}
 
 // 真实流量计数先攒内存，每 5 秒刷一次盘——每个请求都重写 db.json 太重
 const trafficBuffer = new Map()
@@ -1559,7 +1604,7 @@ function authorizeGateway(req, db) {
  * 关键在流式的提交边界：必须读到第一个 chunk 并确认它不是错误，才向客户端
  * writeHead。在这之前失败都可以静默换站；一旦提交，就只能收尾，不能重试。
  */
-async function forwardToUpstream({ candidate, body, res, attemptIndex, pool = 'paid' }) {
+async function forwardToUpstream({ candidate, body, res, attemptIndex, pool = 'paid', clientSignal = null }) {
   const apiKey = await inv.revealSecret(candidate.credential.id)
   if (!apiKey) return { committed: false, error: 'Key 解密失败' }
 
@@ -1572,8 +1617,32 @@ async function forwardToUpstream({ candidate, body, res, attemptIndex, pool = 'p
   }
 
   const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), 300000)
   const startedAt = Date.now()
+
+  // 超时口径是「空闲」而不是「总时长」：长回答连续有字节就不该被杀掉，
+  // 只有连续 STREAM_IDLE_MS 没收到任何东西才当上游卡死。
+  let timer = null
+  const armTimer = (ms) => {
+    if (timer) clearTimeout(timer)
+    timer = setTimeout(() => controller.abort(), ms)
+  }
+  const touch = () => armTimer(STREAM_IDLE_MS)
+  armTimer(STREAM_IDLE_MS)
+
+  // 客户端先走了就别再喂上游：否则对面继续生成，白烧额度还占着连接
+  const onClientGone = () => {
+    if (!controller.signal.aborted) controller.abort()
+  }
+  if (clientSignal) {
+    if (clientSignal.aborted) onClientGone()
+    else clientSignal.addEventListener('abort', onClientGone, { once: true })
+  }
+
+  const cleanup = () => {
+    if (timer) clearTimeout(timer)
+    timer = null
+    if (clientSignal) clientSignal.removeEventListener('abort', onClientGone)
+  }
 
   let upstreamRes
   try {
@@ -1588,13 +1657,13 @@ async function forwardToUpstream({ candidate, body, res, attemptIndex, pool = 'p
       signal: controller.signal,
     })
   } catch (error) {
-    clearTimeout(timer)
+    cleanup()
     return { committed: false, error: `连接失败：${error.message}` }
   }
 
   if (!upstreamRes.ok) {
     const text = await upstreamRes.text().catch(() => '')
-    clearTimeout(timer)
+    cleanup()
     return { committed: false, error: `HTTP ${upstreamRes.status} ${text.slice(0, 160).replace(/\s+/g, ' ')}` }
   }
 
@@ -1612,10 +1681,10 @@ async function forwardToUpstream({ candidate, body, res, attemptIndex, pool = 'p
     try {
       payload = await upstreamRes.json()
     } catch {
-      clearTimeout(timer)
+      cleanup()
       return { committed: false, error: '上游返回的不是 JSON' }
     }
-    clearTimeout(timer)
+    cleanup()
     if (payload?.error) return { committed: false, error: payload.error.message || '上游返回 error 字段' }
     res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', ...headers })
     res.end(JSON.stringify(payload))
@@ -1642,6 +1711,8 @@ async function forwardToUpstream({ candidate, body, res, attemptIndex, pool = 'p
   }
 
   const push = async (chunk) => {
+    // 客户端已经断开时 res.write 会静默失败，drain 也不会再来——直接抛，让上层收尾
+    if (res.destroyed || res.writableEnded) throw new Error('客户端已断开')
     if (!res.write(chunk)) await once(res, 'drain')
   }
 
@@ -1649,6 +1720,7 @@ async function forwardToUpstream({ candidate, body, res, attemptIndex, pool = 'p
     while (true) {
       const { value, done } = await reader.read()
       if (done) break
+      touch()
       buffer += decoder.decode(value, { stream: true })
 
       let boundary
@@ -1671,7 +1743,8 @@ async function forwardToUpstream({ candidate, body, res, attemptIndex, pool = 'p
 
         // 第一个事件就是错误：还没提交，可以换站
         if (!committed && parsed?.error) {
-          clearTimeout(timer)
+          await reader.cancel().catch(() => {})
+          cleanup()
           return { committed: false, error: parsed.error.message || '上游返回 error' }
         }
 
@@ -1698,24 +1771,31 @@ async function forwardToUpstream({ candidate, body, res, attemptIndex, pool = 'p
     }
 
     if (!committed) {
-      clearTimeout(timer)
+      cleanup()
       return { committed: false, error: '上游没有返回任何内容' }
     }
 
     res.end()
   } catch (error) {
-    clearTimeout(timer)
+    await reader.cancel().catch(() => {})
+    cleanup()
     if (!committed) return { committed: false, error: `流中断：${error.message}` }
     if (!res.writableEnded) res.end()
     return { committed: true, usage, ttftMs, streamError: error.message }
   }
 
-  clearTimeout(timer)
+  cleanup()
   return { committed: true, usage, ttftMs }
 }
 
 async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = false) {
   const body = await readBody(req)
+  // 客户端关闭连接时立刻取消上游请求：否则上游会继续生成，白烧额度还占着连接。
+  // res 随请求销毁，监听器跟着回收，不需要手动摘。
+  const clientAbort = new AbortController()
+  res.on('close', () => {
+    if (!res.writableFinished) clientAbort.abort()
+  })
   const rawModel = body?.model
   if (!rawModel) return openaiError(res, 400, '请求体缺少 model 字段')
   // 两条路都能进免费池：入口路径（/free/v1）或模型名带 free/ 前缀。
@@ -1826,10 +1906,17 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
     const candidate = candidates[index]
     const attemptStarted = Date.now()
     try {
-      const result = await forwardToUpstream({ candidate, body, res, attemptIndex: index, pool })
+      const result = await forwardToUpstream({
+        candidate,
+        body,
+        res,
+        attemptIndex: index,
+        pool,
+        clientSignal: clientAbort.signal,
+      })
       if (result.committed) {
         const latencyMs = Date.now() - started
-        await inv.recordRouting({
+        queueRouting({
           model,
           pool,
           keyId: keyRecord?.id ?? null,
@@ -1859,6 +1946,13 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
           ok: !result.streamError,
         })
         bufferTraffic(candidate.offer.id, !result.streamError)
+        // 免费池的额度必须跟着真实调用扣：以前只有手动填的接口能改 freeQuota，
+        // 于是「额度用尽」永远判不出来，网关会一直往一个已经空了的池子里发请求。
+        if (pool === 'free') {
+          const tokens =
+            (Number(result.usage?.prompt_tokens) || 0) + (Number(result.usage?.completion_tokens) || 0)
+          await inv.consumeFreeQuota(candidate.offer.id, { tokens, requests: 1 }).catch(() => {})
+        }
         return
       }
       failures.push({
@@ -1879,7 +1973,7 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
     }
   }
 
-  await inv.recordRouting({
+  queueRouting({
     model,
     pool,
     keyId: keyRecord?.id ?? null,
@@ -1912,7 +2006,9 @@ async function handleProxy(req, res, url) {
   const isFreeEntry = pathname === FREE_BASE_PATH || pathname.startsWith(`${FREE_BASE_PATH}/`)
   if (isFreeEntry) pathname = pathname.slice(FREE_BASE_PATH.length) || '/'
 
-  const db = await store.readDb()
+  // 网关热路径用带缓存的读：db.json 已到 1MB，每请求解析一遍要 15ms 左右。
+  // 注意：这里返回的对象是共享的，下游只读不改（写操作一律走 mutate）。
+  const db = await store.readDbCached()
 
   const auth = authorizeGateway(req, db)
   if (!auth.ok) return openaiError(res, auth.status, auth.message, 'authentication_error')
@@ -1963,7 +2059,8 @@ async function handleProxy(req, res, url) {
 async function serveStatic(req, res, pathname) {
   const rel = pathname === '/' ? 'index.html' : pathname.replace(/^\/+/, '')
   const target = resolve(WEB_DIR, rel)
-  if (!target.startsWith(WEB_DIR)) {
+  // 必须比到「目录 + 分隔符」：startsWith(WEB_DIR) 会把 web-evil/ 这种兄弟目录也放过去
+  if (target !== WEB_DIR && !target.startsWith(WEB_DIR + sep)) {
     res.writeHead(403).end('Forbidden')
     return
   }
@@ -1981,10 +2078,32 @@ async function serveStatic(req, res, pathname) {
 
 // ------------------------------------------------------------------ server
 
+/**
+ * 只接受本机回环 Host。
+ *
+ * 为什么必须查：攻击者可以让自己的域名解析到 127.0.0.1（DNS rebinding），浏览器
+ * 就会把发往 evil.com 的请求原样打到本地端口上，服务端看到的是一个完全合法的请求。
+ * 校验 Host 是唯一能区分「浏览器在跟本机说话」和「浏览器以为在跟 evil.com 说话」的信号。
+ */
+const LOCAL_HOSTS = new Set(['127.0.0.1', 'localhost', '[::1]', '::1'])
+
+function hostIsLocal(req) {
+  const raw = String(req.headers.host || '').trim().toLowerCase()
+  if (!raw) return true // HTTP/1.0 无 Host 的本地调试请求，放行
+  const name = raw.startsWith('[') ? raw.slice(0, raw.indexOf(']') + 1) : raw.split(':')[0]
+  return LOCAL_HOSTS.has(name)
+}
+
 export function createAppServer() {
   return createServer(async (req, res) => {
     const url = new URL(req.url, 'http://127.0.0.1')
     const pathname = url.pathname
+
+    if (!hostIsLocal(req)) {
+      res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' })
+      res.end('Forbidden: 只接受 127.0.0.1 / localhost 访问')
+      return
+    }
 
     if (
       pathname === '/v1' ||
@@ -2005,8 +2124,17 @@ export function createAppServer() {
       return
     }
 
+    // method 必须在 try 外声明：catch 里要用它记日志，写在 try 里会变成 ReferenceError
+    const method = req.method === 'HEAD' ? 'GET' : req.method
     try {
-      const method = req.method === 'HEAD' ? 'GET' : req.method
+      // 变更类请求必须带 JSON 头。表单/纯文本的跨站请求发不出这个头（要预检），
+      // 顺带挡掉「任意网页往本地端口 POST 一坨 JSON」的 CSRF 路径。
+      if (method !== 'GET' && method !== 'DELETE') {
+        const type = String(req.headers['content-type'] || '').toLowerCase()
+        if (!type.startsWith('application/json')) {
+          throw new HttpError(415, '请求体必须是 application/json')
+        }
+      }
       for (const r of routes) {
         if (r.method !== method) continue
         const match = r.pattern.exec(pathname)
@@ -2027,7 +2155,12 @@ export function createAppServer() {
     } catch (error) {
       // HttpError 是业务校验失败；带 errno 的是磁盘/文件系统层的故障，得报 500，
       // 否则「db.json 写不进去」会被当成「你参数填错了」。
-      const status = error instanceof HttpError ? error.status : IO_ERROR_CODES.has(error?.code) ? 500 : 400
+      const status =
+        error instanceof HttpError
+          ? error.status
+          : error instanceof store.StorageError || IO_ERROR_CODES.has(error?.code)
+            ? 500
+            : 400
       if (status >= 500) console.error(`[api] ${method} ${pathname} 失败：`, error)
       if (!res.writableEnded) json(res, status, { error: error.message || String(error) })
     }

@@ -21,7 +21,7 @@
  * 客户端换账号后下一次刷新自动跟着变。
  */
 import { createDecipheriv, createHash } from 'node:crypto'
-import { readFile, readdir } from 'node:fs/promises'
+import { open, readFile, readdir } from 'node:fs/promises'
 import { homedir, platform, userInfo } from 'node:os'
 import { join } from 'node:path'
 
@@ -134,11 +134,33 @@ async function readLogFiles() {
   }
 }
 
+/** 只读日志尾部若干字节：客户端日志动辄几 MB，整份读进来只为找最后一条太浪费 */
+const LOG_TAIL_BYTES = 512 * 1024
+
+async function readLogTail(file) {
+  try {
+    const handle = await open(file, 'r')
+    try {
+      const { size } = await handle.stat()
+      const start = Math.max(0, size - LOG_TAIL_BYTES)
+      const length = size - start
+      if (length <= 0) return ''
+      const buffer = Buffer.alloc(length)
+      await handle.read(buffer, 0, length, start)
+      return buffer.toString('utf8')
+    } finally {
+      await handle.close()
+    }
+  } catch {
+    return ''
+  }
+}
+
 /** 客户端自己在日志里写了它用的版本号，跟着它走就不用每次升级都改代码。 */
 async function detectAppVersion() {
   if (process.env.ZCODE_APP_VERSION) return process.env.ZCODE_APP_VERSION
   for (const file of await readLogFiles()) {
-    const text = await readFile(file, 'utf8').catch(() => '')
+    const text = await readLogTail(file)
     const match = text.match(/billing\/balance\?app_version=([\d.]+)/)
     if (match) return match[1]
   }
@@ -161,7 +183,7 @@ function parseLogTime(line) {
  */
 export async function readLoggedBalance(now = Date.now()) {
   for (const file of await readLogFiles()) {
-    const text = await readFile(file, 'utf8').catch(() => '')
+    const text = await readLogTail(file)
     if (!text) continue
     const lines = text.split(/\r?\n/)
     for (let i = lines.length - 1; i >= 0; i -= 1) {

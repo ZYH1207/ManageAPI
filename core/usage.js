@@ -7,8 +7,9 @@
  * 聚合而非明细：个人用量一天几百次请求，按维度聚合后文件一年也就几十 KB。
  */
 import { join } from 'node:path'
-import { readFile, writeFile, rename, mkdir } from 'node:fs/promises'
+import { readFile, mkdir } from 'node:fs/promises'
 import { dataDir } from './store.js'
+import { writeJsonAtomic } from './fsx.js'
 
 let cache = null
 let writeChain = Promise.resolve()
@@ -45,10 +46,7 @@ export async function readUsage() {
 async function flush() {
   const data = await readUsage()
   await mkdir(dataDir(), { recursive: true })
-  const p = filePath()
-  const tmp = `${p}.${process.pid}.tmp`
-  await writeFile(tmp, JSON.stringify(data), 'utf8')
-  await rename(tmp, p)
+  await writeJsonAtomic(filePath(), data)
 }
 
 function todayKey(iso) {

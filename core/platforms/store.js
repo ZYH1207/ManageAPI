@@ -10,10 +10,11 @@
  * 而 mutate 的回调是同步的，并发读-改-写会互相覆盖。
  */
 import { join } from 'node:path'
-import { mkdir, readFile, writeFile, rename, access } from 'node:fs/promises'
+import { mkdir, readFile, access } from 'node:fs/promises'
 import { constants } from 'node:fs'
 import { randomUUID } from 'node:crypto'
 import { dataDir } from '../store.js'
+import { writeJsonAtomic } from '../fsx.js'
 
 const FREE_DB_VERSION = 1
 const ACCOUNT_STATUSES = ['ok', 'expired', 'exhausted']
@@ -74,10 +75,7 @@ export async function readFreeDb() {
 
 export async function writeFreeDb(db) {
   await mkdir(dataDir(), { recursive: true })
-  const p = freeDbPath()
-  const tmp = `${p}.${process.pid}.tmp`
-  await writeFile(tmp, JSON.stringify(db, null, 2), 'utf8')
-  await rename(tmp, p)
+  await writeJsonAtomic(freeDbPath(), db, 2)
 }
 
 let writeQueue = Promise.resolve()

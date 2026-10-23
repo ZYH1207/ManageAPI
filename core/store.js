@@ -9,16 +9,19 @@
  */
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import { mkdir, readFile, writeFile, rename, chmod, access, unlink } from 'node:fs/promises'
+import { mkdir, readFile, writeFile, chmod, access, stat } from 'node:fs/promises'
 import { constants } from 'node:fs'
 import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto'
 import { defaultMonitor, ensureMonitor } from './monitor.js'
+import { writeJsonAtomic } from './fsx.js'
 
 const DB_VERSION = 3
 
-/** 写盘串行链与临时文件名序号（见 mutate / writeDb） */
+/** 写盘串行链（见 mutate） */
 let writeChain = Promise.resolve()
-let tmpSeq = 0
+
+/** 数据文件坏了要报 5xx，不能当「参数错误」——这类错误前端做什么都没用 */
+export class StorageError extends Error {}
 
 export function dataDir() {
   return process.env.MANAGE_API_HOME || join(homedir(), '.manage-api')
@@ -180,7 +183,7 @@ export async function readDb() {
   try {
     raw = JSON.parse(await readFile(p, 'utf8'))
   } catch (error) {
-    throw new Error(`数据文件解析失败：${p}（${error.message}）`)
+    throw new StorageError(`数据文件解析失败：${p}（${error.message}）`)
   }
   const base = emptyDb()
   return migrate({
@@ -196,31 +199,37 @@ export async function readDb() {
 
 export async function writeDb(db) {
   await mkdir(dataDir(), { recursive: true })
-  const p = dbPath()
-  // 临时名带自增序号：同一进程内并发写不会互相覆盖同一个 tmp
-  const tmp = `${p}.${process.pid}.${++tmpSeq}.tmp`
-  await writeFile(tmp, JSON.stringify(db, null, 2), 'utf8')
-  await renameWithRetry(tmp, p)
+  await writeJsonAtomic(dbPath(), db, 2)
+  // 自己写完就把缓存作废，下一次读一定是新的
+  dbCache = { mtimeMs: 0, size: -1, db: null }
 }
 
+let dbCache = { mtimeMs: 0, size: -1, db: null }
+
 /**
- * Windows 上 rename 覆盖一个正被别的句柄打开的目标会抛 EPERM/EBUSY（不是权限问题，是 Windows 的文件语义）。
- * 这类错误重试几次基本都能过去；重试到底还不行就清掉 tmp 再把错抛出去，别把垃圾文件留在数据目录里。
+ * 读 db 并缓存——只读场景（网关热路径）用，**不要改返回的对象**。
+ *
+ * 每请求 readDb 要 15ms 左右（db.json 已到 1MB），对本地网关是白扔的延迟。
+ * 用 mtime + size 判断文件有没有被换过：我们自己的写入会换文件，别的进程改了也一样。
  */
-async function renameWithRetry(from, to, attempts = 8) {
-  for (let i = 0; i < attempts; i += 1) {
-    try {
-      await rename(from, to)
-      return
-    } catch (error) {
-      const retryable = error.code === 'EPERM' || error.code === 'EBUSY' || error.code === 'EACCES'
-      if (!retryable || i === attempts - 1) {
-        await unlink(from).catch(() => {})
-        throw error
-      }
-      await new Promise((resolve) => setTimeout(resolve, 5 * (i + 1)))
-    }
+export async function readDbCached() {
+  const p = dbPath()
+  let stats
+  try {
+    stats = await stat(p)
+  } catch {
+    return readDb() // 文件不存在或读不到，走慢路径（会返回空库或抛 StorageError）
   }
+  if (dbCache.db && dbCache.mtimeMs === stats.mtimeMs && dbCache.size === stats.size) {
+    return dbCache.db
+  }
+  const db = await readDb()
+  // 读完再 stat 一次：避免把「读的过程中又变了」的文件记成缓存
+  const after = await stat(p).catch(() => null)
+  if (after && after.mtimeMs === stats.mtimeMs && after.size === stats.size) {
+    dbCache = { mtimeMs: after.mtimeMs, size: after.size, db }
+  }
+  return db
 }
 
 /**

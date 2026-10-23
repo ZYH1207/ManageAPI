@@ -37,10 +37,10 @@ function toast(message, isError = false) {
   toastTimer = setTimeout(() => { el.hidden = true }, isError ? 4200 : 2200)
 }
 
-async function api(method, path, body) {
+async function api(method, path, body, extraHeaders = null) {
   const res = await fetch(path, {
     method,
-    headers: body ? { 'Content-Type': 'application/json' } : {},
+    headers: { ...(body ? { 'Content-Type': 'application/json' } : {}), ...(extraHeaders || {}) },
     body: body ? JSON.stringify(body) : undefined,
   })
   const data = await res.json().catch(() => ({}))
@@ -2981,7 +2981,14 @@ document.addEventListener('click', async (event) => {
   if (action === 'export') {
     const includeKey = confirm('导出内容会包含完整 API Key，确认？\n\n取消则导出脱敏版本。')
     try {
-      const data = await api('GET', `/api/export/config?providerId=${encodeURIComponent(providerId)}&includeKey=${includeKey ? 1 : 0}`)
+      // 取明文 Key 要额外带一个自定义头：跨站请求想伪造这个头必须先过 CORS 预检，
+      // 而本服务不返回 CORS 头，预检必然失败——等于给「网页偷 Key」加了道门。
+      const data = await api(
+        'GET',
+        `/api/export/config?providerId=${encodeURIComponent(providerId)}&includeKey=${includeKey ? 1 : 0}`,
+        null,
+        includeKey ? { 'x-manage-api-intent': 'reveal-secret' } : null,
+      )
       await navigator.clipboard.writeText(data.envBlock)
       toast('配置已复制到剪贴板')
     } catch (error) {
