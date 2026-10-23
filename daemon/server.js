@@ -508,10 +508,16 @@ async function loadProviderPricing(providerId) {
     byModel.get(inv.normalizeModelKey(offer.upstreamName)) ||
     null
 
+  const credentials = db.credentials.filter((c) => c.providerId === provider.id)
+  // 「当前分组」取第一把 Key 的分组：分组是 Key 的属性（不同 Key 可能买的是不同套餐），
+  // 但绝大多数站一个账号一个分组，用第一把来展示足够。
+  const credential = credentials[0] || null
+
   return {
     db,
     provider,
     credential,
+    credentials,
     pricing,
     offers,
     byModel,
