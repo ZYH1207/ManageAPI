@@ -851,3 +851,9 @@ Object.assign(EN, {
   '「令牌」在站点卡片上（不在 Key 上）——它是站点后台的登录凭证，一个后台账号填一次，整站通用。获取：登录后台 → F12 → Network → 点任意 <code>/api/v1/</code> 请求 → 复制 Request Headers 里的 <code>Authorization</code>（去掉 <code>Bearer </code> 前缀）。令牌会过期，失效后重新复制。':
     'The token lives on the site card, not on individual keys — it is the backend login credential, entered once per backend account and shared by the whole site. To get it: log in → F12 → Network → click any <code>/api/v1/</code> request → copy <code>Authorization</code> from Request Headers (drop the <code>Bearer </code> prefix). Tokens expire; copy a fresh one when they do.',
 })
+
+Object.assign(EN, {
+  '识别分组': 'Detect groups',
+  '从站点后台的令牌列表读出每把 Key 属于哪个分组，自动按各自的分组应用倍率':
+    'Reads each key\u2019s group from the site\u2019s token list and applies that group\u2019s rate',
+})

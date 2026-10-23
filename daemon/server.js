@@ -738,6 +738,133 @@ route('POST', /^\/api\/providers\/([\w-]+)\/apply-group$/, async (ctx) => {
 })
 
 /** 把自定义倍率恢复成站点公布的值。 */
+/**
+ * 从站点后台的「令牌列表」反查每把 Key 属于哪个分组，并直接按各自的分组应用倍率。
+ *
+ * 这一步比「让用户从十几个分组里猜」可靠得多：分组是你买套餐时的商务事实，
+ * 站点后台存着，我们只需要读出来。
+ */
+route('POST', /^\/api\/providers\/([\w-]+)\/detect-groups$/, async (ctx) => {
+  const providerId = ctx.params[0]
+  const db = await store.readDb()
+  const provider = db.providers.find((p) => p.id === providerId)
+  if (!provider) throw new HttpError(404, '站点不存在')
+
+  const adminToken = await inv.revealAdminToken(provider.id)
+  if (!adminToken) {
+    throw new HttpError(400, '需要先在站点卡片上填「令牌」，才能读后台的令牌列表')
+  }
+
+  const credentials = db.credentials.filter((c) => c.providerId === provider.id)
+  if (credentials.length === 0) throw new HttpError(400, '该站点还没有 Key')
+
+  const { items, source } = await providers.fetchTokenList({
+    baseUrl: provider.baseUrl,
+    adminToken,
+    timeoutMs: 20000,
+  })
+
+  // 价格表读不到不影响「认分组」——令牌列表本身就带倍率（Sub2API），够用了
+  let pricing = { groups: [] }
+  let match = () => null
+  let benchTable = {}
+  let pricingError = null
+  try {
+    const loaded = await loadProviderPricing(providerId)
+    pricing = loaded.pricing
+    match = loaded.match
+    benchTable = loaded.benchTable
+  } catch (error) {
+    pricingError = error.message || String(error)
+    benchTable = await bench.readBenchmarks()
+  }
+  const rateOfGroup = new Map(pricing.groups.map((g) => [g.name, g.rate]))
+
+  const results = []
+  for (const credential of credentials) {
+    const secret = await inv.revealSecret(credential.id)
+    const hit = providers.matchTokenBySecret(items, secret)
+    const group = hit?.group ? String(hit.group) : ''
+    if (!group) {
+      results.push({
+        credentialId: credential.id,
+        label: credential.label,
+        matched: false,
+        reason: hit ? '这把 Key 在后台没有分组' : '后台令牌列表里找不到这把 Key',
+      })
+      continue
+    }
+    await inv.updateCredential(credential.id, { group })
+    // 令牌里直接带了倍率就用它（Sub2API），否则查价格表
+    const rate = typeof hit.rate === 'number' ? hit.rate : (rateOfGroup.get(group) ?? null)
+    results.push({
+      credentialId: credential.id,
+      label: credential.label,
+      matched: true,
+      group,
+      tokenName: hit.name || '',
+      rate,
+      updated: 0,
+    })
+  }
+
+  // 按每把 Key 自己的分组落倍率。只动属于该 Key 的行，互不干扰。
+  await store.mutate((d) => {
+    for (const row of results) {
+      if (!row.matched) continue
+      for (const offer of d.offers) {
+        if (offer.providerId !== provider.id) continue
+        if (offer.credentialId !== row.credentialId) continue
+
+        const key = offer.benchmarkKey || offer.modelKey || offer.upstreamName
+        const hit = match(offer, row.group)
+        // 分组名先写上——这一步不依赖价格表，读不到广场也该记住「你属于哪个分组」
+        offer.group = row.group
+
+        if (typeof row.rate === 'number' && benchTable[key]) {
+          // 倍率模式：只要基准价 + 倍率，不需要广场给的绝对价。
+          // 站慢或没开广场时这条路仍然能走通，是它最重要的价值。
+          offer.ratio = row.rate
+          offer.siteRatio = row.rate
+          offer.ratioSource = 'site'
+          offer.pricingMode = 'ratio'
+          offer.inPrice = null
+          offer.outPrice = null
+        } else if (hit) {
+          // 没有基准价，只能按广场给的绝对价 × 倍率直接填
+          const mult = typeof row.rate === 'number' ? row.rate : 1
+          if (hit.inPrice !== null) offer.inPrice = Math.round(hit.inPrice * mult * 1000) / 1000
+          if (hit.outPrice !== null) offer.outPrice = Math.round(hit.outPrice * mult * 1000) / 1000
+          offer.currency = 'CNY'
+          offer.pricingMode = 'manual'
+          offer.ratio = null
+          offer.siteRatio = typeof row.rate === 'number' ? row.rate : null
+          offer.ratioSource = 'site'
+        } else {
+          // 既没有基准价、也没有广场价：只记分组，价格留给用户自己填
+          offer.updatedAt = new Date().toISOString()
+          row.unpriced = (row.unpriced || 0) + 1
+          continue
+        }
+        offer.updatedAt = new Date().toISOString()
+        row.updated += 1
+      }
+    }
+  })
+
+  return {
+    ...(await buildState()),
+    detectResult: {
+      tokenCount: items.length,
+      source,
+      keyCount: credentials.length,
+      matched: results.filter((r) => r.matched).length,
+      pricingError,
+      results,
+    },
+  }
+})
+
 route('POST', /^\/api\/providers\/([\w-]+)\/restore-ratio$/, async (ctx) => {
   const group = ctx.body?.group
   const result = await inv.restoreSiteRatio(ctx.params[0], group)

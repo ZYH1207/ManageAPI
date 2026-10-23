@@ -242,6 +242,96 @@ export async function fetchSiteUsage({ baseUrl, adminToken, timeoutMs = 15000 })
 }
 
 /**
+ * 读站点的「令牌列表」——每把 Key 在后台属于哪个分组，站点自己最清楚。
+ *
+ * 两类站的接口不同，按优先级试：
+ *   Sub2API   GET /api/v1/keys        → { data: { items: [{ key, name, group: { name, rate_multiplier } }] } }
+ *   one-api   GET /api/token/?p=0...  → { data: { items: [{ key, name, group: '分组名' }] } }
+ *
+ * Sub2API 那条更好：它把 group 展开成对象，连倍率一起给了，
+ * 所以连「模型广场」都不用读，站慢的时候也能用。
+ *
+ * @returns {Promise<{items:Array<{name,key,group,rate}>, raw:any, source:string}>}
+ */
+export async function fetchTokenList({ baseUrl, adminToken, timeoutMs = 15000 }) {
+  const hostMatch = String(baseUrl).match(/^https?:\/\/([^/]+)/i)
+  const host = hostMatch ? hostMatch[1] : ''
+  const hosts = [host, host.replace(/^api\./, '')].filter((v, i, a) => v && a.indexOf(v) === i)
+
+  const attempts = [
+    { path: '/api/v1/keys', source: 'sub2api' },
+    { path: '/api/token/?p=0&size=100', source: 'one-api' },
+    { path: '/api/token?p=0&size=100', source: 'one-api' },
+  ]
+
+  let lastError = null
+  for (const attempt of attempts) {
+    for (const h of hosts) {
+      try {
+        const payload = await requestJson(`https://${h}${attempt.path}`, { apiKey: adminToken, timeoutMs })
+        const raw = pickTokenArray(payload)
+        if (raw.length === 0) {
+          lastError = new Error(
+            `令牌接口有响应，但没认出列表结构：${JSON.stringify(payload).slice(0, 140)}`,
+          )
+          continue
+        }
+        return { items: raw.map(normalizeToken), raw: payload, source: attempt.source }
+      } catch (error) {
+        lastError = error
+      }
+    }
+  }
+  throw lastError || new Error('读不到令牌列表')
+}
+
+/** 把两种结构统一成 { name, key, group, rate } */
+function normalizeToken(token) {
+  const g = token?.group
+  const group = typeof g === 'string' ? g : String(g?.name || '')
+  const rate = typeof g === 'object' && g ? Number(g.rate_multiplier) : NaN
+  return {
+    name: String(token?.name || ''),
+    key: String(token?.key || ''),
+    group,
+    rate: Number.isFinite(rate) ? rate : null,
+  }
+}
+
+function pickTokenArray(payload) {
+  const candidates = [
+    payload?.data?.items,
+    payload?.data,
+    payload?.items,
+    payload?.tokens,
+    Array.isArray(payload) ? payload : null,
+  ]
+  for (const c of candidates) {
+    if (Array.isArray(c)) return c
+  }
+  return []
+}
+
+/**
+ * 把「我们存的 sk-xxx」和「站点令牌列表里的 key」对上。
+ *
+ * 站点返回的 key 通常不带 sk- 前缀，所以两边都剥掉前缀再比；
+ * 完全比不中时退一步用尾号，但只在尾号唯一时才认——尾号撞车比认错强。
+ */
+export function matchTokenBySecret(items, secret) {
+  const bare = String(secret || '').replace(/^sk-/i, '').trim()
+  if (!bare) return null
+
+  const exact = items.find((t) => String(t.key || '').replace(/^sk-/i, '').trim() === bare)
+  if (exact) return exact
+
+  const tail = bare.slice(-6)
+  if (tail.length < 6) return null
+  const byTail = items.filter((t) => String(t.key || '').replace(/^sk-/i, '').endsWith(tail))
+  return byTail.length === 1 ? byTail[0] : null
+}
+
+/**
  * 统一的价格来源：优先「可用渠道」，回落「模型广场」。
  *
  * 两条路的差异：

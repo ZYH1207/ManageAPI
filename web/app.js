@@ -684,6 +684,7 @@ function renderProviders() {
             <button class="ghost" data-act="toggle-provider">${collapsedPanels.has(`provider:${p.id}`) ? '展开' : '收起'}</button>
             <button data-act="sync">同步模型</button>
             <button data-act="open-group-picker" title="从站点读分组，选你买的那个，倍率自动填到下面所有模型">导入倍率</button>
+            <button data-act="detect-groups" title="从站点后台的令牌列表读出每把 Key 属于哪个分组，自动按各自的分组应用倍率">识别分组</button>
             <button data-act="usage-check" title="用管理令牌拉站方用量，和我们的估算对比">用量核对</button>
             <button data-act="balance">读余额</button>
             <button class="ghost" data-act="set-admin-token" data-provider="${esc(p.id)}" title="站点后台的登录令牌，一次填好整站通用，用来读余额和用量">${p.hasAdminToken ? '令牌 ✓' : '令牌'}</button>
@@ -2312,6 +2313,34 @@ document.addEventListener('click', async (event) => {
     const providerId = actionButton.closest('[data-provider]').dataset.provider
     delete usageCheckResults[providerId]
     render()
+    return
+  }
+
+  if (action === 'detect-groups') {
+    await withBusy(actionButton, async () => {
+      try {
+        const result = await api('POST', `/api/providers/${providerId}/detect-groups`, {})
+        state = result
+        render()
+        const r = result.detectResult
+        const ok = r.results.filter((x) => x.matched)
+        const bad = r.results.filter((x) => !x.matched)
+        if (ok.length === 0) {
+          toast(`没匹配上：${bad.map((b) => `${b.label}（${b.reason}）`).join('；')}`, true)
+          return
+        }
+        toast(
+          ok
+            .map((x) => `${x.label} → ${x.group}${x.rate !== null ? ` ×${x.rate}` : ''}${x.updated ? `（${x.updated} 个模型）` : ''}`)
+            .join(' · '),
+        )
+        if (bad.length) {
+          setTimeout(() => toast(`未识别：${bad.map((b) => b.label).join('、')}`, true), 2200)
+        }
+      } catch (error) {
+        toast(error.message, true)
+      }
+    })
     return
   }
 
