@@ -363,6 +363,7 @@ web/               Frontend (vanilla JS, no build, no framework)
 
 docs/              README images + design docs
   dsh-plugin-plan.md DSH plugin plan (feature list and extension points)
+  free-api-plan.md   Free-tier plan (free relay models + platform credits)
 ```
 
 `core/` has no host dependencies and can be reused on its own.
@@ -415,6 +416,7 @@ Site names in the demo data (云雀 / 星链 / 极光 / 苍穹) are entirely fic
 - **More upstream types** — optimised for one-api / new-api / Sub2API; other self-hosted gateways need manual prices
 - **Per-request billing** — currently token-based only
 - **Master-password key derivation** — stronger local key protection
+- **Free-tier pool** — collect free relay models and free credits from agent platforms, on its own page with its own ranking, kept out of paid price comparison. See [`docs/free-api-plan.md`](docs/free-api-plan.md)
 - **DSH plugin form** — more than a sidebar: register as a DSH provider so every real agent turn takes part in routing and feeds back into scoring. See [`docs/dsh-plugin-plan.md`](docs/dsh-plugin-plan.md)
 
 ---

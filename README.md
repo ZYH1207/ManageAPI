@@ -370,6 +370,7 @@ web/               前端（原生 JS，无构建，无框架）
 
 docs/              README 用图 + 设计文档
   dsh-plugin-plan.md DSH 插件端规划（功能清单与扩展点）
+  free-api-plan.md   免费额度池开发计划（中转站免费模型 + 平台积分）
 ```
 
 `core/` 不依赖任何宿主，可以单独复用。
@@ -421,6 +422,7 @@ node .test/capture-shots.mjs
 - **更多上游类型** —— 目前针对 one-api / new-api / Sub2API 系优化，其他自建网关要手动填价
 - **按次计费** —— 现在只支持按 token 计价
 - **主密码派生密钥** —— 提升本地密钥强度
+- **免费额度池** —— 收集中转站的免费模型与 Agent 平台的免费积分，独立成页、独立排序，不参与付费比价。方案见 [`docs/free-api-plan.md`](docs/free-api-plan.md)
 - **DSH 插件形态** —— 不只是搬进侧边栏：注册成 DSH 的 provider，让 agent 的每次真实对话都参与选站并回写评分。方案见 [`docs/dsh-plugin-plan.md`](docs/dsh-plugin-plan.md)
 
 ---
