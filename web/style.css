@@ -28,6 +28,11 @@
   --warn-border: #f0dcb4;
   --danger-border: #f0d5d5;
   --alert-desc: #5c6663;
+  /* 免费页配额进度条 */
+  --quota-track: #eef1f0;
+  --quota-fill: #22a06b;
+  --quota-warn: #d99b23;
+  --quota-empty: #c3c9c7;
 }
 
 /* ------------------------------------------------------------- 深色模式 */
@@ -61,6 +66,11 @@
   --warn-border: rgba(251, 191, 36, 0.28);
   --danger-border: rgba(248, 113, 113, 0.42);
   --alert-desc: rgba(255, 255, 255, 0.78);
+  /* 免费页配额进度条 */
+  --quota-track: #22304a;
+  --quota-fill: #34d399;
+  --quota-warn: #fbbf24;
+  --quota-empty: #3d4b63;
   color-scheme: dark;
 }
 
@@ -1024,3 +1034,29 @@ html[data-lang='en'] .doc[data-lang-block='en'] { display: block; }
 .switch-text { display: flex; flex-direction: column; gap: 3px; line-height: 1.55; }
 .switch-text b { font-size: 13px; font-weight: 500; color: var(--text); }
 .switch-text span { font-size: 12px; color: var(--muted); }
+
+/* ------------------------------------------------- 免费页：分段控件里的计数 */
+.seg-count {
+  margin-left: 6px;
+  font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+  font-size: 11px; color: var(--faint);
+  padding: 1px 5px; border-radius: 5px; background: var(--hover);
+}
+.seg button.active .seg-count { color: var(--accent); }
+
+/* ------------------------------------------------------- 免费页：配额进度条 */
+.quota {
+  display: flex; align-items: center; gap: 8px;
+}
+.quota-track {
+  flex: 1; min-width: 56px; height: 6px;
+  background: var(--quota-track); border-radius: 999px; overflow: hidden;
+}
+.quota-fill {
+  height: 100%; border-radius: 999px;
+  background: var(--quota-fill);
+  transition: width 0.2s;
+}
+.quota-fill.warn { background: var(--quota-warn); }
+.quota-fill.empty { background: var(--quota-empty); }
+.quota-text { font-size: 11.5px; color: var(--muted); white-space: nowrap; }

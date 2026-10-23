@@ -214,6 +214,7 @@ function openHelpModal() {
 function render() {
   renderOverview()
   renderProviders()
+  renderFree()
   renderPricing()
   renderDecision()
   renderProbes()
@@ -742,6 +743,154 @@ function bindAddProviderForm() {
       toast(error.message, true)
     }
   })
+}
+
+// --------------------------------------------------------------- 免费池视图
+
+/** 两栏共用的边界说明。放在切换控件上方，一次说清。 */
+function freeNoteHtml() {
+  // 整段交给 t()：句子里有 <code> 会被拆成多个文本节点，
+  // 逐节点匹配翻不了，只能整段翻（和基准价页那三条说明同一个做法）。
+  const inner =
+    '<b>免费池独立于付费比价</b><span class="desc" style="display:block;margin-top:2px">这里的供给不参与「最便宜」判断和自动选站。只有你在客户端写 <code>free/</code> 前缀，或把地址换成 <code>/free/v1</code> 时才会用到。</span>'
+  return `
+    <div class="alert calm" style="margin-bottom:14px;align-items:flex-start">
+      <span class="grow" style="line-height:1.65">${t(inner)}</span>
+    </div>`
+}
+
+function freeSegHtml(relayCount, platformCount) {
+  const btn = (pane, label, count) => `
+    <button type="button" data-act="free-pane" data-pane="${pane}" class="${freePane === pane ? 'active' : ''}">
+      ${label}<span class="seg-count">${count}</span>
+    </button>`
+  return `<div class="seg">${btn('relay', '中转站免费模型', relayCount)}${btn('platform', '平台积分', platformCount)}</div>`
+}
+
+function freeStats(items) {
+  return `<div class="stats">${items
+    .map(
+      ([k, v, unit]) => `
+    <div class="stat"><div class="k">${esc(k)}</div>
+    <div class="v">${esc(v)}${unit ? `<small>${unit}</small>` : ''}</div></div>`,
+    )
+    .join('')}</div>`
+}
+
+/** 中转站侧：一行一个模型，同一模型的多个来源合并 */
+function freeRelayPane(offers) {
+  if (offers.length === 0) {
+    return `
+      <div class="empty">
+        <h3>还没有免费模型</h3>
+        <p>去「站点」页点「导入倍率」，实际价为 0 的模型会自动出现在这里。</p>
+        <button class="primary" data-goto="providers">去站点导入</button>
+      </div>`
+  }
+
+  const providerName = (id) => state.providers.find((p) => p.id === id)?.name || '—'
+  const routable = offers.filter((o) => o.score?.routable).length
+  const withFp = offers.filter((o) => typeof o.score?.fingerprintRate === 'number')
+  const avgFp = withFp.length
+    ? withFp.reduce((s, o) => s + o.score.fingerprintRate, 0) / withFp.length
+    : null
+  const withTtft = offers.filter((o) => typeof o.score?.ttftMs === 'number')
+  const avgTtft = withTtft.length
+    ? withTtft.reduce((s, o) => s + o.score.ttftMs, 0) / withTtft.length
+    : null
+
+  const stats = freeStats([
+    ['可用供给', `${routable}/${offers.length}`, '条'],
+    ['平均指纹', avgFp === null ? '—' : Math.round(avgFp * 100), avgFp === null ? '' : '%'],
+    ['平均首字', avgTtft === null ? '—' : Math.round(avgTtft), avgTtft === null ? '' : 'ms'],
+    ['剩余额度', '—', ''], // 配额在 T1-3 实现
+  ])
+
+  const rows = offers
+    .map((offer) => {
+      const score = offer.score || {}
+      const status = !score.samples
+        ? { label: '未探测', cls: '' }
+        : score.routable
+          ? { label: '可用', cls: 'ok' }
+          : { label: '可疑', cls: 'warn' }
+      const fp = typeof score.fingerprintRate === 'number' ? `${Math.round(score.fingerprintRate * 100)}%` : '—'
+      const ttft = typeof score.ttftMs === 'number' ? `${Math.round(score.ttftMs)}ms` : '—'
+      return `
+        <tr>
+          <td class="mono">${esc(offer.upstreamName)}</td>
+          <td>${esc(providerName(offer.providerId))}</td>
+          <td>${offer.group ? esc(offer.group) : '<span style="color:var(--faint)">默认</span>'}</td>
+          <td class="mono">—</td>
+          <td class="mono">${fp}</td>
+          <td class="mono">${ttft}</td>
+          <td><span class="badge ${status.cls}">${status.label}</span></td>
+        </tr>`
+    })
+    .join('')
+
+  return `
+    ${stats}
+    <div class="table-wrap">
+      <table>
+        <thead><tr>
+          <th>模型</th><th>站点</th><th>分组</th><th>配额</th>
+          <th>指纹</th><th>首字</th><th>状态</th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
+    <p class="hint" style="margin-top:10px">
+      免费模型是探针最有价值的场景：没人会白送，最常见的偷工方式是拿小模型冒充大模型。
+      指纹低于 100% 的那几行值得点开看看。
+    </p>`
+}
+
+/** 平台侧：卡片网格。T2 阶段接入 connector 后填充。 */
+function freePlatformPane(platforms) {
+  if (platforms.length === 0) {
+    return `
+      <div class="empty">
+        <h3>还没有连接平台</h3>
+        <p>平台积分可以来自 WorkBuddy、Trae 等 Agent 平台。连接后能自动读模型目录、剩余积分与重置时间。</p>
+        <span class="badge">连接功能开发中</span>
+      </div>`
+  }
+  return ''
+}
+
+function renderFree() {
+  const view = $('#view-free')
+  if (!view) return
+  const pool = state.freePool || {}
+  const relay = pool.relay || []
+  const platforms = pool.platforms || []
+
+  // 两栏都没内容时给一个「两个来源」的引导，不落到某一栏的空态
+  if (relay.length === 0 && platforms.length === 0) {
+    view.innerHTML = `
+      ${freeNoteHtml()}
+      <div class="empty">
+        <h3>免费额度有两个来源</h3>
+        <p style="text-align:left;display:inline-block;line-height:1.9;margin:8px 0 16px">
+          <b>① 中转站的免费模型</b><br />
+          去「站点」页点「导入倍率」，实际价为 0 的模型会自动出现在这里<br /><br />
+          <b>② 平台的免费积分</b><br />
+          连接 WorkBuddy、Trae 等平台，或手动填一个额度
+        </p>
+        <div>
+          <button class="primary" data-goto="providers">去站点导入</button>
+        </div>
+      </div>`
+    return
+  }
+
+  view.innerHTML = `
+    ${freeNoteHtml()}
+    ${freeSegHtml(relay.length, platforms.length)}
+    <div style="margin-top:16px">
+      ${freePane === 'relay' ? freeRelayPane(relay) : freePlatformPane(platforms)}
+    </div>`
 }
 
 // --------------------------------------------------------------- 比价视图
@@ -1591,10 +1740,13 @@ const SIDEBAR_KEY = 'manageapi.sidebarCollapsed'
   }
 })()
 
-const TABS = ['overview', 'providers', 'pricing', 'decision', 'probes', 'gateway', 'usage', 'benchmark']
+const TABS = ['overview', 'providers', 'free', 'pricing', 'decision', 'probes', 'gateway', 'usage', 'benchmark']
 
 /** 折叠状态：'provider:xxx' / 'pricing:模型名' / 'probe:站点id' */
 const collapsedPanels = new Set()
+
+/** 免费页当前栏：'relay'（中转站免费模型）| 'platform'（平台积分） */
+let freePane = 'relay'
 
 /** 搜索框内容 */
 const filters = { pricing: '', decision: '', benchmark: '' }
@@ -1602,6 +1754,7 @@ const filters = { pricing: '', decision: '', benchmark: '' }
 const TAB_META = {
   overview: { title: '概览', sub: '当前状态一眼看完' },
   providers: { title: '站点', sub: '中转站、Key 与分组倍率' },
+  free: { title: '免费', sub: '免费额度与平台积分，不参与付费比价' },
   pricing: { title: '比价', sub: '同一模型跨站对比' },
   decision: { title: '智能决策', sub: '候选排序与手动调整' },
   probes: { title: '探针', sub: '指纹 / 截断 / 计费 / 缓存' },
@@ -1616,6 +1769,11 @@ function setPageSub(text) {
 }
 
 function setTab(name) {
+  // 支持二级 hash：#free/relay、#free/platform
+  const [tabPart, panePart] = String(name || '').split('/')
+  if (tabPart === 'free' && ['relay', 'platform'].includes(panePart)) freePane = panePart
+  name = tabPart
+
   // 「使用说明」不在侧边栏里，但 #help 要能直接打开（弹窗里那个「在新页面打开」链接）
   if (name === 'help') {
     activeTab = 'help'
@@ -1649,7 +1807,15 @@ function setTab(name) {
   if (titleEl) titleEl.textContent = meta.title
   setPageSub(meta.sub)
   translateDom($('.topbar-left') || document.body)
-  if (location.hash !== `#${name}`) history.replaceState(null, '', `#${name}`)
+  const nextHash = name === 'free' ? `#free/${freePane}` : `#${name}`
+  if (location.hash !== nextHash) history.replaceState(null, '', nextHash)
+  // 初始化时 render() 早于 setTab()，那时 freePane 还是默认值；
+  // 从 URL 直接打开 #free/platform 需要在这里补一次重绘。
+  if (name === 'free') {
+    renderFree()
+    // 重绘发生在 render() 的 translateDom 之后，得自己补一次翻译
+    translateDom($('#view-free') || document.body)
+  }
 }
 
 // 点语言菜单以外的地方收起它
@@ -1823,6 +1989,17 @@ document.addEventListener('click', async (event) => {
   const action = actionButton.dataset.act
   const card = actionButton.closest('[data-provider]')
   const providerId = card?.dataset.provider
+
+  if (action === 'free-pane') {
+    const pane = actionButton.dataset.pane
+    if (pane && pane !== freePane) {
+      freePane = pane
+      render()
+      const nextHash = `#free/${freePane}`
+      if (location.hash !== nextHash) history.replaceState(null, '', nextHash)
+    }
+    return
+  }
 
   if (action === 'sync') {
     await withBusy(actionButton, async () => {

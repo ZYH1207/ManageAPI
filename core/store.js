@@ -43,6 +43,13 @@ export function emptyDb() {
       // 放行可疑供给：默认 false，探针判定不可信/过期的会被排到后面。
       // 打开后它们按有效成本正常参与竞争——风险由用户自己承担。
       allowUntrusted: false,
+      // 免费池跨栏偏好：同一个模型同时出现在中转站与平台时怎么选。
+      //   'platform'  平台优先（更怕假货）
+      //   'relay'     中转站优先（更怕断供）
+      //   'remaining' 按「预计剩余天数」跨栏混排（默认）
+      freeCrossPane: 'remaining',
+      // 免费池耗尽时是否允许回落付费。默认关闭——静默花钱比报错更糟。
+      allowPaidFallback: false,
     },
     providers: [],
     credentials: [],

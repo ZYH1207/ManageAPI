@@ -690,3 +690,47 @@ Object.assign(EN, {
   '已放行可疑供给，它们会正常参与选站': 'Suspicious supplies are now allowed to compete',
   '已恢复：可疑供给只作为最后兜底': 'Restored: suspicious supplies are only a last resort',
 })
+
+// 免费页
+Object.assign(EN, {
+  '免费': 'Free',
+  '额度与积分': 'Quotas & credits',
+  '免费额度与平台积分，不参与付费比价': 'Free quotas and platform credits — excluded from paid comparison',
+
+  '<b>免费池独立于付费比价</b><span class="desc" style="display:block;margin-top:2px">这里的供给不参与「最便宜」判断和自动选站。只有你在客户端写 <code>free/</code> 前缀，或把地址换成 <code>/free/v1</code> 时才会用到。</span>':
+    '<b>The free pool is separate from paid comparison</b><span class="desc" style="display:block;margin-top:2px">Nothing here takes part in "cheapest" ranking or automatic site selection. It is only used when your client sends a <code>free/</code> model prefix, or points at <code>/free/v1</code>.</span>',
+
+  '中转站免费模型': 'Free relay models',
+  '平台积分': 'Platform credits',
+  '可用供给': 'Usable',
+  '平均指纹': 'Avg fingerprint',
+  '平均首字': 'Avg TTFT',
+  '剩余额度': 'Remaining',
+  '模型': 'Model',
+  '站点': 'Site',
+  '分组': 'Group',
+  '配额': 'Quota',
+  '指纹': 'Fingerprint',
+  '首字': 'TTFT',
+  '状态': 'Status',
+
+  '还没有免费模型': 'No free models yet',
+  '去「站点」页点「导入倍率」，实际价为 0 的模型会自动出现在这里。':
+    'Open Sites and click "Import ratios" — models priced at 0 will show up here automatically.',
+  '去站点导入': 'Import from sites',
+  '免费模型是探针最有价值的场景：没人会白送，最常见的偷工方式是拿小模型冒充大模型。 指纹低于 100% 的那几行值得点开看看。':
+    'Free models are where probing matters most: nobody gives things away for free, and the usual trick is serving a smaller model. Rows below 100% fingerprint are worth a look.',
+
+  '还没有连接平台': 'No platform connected',
+  '平台积分可以来自 WorkBuddy、Trae 等 Agent 平台。连接后能自动读模型目录、剩余积分与重置时间。':
+    'Platform credits can come from agents like WorkBuddy or Trae. Once connected, the model catalogue, remaining credits and reset time are read automatically.',
+  '连接功能开发中': 'Connector in progress',
+
+  '免费额度有两个来源': 'Free quota comes from two places',
+  '① 中转站的免费模型': '1) Free models on relay sites',
+  '② 平台的免费积分': '2) Free credits on agent platforms',
+  '去「站点」页点「导入倍率」，实际价为 0 的模型会自动出现在这里':
+    'Open Sites and click "Import ratios" — models priced at 0 appear here automatically',
+  '连接 WorkBuddy、Trae 等平台，或手动填一个额度':
+    'Connect WorkBuddy, Trae and similar platforms, or enter a quota manually',
+})

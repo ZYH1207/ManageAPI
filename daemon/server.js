@@ -15,6 +15,7 @@ import * as bench from '../core/benchmark.js'
 import * as providers from '../core/providers.js'
 import { scoreOffers, isRoutable, longTermScores } from '../core/score.js'
 import { selectCandidates, listPublicModels, explain } from '../core/router.js'
+import { splitOffers, resolvePool, FREE_PREFIX, FREE_BASE_PATH } from '../core/free.js'
 import { recordUsage, usageSummary, tokensUsedByKey, resetUsage, readUsage } from '../core/usage.js'
 import { runProbes } from './probe-runner.js'
 import { REFERENCE_AS_OF, listReference } from '../core/model-prices.js'
@@ -97,8 +98,12 @@ async function buildState() {
   // 实际参与推荐/排序的口径：开关打开就全放行
   const isTrusted = (offerId) => allowUntrusted || probeTrusted(offerId)
 
-  const { ranked, unpriced } = pricing.rankByModel(db.offers, db.settings, benchmarks, isTrusted)
-  const summary = pricing.summarize(db.offers, db.settings, benchmarks, isTrusted)
+  // 免费供给在**数据入口**就切断：比价、概览结论、智能决策一律只看 paid。
+  // 不靠渲染层过滤——漏一个分支就会污染「最便宜」的结论。
+  const { paid: paidOffers, free: freeOffers } = splitOffers(db.offers, benchmarks)
+
+  const { ranked, unpriced } = pricing.rankByModel(paidOffers, db.settings, benchmarks, isTrusted)
+  const summary = pricing.summarize(paidOffers, db.settings, benchmarks, isTrusted)
 
   const usage = await usageSummary({ days: 30 })
   // 关注度：有真实用量 > 调过手动顺序 > 探过。headline 优先推你真正在用的模型
@@ -118,7 +123,7 @@ async function buildState() {
   const longTerm = longTermScores(db.probes, db.traffic)
   const siteRanking = db.providers
     .map((provider) => {
-      const stats = db.offers
+      const stats = paidOffers
         .filter((o) => o.providerId === provider.id)
         .map((o) => longTerm.get(o.id))
         .filter(Boolean)
@@ -172,7 +177,7 @@ async function buildState() {
   const decisions = rankedWithCache.map((group) => {
     const order = db.manualOrder?.[group.modelKey] || null
     const candidates = selectCandidates({
-      offers: db.offers,
+      offers: paidOffers,
       providers: db.providers,
       credentials: db.credentials,
       scores: scoreMap,
@@ -210,6 +215,18 @@ async function buildState() {
       adminTokenTail: c.adminTokenTail ?? null,
     })),
     offers: db.offers,
+    // 免费池：与付费侧完全隔离。两栏数据分开给，前端不用自己筛。
+    freePool: {
+      relay: freeOffers.map((o) => ({
+        ...o,
+        score: scores[o.id] ?? null,
+      })),
+      // 平台侧（T2）先留空数组，前端按空态处理
+      platforms: [],
+      accounts: [],
+      crossPane: db.settings.freeCrossPane || 'remaining',
+      allowPaidFallback: Boolean(db.settings.allowPaidFallback),
+    },
     benchmarks,
     reference: { asOf: REFERENCE_AS_OF, list: listReference() },
     ranked: rankedWithCache,
@@ -277,6 +294,16 @@ route('PATCH', /^\/api\/settings$/, async (ctx) => {
     }
     if (ctx.body.allowUntrusted !== undefined) {
       db.settings.allowUntrusted = Boolean(ctx.body.allowUntrusted)
+    }
+    if (ctx.body.freeCrossPane !== undefined) {
+      const v = String(ctx.body.freeCrossPane)
+      if (!['platform', 'relay', 'remaining'].includes(v)) {
+        throw new HttpError(400, '免费池跨栏偏好只能是 platform / relay / remaining')
+      }
+      db.settings.freeCrossPane = v
+    }
+    if (ctx.body.allowPaidFallback !== undefined) {
+      db.settings.allowPaidFallback = Boolean(ctx.body.allowPaidFallback)
     }
   })
   return buildState()
@@ -1056,10 +1083,12 @@ async function forwardToUpstream({ candidate, body, res, attemptIndex }) {
   return { committed: true, usage, ttftMs }
 }
 
-async function handleChatCompletions(req, res, db, keyRecord) {
+async function handleChatCompletions(req, res, db, keyRecord, isFree = false) {
   const body = await readBody(req)
-  const model = body?.model
-  if (!model) return openaiError(res, 400, '请求体缺少 model 字段')
+  const rawModel = body?.model
+  if (!rawModel) return openaiError(res, 400, '请求体缺少 model 字段')
+  // 剥掉 free/ 前缀；是否走免费池由调用方（handleProxy）按「前缀 or 入口」决定
+  const model = resolvePool({ pathname: '', model: rawModel }).model
 
   // 月度 token 上限（可选，Key 上配置）
   if (keyRecord?.monthlyTokenLimit) {
@@ -1077,8 +1106,11 @@ async function handleChatCompletions(req, res, db, keyRecord) {
 
   const benchmarks = await bench.readBenchmarks()
   const scores = scoresFor(db)
+  // 免费池只在自己的供给里选；付费池永远看不到免费项。两者不互相回落。
+  const split = splitOffers(db.offers, benchmarks)
+  const poolOffers = isFree ? split.free : split.paid
   const candidates = selectCandidates({
-    offers: db.offers,
+    offers: poolOffers,
     providers: db.providers,
     credentials: db.credentials,
     scores,
@@ -1089,7 +1121,16 @@ async function handleChatCompletions(req, res, db, keyRecord) {
   })
 
   if (candidates.length === 0) {
-    const available = listPublicModels({ offers: db.offers, scores }).map((m) => m.id)
+    const available = listPublicModels({ offers: poolOffers, scores }).map((m) => m.id)
+    // 免费池里没有这个模型 → 明确告诉用户，不静默回落付费
+    if (isFree) {
+      return openaiError(
+        res,
+        404,
+        `免费池里没有可用的 ${model}。免费模型：${available.slice(0, 20).join(', ') || '（无，去「免费」页看看）'}`,
+        'model_not_in_free_pool',
+      )
+    }
     return openaiError(
       res,
       404,
@@ -1184,7 +1225,11 @@ async function handleChatCompletions(req, res, db, keyRecord) {
 }
 
 async function handleProxy(req, res, url) {
-  const pathname = url.pathname.replace(/\/+$/, '') || '/'
+  let pathname = url.pathname.replace(/\/+$/, '') || '/'
+  // /free/v1/... 是免费池专用入口：整条路径剥掉 /free，剩下的按普通网关处理
+  const isFreeEntry = pathname === FREE_BASE_PATH || pathname.startsWith(`${FREE_BASE_PATH}/`)
+  if (isFreeEntry) pathname = pathname.slice(FREE_BASE_PATH.length) || '/'
+
   const db = await store.readDb()
 
   const auth = authorizeGateway(req, db)
@@ -1192,22 +1237,40 @@ async function handleProxy(req, res, url) {
 
   if (pathname === '/v1/models') {
     const scores = scoresFor(db)
-    const models = listPublicModels({ offers: db.offers, scores })
+    const benchmarks = await bench.readBenchmarks()
+    const split = splitOffers(db.offers, benchmarks)
+    const shape = (m, ownedBy, prefix = '') => ({
+      id: `${prefix}${m.id}`,
+      object: 'model',
+      created: Math.floor(Date.now() / 1000),
+      owned_by: ownedBy,
+      providers: m.providers,
+      healthy: m.healthy,
+    })
+
+    if (isFreeEntry) {
+      const models = listPublicModels({ offers: split.free, scores })
+      return json(res, 200, {
+        object: 'list',
+        data: models.map((m) => shape(m, 'manage-api-free')),
+      })
+    }
+
+    // 付费入口：付费模型 + 带 free/ 前缀的免费模型。
+    // 带前缀是有意的——用户在下拉里能看见、能选，且一眼知道走的是免费池。
+    const paidModels = listPublicModels({ offers: split.paid, scores })
+    const freeModels = listPublicModels({ offers: split.free, scores })
     return json(res, 200, {
       object: 'list',
-      data: models.map((m) => ({
-        id: m.id,
-        object: 'model',
-        created: Math.floor(Date.now() / 1000),
-        owned_by: 'manage-api',
-        providers: m.providers,
-        healthy: m.healthy,
-      })),
+      data: [
+        ...paidModels.map((m) => shape(m, 'manage-api')),
+        ...freeModels.map((m) => shape(m, 'manage-api-free', FREE_PREFIX)),
+      ],
     })
   }
 
   if (pathname === '/v1/chat/completions') {
-    return handleChatCompletions(req, res, db, auth.keyRecord)
+    return handleChatCompletions(req, res, db, auth.keyRecord, isFreeEntry)
   }
 
   return openaiError(res, 404, `暂不支持 ${pathname}，目前只代理 /v1/chat/completions 与 /v1/models`)
@@ -1241,7 +1304,12 @@ export function createAppServer() {
     const url = new URL(req.url, 'http://127.0.0.1')
     const pathname = url.pathname
 
-    if (pathname === '/v1' || pathname.startsWith('/v1/')) {
+    if (
+      pathname === '/v1' ||
+      pathname.startsWith('/v1/') ||
+      pathname === FREE_BASE_PATH ||
+      pathname.startsWith(`${FREE_BASE_PATH}/`)
+    ) {
       try {
         await handleProxy(req, res, url)
       } catch (error) {

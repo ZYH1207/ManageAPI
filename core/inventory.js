@@ -206,6 +206,9 @@ export async function syncOffers(providerId, credentialId, models, group = '') {
         upstreamName,
         modelKey: normalizeModelKey(upstreamName),
         group: g,
+        // supply 决定这条供给进哪个池：paid 走比价与自动选站，free 只进免费池。
+        // 新建时一律按 paid，实际价解析为 0 时由 tagSupply 改成 free。
+        supply: 'paid',
         inPrice: null,
         outPrice: null,
         ratio: null,
