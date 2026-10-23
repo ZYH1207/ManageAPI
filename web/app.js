@@ -684,7 +684,7 @@ function renderProviders() {
             <button class="ghost" data-act="toggle-provider">${collapsedPanels.has(`provider:${p.id}`) ? '展开' : '收起'}</button>
             <button data-act="sync">同步模型</button>
             <button data-act="open-group-picker" title="从站点读分组，选你买的那个，倍率自动填到下面所有模型">导入倍率</button>
-            <button data-act="detect-groups" title="从站点后台的令牌列表读出每把 Key 属于哪个分组，自动按各自的分组应用倍率">识别分组</button>
+            <button data-act="detect-groups" title="需要先填「令牌」。从站点后台的令牌列表读出每把 Key 属于哪个分组，按各自的分组自动应用倍率">识别分组</button>
             <button data-act="usage-check" title="用管理令牌拉站方用量，和我们的估算对比">用量核对</button>
             <button data-act="balance">读余额</button>
             <button class="ghost" data-act="set-admin-token" data-provider="${esc(p.id)}" title="站点后台的登录令牌，一次填好整站通用，用来读余额和用量">${p.hasAdminToken ? '令牌 ✓' : '令牌'}</button>

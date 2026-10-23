@@ -857,3 +857,8 @@ Object.assign(EN, {
   '从站点后台的令牌列表读出每把 Key 属于哪个分组，自动按各自的分组应用倍率':
     'Reads each key\u2019s group from the site\u2019s token list and applies that group\u2019s rate',
 })
+
+Object.assign(EN, {
+  '需要先填「令牌」。从站点后台的令牌列表读出每把 Key 属于哪个分组，按各自的分组自动应用倍率':
+    'Needs a site token first. Reads each key\u2019s group from the site token list and applies that group\u2019s rate.',
+})

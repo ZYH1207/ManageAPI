@@ -264,25 +264,43 @@ export async function fetchTokenList({ baseUrl, adminToken, timeoutMs = 15000 })
     { path: '/api/token?p=0&size=100', source: 'one-api' },
   ]
 
-  let lastError = null
+  const tried = []
+  // 401 比 404 重要得多：404 只说明「这个路径没有」，401 说明「令牌本身不行」。
+  // 之前直接抛最后一个错误，导致令牌过期的站显示成「接口不存在」，指错了方向。
+  let authError = null
+  let shapeError = null
+  let firstError = null
+
   for (const attempt of attempts) {
     for (const h of hosts) {
+      const where = `${h}${attempt.path}`
       try {
-        const payload = await requestJson(`https://${h}${attempt.path}`, { apiKey: adminToken, timeoutMs })
+        const payload = await requestJson(`https://${where}`, { apiKey: adminToken, timeoutMs })
         const raw = pickTokenArray(payload)
         if (raw.length === 0) {
-          lastError = new Error(
-            `令牌接口有响应，但没认出列表结构：${JSON.stringify(payload).slice(0, 140)}`,
-          )
+          shapeError = `接口有响应但没认出列表结构：${JSON.stringify(payload).slice(0, 120)}`
+          tried.push(`${where} 200（结构不认识）`)
           continue
         }
         return { items: raw.map(normalizeToken), raw: payload, source: attempt.source }
       } catch (error) {
-        lastError = error
+        const message = error.message || String(error)
+        tried.push(`${where} ${message}`)
+        if (/HTTP 40[13]/.test(message)) authError = message
+        else if (!firstError) firstError = message
       }
     }
   }
-  throw lastError || new Error('读不到令牌列表')
+
+  if (authError) {
+    throw new Error(
+      '站点令牌已失效或无权限（401/403）。在站点卡片上点「令牌」，从浏览器重新复制一个再试。',
+    )
+  }
+  if (shapeError) throw new Error(shapeError)
+  throw new Error(
+    `这个站没有暴露「令牌列表」接口，读不到每把 Key 属于哪个分组。改用「导入倍率」手动选即可。已试过：${tried.join('；')}`,
+  )
 }
 
 /** 把两种结构统一成 { name, key, group, rate } */
