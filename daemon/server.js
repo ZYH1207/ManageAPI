@@ -366,11 +366,14 @@ route('POST', /^\/api\/providers$/, async (ctx) => {
 
 route('PATCH', /^\/api\/providers\/([\w-]+)$/, async (ctx) => {
   await inv.updateProvider(ctx.params[0], ctx.body)
+  // 换令牌后价格表必须重取，否则还是按旧令牌的结果缓存 5 分钟
+  if (ctx.body?.adminToken !== undefined) invalidatePricing(ctx.params[0])
   return buildState()
 })
 
 route('DELETE', /^\/api\/providers\/([\w-]+)$/, async (ctx) => {
   await inv.deleteProvider(ctx.params[0])
+  invalidatePricing(ctx.params[0])
   return buildState()
 })
 
@@ -409,37 +412,59 @@ route('POST', /^\/api\/providers\/([\w-]+)\/sync$/, async (ctx) => {
     db.offers.filter((o) => o.providerId === provider.id).map((o) => o.upstreamName),
   )
 
-  const models = new Set()
-  const failures = []
-  const usedCredentialIds = []
+  // 逐把 Key 同步，各自带自己的分组——不能先并集再统一塞进第一把的分组，
+  // 否则两把 Key 属于不同分组时，模型会挂到错误的分组上，行数也会虚高。
+  //
+  // 拉取并行、写盘串行：串行拉取时最坏情况是「N 把 Key × 超时」，
+  // 两把就能等一分半；而 mutate 是读-改-写，并发写会互相覆盖。
   const startedAt = Date.now()
-  let firstGroup = ''
-  let firstCredentialId = null
+  const syncTimeoutMs = Math.min(Number(db.settings.probeTimeoutMs) || 15000, 20000)
+  const fetched = await Promise.all(
+    targets.map(async (credential) => {
+      const apiKey = await inv.revealSecret(credential.id)
+      if (!apiKey) {
+        return { credential, error: 'Key 解密失败，可能是 master.key 被替换过' }
+      }
+      try {
+        const result = await providers.listModels({
+          baseUrl: provider.baseUrl,
+          apiKey,
+          timeoutMs: syncTimeoutMs,
+        })
+        return { credential, models: result.models }
+      } catch (error) {
+        return { credential, error: error.message || String(error) }
+      }
+    }),
+  )
 
-  for (const credential of targets) {
-    const apiKey = await inv.revealSecret(credential.id)
-    if (!apiKey) {
-      failures.push({ label: credential.label, error: 'Key 解密失败，可能是 master.key 被替换过' })
+  const allModels = new Set()
+  const failures = []
+  const perKey = []
+  let added = 0
+
+  for (const row of fetched) {
+    if (row.error) {
+      failures.push({ label: row.credential.label, error: row.error })
       continue
     }
-    try {
-      const result = await providers.listModels({
-        baseUrl: provider.baseUrl,
-        apiKey,
-        timeoutMs: db.settings.probeTimeoutMs || 15000,
-      })
-      for (const name of result.models) models.add(name)
-      usedCredentialIds.push(credential.id)
-      if (!firstCredentialId) {
-        firstCredentialId = credential.id
-        firstGroup = credential.group || ''
-      }
-    } catch (error) {
-      failures.push({ label: credential.label, error: error.message || String(error) })
-    }
+    const saved = await inv.syncOffers(
+      provider.id,
+      row.credential.id,
+      row.models,
+      row.credential.group || '',
+    )
+    added += saved.added
+    for (const name of row.models) allModels.add(name)
+    perKey.push({
+      credentialId: row.credential.id,
+      label: row.credential.label,
+      group: row.credential.group || '',
+      count: row.models.length,
+    })
   }
 
-  if (models.size === 0) {
+  if (allModels.size === 0) {
     throw new HttpError(
       502,
       `所有 Key 都拉不到模型：${failures.map((f) => `${f.label}: ${f.error}`).join(' | ')}`,
@@ -447,8 +472,7 @@ route('POST', /^\/api\/providers\/([\w-]+)\/sync$/, async (ctx) => {
   }
 
   const elapsedMs = Date.now() - startedAt
-  const list = [...models]
-  const result = await inv.syncOffers(provider.id, firstCredentialId, list, firstGroup)
+  const list = [...allModels]
 
   const current = new Set(list)
   const state = await buildState()
@@ -457,12 +481,13 @@ route('POST', /^\/api\/providers\/([\w-]+)\/sync$/, async (ctx) => {
     sync: {
       providerId: provider.id,
       fetched: list.length,
-      added: result.added,
+      added,
       removed: [...previous].filter((name) => !current.has(name)),
       elapsedMs,
-      // 哪几把 Key 成功了、哪几把失败——失败原因直接给出来，不然用户不知道该换哪把
-      keysUsed: usedCredentialIds.length,
+      keysUsed: perKey.length,
       keysTotal: targets.length,
+      // 每把 Key 各自拉到几个模型——总数是并集，用户看到「11 个」时能对上账
+      perKey,
       failures,
     },
   }
@@ -480,14 +505,47 @@ route('POST', /^\/api\/providers\/([\w-]+)\/group-ratio$/, async (ctx) => {
  * 再拿这个分组的倍率去乘模型原价。这两步拆成两个接口：
  *   GET  /groups      —— 只读，列出该站所有分组 + 每个分组能对上几个模型
  *   POST /apply-group —— 写，把选定分组的倍率落到 offer 上
+ *
+ * 价格表按站点缓存 5 分钟：每点一次「选分组」都要走两次网络（channels 失败再回落 plaza），
+ * 一个站十几个分组、来回点几次就明显卡。缓存只影响「读」，写操作后主动失效。
  */
-async function loadProviderPricing(providerId) {
+const PRICING_TTL_MS = 5 * 60 * 1000
+// 失败也要缓存一小会儿：站点超时要 10 秒，连点几次「选分组」会一直转圈。
+// 30 秒足够让用户看到「读不到」，又不至于让一次抖动锁死五分钟。
+const PRICING_FAIL_TTL_MS = 30 * 1000
+const pricingCache = new Map()
+
+function invalidatePricing(providerId) {
+  pricingCache.delete(providerId)
+}
+
+async function loadProviderPricing(providerId, { fresh = false } = {}) {
   const db = await store.readDb()
   const provider = db.providers.find((p) => p.id === providerId)
   if (!provider) throw new HttpError(404, '站点不存在')
 
-  const adminToken = await inv.revealAdminToken(provider.id)
-  const pricing = await providers.fetchProviderPricing({ baseUrl: provider.baseUrl, adminToken })
+  const cached = pricingCache.get(providerId)
+  if (!fresh && cached) {
+    const ttl = cached.error ? PRICING_FAIL_TTL_MS : PRICING_TTL_MS
+    if (Date.now() - cached.at < ttl) {
+      if (cached.error) throw new HttpError(502, cached.error)
+    }
+  }
+
+  let pricing
+  if (!fresh && cached && !cached.error && Date.now() - cached.at < PRICING_TTL_MS) {
+    pricing = cached.data
+  } else {
+    try {
+      const adminToken = await inv.revealAdminToken(provider.id)
+      pricing = await providers.fetchProviderPricing({ baseUrl: provider.baseUrl, adminToken })
+      pricingCache.set(providerId, { at: Date.now(), data: pricing })
+    } catch (error) {
+      const message = error.message || String(error)
+      pricingCache.set(providerId, { at: Date.now(), error: message })
+      throw new HttpError(502, message)
+    }
+  }
 
   const byModel = new Map()
   for (const model of pricing.models) {
@@ -534,8 +592,15 @@ async function loadProviderPricing(providerId) {
  * 商务事实（他买的是哪个套餐），工具不该替他猜。
  */
 route('GET', /^\/api\/providers\/([\w-]+)\/groups$/, async (ctx) => {
-  const { credential, pricing, offers, match, byGroupModel } = await loadProviderPricing(ctx.params[0])
-  const current = credential?.group || ''
+  const credentialId = ctx.query?.get('credentialId') || ''
+  const fresh = ctx.query?.get('fresh') === '1'
+  const { credential, credentials, pricing, offers, match, byGroupModel } = await loadProviderPricing(
+    ctx.params[0],
+    { fresh },
+  )
+  // 分组是「这把 Key」的属性：从哪一行点进来的，就显示哪一把的当前分组。
+  const active = credentials.find((c) => c.id === credentialId) || credential
+  const current = active?.group || ''
 
   // 广场能给出「哪个分组有哪些模型」，就按分组严格数；只有渠道数据时只能全站数，
   // 每个分组都会显示成同一个数——那就没意义了，所以优先用严格口径。
@@ -562,6 +627,9 @@ route('GET', /^\/api\/providers\/([\w-]+)\/groups$/, async (ctx) => {
 
   return {
     providerId: ctx.params[0],
+    credentialId: active?.id || null,
+    credentialLabel: active?.label || null,
+    keyCount: credentials.length,
     current,
     source: pricing.source,
     groups,
@@ -579,7 +647,14 @@ route('GET', /^\/api\/providers\/([\w-]+)\/groups$/, async (ctx) => {
 route('POST', /^\/api\/providers\/([\w-]+)\/apply-group$/, async (ctx) => {
   const providerId = ctx.params[0]
   const group = String(ctx.body.group ?? '').trim()
-  const { provider, credential, pricing, offers, match, benchTable } = await loadProviderPricing(providerId)
+  const credentialId = String(ctx.body.credentialId || '')
+  const { provider, credential, credentials, pricing, offers, match, benchTable } = await loadProviderPricing(
+    providerId,
+  )
+
+  // 分组是 Key 的属性，必须作用在「你点的那把 Key」上，不能默认第一把
+  const target = credentials.find((c) => c.id === credentialId) || credential
+  if (!target) throw new HttpError(400, '该站点还没有 Key')
 
   const rateOfGroup = new Map(pricing.groups.map((g) => [g.name, g.rate]))
   const rates = pricing.groups.map((g) => g.rate).filter((r) => typeof r === 'number')
@@ -588,9 +663,9 @@ route('POST', /^\/api\/providers\/([\w-]+)\/apply-group$/, async (ctx) => {
   const rate = group && rateOfGroup.has(group) ? rateOfGroup.get(group) : uniformRate
 
   // 记下这把 Key 属于哪个分组，下次打开就不用再选
-  const prevGroup = credential?.group || ''
-  if (credential && group !== prevGroup) {
-    await inv.updateCredential(credential.id, { group })
+  const prevGroup = target.group || ''
+  if (group !== prevGroup) {
+    await inv.updateCredential(target.id, { group })
   }
 
   let updated = 0
@@ -601,9 +676,14 @@ route('POST', /^\/api\/providers\/([\w-]+)\/apply-group$/, async (ctx) => {
   await store.mutate((d) => {
     for (const offer of d.offers) {
       if (offer.providerId !== provider.id) continue
-      // 只接管「属于这把 Key 的那个分组」的行。用户手工复制出来的其他分组不动，
-      // 否则一次导入会把他自己分的组全冲掉。
-      if ((offer.group || '') !== prevGroup) continue
+      // 只接管属于这把 Key 的行。优先按 credentialId 精确判断——
+      // 两把 Key 都在默认分组时，光看 group 会互相踩。
+      // 没有 credentialId 的老数据才回落到 group 比较。
+      if (offer.credentialId) {
+        if (offer.credentialId !== target.id) continue
+      } else if ((offer.group || '') !== prevGroup) {
+        continue
+      }
 
       const hit = match(offer, group)
       if (!hit) {
@@ -650,6 +730,9 @@ route('POST', /^\/api\/providers\/([\w-]+)\/apply-group$/, async (ctx) => {
       missingBench,
       source: pricing.source,
       modelTotal: offers.length,
+      // 明确回传「改的是哪把 Key」，前端据此提示，避免「我改的是第二把，第一把却变了」
+      credentialId: target.id,
+      credentialLabel: target.label,
     },
   }
 })

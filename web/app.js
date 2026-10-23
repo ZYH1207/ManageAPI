@@ -399,6 +399,8 @@ const usageCheckResults = {}
 /** 分组选择弹窗的状态 */
 const groupPicker = {
   providerId: null,
+  // 分组是「哪把 Key」的属性，弹窗必须记住是从哪一行点进来的
+  credentialId: null,
   loading: false,
   error: null,
   data: null,
@@ -412,8 +414,9 @@ const groupPicker = {
  * 为什么一定要让用户选：倍率是按分组定的，而「你买的是哪个分组」是商务事实，
  * 工具从 API 里读不出来（Key 只告诉你「能用哪些模型」，不告诉你「属于哪个分组」）。
  */
-async function openGroupPicker(providerId) {
+async function openGroupPicker(providerId, credentialId = null, { fresh = false } = {}) {
   groupPicker.providerId = providerId
+  groupPicker.credentialId = credentialId
   groupPicker.loading = true
   groupPicker.error = null
   groupPicker.data = null
@@ -424,7 +427,11 @@ async function openGroupPicker(providerId) {
   renderGroupModal()
 
   try {
-    const data = await api('GET', `/api/providers/${providerId}/groups`)
+    const params = new URLSearchParams()
+    if (credentialId) params.set('credentialId', credentialId)
+    if (fresh) params.set('fresh', '1')
+    const query = params.toString() ? `?${params.toString()}` : ''
+    const data = await api('GET', `/api/providers/${providerId}/groups${query}`)
     groupPicker.data = data
     const names = data.groups.map((g) => g.name)
     groupPicker.selected = names.includes(data.current) ? data.current : names[0] || ''
@@ -457,6 +464,7 @@ function paintGroupModal(body) {
       </div>
       <p class="hint" style="margin:0">读不到也不影响用：可以在下面手动填倍率，或者在「基准价」页直接填价格。</p>
       <div class="group-pick-foot"><span class="grow"></span>
+        <button class="ghost" data-act="retry-groups">重试</button>
         <button class="ghost" data-act="close-group-modal">知道了</button>
       </div>`
     return
@@ -495,11 +503,16 @@ function paintGroupModal(body) {
     .join('')
 
   const noRate = d.groups.every((g) => g.rate === null)
+  // 多 Key 时一定要写清「这次改的是哪一把」，否则用户会以为改错了 Key
+  const keyLine = d.credentialLabel
+    ? `<b>${esc(d.credentialLabel)}</b> 这把 Key${d.keyCount > 1 ? `（该站共 ${d.keyCount} 把）` : ''}`
+    : ''
   body.innerHTML = `
     <p class="hint" style="margin:0 0 4px">
       <b>${esc(provider?.name || '')}</b> 共 ${d.groups.length} 个分组，数据来自
       ${d.source === 'channels' ? '「可用渠道」' : '「模型广场」'}。
-      选你实际买的那个，倍率会立刻填到下面所有模型，比价和决策页同步更新。
+      ${keyLine ? `下面选的分组只作用于 ${keyLine}，不会动其它 Key。<br />` : ''}
+      选你实际买的那个，倍率会立刻填到这把 Key 对应的模型上，比价和决策页同步更新。
     </p>
     ${noRate ? '<p class="hint" style="color:var(--warn);margin:6px 0 0">这个站没公布倍率，只能填绝对价。选完会按原价填入。</p>' : ''}
     <div class="group-pick">${rows}</div>
@@ -539,6 +552,7 @@ async function applyPickedGroup(button) {
   try {
     const result = await api('POST', `/api/providers/${providerId}/apply-group`, {
       group: groupPicker.selected,
+      credentialId: groupPicker.credentialId || undefined,
     })
     state = result
     const modal = $('#group-modal')
@@ -547,7 +561,9 @@ async function applyPickedGroup(button) {
     render()
 
     const r = result.groupResult
-    const parts = [`「${r.group || '未指定分组'}」已应用`]
+    // 多 Key 时必须点名改的是哪一把，否则用户分不清「第二把改了，第一把怎么没变」
+    const keyPrefix = r.credentialLabel ? `${r.credentialLabel}：` : ''
+    const parts = [`${keyPrefix}「${r.group || '未指定分组'}」已应用`]
     if (r.rate !== null) parts.push(`倍率 ×${r.rate}`)
     parts.push(`${r.updated} 个模型`)
     if (r.unmatched?.length) parts.push(`${r.unmatched.length} 个未匹配`)
@@ -700,6 +716,7 @@ function renderProviders() {
               <button class="ghost tiny group-chip" data-act="open-group-picker" title="${k.group ? '这把 Key 属于这个分组，点这里换' : '还没选分组，点这里选（会顺便把倍率填好）'}">
                 ${k.group ? `分组 · ${esc(k.group)}` : '选分组'}
               </button>
+              <span class="tail">${offers.filter((o) => o.credentialId === k.id).length} 个模型</span>
               <span class="grow"></span>
               <button class="ghost danger" data-act="del-key">删除</button>
             </div>`).join('')}
@@ -2134,11 +2151,18 @@ document.addEventListener('click', async (event) => {
       const removed = sync.removed.length ? `，${sync.removed.length} 个已下线` : ''
       const failed = sync.failures?.length ? `，${sync.failures.length} 把 Key 失败` : ''
       toast(`拉到 ${sync.fetched} 个模型，新增 ${sync.added}${removed}${failed}（${sync.elapsedMs}ms）`)
+      // 多 Key 时把「每把各拉到几个」说清楚：总数是并集，两把 Key 权限不同就会多于单把
+      if (sync.perKey?.length > 1) {
+        setTimeout(
+          () => toast(sync.perKey.map((k) => `${k.label} ${k.count} 个`).join(' · ') + '（合计去重）'),
+          1500,
+        )
+      }
       // 有 Key 失败时说清是哪一把、为什么——不然用户不知道新加的 Key 到底有没有用上
       if (sync.failures?.length) {
         setTimeout(
           () => toast(`失败的 Key：${sync.failures.map((f) => `${f.label}（${f.error}）`).join('；')}`, true),
-          1600,
+          3000,
         )
       }
     })
@@ -2293,12 +2317,20 @@ document.addEventListener('click', async (event) => {
 
   if (action === 'open-group-picker') {
     const providerId = actionButton.closest('[data-provider]').dataset.provider
-    await openGroupPicker(providerId)
+    // 从 Key 那一行点进来的，就认准那把 Key；从卡片按钮点进来的没有 credentialId，
+    // 后端会回落到第一把——但改的仍是「第一把」，不会波及别的 Key。
+    const credentialId = actionButton.closest('[data-credential]')?.dataset.credential || null
+    await openGroupPicker(providerId, credentialId)
     return
   }
 
   if (action === 'apply-group') {
     await applyPickedGroup(actionButton)
+    return
+  }
+
+  if (action === 'retry-groups') {
+    await openGroupPicker(groupPicker.providerId, groupPicker.credentialId, { fresh: true })
     return
   }
 
