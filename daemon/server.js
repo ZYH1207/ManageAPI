@@ -368,7 +368,9 @@ async function buildState({ light = false } = {}) {
   // 轻量版：自动刷新轮询用，砍掉最大的两块（scores 73KB / decisions 20KB），
   // 前端把这两项沿用旧值——比价/决策页轮询时仍走完整版
   if (light) {
-    delete result.scores
+    // 只裁 decisions（每模型候选表，最大的一块）。scores 要保留：概览 / 探针 /
+    // 网关页和通知中心都从它派生健康状态，裁掉的话停在这些页时 15 秒轮询
+    // 永远不更新评分，界面上「可疑/过期」的标记一挂就是一整个会话。
     delete result.decisions
   }
   return result
@@ -880,7 +882,6 @@ route('POST', /^\/api\/providers\/([\w-]+)\/apply-group$/, async (ctx) => {
   }
 })
 
-/** 把自定义倍率恢复成站点公布的值。 */
 /**
  * 从站点后台的「令牌列表」反查每把 Key 属于哪个分组，并直接按各自的分组应用倍率。
  *
@@ -1036,6 +1037,7 @@ route('POST', /^\/api\/providers\/([\w-]+)\/detect-groups$/, async (ctx) => {
   }
 })
 
+/** 把自定义倍率恢复成站点公布的值。 */
 route('POST', /^\/api\/providers\/([\w-]+)\/restore-ratio$/, async (ctx) => {
   const group = ctx.body?.group
   const result = await inv.restoreSiteRatio(ctx.params[0], group)

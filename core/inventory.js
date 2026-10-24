@@ -91,8 +91,8 @@ export async function updateProvider(id, patch) {
     if (encryptedAdmin !== undefined) {
       provider.adminToken = encryptedAdmin
       provider.adminTokenTail = encryptedAdmin ? String(patch.adminToken).trim().slice(-6) : null
-      // 换令牌就把上一次的失效结论清掉，重新判
-      provider.tokenStatus = encryptedAdmin ? null : null
+      // 换令牌（包括清空）都把上一次的失效结论清掉，重新判
+      provider.tokenStatus = null
       provider.tokenStatusAt = null
     }
     if (patch.quotaRemaining !== undefined) {
@@ -307,9 +307,8 @@ export async function syncOffers(providerId, credentialId, models, group = '') {
         upstreamName,
         modelKey: normalizeModelKey(upstreamName),
         group: g,
-        // supply 决定这条供给进哪个池：paid 走比价与自动选站，free 只进免费池。
-        // 新建时一律按 paid，实际价解析为 0 时由 tagSupply 改成 free。
-        supply: 'paid',
+        // 没有 supply 字段：付费/免费不落库、每次按「解析后实际价 === 0」现算
+        // （free.js 的 isFreeOffer），倍率一改判定立刻跟着变
         inPrice: null,
         outPrice: null,
         ratio: null,

@@ -318,10 +318,6 @@ export function markAnnouncementsRead(db, ids) {
   return count
 }
 
-function dayKey(iso) {
-  return String(iso || '').slice(0, 10)
-}
-
 function recentDays(count, now = new Date()) {
   const days = []
   for (let i = count - 1; i >= 0; i -= 1) {

@@ -20,7 +20,6 @@ const offer = (id, freeQuota) => ({
   providerId: 'p_demo',
   upstreamName: `${id}-model`,
   group: '',
-  supply: 'free',
   freeQuota,
 })
 

@@ -118,11 +118,17 @@ function buildNotifications() {
   const list = []
   const scores = state.scores || {}
 
-  // 余额偏低（余额挂在站点上，一个站一条）
+  // 余额偏低（余额挂在站点上，一个站一条）。
+  // 阈值与监控告警同一份（settings.balanceWarnUsd，统一按美元；0 = 关闭提醒），
+  // 人民币余额按汇率折算后再比——此前这里硬编码 ¥10/$1.5，和告警设置对不上
   for (const p of state.providers || []) {
     if (typeof p.quotaRemaining !== 'number') continue
     const currency = p.currency || 'CNY'
-    const threshold = currency === 'USD' ? 1.5 : 10
+    const rawUsd = Number(state.settings?.balanceWarnUsd ?? state.settings?.balanceWarnCny)
+    const warnUsd = Number.isFinite(rawUsd) && rawUsd >= 0 ? rawUsd : 10
+    if (warnUsd === 0) continue
+    const fx = Number(state.settings?.fx?.rates?.CNY) || 7.2
+    const threshold = currency.toUpperCase() === 'CNY' ? warnUsd * fx : warnUsd
     if (p.quotaRemaining > threshold) continue
     list.push({
       id: `quota:${p.id}:${p.quotaRemaining}`,
@@ -793,8 +799,6 @@ function providersHtml({ withForm = true, panel = '', actions = '' } = {}) {
     }).join('')
     const hasCustom = offers.some((o) => o.ratioSource === 'custom')
 
-    // 默认收起：13 个站全展开时页面太长，翻起来比折叠还累
-    const collapsed = !collapsedPanels.has(`provider:${p.id}`)
     const kindText = ID_PROVIDER_KIND[p.kind] || ''
     // 这个站有多少模型落在免费池里（后端算好名字，这里只数）
     const freeNames = Array.isArray(p.freeModels) ? p.freeModels : []
@@ -968,14 +972,6 @@ function providersHtml({ withForm = true, panel = '', actions = '' } = {}) {
     <div class="site-cards">${matched.length ? cards : `<div class="empty small"><p>${t('没有匹配的站点。')}</p></div>`}</div>
     <div class="drop-zone" data-drop="next" ${sitePage >= pageCount ? 'hidden' : ''}>${t('放到下一页')}</div>
     ${addForm}`
-}
-
-/** 「站点」视图（已并入监控页，这里保留给 #providers 直达链接用） */
-function renderProviders() {
-  const view = $('#view-providers')
-  if (!view) return
-  view.innerHTML = providersHtml()
-  bindAddProviderForm()
 }
 
 /** 只重画监控页里的站点卡（搜索、翻页时用，不重新拉数据） */
@@ -1538,7 +1534,8 @@ function paintCurrencySwitch() {
 /**
  * 重新拉一次 state 并重绘。
  * - 正在输入（焦点在表单元素里）时跳过，避免打断填写
- * - 比价/决策页用完整 state，其它页用 ?light=1（省掉 scores / decisions 两个大块）
+ * - 比价/决策页用完整 state，其它页用 ?light=1（服务端只裁掉 decisions 这一大块；
+ *   scores 保留——概览/探针/网关页和通知中心都靠它，停在这些页时评分才会跟着轮询更新）
  * - 重绘后恢复滚动位置
  */
 async function refreshState({ silent = false } = {}) {
@@ -2716,8 +2713,8 @@ function renderMonitor() {
       </div>
       ${chart ? `<div class="chart-wrap">${chart}</div>` : '<div class="empty small"><p>还没有同步到余额。点右上角「立即同步」跑一轮。</p></div>'}
       <div class="chart-legend">
-        <span><i class="legend-line"></i>总余额（${priceSym()}，其他币种按汇率折算）</span>
-        <span><i class="legend-bar"></i>每日花费（估）</span>
+        <span><i class="legend-line"></i>${t('总余额（{sym}，其他币种按汇率折算）', { sym: priceSym() })}</span>
+        <span><i class="legend-bar"></i>${t('每日花费（估）')}</span>
       </div>
       <div class="monitor-chips">${chips}</div>
     </div>`
@@ -2934,9 +2931,6 @@ function renderMonitor() {
   // 站点卡与「添加站点」表单复用站点页的那一套，避免两处各写一份
   const sitesHost = $('#monitor-sites-host')
   if (sitesHost) sitesHost.innerHTML = providersHtml({ withForm: false, panel: syncPanel, actions: syncActions })
-  const addHost = $('#monitor-add-host')
-  if (addHost) addHost.innerHTML = $('#tpl-add-provider').innerHTML
-  bindAddProviderForm()
   bindSiteSearch()
 }
 
@@ -3804,31 +3798,6 @@ document.addEventListener('click', async (event) => {
     return
   }
 
-  // 站点卡顺序：和后一个/前一个交换 sortOrder，两张都写一次
-  if (action === 'prov-move') {
-    const dir = actionButton.dataset.dir
-    const id = actionButton.dataset.provider
-    const list = state.providers || []
-    const index = list.findIndex((p) => p.id === id)
-    const swapIndex = dir === 'up' ? index - 1 : index + 1
-    if (index < 0 || swapIndex < 0 || swapIndex >= list.length) return
-    const self = list[index]
-    const other = list[swapIndex]
-    const selfOrder = Number(self.sortOrder) || 0
-    const otherOrder = Number(other.sortOrder) || 0
-    // 老数据没设过排序号（都是 0）时，用 ±1 拉开差距，否则怎么换都回到原位
-    const nextSelf = otherOrder === selfOrder ? (dir === 'up' ? selfOrder - 1 : selfOrder + 1) : otherOrder
-    const nextOther = otherOrder === selfOrder ? selfOrder : selfOrder
-    await withBusy(actionButton, async () => {
-      await api('PATCH', `/api/providers/${self.id}`, { sortOrder: nextSelf })
-      await api('PATCH', `/api/providers/${other.id}`, { sortOrder: nextOther })
-      state = await api('GET', '/api/state')
-      render()
-      toast(`「${self.name}」已${dir === 'up' ? '上移' : '下移'}到第 ${swapIndex + 1} 位`)
-    })
-    return
-  }
-
   if (action === 'prov-toggle-pause') {
     const providerId = actionButton.dataset.provider
     const provider = (state.providers || []).find((p) => p.id === providerId)
@@ -3929,16 +3898,6 @@ document.addEventListener('click', async (event) => {
     } catch (error) {
       toast(error.message, true)
     }
-    return
-  }
-
-  if (action === 'toggle-provider') {
-    const card = actionButton.closest('[data-provider]')
-    const key = `provider:${card?.dataset.provider}`
-    if (!key) return
-    if (collapsedPanels.has(key)) collapsedPanels.delete(key)
-    else collapsedPanels.add(key)
-    render()
     return
   }
 

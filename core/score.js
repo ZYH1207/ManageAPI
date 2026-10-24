@@ -250,31 +250,11 @@ export function longTermScores(probes, traffic = {}, { halfLifeDays = 14, now = 
  * 有效成本 = 名义价格 ÷ 质量系数。
  * 直观含义：为「一份可信输出」实际付了多少钱。
  * 降智的站名义价再低，除下来也可能更贵。
+ * 价格入参按美元/百万 token（项目声明的比较口径）；币种不影响排序，
+ * 但统一美元命名是为了和 pricing.js 的「比较一律按美元」对上。
  */
-export function effectiveCost(priceCnyPerMtok, quality) {
-  if (priceCnyPerMtok === null || priceCnyPerMtok === undefined) return null
+export function effectiveCost(priceUsdPerMtok, quality) {
+  if (priceUsdPerMtok === null || priceUsdPerMtok === undefined) return null
   const q = typeof quality === 'number' && quality > 0 ? Math.max(quality, 0.05) : 1
-  return priceCnyPerMtok / q
-}
-
-/**
- * 按供给类型取质量分。
- *
- * 免费供给去掉「计费正常」这一项：0 元的模型本来就不该收钱，计费项恒为 1，
- * 留着只会把 0.2 的权重白送给一个永远满分的项，把「掉包」和「截断」这两个
- * 真正能区分免费站的信号稀释掉。剩下的权重重新归一到 1（0.6 / 0.4）。
- *
- * 付费侧维持 score.integrity 不动，否则整条比价链路的排序都会跟着变。
- */
-export function qualityFor(score, supply = 'paid') {
-  if (!score) return null
-  if (supply !== 'free') return score.integrity ?? null
-
-  const parts = [
-    { value: score.fingerprintRate, weight: 0.6 },
-    { value: score.truncationRate, weight: 0.4 },
-  ].filter((p) => typeof p.value === 'number')
-  if (parts.length === 0) return null
-  const totalWeight = parts.reduce((sum, p) => sum + p.weight, 0)
-  return parts.reduce((sum, p) => sum + p.value * p.weight, 0) / totalWeight
+  return priceUsdPerMtok / q
 }

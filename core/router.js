@@ -53,6 +53,11 @@ export function selectCandidates({ offers, providers, credentials, scores, bench
     const cost = offerCost(offer, settings, benchmarks)
     const score = getScore(scores, offer.id)
     const quality = score?.quality ?? null
+    // 两个价格口径，分工写在定价模块里：比较一律按美元（pricing.js 的声明），
+    // 所以排序和有效成本用 priceUsd；price 字段是给前端展示的人民币值，
+    // 由前端 priceText 按显示币种换算——此前排序直接拿 CNY 值，排序结果虽
+    // 不受影响（汇率对全部候选是同一标量），但和声明的口径自相矛盾。
+    const priceUsd = cost.blendedUsdPerMtok
     const price = cost.blendedCnyPerMtok
     const ttftMs = score?.ttftMs ?? null
     // 太慢的直接排除，但仍保留在候选列表里——决策日志要能看出「为什么没选它」
@@ -85,7 +90,9 @@ export function selectCandidates({ offers, providers, credentials, scores, bench
       probeOk: isRoutable(score),
       routable: (allowUntrusted || isRoutable(score)) && !tooSlow,
       tooSlow,
+      // effective 是展示口径（人民币）；排序用 effectiveUsd，见上
       effective: effectiveCost(price, quality),
+      effectiveUsd: effectiveCost(priceUsd, quality),
       status: score?.status || 'unknown',
       statusReason: reasons.join(' · ') || null,
       ttftMs,
@@ -107,8 +114,9 @@ export function selectCandidates({ offers, providers, credentials, scores, bench
         const ib = manualIndex.has(b.offer.id) ? manualIndex.get(b.offer.id) : Number.MAX_SAFE_INTEGER
         if (ia !== ib) return ia - ib
       }
-      const ea = a.effective ?? INFINITY_COST
-      const eb = b.effective ?? INFINITY_COST
+      // 有效成本排序按美元口径；兜底的展示价（CNY）与美元只差同一汇率标量，等价
+      const ea = a.effectiveUsd ?? INFINITY_COST
+      const eb = b.effectiveUsd ?? INFINITY_COST
       if (ea !== eb) return ea - eb
       return (a.price ?? INFINITY_COST) - (b.price ?? INFINITY_COST)
     })

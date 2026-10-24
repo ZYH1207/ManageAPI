@@ -943,7 +943,8 @@ Object.assign(EN, {
   '余额概览': 'Balance overview',
   '还没有同步到余额。点右上角「立即同步」跑一轮。':
     'No balance collected yet — hit "Collect now" to run a round.',
-  '总余额（¥，美元站按汇率折算）': 'Total balance (¥; USD sites converted at the current rate)',
+  // 图例符号是动态的（显示币种），用 {sym} 占位符；旧的整串 key 已对不上当前文案
+  '总余额（{sym}，其他币种按汇率折算）': 'Total balance ({sym}; other currencies converted at the current rate)',
   '≈ ¥{cny}（按汇率折算）': '≈ ¥{cny} at the current rate',
   '余额币种，读余额时按站点接口自动判断，可手动纠正': 'Balance currency — auto-detected from the site API, override if wrong',
   '显示币种': 'Display currency',
