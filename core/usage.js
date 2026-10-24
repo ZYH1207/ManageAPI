@@ -49,8 +49,25 @@ async function flush() {
   await writeJsonAtomic(filePath(), data)
 }
 
+/**
+ * 本地日期键（YYYY-MM-DD）。「今天/本月」按用户所在时区算，与签到账本
+ * (platforms/ledger.js 的 localDayKey) 同一口径；此前用 UTC 日，东八区用户
+ * 每天早上 8 点前的用量都记在「昨天」、月底 8 小时记错月。旧数据里的 UTC
+ * 键不迁移，自然老化——只是图表边界略歪，聚合数字不变。
+ */
+export function localDayKey(date = new Date()) {
+  const d = date instanceof Date ? date : new Date(date)
+  const pad = (n) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+}
+
+/** 本地月份月初的日期键（月度 Key 限额用，同样按本地时区归属月份）。 */
+export function localMonthStart(date = new Date()) {
+  return `${localDayKey(date).slice(0, 7)}-01`
+}
+
 function todayKey(iso) {
-  return String(iso || new Date().toISOString()).slice(0, 10)
+  return localDayKey(iso ? new Date(iso) : new Date())
 }
 
 /**
@@ -86,13 +103,12 @@ export async function recordUsage(entry) {
   return writeChain
 }
 
-/** 最近 n 天的日期键，从旧到新。 */
+/** 最近 n 天的日期键（本地日），从旧到新。 */
 function recentDays(count) {
   const days = []
   const now = new Date()
   for (let i = count - 1; i >= 0; i -= 1) {
-    const d = new Date(now.getTime() - i * 86400000)
-    days.push(d.toISOString().slice(0, 10))
+    days.push(localDayKey(new Date(now.getTime() - i * 86400000)))
   }
   return days
 }

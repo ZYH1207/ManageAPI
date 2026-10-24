@@ -25,9 +25,12 @@ const SOURCES = [
     pick: (json) => (json && json.result === 'success' ? json.rates : null),
   },
   {
-    name: 'frankfurter',
-    url: 'https://api.frankfurter.app/latest?from=USD&to=CNY,EUR,JPY,GBP,HKD',
-    pick: (json) => (json && json.rates ? json.rates : null),
+    // 备用源必须真的报 CNY。曾用 frankfurter，但它基于 ECB 参考汇率、
+    // ECB 不发布 CNY，这个兜底从上线起就没成功过。换成 exchangerate-api
+    // 的另一个免费端点（与主源同家、独立入口），实测包含全部白名单币种。
+    name: 'exchangerate-api',
+    url: 'https://open.exchangerate-api.com/v6/latest/USD',
+    pick: (json) => (json && json.result === 'success' ? json.rates : null),
   },
 ]
 

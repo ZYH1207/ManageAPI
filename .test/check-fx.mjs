@@ -89,6 +89,39 @@ try {
   check('CNY→USD', Math.round(fx.convert(100, 'CNY', 'USD', rates) * 100) / 100 === 13.89)
   check('USD→EUR', fx.convert(10, 'USD', 'EUR', rates) === 9)
   check('缺失币种返回 null', fx.convert(10, 'USD', 'JPY', rates) === null)
+
+  console.log('10) 备用源兜底（换源后必须真的能用）')
+  // 背景：frankfurter 基于 ECB 汇率、不发布 CNY，备用源上线起就没成功过。
+  // 这里钉死两条：主源挂时备用源能接住；备用源不报 CNY 就必须被跳过。
+  const byUrl = (map) => async (url) => {
+    for (const [needle, handler] of Object.entries(map)) {
+      if (url.includes(needle)) {
+        if (typeof handler === 'function') return handler()
+        return handler
+      }
+    }
+    throw new Error(`unexpected url: ${url}`)
+  }
+  const failFirst = byUrl({
+    'open.er-api.com': () => { throw new Error('primary down') },
+    'open.exchangerate-api.com': {
+      ok: true,
+      json: async () => ({ result: 'success', rates: { CNY: 7.03, EUR: 0.9 } }),
+    },
+  })
+  const viaBackup = await fx.fetchRates({ fetchImpl: failFirst })
+  check('主源挂了备用源接住', viaBackup?.rates?.CNY === 7.03)
+  check('备用源名被记录', viaBackup?.source === 'exchangerate-api')
+
+  const noCny = byUrl({
+    'open.er-api.com': () => { throw new Error('primary down') },
+    'open.exchangerate-api.com': {
+      ok: true,
+      json: async () => ({ result: 'success', rates: { EUR: 0.9, JPY: 150 } }),
+    },
+  })
+  const rejected = await fx.fetchRates({ fetchImpl: noCny })
+  check('备用源不报 CNY 就整体作废（不拿 EUR 冒充）', rejected === null)
 } finally {
   await rm(home, { recursive: true, force: true })
 }

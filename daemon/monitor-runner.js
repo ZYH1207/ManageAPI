@@ -30,16 +30,22 @@ export async function collectProviderSnapshots({ providerId = null, logger = con
     const snap = { providerId: provider.id, at }
     const errors = []
 
-    const credential = db.credentials.find((c) => c.providerId === provider.id)
-    const apiKey = credential ? await inv.revealSecret(credential.id) : ''
+    // 余额要试该站**所有** Key（与 sync 同口径）：只试第一把的话，
+    // 旧 Key 过期后新加的 Key 永远轮不上，余额就一直读不到
+    const apiKeys = []
+    for (const credential of db.credentials.filter((c) => c.providerId === provider.id)) {
+      const secret = await inv.revealSecret(credential.id)
+      if (secret) apiKeys.push(secret)
+    }
+    const apiKey = apiKeys[0] || ''
     const adminToken = await inv.revealAdminToken(provider.id)
 
     // ---------------------------------------------------------------- 余额
     if (apiKey || adminToken) {
       try {
-        snap.balance = await providers.tryBalance({
+        snap.balance = await providers.tryBalanceWithKeys({
           baseUrl: provider.baseUrl,
-          apiKey,
+          apiKeys,
           adminToken,
           timeoutMs: 10000,
         })

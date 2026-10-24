@@ -19,7 +19,7 @@ import { selectCandidates, listPublicModels, explain } from '../core/router.js'
 import { splitOffers, resolvePool, FREE_PREFIX, FREE_BASE_PATH } from '../core/free.js'
 import { rankFreePool } from '../core/rank-free.js'
 import * as platforms from '../core/platforms/index.js'
-import { recordUsage, usageSummary, tokensUsedByKey, resetUsage, readUsage } from '../core/usage.js'
+import { recordUsage, usageSummary, tokensUsedByKey, resetUsage, readUsage, localMonthStart } from '../core/usage.js'
 import { buildMonitorView, markAlertsRead, markAnnouncementsRead, applySnapshot } from '../core/monitor.js'
 import { collectProviderSnapshots } from './monitor-runner.js'
 import { runProbes } from './probe-runner.js'
@@ -39,6 +39,9 @@ const MIME = {
 }
 
 const MAX_BODY = 1024 * 1024
+// 网关的 chat 请求体放宽：长上下文（几十万 token 历史）+ 内嵌图片轻松超 1MB，
+// 管理接口的 1MB 上限不该拦住正常的对话请求
+const MAX_GATEWAY_BODY = 64 * 1024 * 1024
 
 /** 流式转发的空闲超时：连续这么久没收到上游任何字节，才判定卡死 */
 const STREAM_IDLE_MS = 120000
@@ -76,12 +79,12 @@ function json(res, status, payload) {
   res.end(body)
 }
 
-async function readBody(req) {
+async function readBody(req, { maxBytes = MAX_BODY } = {}) {
   const chunks = []
   let size = 0
   for await (const chunk of req) {
     size += chunk.length
-    if (size > MAX_BODY) {
+    if (size > maxBytes) {
       // 超限后要先把剩下的数据读掉，否则连接会被直接掐断，客户端看不到 413
       req.resume()
       throw new HttpError(413, '请求体过大')
@@ -1095,12 +1098,17 @@ route('POST', /^\/api\/providers\/([\w-]+)\/balance$/, async (ctx) => {
   const db = await store.readDb()
   const provider = db.providers.find((p) => p.id === ctx.params[0])
   if (!provider) throw new HttpError(404, '站点不存在')
-  const credential = db.credentials.find((c) => c.providerId === provider.id)
-  if (!credential) throw new HttpError(400, '该站点还没有 Key')
+  const credentials = db.credentials.filter((c) => c.providerId === provider.id)
+  if (credentials.length === 0) throw new HttpError(400, '该站点还没有 Key')
 
-  const apiKey = await inv.revealSecret(credential.id)
+  // 所有 Key 都试（与 sync 同口径）：旧 Key 过期、新 Key 可用时也能读到余额
+  const apiKeys = (await Promise.all(credentials.map((c) => inv.revealSecret(c.id)))).filter(Boolean)
   const adminToken = await inv.revealAdminToken(provider.id)
-  const result = await providers.tryBalance({ baseUrl: provider.baseUrl, apiKey, adminToken })
+  const result = await providers.tryBalanceWithKeys({
+    baseUrl: provider.baseUrl,
+    apiKeys,
+    adminToken,
+  })
   // 令牌失效会挂在 reason 里（HTTP 401/403）——顺手记下来，卡片上标红
   if (adminToken) {
     const bad = /HTTP (401|403)/.test(String(result.reason || ''))
@@ -1688,9 +1696,11 @@ function flushRouting() {
     clearTimeout(routingTimer)
     routingTimer = null
   }
-  if (!routingBuffer.length) return
+  if (!routingBuffer.length) return Promise.resolve()
   const batch = routingBuffer.splice(0, routingBuffer.length)
-  inv.recordRoutingBatch(batch).catch((error) => console.error('[网关] 决策日志写盘失败：', error))
+  return inv.recordRoutingBatch(batch).catch((error) => {
+    console.error('[网关] 决策日志写盘失败：', error)
+  })
 }
 
 function queueRouting(entry) {
@@ -1722,6 +1732,25 @@ async function flushTraffic() {
   const snapshot = [...trafficBuffer.entries()]
   trafficBuffer.clear()
   await inv.addTraffic(snapshot)
+}
+
+/**
+ * 退出前把攒批的决策日志与流量计数落盘（index.js 的 shutdown 调用）。
+ * 进程退出不会执行 setTimeout 攒的刷新，不冲掉的话最后 2-5 秒的数据就丢了——
+ * 流量计数直接参与可用率评分，丢一批等于让站点的成败样本凭空消失。
+ * 幂等：buffer 已空就是 no-op，退出路径里可以放心多次调用。
+ */
+export async function flushGatewayBuffers() {
+  if (trafficTimer) {
+    clearTimeout(trafficTimer)
+    trafficTimer = null
+  }
+  try {
+    await flushRouting()
+    await flushTraffic()
+  } catch (error) {
+    console.error('[网关] 退出前落盘失败：', error)
+  }
 }
 
 function openaiError(res, status, message, type = 'invalid_request_error') {
@@ -1935,7 +1964,7 @@ async function forwardToUpstream({ candidate, body, res, attemptIndex, pool = 'p
 }
 
 async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = false) {
-  const body = await readBody(req)
+  const body = await readBody(req, { maxBytes: MAX_GATEWAY_BODY })
   // 客户端关闭连接时立刻取消上游请求：否则上游会继续生成，白烧额度还占着连接。
   // res 随请求销毁，监听器跟着回收，不需要手动摘。
   const clientAbort = new AbortController()
@@ -1950,9 +1979,10 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
   const model = parsed.model
   const isFree = isFreeEntry || parsed.isFree
 
-  // 月度 token 上限（可选，Key 上配置）
+  // 月度 token 上限（可选，Key 上配置）。「本月」按用户本地时区归属——
+  // 用 UTC 月的话，东八区月底最后 8 小时的用量会算进下个月的额度
   if (keyRecord?.monthlyTokenLimit) {
-    const monthStart = `${new Date().toISOString().slice(0, 7)}-01`
+    const monthStart = localMonthStart()
     const used = await tokensUsedByKey(keyRecord.id, monthStart)
     if (used >= keyRecord.monthlyTokenLimit) {
       return openaiError(

@@ -197,6 +197,25 @@ export async function tryBalance({ baseUrl, apiKey, adminToken, timeoutMs = 1000
 }
 
 /**
+ * 多把 Key 依次试余额，任何一把成功即返回；全失败时返回最后一次的结果。
+ * 背景：用户常常在旧 Key 过期后又加新的，「只试第一把」会让余额永远失败，
+ * 而模型同步（sync 路由）早就改成所有 Key 都试了，两边口径应当一致。
+ * 管理令牌失效时换 Key 也救不了，直接短路返回。
+ */
+export async function tryBalanceWithKeys({ baseUrl, apiKeys = [], adminToken, timeoutMs = 10000 }) {
+  const keys = apiKeys.filter(Boolean)
+  if (keys.length === 0) return tryBalance({ baseUrl, apiKey: '', adminToken, timeoutMs })
+  let last = null
+  for (const apiKey of keys) {
+    const result = await tryBalance({ baseUrl, apiKey, adminToken, timeoutMs })
+    if (result.ok) return result
+    last = result
+    if (adminToken && String(result.reason || '').includes('管理令牌已失效')) return result
+  }
+  return last
+}
+
+/**
  * 拉取「可用渠道」列表（Sub2API 的 /api/v1/channels/available）。
  *
  * 结构是三层嵌套，分组藏在第二层：

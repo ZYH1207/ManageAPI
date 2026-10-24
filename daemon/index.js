@@ -3,7 +3,7 @@
  * daemon 启动入口。
  * 用法：node daemon/index.js [--port 4319] [--open]
  */
-import { createAppServer } from './server.js'
+import { createAppServer, flushGatewayBuffers } from './server.js'
 import { dataDir } from '../core/store.js'
 import { ensureGatewayKeys } from '../core/inventory.js'
 import { acquireInstanceLock } from './instance-lock.js'
@@ -110,9 +110,16 @@ function shutdown(signal) {
   closing = true
   console.log(`\n  收到 ${signal}，正在停止…`)
   stopBackups()
-  server.close(() => process.exit(0))
+  // 攒批的决策日志/流量计数先冲一次；close 等待期间和强退前再各冲一次（幂等），
+  // 不然最后 2-5 秒的成败样本凭空消失，参与评分的可用率会失真
+  flushGatewayBuffers()
+  server.close(() => {
+    flushGatewayBuffers().finally(() => process.exit(0))
+  })
   // 有长连接（比如正在流式返回）时 close 会等很久，5 秒后强退
-  setTimeout(() => process.exit(0), 5000).unref()
+  setTimeout(() => {
+    flushGatewayBuffers().finally(() => process.exit(0))
+  }, 5000).unref()
 }
 
 startProbeScheduler({ runProbes, collectMonitor: collectProviderSnapshots, logger: console })

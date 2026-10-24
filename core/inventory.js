@@ -153,14 +153,36 @@ export async function setTokenStatus(id, { ok, message = null, status = null } =
   })
 }
 
+/** 删掉按 offerId 记的孤儿数据：流量计数与手动排序。routing 是带名字快照的历史日志，刻意保留。 */
+function pruneOfferRefs(db, deadOfferIds) {
+  if (!deadOfferIds.size) return
+  if (db.traffic && typeof db.traffic === 'object') {
+    for (const offerId of Object.keys(db.traffic)) {
+      if (deadOfferIds.has(offerId)) delete db.traffic[offerId]
+    }
+  }
+  if (db.manualOrder && typeof db.manualOrder === 'object') {
+    for (const key of Object.keys(db.manualOrder)) {
+      const order = Array.isArray(db.manualOrder[key]) ? db.manualOrder[key] : []
+      const left = order.filter((oid) => !deadOfferIds.has(String(oid)))
+      if (left.length === 0) delete db.manualOrder[key]
+      else if (left.length !== order.length) db.manualOrder[key] = left
+    }
+  }
+}
+
 export async function deleteProvider(id) {
   return mutate((db) => {
     const before = db.providers.length
     db.providers = db.providers.filter((p) => p.id !== id)
     if (db.providers.length === before) throw new Error(`站点不存在：${id}`)
+    const deadOfferIds = new Set(
+      db.offers.filter((o) => o.providerId === id).map((o) => o.id),
+    )
     db.credentials = db.credentials.filter((c) => c.providerId !== id)
     db.offers = db.offers.filter((o) => o.providerId !== id)
     db.probes = db.probes.filter((r) => r.providerId !== id)
+    pruneOfferRefs(db, deadOfferIds)
     return { deleted: id }
   })
 }
@@ -374,6 +396,7 @@ export async function deleteOffer(id) {
     const before = db.offers.length
     db.offers = db.offers.filter((o) => o.id !== id)
     if (db.offers.length === before) throw new Error(`模型记录不存在：${id}`)
+    pruneOfferRefs(db, new Set([id]))
     return { deleted: id }
   })
 }

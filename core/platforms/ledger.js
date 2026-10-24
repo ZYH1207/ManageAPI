@@ -6,6 +6,8 @@
  * 之后按账本推算剩余天数就会偏乐观。
  */
 import { newId, nowIso, readFreeDb, mutateFree } from './store.js'
+// quota.js 零依赖、不回头 import 本目录，不会形成循环；周期重置逻辑与中转站侧共用一份
+import { resetIfDue } from '../quota.js'
 
 const KINDS = new Set(['consume', 'checkin', 'refresh', 'manual'])
 
@@ -86,10 +88,14 @@ export async function consume(accountId, { amount, unit, note = '' } = {}) {
     })
 
     if (account.quota) {
-      account.quota.used = (Number(account.quota.used) || 0) + value
+      // 跨过重置点先归零（与中转站侧 consumeFreeQuota 同口径）：used 只增不减的话，
+      // 手动平台没有连接器来刷新，跨周期后剩余额度与 daysLeft 会一直偏悲观
+      const quota = resetIfDue(account.quota)
+      quota.used = (Number(quota.used) || 0) + value
+      account.quota = quota
       // 手动连接器没有远端可查，本地扣到超限就是真的没了，卡片该立刻变红
-      const limit = Number(account.quota.limit)
-      if (Number.isFinite(limit) && limit > 0 && account.quota.used >= limit) {
+      const limit = Number(quota.limit)
+      if (Number.isFinite(limit) && limit > 0 && quota.used >= limit) {
         account.status = 'exhausted'
       }
     }
@@ -139,9 +145,12 @@ export async function daysLeft(accountId) {
   const account = db.accounts.find((a) => a.id === accountId)
   if (!account?.quota) return null
 
-  const limit = Number(account.quota.limit)
+  // 读的时候也按重置点归零（副本，不落盘）：夜里没消耗、第二天直接看卡片，
+  // remaining 不该还背着昨天的 used
+  const quota = resetIfDue(account.quota)
+  const limit = Number(quota.limit)
   if (!Number.isFinite(limit) || limit <= 0) return null
-  const remaining = Math.max(0, limit - (Number(account.quota.used) || 0))
+  const remaining = Math.max(0, limit - (Number(quota.used) || 0))
 
   const since = Date.now() - RATE_WINDOW_DAYS * 86400000
   let spent = 0
