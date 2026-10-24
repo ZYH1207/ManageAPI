@@ -62,18 +62,17 @@ function priceText(cny) {
 }
 
 /**
- * 倍率数字的语义色 class（参考 upstream-ops 的 ratioTone，全站三处共用：
- * 监控变动流、站点卡分组胶囊、分组倍率弹窗）：
- * ≤0.8 折扣绿、0.8~1.2 正常灰、>1.2 加价橙、>2 高溢价红。
- * 只给「倍率数字」用——分组胶囊的底色是身份色（认分组用），与价格无关。
+ * 倍率数字的颜色档位（全站三处共用：监控变动流、站点卡分组胶囊、分组倍率弹窗）。
+ * 常态（含折扣）与分组文字同色、仅加粗——「颜色只用来表达状态，不用来分区」：
+ * 折扣是常态不是警报，标绿会和分组身份色抢语义；只有加价才是需要提醒的异常。
+ * 「哪档便宜」的判断交给数字本身和比价页的「最便宜」徽章。
  */
 function ratioToneClass(rate) {
   const n = Number(rate)
-  if (!Number.isFinite(n)) return 'flat'
-  if (n <= 0.8) return 'good'
+  if (!Number.isFinite(n)) return ''
   if (n > 2) return 'bad'
   if (n > 1.2) return 'warn'
-  return 'flat'
+  return ''
 }
 
 let toastTimer = null
@@ -895,7 +894,7 @@ function providersHtml({ withForm = true, panel = '', actions = '' } = {}) {
         </div>
 
         <div class="prov-groups">
-          <span class="k" title="${t('胶囊底色只标识分组（同名同色），与价格无关；倍率数字：≤0.8 折扣、>1.2 加价、>2 高溢价')}">${groupNames.length ? `${groupNames.length} 个分组` : '还没有分组'}</span>
+          <span class="k" title="${t('胶囊底色只标识分组（同名同色），与价格无关；倍率数字仅加价时示警：>1.2 橙、>2 红，常态与分组文字同色')}">${groupNames.length ? `${groupNames.length} 个分组` : '还没有分组'}</span>
           <span class="prov-group-chips">
             ${groupNames.slice(0, 6).map((g) => {
               const st = groupStats.get(g) || {}
@@ -2776,7 +2775,7 @@ function renderMonitor() {
         <h3>最近倍率变动</h3>
         <span class="hint">${t('{n} 条', { n: (data.changes || []).length })}</span>
       </div>
-      <div class="legend-note">${t('胶囊底色只标识分组（同名同色），与价格无关；倍率数字：≤0.8 折扣、>1.2 加价、>2 高溢价')}</div>
+      <div class="legend-note">${t('胶囊底色只标识分组（同名同色），与价格无关；倍率数字仅加价时示警：>1.2 橙、>2 红，常态与分组文字同色')}</div>
       ${changeRows || '<div class="empty small"><p>还没有变动。第一次同步只记基线，之后才开始比较。</p></div>'}
     </div>`
 

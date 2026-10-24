@@ -930,13 +930,11 @@ a.icon-btn:hover { text-decoration: none; }
   white-space: nowrap; max-width: 160px; overflow: hidden; text-overflow: ellipsis;
 }
 .gtag[class*='gchip-'] { background: var(--g-bg); color: var(--g-fg); border-color: var(--g-ring); }
-/* 倍率数字的语义色（参考 upstream-ops 的 ratioTone）：
-   ≤0.8 折扣绿、0.8~1.2 正常中性、>1.2 加价橙、>2 高溢价红 */
+/* 倍率数字：常态与所在文本同色、仅加粗；只有加价档位才示警
+   （>1.2 橙、>2 红）——「颜色只用来表达状态，不用来分区」，折扣是常态不上色 */
 .ratio-tone { font-weight: 600; }
-.ratio-tone.good { color: var(--success); }
 .ratio-tone.warn { color: var(--warn); }
 .ratio-tone.bad { color: var(--danger); }
-.ratio-tone.flat { color: var(--muted); }
 /* 胶囊里的「混合」小字：不是价位状态，用弱化样式与倍率数字区分 */
 .chip-note { font-size: 10px; opacity: 0.75; font-weight: 400; }
 /* 配色图例：说破「底色是身份、数字是折扣」，防把身份色误读成价格 */
