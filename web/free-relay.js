@@ -41,7 +41,7 @@ export const VENDOR_LABEL = {
 /** 国产厂商前缀集合：胶囊统一蓝色 */
 const CN_PREFIXES = new Set([
   'deepseek', 'glm', 'chatglm', 'qwen', 'kimi', 'moonshot', 'doubao',
-  'hunyuan', 'ernie', 'minimax', 'abab', 'spark', 'yi',
+  'hunyuan', 'ernie', 'minimax', 'abab', 'spark', 'yi', 'k3',
 ])
 
 /** 海外主流厂商的专属色；其余海外厂牌与未识别的一律中性灰，不猜 */
@@ -59,12 +59,21 @@ const OVERSEAS_CHIP = {
  * 模型名 → 厂商胶囊 class：国产=蓝（统一）、海外主流各家一色、
  * 未识别=空（中性灰）。免费分组的 `.vchip-free` 不在这里判——
  * 免费与否看价格（倍率 0 / 实际价 0），由调用方按数据判定。
+ *
+ * 两步匹配：先按分隔符切出的第一段精确比对（o3、k3 这类短名）；
+ * 第一段带版本号时（qwen3.8、glm5、gpt5），取纯字母前缀再比对一次。
+ * 只在含数字的段上做前缀比对，避免 yin→yi 这类纯字母误伤。
  */
 export function vendorChipClass(modelName) {
-  const prefix = String(modelName || '').toLowerCase().split(/[-_./:]/)[0]
-  if (!prefix) return ''
-  if (CN_PREFIXES.has(prefix)) return 'vchip-cn'
-  return OVERSEAS_CHIP[prefix] || ''
+  const first = String(modelName || '').toLowerCase().split(/[-_./:]/)[0]
+  if (!first) return ''
+  if (CN_PREFIXES.has(first)) return 'vchip-cn'
+  if (OVERSEAS_CHIP[first]) return OVERSEAS_CHIP[first]
+  if (!/[0-9]/.test(first)) return ''
+  const stem = first.match(/^[a-z]+/)?.[0]
+  if (!stem) return ''
+  if (CN_PREFIXES.has(stem)) return 'vchip-cn'
+  return OVERSEAS_CHIP[stem] || ''
 }
 
 export function vendorOf(name) {
