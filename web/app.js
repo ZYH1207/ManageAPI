@@ -870,7 +870,7 @@ function providersHtml({ withForm = true, panel = '', actions = '' } = {}) {
             ${kindText ? `<span class="badge">${esc(kindText)}</span>` : ''}
             ${
               freeNames.length
-                ? `<span class="badge info prov-free" title="${esc(t('免费模型：{list}', { list: freeNames.join('、') }))}">${icon('gift')}${t('免费 {n}', { n: freeNames.length })}</span>`
+                ? `<span class="badge prov-free" title="${esc(t('免费模型：{list}', { list: freeNames.join('、') }))}">${icon('gift')}${t('免费 {n}', { n: freeNames.length })}</span>`
                 : ''
             }
             ${p.paused ? `<span class="badge warn">${t('已暂停')}</span>` : ''}
@@ -918,7 +918,7 @@ function providersHtml({ withForm = true, panel = '', actions = '' } = {}) {
         </div>
 
         <div class="prov-groups">
-          <span class="k" title="${t('胶囊底色标识模型厂商：国产=蓝、免费分组=蓝紫（与「免费 N」标记一致）；倍率数字仅加价时示警：>1.2 橙、>2 红')}">${groupNames.length ? `${groupNames.length} 个分组` : '还没有分组'}</span>
+          <span class="k" title="${t('胶囊底色按厂商品牌色：国产=蓝、OpenAI=绿、Claude=橙、Gemini=黄、免费=紫（与「免费 N」标记一致）；倍率数字仅加价时示警：>1.2 橙、>2 红')}">${groupNames.length ? `${groupNames.length} 个分组` : '还没有分组'}</span>
           <span class="prov-group-chips">
             ${groupNames.slice(0, 6).map((g) => {
               const st = groupStats.get(g) || {}
@@ -2774,7 +2774,7 @@ function renderMonitor() {
         <h3>最近倍率变动</h3>
         <span class="hint">${t('{n} 条', { n: (data.changes || []).length })}</span>
       </div>
-      <div class="legend-note">${t('胶囊底色标识模型厂商：国产=蓝、免费分组=蓝紫（与「免费 N」标记一致）；倍率数字仅加价时示警：>1.2 橙、>2 红')}</div>
+      <div class="legend-note">${t('胶囊底色按厂商品牌色：国产=蓝、OpenAI=绿、Claude=橙、Gemini=黄、免费=紫（与「免费 N」标记一致）；倍率数字仅加价时示警：>1.2 橙、>2 红')}</div>
       ${changeRows || '<div class="empty small"><p>还没有变动。第一次同步只记基线，之后才开始比较。</p></div>'}
     </div>`
 

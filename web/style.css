@@ -897,21 +897,31 @@ a.icon-btn:hover { text-decoration: none; }
 }
 .prov-group-chips .group-chip:hover { border-color: var(--accent); }
 
-/* ------------------------------------------- 厂商配色（分组胶囊 / 分组徽章）
-   胶囊底色标识模型厂商：国产统一蓝、海外主流各家一色、其余中性不猜；
-   免费分组用 info 蓝——与站点卡「免费 N」标记同款，跨页面认「免费」。
-   判定在 free-relay.js（vendorChipClass 单模型 / app.js 的 groupChipClass 聚合）。
-   呈现仍是低饱和三件套（参考 upstream-ops）：底 + 同色文字 + 同色细描边，
-   不抢主色。色相避开语义色：红(danger)、橙(warn)、绿(success)、青(主色 teal)。 */
-.vchip-free { --g-bg: var(--info-soft); --g-fg: var(--info); --g-ring: var(--info-border); }
-.vchip-cn { --g-bg: hsl(207 60% 93%); --g-fg: hsl(207 55% 32%); --g-ring: hsl(207 45% 83%); }
-.vchip-openai { --g-bg: hsl(262 55% 93%); --g-fg: hsl(262 40% 38%); --g-ring: hsl(262 35% 84%); }
-.vchip-anthropic { --g-bg: hsl(345 60% 94%); --g-fg: hsl(345 42% 36%); --g-ring: hsl(345 38% 85%); }
-.vchip-google { --g-bg: hsl(55 75% 91%); --g-fg: hsl(55 55% 27%); --g-ring: hsl(55 55% 81%); }
-[data-theme='dark'] .vchip-cn { --g-bg: hsl(207 30% 17%); --g-fg: hsl(207 50% 72%); --g-ring: hsl(207 30% 28%); }
-[data-theme='dark'] .vchip-openai { --g-bg: hsl(262 30% 18%); --g-fg: hsl(262 40% 74%); --g-ring: hsl(262 30% 30%); }
-[data-theme='dark'] .vchip-anthropic { --g-bg: hsl(345 30% 18%); --g-fg: hsl(345 55% 74%); --g-ring: hsl(345 30% 30%); }
-[data-theme='dark'] .vchip-google { --g-bg: hsl(55 35% 16%); --g-fg: hsl(55 45% 68%); --g-ring: hsl(55 30% 27%); }
+/* ------------------------------------------- 厂商品牌配色（分组胶囊 / 分组徽章）
+   胶囊底色按厂商品牌色：国产统一 DeepSeek 蓝、OpenAI 用 ChatGPT 绿、
+   Claude 用其赭橙、Gemini 用 Google 黄；免费=紫，站点卡「免费 N」徽章
+   同款（跨页面认「免费」）。判定在 free-relay.js（vendorChipClass 单模型 /
+   app.js 的 groupChipClass 聚合）。呈现仍是低饱和三件套（参考 upstream-ops）：
+   底 + 同色文字 + 同色细描边，不抢主色。 */
+:root {
+  --vendor-free: #7c4de0;
+  --vendor-free-soft: hsl(258 70% 95%);
+  --vendor-free-border: hsl(258 55% 87%);
+}
+[data-theme='dark'] {
+  --vendor-free: #b39df5;
+  --vendor-free-soft: hsl(258 32% 19%);
+  --vendor-free-border: hsl(258 30% 31%);
+}
+.vchip-free { --g-bg: var(--vendor-free-soft); --g-fg: var(--vendor-free); --g-ring: var(--vendor-free-border); }
+.vchip-cn { --g-bg: hsl(226 70% 93%); --g-fg: hsl(226 70% 40%); --g-ring: hsl(226 60% 84%); }
+.vchip-openai { --g-bg: hsl(166 55% 92%); --g-fg: hsl(166 65% 26%); --g-ring: hsl(166 45% 82%); }
+.vchip-anthropic { --g-bg: hsl(18 70% 94%); --g-fg: hsl(18 65% 33%); --g-ring: hsl(18 55% 86%); }
+.vchip-google { --g-bg: hsl(43 85% 91%); --g-fg: hsl(43 80% 27%); --g-ring: hsl(43 75% 80%); }
+[data-theme='dark'] .vchip-cn { --g-bg: hsl(226 35% 18%); --g-fg: hsl(226 75% 76%); --g-ring: hsl(226 35% 30%); }
+[data-theme='dark'] .vchip-openai { --g-bg: hsl(166 30% 14%); --g-fg: hsl(166 55% 62%); --g-ring: hsl(166 30% 25%); }
+[data-theme='dark'] .vchip-anthropic { --g-bg: hsl(18 32% 16%); --g-fg: hsl(18 55% 72%); --g-ring: hsl(18 30% 27%); }
+[data-theme='dark'] .vchip-google { --g-bg: hsl(43 40% 14%); --g-fg: hsl(43 75% 70%); --g-ring: hsl(43 35% 25%); }
 /* 消费规则：带厂商色的分组胶囊 / 徽章覆盖默认配色；
    没带（未指定、混合厂商、未识别、「还有 N 个」）保持原中性样式 */
 .group-chip[class*='vchip-'] { background: var(--g-bg); color: var(--g-fg); border-color: var(--g-ring); }
@@ -1124,9 +1134,12 @@ button.with-icon { display: inline-flex; align-items: center; gap: 6px; white-sp
 .ig-vendor { flex: 1 1 auto; min-width: 0; }
 .ig-child { padding-left: 26px; }
 .ig-child .mono { color: var(--muted); }
-/* 「免费 N」徽章：蓝色信息色，图标和文字基线对齐 */
+/* 「免费 N」徽章：免费紫（与免费分组的 .vchip-free 同款），图标和文字基线对齐 */
 .badge.info { background: var(--info-soft); color: var(--info); }
-.badge.prov-free { display: inline-flex; align-items: center; gap: 4px; }
+.badge.prov-free {
+  display: inline-flex; align-items: center; gap: 4px;
+  background: var(--vendor-free-soft); color: var(--vendor-free);
+}
 .badge.prov-free svg { width: 11px; height: 11px; }
 .badge.warn { background: var(--warn-soft); color: var(--warn); }
 .badge.danger { background: var(--danger-soft); color: var(--danger); }

@@ -1028,9 +1028,9 @@ Object.assign(EN, {
   '{n} 天前': '{n} d ago',
   '{n} 天': '{n}d',
   '{n} 条': '{n} entries',
-  // 配色图例：胶囊底色标识厂商（国产蓝 / 免费蓝紫），倍率数字只在加价时示警
-  '胶囊底色标识模型厂商：国产=蓝、免费分组=蓝紫（与「免费 N」标记一致）；倍率数字仅加价时示警：>1.2 橙、>2 红':
-    'Chip color identifies the vendor: Chinese vendors = blue, free groups = indigo (matching the "Free N" badge); ratio digits only warn on markups: >1.2 orange, >2 red',
+  // 配色图例：胶囊底色按厂商品牌色，免费=紫（与「免费 N」标记一致）
+  '胶囊底色按厂商品牌色：国产=蓝、OpenAI=绿、Claude=橙、Gemini=黄、免费=紫（与「免费 N」标记一致）；倍率数字仅加价时示警：>1.2 橙、>2 红':
+    'Chip color follows vendor brand colors: Chinese vendors = blue, OpenAI = green, Claude = orange, Gemini = yellow, free = purple (matching the "Free N" badge); ratio digits only warn on markups: >1.2 orange, >2 red',
   '还有 {n} 个': '{n} more',
   '{n} 个模型': '{n} models',
   '正常': 'OK',
