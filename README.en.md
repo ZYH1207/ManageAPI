@@ -355,9 +355,18 @@ Everything lives in `~/.manage-api/`:
 | `db.json` | Sites, credentials (encrypted), supplies, prices, probe records |
 | `master.key` | AES-256-GCM key, generated on first run, mode 0600 |
 | `benchmark.json` | Benchmark table, hand-editable |
+| `free.json` | Free-pool platform accounts and credit ledger |
 | `usage.json` | Usage aggregates (grows over time) |
 
 Override the directory with `MANAGE_API_HOME=/path/to/data node daemon/index.js`.
+
+**Automatic backups**: on startup and every 24 hours, `db.json`, `master.key`, `benchmark.json`, `free.json` and `usage.json` are copied into a timestamped folder under `manage-api-backups/` next to the data directory (by default `C:\Users\<you>\manage-api-backups\`). The last 30 copies are kept. Use `MANAGE_API_BACKUP_DIR` to change the location and `MANAGE_API_BACKUP_KEEP` to change the count.
+
+**Restore**: stop the daemon, then copy `db.json` and `master.key` (plus any other needed files) back into `~/.manage-api/`. They must be restored together; a db without its `master.key` cannot decrypt any saved key.
+
+**Single instance**: the daemon writes `daemon.lock` (PID + port) in the data directory. A second instance exits immediately instead of sharing the same data. A lock left by a crash is cleaned up on the next start when its PID is no longer alive; if you are sure no instance is running, you can delete the file manually.
+
+The backup contains `master.key`, so treat it as sensitive: do not commit it or put it on a public drive.
 
 **Threat model**: encryption protects against "leaked backup, file shared by mistake, accidentally committed". It does not protect against "this machine is already compromised", because the key sits in the same directory. Stronger protection needs a master password derived at startup — not implemented.
 
@@ -371,7 +380,7 @@ The daemon binds `127.0.0.1` only, has no authentication, and must not be expose
 - **Only `/v1/chat/completions` and `/v1/models` are proxied.** Embeddings, images and other endpoints are not.
 - **Usage depends on the upstream returning `usage`.** A few sites do not, even when asked; those requests record 0 tokens but still count as requests.
 - **Price units are per-million and per-thousand tokens only.** Per-request billing is not supported.
-- **One instance at a time.** Multiple processes share one data directory and overwrite each other.
+- **One instance at a time.** The daemon refuses a second instance with `daemon.lock`; do not bypass the lock by starting two processes.
 
 ---
 
@@ -380,6 +389,7 @@ The daemon binds `127.0.0.1` only, has no authentication, and must not be expose
 ```
 core/              Host-agnostic core (no framework dependencies)
   store.js           Data directory, atomic JSON writes, credential crypto
+  backup.js          Daily automatic backup (db + master.key + side data)
   inventory.js       Sites / credentials / supplies CRUD, group ratios, gateway keys, routing log
   pricing.js         Cost normalisation, sorting, headline generation
   benchmark.js       Benchmark table
@@ -400,6 +410,7 @@ core/              Host-agnostic core (no framework dependencies)
 
 daemon/            Local HTTP server + gateway (same port)
   index.js           Startup, port selection, open browser
+  instance-lock.js   Single-instance lock: PID + port, stale locks cleaned up
   server.js          HTTP routes, gateway forwarding, SSE splitting
   probe-runner.js    Probe executor (manual and scheduled)
   monitor-runner.js  Collector: balance / group ratios / notices

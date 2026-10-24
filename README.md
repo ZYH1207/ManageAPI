@@ -391,9 +391,18 @@ ZCode 的额度分两种口径，卡片会分别写清楚：**本周期**（每�
 | `db.json` | 站点、凭据（密文）、模型供给、价格、探针记录、监控历史（余额点 / 倍率变动 / 公告 / 告警） |
 | `master.key` | AES-256-GCM 密钥，首次启动自动生成，权限 0600 |
 | `benchmark.json` | 基准价表，可手工编辑 |
+| `free.json` | 免费池平台账号与积分账本 |
 | `usage.json` | 用量统计（按天聚合，会持续增长） |
 
 可以用环境变量换目录：`MANAGE_API_HOME=/path/to/data node daemon/index.js`
+
+**自动备份**：启动时和之后每 24 小时，会把 `db.json`、`master.key`、`benchmark.json`、`free.json`、`usage.json` 复制到数据目录同级的 `manage-api-backups/`（默认 `C:\Users\<你>\manage-api-backups\`），每份一个时间戳目录，默认保留最近 30 份。用 `MANAGE_API_BACKUP_DIR` 换位置，用 `MANAGE_API_BACKUP_KEEP` 改保留份数。
+
+**恢复**：先停掉 daemon，把备份目录里的 `db.json` 和 `master.key`（需要的话再加上其他文件）复制回 `~/.manage-api/`。`master.key` 必须和 `db.json` 配对；只恢复 db 会导致所有 Key 解不开。
+
+**单实例**：daemon 启动时在数据目录写 `daemon.lock`（PID + 端口）。第二个实例会直接退出，不会抢同一个数据目录。进程崩溃留下的锁会在下次启动时按 PID 自动清理；确认没有实例在跑时，也可以手动删掉这个文件。
+
+备份里有 `master.key`，和原数据一样敏感：不要提交仓库、不要放公共网盘。
 
 **威胁模型说明**：Key 加密防的是「备份泄露、误传文件、误提交仓库」，不防「本机已被攻破」——因为密钥就在同一个目录下。要更高强度需要改成主密码派生（启动时输入一次），当前版本没做。
 
@@ -409,7 +418,7 @@ daemon 只绑 `127.0.0.1`，不对外网开放，也不做鉴权。**不要改�
 - **只代理 `/v1/chat/completions` 和 `/v1/models`**。embeddings、images 等没做。
 - **用量依赖上游返回 `usage`。** 少数站即使要求了也不返回，这类请求记 0 token，但请求数仍计入。
 - **价格单位只支持「每百万 token」和「每千 token」**，不支持按次计费。
-- **同一时间只能跑一个实例。** 多个进程会抢同一个数据目录互相覆盖。
+- **同一时间只能跑一个实例。** daemon 会用 `daemon.lock` 拒绝第二个实例；不要绕过锁同时启动两个进程。
 
 ---
 
@@ -418,6 +427,7 @@ daemon 只绑 `127.0.0.1`，不对外网开放，也不做鉴权。**不要改�
 ```
 core/              宿主无关的核心逻辑（不依赖任何运行时框架）
   store.js           数据目录、JSON 原子写、凭据加解密
+  backup.js          每日自动备份（db + master.key + 旁路数据）
   inventory.js       站点 / 凭据 / 模型供给 CRUD、分组倍率、网关 Key、路由日志
   pricing.js         成本归一、排序、结论生成
   benchmark.js       基准价表
@@ -439,6 +449,7 @@ core/              宿主无关的核心逻辑（不依赖任何运行时框架�
 
 daemon/            本地 HTTP 服务 + 网关（同一个端口）
   index.js           启动、端口选择、开浏览器
+  instance-lock.js   单实例锁：PID + 端口，崩溃后自动清理
   server.js          HTTP 路由、网关转发、SSE 切分
   probe-runner.js    探测执行器（手动与定时共用）
   monitor-runner.js  采集执行器：余额 / 分组倍率 / 公告
@@ -463,6 +474,7 @@ web/               前端（原生 JS，无构建，无框架）
   check-workbuddy-quota.mjs 额度口径：包内剩余 vs 本周期剩余、同租户识别
   check-free-quota-view.mjs 卡片上「剩余」显示的是本周期可用量
   check-zcode.mjs    ZCode 连接器：凭据解密、套餐/用量换算、缺客户端时的提示
+  check-instance-backup.mjs 单实例锁（失效锁清理）+ 自动备份/保留策略
   check-fx.mjs       汇率：自动拉取、手动优先、拉取失败沿用旧值、三角换算
   dump-strings.mjs   把界面上所有中文文案抓成清单，加新文案时对照用
 

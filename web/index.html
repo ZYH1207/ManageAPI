@@ -466,13 +466,14 @@
               <b>为什么结果可疑？</b> 探针发现指纹不符、输出被截断或用量虚报。点探针页的行能看到原始返回证据。<br />
               <b>一定要用网关吗？</b> 不一定。只用来比价和检测也完全够用。网关的额外价值是自动选站、
               一个 Key 走全部站、按客户端统计用量。<br />
-              <b>多个实例能同时跑吗？</b> 不能。它们会抢同一个数据目录，互相覆盖。只保留一个进程。
+              <b>多个实例能同时跑吗？</b> 不能。daemon 会用 <code>daemon.lock</code> 拒绝第二个实例，避免两边抢同一个数据目录。
             </p>
 
             <h3 class="doc-h3">数据存在哪</h3>
             <p>
               全部在本机 <code>~/.manage-api/</code>，不联网、不上传。Key 加密存储，界面只显示尾号。
-              备份直接拷这个目录即可。
+              启动时和之后每天会自动备份到数据目录同级的 <code>manage-api-backups/</code>（含 <code>master.key</code>，默认留 30 份）。
+              恢复时 <code>db.json</code> 和 <code>master.key</code> 必须一起拷回；只恢复 db 会导致 Key 解不开。
             </p>
           </div>
           <div class="doc" data-lang-block="en">
@@ -817,13 +818,15 @@
               Expand the row on the Probes page to see the raw response.<br />
               <b>Do I have to use the gateway?</b> No. Price comparison and probing work on their own. The gateway adds
               automatic site selection, one key for every site, and per-client usage.<br />
-              <b>Can I run two instances?</b> No. They share one data directory and overwrite each other. Keep one process.
+              <b>Can I run two instances?</b> No. The daemon refuses a second instance with <code>daemon.lock</code>, so two processes cannot share one data directory.
             </p>
 
             <h3 class="doc-h3">Where the data lives</h3>
             <p>
               Everything is in <code>~/.manage-api/</code> on your machine. Nothing is uploaded. Keys are stored encrypted
-              and only their last digits are shown. To back up, copy that directory.
+              and only their last digits are shown. On startup and every day, the daemon backs up the data into
+              <code>manage-api-backups/</code> next to it (including <code>master.key</code>; 30 copies kept by default).
+              Restore <code>db.json</code> and <code>master.key</code> together; a db without its key cannot decrypt saved keys.
             </p>
           </div>
 
