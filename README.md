@@ -108,6 +108,8 @@ ManageAPI 针对这三点，分别做了**比价**、**探针**、**网关**。
 
 所以「你在哪个分组」必须由你告诉工具：API 只能说明「这把 Key 能调用哪些模型」，不会说明「它属于哪一档套餐」——那是商务事实，不是技术信息。
 
+> 界面上所有分组胶囊按**分组名稳定取色**：同名必同色（站点卡、智能决策、监控、免费页里认出同一个分组），改名才换色；「未指定」保持中性灰。颜色只做识别不做强调——呈现规则（低饱和底 + 同色文字）参考了 [upstream-ops](https://github.com/bejix/upstream-ops)。监控页倍率变动里的倍率数字另有语义色：≤0.8 绿、>1.2 橙、>2 红。
+
 ### 导入倍率
 
 站点卡片上点 **导入倍率**，会列出该站所有分组，每个后面标着倍率和能覆盖你几个模型，能用的排在前面：
@@ -560,11 +562,6 @@ node .test/capture-shots.mjs
 - **按次计费** —— 现在只支持按 token 计价
 - **主密码派生密钥** —— 提升本地密钥强度
 - **免费额度池** —— 收集中转站的免费模型与 Agent 平台的免费积分，独立成页、独立排序，不参与付费比价。方案见 [`docs/free-api-plan.md`](docs/free-api-plan.md)
-- **分组配色统一** —— 现在所有分组名都是同一种强调色胶囊（`.group-chip` 只用了 `--accent-soft`），同一个「默认分组」在比价表、站点卡、智能决策、免费页看起来没有任何视觉关联，站点多了以后很难扫。计划：
-  - 内置一组 8 色分组调色板（深浅色各一套，写在 `web/style.css` 的变量里），按**分组名稳定哈希**取色（同名必同色，改名才换色）；
-  - 比价表的分组胶囊、站点卡的 chips、智能决策页的 winner、免费页的平台分组统一走同一个 `groupColor(name)`；
-  - 颜色只做识别不做强调：低饱和底 + 同色文字，不抢主色（主色仍只给「最便宜 / 主按钮」）；
-  - 「未指定」保持中性灰，不参与取色。
 - **平台额度接入网关** —— 免费页平台栏的积分（WorkBuddy / CodeBuddy / ZCode）目前只是卡片上的数字，`/v1/chat/completions` 用不到。计划把它们变成和「中转站免费模型」同池的供给：本周期剩余做闸门、`ledger.consume()` 回写扣减、用尽自动落到下一个来源。方案、参考项目（[magpie](https://github.com/yetone/magpie)）与前置条件见 [`docs/free-api-plan.md`](docs/free-api-plan.md) 的 **T2c**。
 - **站点登录态（参考 [upstream-ops](https://github.com/bejix/upstream-ops)）** —— 现在读中转站数据只靠「令牌 / API Key」这类静态凭据，拿不到用户中心的东西：今日消费、累计消费、订阅、公告、分组倍率的历史变动。upstream-ops 的做法是**用账号密码登录站点、自己维持会话**（`/api/user/login` + `refresh`，请求带 `Authorization` 或 Cookie，one-api 系还要带 `New-Api-User` 头），过期前 5 分钟自动续期。若要跟进，计划分四步：
   1. **先自动判定站点系别**（现在「类型」是让用户手填、默认「不确定」）：`provider.kind` 支持 `one-api / new-api / sub2api / unknown`，加一个只读探测——`GET /api/status` 有 `quota_per_unit` / `chat_link` 一类字段 → one-api 系（再看是否返回 `version`、能否 `GET /api/pricing` 区分 new-api）；`GET /api/v1/settings/public` 或 `/api/v1/groups/available` 通 → Sub2API；都不通 → `unknown`。结果写回 `provider.kind` 并记来源（`kindSource: 'auto' | 'manual'`，手填过的不被自动覆盖），添加站点时跑一次，探测失败不阻断保存。**登录接口、鉴权头、额度换算都要按系别分支，所以这是登录态的前置。**
@@ -578,7 +575,7 @@ node .test/capture-shots.mjs
 
 ## 致谢
 
-- [bejix/upstream-ops](https://github.com/bejix/upstream-ops) —— 站点页的卡片式布局（渠道卡、分组胶囊、工具栏）参考了它的设计；只借版式，数据与交互都是本项目自己实现的。谢谢作者。
+- [bejix/upstream-ops](https://github.com/bejix/upstream-ops) —— 站点页的卡片式布局（渠道卡、分组胶囊、工具栏）与分组/倍率的低饱和配色规则参考了它的设计；只借版式与配色思路，数据与交互都是本项目自己实现的。谢谢作者。
 
 ## 反馈
 

@@ -1,6 +1,6 @@
 /** 前端：无框架，全量状态 + 重渲染。 */
 import { getLang, onLangChange, restoreDom, setLang, t, translateDom } from './i18n.js'
-import { renderFreeRelayPane } from './free-relay.js'
+import { renderFreeRelayPane, groupColorClass } from './free-relay.js'
 import { renderFreePlatformPane } from './free-platform.js'
 
 const $ = (sel, root = document) => root.querySelector(sel)
@@ -875,7 +875,7 @@ function providersHtml({ withForm = true, panel = '', actions = '' } = {}) {
         <div class="prov-groups">
           <span class="k">${groupNames.length ? `${groupNames.length} 个分组` : '还没有分组'}</span>
           <span class="prov-group-chips">
-            ${groupNames.slice(0, 6).map((g) => `<span class="group-chip">${g ? esc(g) : '未指定'}</span>`).join('')}
+            ${groupNames.slice(0, 6).map((g) => `<span class="group-chip ${groupColorClass(g)}">${g ? esc(g) : '未指定'}</span>`).join('')}
             ${groupNames.length > 6 ? `<span class="group-chip">还有 ${groupNames.length - 6} 个</span>` : ''}
           </span>
         </div>
@@ -896,7 +896,7 @@ function providersHtml({ withForm = true, panel = '', actions = '' } = {}) {
             <div class="keyrow" data-credential="${esc(k.id)}">
               <span>${esc(k.label)}</span>
               <span class="tail">sk-••••${esc(k.tail || '????')}</span>
-              <button class="ghost tiny group-chip" data-act="open-group-picker" title="${k.group ? '这把 Key 属于这个分组，点这里换' : '还没选分组，点这里选（会顺便把倍率填好）'}">
+              <button class="ghost tiny group-chip ${groupColorClass(k.group)}" data-act="open-group-picker" title="${k.group ? '这把 Key 属于这个分组，点这里换' : '还没选分组，点这里选（会顺便把倍率填好）'}">
                 ${k.group ? `分组 · ${esc(k.group)}` : '选分组'}
               </button>
               <span class="tail">${offers.filter((o) => o.credentialId === k.id).length} 个模型</span>
@@ -1815,7 +1815,7 @@ function renderDecision() {
               ? `<div class="sub mono">${esc(candidate.upstreamName)}</div>`
               : ''
           }</td>
-          <td>${candidate.group ? `<span class="badge">${esc(candidate.group)}</span>` : '<span style="color:var(--faint)">默认</span>'}</td>
+          <td>${candidate.group ? `<span class="badge ${groupColorClass(candidate.group)}">${esc(candidate.group)}</span>` : '<span style="color:var(--faint)">默认</span>'}</td>
           <td class="num">${candidate.price === null ? '—' : priceText(candidate.price)}</td>
           <td class="num">${candidate.quality === null ? '—' : candidate.quality.toFixed(2)}</td>
           <td class="num">${candidate.effective === null ? '—' : priceText(candidate.effective)}</td>
@@ -2154,7 +2154,7 @@ function renderGateway() {
           <td style="color:var(--faint)">${new Date(r.ts).toLocaleTimeString('zh-CN')}</td>
           <td>${esc(r.keyName || '—')}</td>
           <td class="mono">${esc(r.model)}</td>
-          <td>${r.chosenProviderName ? `${esc(r.chosenProviderName)}${r.chosenGroup ? ` <span class="badge">${esc(r.chosenGroup)}</span>` : ''}` : '<span class="badge danger">全部失败</span>'}</td>
+          <td>${r.chosenProviderName ? `${esc(r.chosenProviderName)}${r.chosenGroup ? ` <span class="badge ${groupColorClass(r.chosenGroup)}">${esc(r.chosenGroup)}</span>` : ''}` : '<span class="badge danger">全部失败</span>'}</td>
           <td class="num">${r.usage ? formatTokens((r.usage.prompt_tokens || 0) + (r.usage.completion_tokens || 0)) : '—'}</td>
           <td class="num">${r.attempts}</td>
           <td class="num">${r.ttftMs ? `${r.ttftMs}ms` : '—'}</td>
@@ -2765,9 +2765,14 @@ function renderMonitor() {
       const balanceText = row.balance === null ? '—' : `${esc(currency)} ${money(row.balance)}`
       const thresholdText = row.threshold === null ? t('未设阈值') : `${esc(currency)} ${money(row.threshold)}`
       const groups = row.groups || []
+      // 倍率数字按语义着色（参考 upstream-ops 的 ratioTone）：
+      // ≤0.8 折扣绿、0.8~1.2 正常中性、>1.2 加价橙、>2 高溢价红——
+      // 胶囊底色仍是分组身份色，「颜色认分组、数字看贵贱」两条信息不混
+      const ratioTone = (rate) =>
+        rate <= 0.8 ? 'good' : rate > 2 ? 'bad' : rate > 1.2 ? 'warn' : 'flat'
       const groupChips = groups
         .slice(0, 6)
-        .map((g) => `<span class="group-chip static">${esc(g.name)}${typeof g.rate === 'number' ? ` ×${g.rate}` : ''}</span>`)
+        .map((g) => `<span class="group-chip static ${groupColorClass(g.name)}">${esc(g.name)}${typeof g.rate === 'number' ? ` <span class="ratio-tone ${ratioTone(g.rate)}">×${g.rate}</span>` : ''}</span>`)
         .join('')
       const more = groups.length > 6
         ? `<span class="hint">${t('还有 {n} 个', { n: groups.length - 6 })}</span>`

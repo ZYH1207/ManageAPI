@@ -8,6 +8,23 @@
  * 渲染层没法 import core/rank-free.js。规则必须与它保持一致——改阈值请两边一起改。
  */
 
+/**
+ * 分组身份色 class（gchip-0 ~ gchip-7）：按分组名稳定哈希取色，
+ * 同名必同色、改名才换色。「未指定」（空名）不参与取色，保持中性灰。
+ *
+ * 放在这个纯函数模块里导出，app.js 与免费页共用同一份——身份色的意义
+ * 就是跨页面认出同一个分组，两处各写一遍哈希迟早漂移。
+ * 颜色本身定义在 web/style.css 的 .gchip-N；呈现参考 upstream-ops：
+ * 低饱和底 + 同色文字 + 同色细描边，只做识别不做强调。
+ */
+export function groupColorClass(name) {
+  const n = String(name || '').trim()
+  if (!n) return ''
+  let h = 5381
+  for (let i = 0; i < n.length; i += 1) h = ((h << 5) + h + n.charCodeAt(i)) >>> 0
+  return `gchip-${h % 8}`
+}
+
 const DAY_MS = 86400000
 const WINDOW_MS = { day: DAY_MS, month: 30 * DAY_MS }
 // 与 core/rank-free.js 同一套门槛：指纹、未截断都要求 >= 80%
@@ -225,7 +242,7 @@ export function renderFreeRelayPane({ offers = [], providers = [], crossPane = '
       const fp = typeof score?.fingerprintRate === 'number' ? `${Math.round(score.fingerprintRate * 100)}%` : '—'
       const ttft = typeof score?.ttftMs === 'number' ? `${Math.round(score.ttftMs)}ms` : '—'
       const group = offer.group
-        ? esc(offer.group)
+        ? `<span class="gtag ${groupColorClass(offer.group)}">${esc(offer.group)}</span>`
         : `<span style="color:var(--faint)">${esc(t('默认'))}</span>`
       const status = gate
         ? `<span class="badge warn" title="${esc(t(gate.why || gate.label))}">${esc(t(gate.label))}</span>`

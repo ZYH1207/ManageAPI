@@ -896,6 +896,48 @@ a.icon-btn:hover { text-decoration: none; }
   color: var(--accent); font-weight: 500;
 }
 .prov-group-chips .group-chip:hover { border-color: var(--accent); }
+
+/* ------------------------------------------- 分组身份色板（8 色，浅 / 深两套）
+   同一个分组名在站点卡、比价、智能决策、监控、免费页用同一个颜色——
+   取色按名字稳定哈希（free-relay.js 的 groupColorClass），同名必同色。
+   呈现规则参考 upstream-ops：低饱和底 + 同色文字 + 同色细描边，
+   只做识别不做强调，不抢主色（主色仍只给「最便宜 / 主按钮」）。
+   色相刻意避开语义色：红(danger)、橙(warn)、绿(success)、青(主色 teal)。 */
+.gchip-0 { --g-bg: hsl(215 65% 93%); --g-fg: hsl(215 45% 34%); --g-ring: hsl(215 40% 83%); }
+.gchip-1 { --g-bg: hsl(262 55% 93%); --g-fg: hsl(262 40% 38%); --g-ring: hsl(262 35% 84%); }
+.gchip-2 { --g-bg: hsl(305 55% 93%); --g-fg: hsl(305 40% 36%); --g-ring: hsl(305 35% 84%); }
+.gchip-3 { --g-bg: hsl(345 60% 94%); --g-fg: hsl(345 42% 36%); --g-ring: hsl(345 38% 85%); }
+.gchip-4 { --g-bg: hsl(55 75% 91%);  --g-fg: hsl(55 55% 27%);  --g-ring: hsl(55 55% 81%); }
+.gchip-5 { --g-bg: hsl(95 45% 92%);  --g-fg: hsl(95 40% 28%);  --g-ring: hsl(95 35% 82%); }
+.gchip-6 { --g-bg: hsl(130 35% 91%); --g-fg: hsl(130 38% 27%); --g-ring: hsl(130 30% 81%); }
+.gchip-7 { --g-bg: hsl(185 45% 91%); --g-fg: hsl(185 45% 27%); --g-ring: hsl(185 40% 80%); }
+[data-theme='dark'] .gchip-0 { --g-bg: hsl(215 30% 17%); --g-fg: hsl(215 45% 72%); --g-ring: hsl(215 30% 28%); }
+[data-theme='dark'] .gchip-1 { --g-bg: hsl(262 30% 18%); --g-fg: hsl(262 40% 74%); --g-ring: hsl(262 30% 30%); }
+[data-theme='dark'] .gchip-2 { --g-bg: hsl(305 30% 18%); --g-fg: hsl(305 45% 74%); --g-ring: hsl(305 30% 30%); }
+[data-theme='dark'] .gchip-3 { --g-bg: hsl(345 30% 18%); --g-fg: hsl(345 55% 74%); --g-ring: hsl(345 30% 30%); }
+[data-theme='dark'] .gchip-4 { --g-bg: hsl(55 35% 16%); --g-fg: hsl(55 45% 68%); --g-ring: hsl(55 30% 27%); }
+[data-theme='dark'] .gchip-5 { --g-bg: hsl(95 25% 16%); --g-fg: hsl(95 35% 64%); --g-ring: hsl(95 25% 26%); }
+[data-theme='dark'] .gchip-6 { --g-bg: hsl(130 22% 16%); --g-fg: hsl(130 32% 62%); --g-ring: hsl(130 22% 26%); }
+[data-theme='dark'] .gchip-7 { --g-bg: hsl(185 30% 16%); --g-fg: hsl(185 40% 64%); --g-ring: hsl(185 30% 26%); }
+/* 消费规则：带上色板 class 的分组胶囊 / 徽章覆盖默认配色；
+   没带（未指定分组、「还有 N 个」）保持原中性样式 */
+.group-chip[class*='gchip-'] { background: var(--g-bg); color: var(--g-fg); border-color: var(--g-ring); }
+.badge[class*='gchip-'] { background: var(--g-bg); color: var(--g-fg); }
+/* 免费页分组列的小胶囊（那里原本是纯文本） */
+.gtag {
+  display: inline-block; font-size: 11px; padding: 1px 7px; border-radius: 6px;
+  background: var(--divider); color: var(--muted); border: 1px solid transparent;
+  white-space: nowrap; max-width: 160px; overflow: hidden; text-overflow: ellipsis;
+}
+.gtag[class*='gchip-'] { background: var(--g-bg); color: var(--g-fg); border-color: var(--g-ring); }
+/* 倍率数字的语义色（参考 upstream-ops 的 ratioTone）：
+   ≤0.8 折扣绿、0.8~1.2 正常中性、>1.2 加价橙、>2 高溢价红 */
+.ratio-tone { font-weight: 600; }
+.ratio-tone.good { color: var(--success); }
+.ratio-tone.warn { color: var(--warn); }
+.ratio-tone.bad { color: var(--danger); }
+.ratio-tone.flat { color: var(--muted); }
+
 .sync-extra { display: inline-flex; align-items: flex-end; gap: 8px; }
 .sync-extra[hidden] { display: none; }
 /* 同步设置：两行——上面一行是间隔/阈值输入 + 最右的保存，下面一行是立即同步/新增站点 */
