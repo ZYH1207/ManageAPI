@@ -61,6 +61,21 @@ function priceText(cny) {
   return v === null ? '—' : `${priceSym()}${money(v)}`
 }
 
+/**
+ * 倍率数字的语义色 class（参考 upstream-ops 的 ratioTone，全站三处共用：
+ * 监控变动流、站点卡分组胶囊、分组倍率弹窗）：
+ * ≤0.8 折扣绿、0.8~1.2 正常灰、>1.2 加价橙、>2 高溢价红。
+ * 只给「倍率数字」用——分组胶囊的底色是身份色（认分组用），与价格无关。
+ */
+function ratioToneClass(rate) {
+  const n = Number(rate)
+  if (!Number.isFinite(n)) return 'flat'
+  if (n <= 0.8) return 'good'
+  if (n > 2) return 'bad'
+  if (n > 1.2) return 'warn'
+  return 'flat'
+}
+
 let toastTimer = null
 function toast(message, isError = false) {
   const el = $('#toast')
@@ -759,22 +774,29 @@ function providersHtml({ withForm = true, panel = '', actions = '' } = {}) {
         : p.quotaRemaining
       : 0
 
-    // 中转站的倍率按「分组」定，不是按模型——所以按分组给一个批量入口
+    // 中转站的倍率按「分组」定，不是按模型——所以按分组给一个批量入口。
+    // 倍率归并结果（统一/混合/站点值）算一次，分组胶囊与「分组倍率」弹窗共用，两边口径一致
     const groupNames = [...new Set(offers.map((o) => o.group || ''))]
-    const groupRows = groupNames.map((groupName) => {
+    const groupStats = new Map(groupNames.map((groupName) => {
       const groupOffers = offers.filter((o) => (o.group || '') === groupName)
       const ratioValues = new Set(groupOffers.map((o) => (o.ratio === null || o.ratio === undefined ? '' : String(o.ratio))))
-      const uniform = ratioValues.size === 1 ? [...ratioValues][0] : ''
-      const mixed = ratioValues.size > 1
       const siteRatios = new Set(
         groupOffers.map((o) => (o.siteRatio === null || o.siteRatio === undefined ? '' : String(o.siteRatio))),
       )
-      const siteRatio = siteRatios.size === 1 ? [...siteRatios][0] : ''
-      const custom = groupOffers.some((o) => o.ratioSource === 'custom')
+      return [groupName, {
+        count: groupOffers.length,
+        uniform: ratioValues.size === 1 ? [...ratioValues][0] : '',
+        mixed: ratioValues.size > 1,
+        siteRatio: siteRatios.size === 1 ? [...siteRatios][0] : '',
+        custom: groupOffers.some((o) => o.ratioSource === 'custom'),
+      }]
+    }))
+    const groupRows = [...groupStats.entries()].map(([groupName, st]) => {
+      const { uniform, mixed, siteRatio, custom } = st
       return `
         <div class="keyrow" data-group-ratio="${esc(groupName)}">
           <span>${groupName ? esc(groupName) : '<span style="color:var(--faint)">未指定分组</span>'}</span>
-          <span class="tail">${groupOffers.length} 个模型</span>
+          <span class="tail">${st.count} 个模型</span>
           <span class="grow"></span>
           ${mixed ? '<span style="color:var(--warn);font-size:11px">混合</span>' : ''}
           ${
@@ -786,7 +808,7 @@ function providersHtml({ withForm = true, panel = '', actions = '' } = {}) {
           }
           ${
             siteRatio !== ''
-              ? `<span style="color:var(--faint);font-size:11px">站点 ×${esc(siteRatio)}</span>`
+              ? `<span style="color:var(--faint);font-size:11px">站点 <span class="ratio-tone ${ratioToneClass(siteRatio)}">×${esc(siteRatio)}</span></span>`
               : ''
           }
           <input type="number" step="0.01" min="0" placeholder="倍率" value="${uniform}" data-act="group-ratio" style="width:86px" title="改这里就是自定义倍率，不影响站点原始值" />
@@ -873,9 +895,18 @@ function providersHtml({ withForm = true, panel = '', actions = '' } = {}) {
         </div>
 
         <div class="prov-groups">
-          <span class="k">${groupNames.length ? `${groupNames.length} 个分组` : '还没有分组'}</span>
+          <span class="k" title="${t('胶囊底色只标识分组（同名同色），与价格无关；倍率数字：≤0.8 折扣、>1.2 加价、>2 高溢价')}">${groupNames.length ? `${groupNames.length} 个分组` : '还没有分组'}</span>
           <span class="prov-group-chips">
-            ${groupNames.slice(0, 6).map((g) => `<span class="group-chip ${groupColorClass(g)}">${g ? esc(g) : '未指定'}</span>`).join('')}
+            ${groupNames.slice(0, 6).map((g) => {
+              const st = groupStats.get(g) || {}
+              // 倍率统一才敢标（混合分组标「混合」，未填只显示名字）——数字色是折扣语义
+              const tag = st.mixed
+                ? `<span class="chip-note">${t('混合')}</span>`
+                : st.uniform !== '' && st.uniform !== undefined
+                  ? `<span class="ratio-tone ${ratioToneClass(st.uniform)}">×${esc(st.uniform)}</span>`
+                  : ''
+              return `<span class="group-chip ${groupColorClass(g)}">${g ? esc(g) : '未指定'}${tag}</span>`
+            }).join('')}
             ${groupNames.length > 6 ? `<span class="group-chip">还有 ${groupNames.length - 6} 个</span>` : ''}
           </span>
         </div>
@@ -2745,6 +2776,7 @@ function renderMonitor() {
         <h3>最近倍率变动</h3>
         <span class="hint">${t('{n} 条', { n: (data.changes || []).length })}</span>
       </div>
+      <div class="legend-note">${t('胶囊底色只标识分组（同名同色），与价格无关；倍率数字：≤0.8 折扣、>1.2 加价、>2 高溢价')}</div>
       ${changeRows || '<div class="empty small"><p>还没有变动。第一次同步只记基线，之后才开始比较。</p></div>'}
     </div>`
 
@@ -2765,14 +2797,11 @@ function renderMonitor() {
       const balanceText = row.balance === null ? '—' : `${esc(currency)} ${money(row.balance)}`
       const thresholdText = row.threshold === null ? t('未设阈值') : `${esc(currency)} ${money(row.threshold)}`
       const groups = row.groups || []
-      // 倍率数字按语义着色（参考 upstream-ops 的 ratioTone）：
-      // ≤0.8 折扣绿、0.8~1.2 正常中性、>1.2 加价橙、>2 高溢价红——
-      // 胶囊底色仍是分组身份色，「颜色认分组、数字看贵贱」两条信息不混
-      const ratioTone = (rate) =>
-        rate <= 0.8 ? 'good' : rate > 2 ? 'bad' : rate > 1.2 ? 'warn' : 'flat'
+      // 倍率数字的语义色与站点卡、分组倍率弹窗共用 ratioToneClass——
+      // 胶囊底色仍是分组身份色，「底色认分组、数字看折扣」两条信息不混
       const groupChips = groups
         .slice(0, 6)
-        .map((g) => `<span class="group-chip static ${groupColorClass(g.name)}">${esc(g.name)}${typeof g.rate === 'number' ? ` <span class="ratio-tone ${ratioTone(g.rate)}">×${g.rate}</span>` : ''}</span>`)
+        .map((g) => `<span class="group-chip static ${groupColorClass(g.name)}">${esc(g.name)}${typeof g.rate === 'number' ? ` <span class="ratio-tone ${ratioToneClass(g.rate)}">×${g.rate}</span>` : ''}</span>`)
         .join('')
       const more = groups.length > 6
         ? `<span class="hint">${t('还有 {n} 个', { n: groups.length - 6 })}</span>`

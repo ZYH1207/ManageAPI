@@ -1028,6 +1028,9 @@ Object.assign(EN, {
   '{n} 天前': '{n} d ago',
   '{n} 天': '{n}d',
   '{n} 条': '{n} entries',
+  // 配色图例：说破「胶囊底色是分组身份（与价格无关）、倍率数字颜色是折扣语义」
+  '胶囊底色只标识分组（同名同色），与价格无关；倍率数字：≤0.8 折扣、>1.2 加价、>2 高溢价':
+    'Chip color identifies the group (same name, same color) — it says nothing about price; ratio digits: ≤0.8 discount, >1.2 markup, >2 premium',
   '还有 {n} 个': '{n} more',
   '{n} 个模型': '{n} models',
   '正常': 'OK',

@@ -937,6 +937,12 @@ a.icon-btn:hover { text-decoration: none; }
 .ratio-tone.warn { color: var(--warn); }
 .ratio-tone.bad { color: var(--danger); }
 .ratio-tone.flat { color: var(--muted); }
+/* 胶囊里的「混合」小字：不是价位状态，用弱化样式与倍率数字区分 */
+.chip-note { font-size: 10px; opacity: 0.75; font-weight: 400; }
+/* 配色图例：说破「底色是身份、数字是折扣」，防把身份色误读成价格 */
+.legend-note {
+  font-size: 11px; color: var(--faint); margin: -4px 0 8px;
+}
 
 .sync-extra { display: inline-flex; align-items: flex-end; gap: 8px; }
 .sync-extra[hidden] { display: none; }
