@@ -1,4 +1,11 @@
-/** 网关端到端验证：路由、故障切换、流式、鉴权。 */
+/**
+ * 网关端到端验证：路由、故障切换、流式、鉴权。
+ * 环境要求（README「跑测试」一节）：
+ *   MODE=good      PORT=5101 node .test/mock-upstream.mjs   # 正常A
+ *   MODE=good      PORT=5102 node .test/mock-upstream.mjs   # 正常B
+ *   MODE=fail      PORT=5103 node .test/mock-upstream.mjs   # 便宜但会挂（chat 一律 503）
+ *   MANAGE_API_HOME=<临时目录> node daemon/index.js --port 4399
+ */
 const BASE = 'http://127.0.0.1:4399'
 
 async function api(method, path, body) {
@@ -19,7 +26,9 @@ const stations = [
 ]
 
 let state = await api('GET', '/api/state')
-const gatewayKey = state.gateway.key
+// 多 Key 改造后结构是 gateway.keys[]；取第一把启用的
+const gatewayKey = state.gateway.keys.find((k) => k.enabled)?.key
+if (!gatewayKey) throw new Error('没有可用的网关 Key')
 console.log('网关 Key:', gatewayKey)
 
 for (const station of stations) {
@@ -39,7 +48,9 @@ for (const station of stations) {
         inPrice: station.manual[0], outPrice: station.manual[1], currency: 'USD', ratio: null,
       })
     } else {
-      await api('PATCH', `/api/offers/${offer.id}`, { ratio: station.ratio })
+      // 只写 ratio 不写 pricingMode 不会生效（字段式 PATCH，manual 模式下倍率不参与算价），
+      // 界面里倍率输入框在 manual 模式是禁用的，直调 API 必须显式带上模式
+      await api('PATCH', `/api/offers/${offer.id}`, { ratio: station.ratio, pricingMode: 'ratio' })
     }
   }
 }
@@ -101,6 +112,8 @@ console.log('\n=== 5. 不存在的模型 ===')
 
 console.log('\n=== 6. 路由决策日志 ===')
 {
+  // 决策日志是 2 秒攒批落盘的，等一下再查
+  await new Promise((r) => setTimeout(r, 2500))
   const data = await api('GET', '/api/gateway/routing?limit=5')
   for (const r of data.routing) {
     console.log(

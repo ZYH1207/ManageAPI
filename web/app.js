@@ -1112,6 +1112,9 @@ function openProvPanel(button, pane) {
   const fragment = source.cloneNode(true)
   // 源节点是 hidden 的（详情现在只在弹窗里出现），克隆品要显示出来
   fragment.hidden = false
+  // 克隆体脱离了站点卡的 [data-provider] 祖先；不补上的话弹窗里的
+  // 添加 Key 表单、分组倍率行内编辑都会 closest 不到站点 id 而抛错
+  fragment.dataset.provider = card.dataset.provider
   // 弹窗头部已经有关闭按钮，pane 里那个自带的「关闭」去掉
   fragment.querySelectorAll('[data-act="close-usage-check"]').forEach((node) => node.remove())
   for (const node of fragment.querySelectorAll('[data-pane]')) {
@@ -2197,7 +2200,8 @@ function renderUsage() {
   const dayEntries = Object.entries(usage.byDay || {}).sort((a, b) => a[0].localeCompare(b[0]))
 
   if (!totals.requests) {
-    setPageSubFor('gateway', '还没有请求经过网关')
+    // 副标题只在当前页是 usage 时显示；这里曾误写成 'gateway'，导致空态副标题永远不出现
+    setPageSubFor('usage', '还没有请求经过网关')
     view.innerHTML = `
       <div class="empty">
         <h3>暂无用量数据</h3>
@@ -3168,7 +3172,7 @@ document.addEventListener('click', (event) => {
 document.addEventListener('keydown', (event) => {
   if (event.key !== 'Escape') return
   closeLangMenu()
-  for (const id of ['help-modal', 'contact-modal', 'group-modal', 'pf-accounts-modal', 'add-provider-modal']) {
+  for (const id of ['help-modal', 'contact-modal', 'group-modal', 'pf-accounts-modal', 'add-provider-modal', 'prov-modal']) {
     const modal = document.getElementById(id)
     if (modal && !modal.hidden) modal.hidden = true
   }

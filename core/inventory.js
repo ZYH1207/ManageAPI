@@ -235,6 +235,28 @@ export async function revealSecret(credentialId) {
 // ------------------------------------------------------------------- offers
 
 /**
+ * 真正「在役」的供给：没下线（delistedAt）、站点没暂停（paused）、模型没被忽略（ignoredModels）。
+ * 这是三条过滤规则的唯一实现——比价 / 概览 / 智能决策 / 网关 / 免费池 / 探针目标都从这里取，
+ * 任何一侧自己再写一遍迟早漂移（曾出过「暂停站点仍被派流量」「下线模型仍被探测白烧额度」）。
+ * 纯函数：只读 db，不改；调用方拿到的是 db.offers 里的原对象，不要原地修改。
+ */
+export function routeableOffers(db) {
+  const pausedIds = new Set(db.providers.filter((p) => p.paused).map((p) => p.id))
+  const ignored = new Set(
+    (db.settings?.ignoredModels || []).map((name) => normalizeModelKey(String(name))),
+  )
+  return db.offers.filter((offer) => {
+    if (offer.delistedAt) return false
+    if (pausedIds.has(offer.providerId)) return false
+    if (ignored.size) {
+      const key = normalizeModelKey(offer.modelKey || offer.upstreamName || '')
+      if (key && ignored.has(key)) return false
+    }
+    return true
+  })
+}
+
+/**
  * 把一次拉取到的模型列表合并进台账。
  * 已存在的 upstreamName 保留用户手填的价格与分组，只更新"还在不在"。
  * 分组需要手动维护——大多数站的 /v1/models 不返回分组信息。

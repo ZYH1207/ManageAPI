@@ -476,6 +476,7 @@ web/               前端（原生 JS，无构建，无框架）
   check-zcode.mjs    ZCode 连接器：凭据解密、套餐/用量换算、缺客户端时的提示
   check-instance-backup.mjs 单实例锁（失效锁清理）+ 自动备份/保留策略
   check-fx.mjs       汇率：自动拉取、手动优先、拉取失败沿用旧值、三角换算
+  check-routable-offers.mjs 在役供给过滤自检：暂停/忽略/下线的供给不进路由也不被探针
   dump-strings.mjs   把界面上所有中文文案抓成清单，加新文案时对照用
 
 docs/              README 用图 + 设计文档
@@ -514,7 +515,9 @@ MANAGE_API_HOME=/tmp/e2e node daemon/index.js --port 4399
 node .test/run-e2e.mjs
 ```
 
-`MODE` 可选 `good` / `degraded`（掉包 + 虚报）/ `truncated`（砍额度）/ `fail`（连不上）。
+`MODE` 可选 `good` / `degraded`（掉包 + 虚报）/ `truncated`（砍额度）/ `fail`（chat 一律 503，`run-gateway.mjs` 的「会挂的站」用它）。
+
+网关端到端（路由、故障切换、流式、鉴权）用同一套环境，只是 5103 换成 `MODE=fail`，然后跑 `node .test/run-gateway.mjs`。
 
 免费池平台侧的两条自检不需要网络，直接跑：
 
@@ -524,6 +527,7 @@ node .test/check-workbuddy-quota.mjs # 额度口径：包内剩余 vs 本周期�
 node .test/check-free-quota-view.mjs # 卡片上「剩余」是否用本周期可用量
 node .test/check-zcode.mjs           # ZCode 连接器（不联网、不读真实客户端）
 node .test/check-fx.mjs              # 汇率：自动/手动/失败兜底（假 fetch，不联网）
+node .test/check-routable-offers.mjs # 暂停/忽略/下线的供给不进路由、不被探针（自起假上游）
 ```
 
 ### 检查中英切换
@@ -551,8 +555,6 @@ node .test/capture-shots.mjs
 ---
 
 ## 路线图
-
-> **下次动手的第一件（P1，最前）** —— 把「暂停站点 / 已忽略模型」的过滤收成一份实现。现在 `daemon/server.js` 的 `visibleOffers(db)` 与 `daemon/probe-runner.js` 各写了一遍同样的规则（`delistedAt` + `paused` + `ignoredModels`），上周就因为漏同步出过「暂停站点仍被派流量」；探针那份一旦漂移，会白烧已忽略模型的额度而且日志里看不出来。做法：下移到 `core/inventory.js` 导出 `routeableOffers(db)`，`buildState`、网关、探针三处共用；顺手补一条测试断言「忽略的模型不出现在探针目标里」。
 
 - **更多上游类型** —— 目前针对 one-api / new-api / Sub2API 系优化，其他自建网关要手动填价
 - **按次计费** —— 现在只支持按 token 计价

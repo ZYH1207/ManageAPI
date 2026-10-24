@@ -12,19 +12,9 @@ import { probeModel } from '../core/probe.js'
 export async function runProbes({ providerId, offerId, offerIds, limit = 5 } = {}) {
   const db = await store.readDb()
 
-  // 暂停的站点、被忽略的模型都不探针（手动指定 offerId 时也拦，避免定时任务漏网）
-  const pausedIds = new Set(db.providers.filter((p) => p.paused).map((p) => p.id))
-  const ignored = new Set(
-    (db.settings?.ignoredModels || []).map((name) => inv.normalizeModelKey(String(name))),
-  )
-  let targets = db.offers.filter((offer) => {
-    if (pausedIds.has(offer.providerId)) return false
-    if (ignored.size) {
-      const key = inv.normalizeModelKey(offer.modelKey || offer.upstreamName || '')
-      if (key && ignored.has(key)) return false
-    }
-    return true
-  })
+  // 探针目标与路由/比价同口径：下线、暂停、忽略的都不探（手动指定 offerId 时也拦，避免定时任务漏网）。
+  // 过滤规则唯一实现见 inv.routeableOffers——此前这里漏了 delistedAt，下线模型仍被定时探测白烧额度。
+  let targets = inv.routeableOffers(db)
   if (offerId) targets = targets.filter((o) => o.id === offerId)
   else if (Array.isArray(offerIds) && offerIds.length > 0) {
     const wanted = new Set(offerIds)

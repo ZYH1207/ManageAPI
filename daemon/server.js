@@ -98,26 +98,6 @@ async function readBody(req) {
   }
 }
 
-/**
- * 真正「在役」的供给：没下线、站点没暂停、模型没被忽略。
- * 比价 / 概览 / 智能决策 / 网关 / 免费池都从这里取，避免某个分支漏过滤。
- */
-function visibleOffers(db) {
-  const pausedIds = new Set(db.providers.filter((p) => p.paused).map((p) => p.id))
-  const ignored = new Set(
-    (db.settings?.ignoredModels || []).map((name) => inv.normalizeModelKey(String(name))),
-  )
-  return db.offers.filter((offer) => {
-    if (offer.delistedAt) return false
-    if (pausedIds.has(offer.providerId)) return false
-    if (ignored.size) {
-      const key = inv.normalizeModelKey(offer.modelKey || offer.upstreamName || '')
-      if (key && ignored.has(key)) return false
-    }
-    return true
-  })
-}
-
 /** 统一入口：探针 + 真实流量 + 时效。三处调用都用这一份，避免口径漂移。 */
 function scoresFor(db) {
   return scoreOffers(db.probes, db.traffic, {
@@ -186,8 +166,8 @@ async function buildState({ light = false } = {}) {
   // 免费供给在**数据入口**就切断：比价、概览结论、智能决策一律只看 paid。
   // 不靠渲染层过滤——漏一个分支就会污染「最便宜」的结论。
   // 已下线（delistedAt 有值）的供给保留在库里，但不参与任何展示与路由
-  // 被暂停的站点、被忽略的模型：都走同一个入口过滤，见 visibleOffers()
-  const liveOffers = visibleOffers(db)
+  // 已下线 / 被暂停 / 被忽略的过滤收口在 inv.routeableOffers，探针目标也用同一份
+  const liveOffers = inv.routeableOffers(db)
   const { paid: paidOffers, free: freeOffers } = splitOffers(liveOffers, benchmarks)
 
   const { ranked, unpriced } = pricing.rankByModel(paidOffers, db.settings, benchmarks, isTrusted)
@@ -1989,7 +1969,7 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
   // 免费池只在自己的供给里选；付费池永远看不到免费项。
   // 默认两边互不回落（免费用不了就明确报错，别偷偷扣钱），
   // 只有 settings.allowPaidFallback 显式打开时才允许「免费不够用 → 付费顶上」。
-  const split = splitOffers(visibleOffers(db), benchmarks)
+  const split = splitOffers(inv.routeableOffers(db), benchmarks)
   const manualOrder = db.manualOrder?.[inv.normalizeModelKey(model)] || null
   const pick = (offers) =>
     selectCandidates({
@@ -2070,6 +2050,9 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
 
   for (let index = 0; index < candidates.length; index += 1) {
     const candidate = candidates[index]
+    // 客户端已断开就别再换站：后面的候选会立刻因 aborted 失败，
+    // 把「根本没发出去的请求」记成它们的失败，污染可用率评分
+    if (clientAbort.signal.aborted) return
     const attemptStarted = Date.now()
     try {
       const result = await forwardToUpstream({
@@ -2121,6 +2104,8 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
         }
         return
       }
+      // 客户端断开导致的失败不是站的错，不进失败名单、不计流量
+      if (clientAbort.signal.aborted) return
       failures.push({
         providerName: candidate.provider.name,
         offerId: candidate.offer.id,
@@ -2129,6 +2114,7 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
       })
       bufferTraffic(candidate.offer.id, false)
     } catch (error) {
+      if (clientAbort.signal.aborted) return
       failures.push({
         providerName: candidate.provider.name,
         offerId: candidate.offer.id,
@@ -2182,7 +2168,7 @@ async function handleProxy(req, res, url) {
   if (pathname === '/v1/models') {
     const scores = scoresFor(db)
     const benchmarks = await bench.readBenchmarks()
-    const split = splitOffers(visibleOffers(db), benchmarks)
+    const split = splitOffers(inv.routeableOffers(db), benchmarks)
     const shape = (m, ownedBy, prefix = '') => ({
       id: `${prefix}${m.id}`,
       object: 'model',

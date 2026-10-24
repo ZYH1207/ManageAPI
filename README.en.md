@@ -433,6 +433,7 @@ web/               Frontend (vanilla JS, no build, no framework)
   check-free-relay.mjs   Free-pool gates and quota self-check
   check-free-platform.mjs Platform CRUD / idempotent check-in / ledger self-check
   check-workbuddy-quota.mjs Quota semantics: package vs per-cycle balance, same-tenant detection
+  check-routable-offers.mjs Live-offer filter self-check: paused/ignored/delisted stay out of routing and probes
   dump-strings.mjs   Dumps every Chinese string in the UI, as a translation checklist
 
 docs/              README images + design docs
@@ -471,7 +472,13 @@ MANAGE_API_HOME=/tmp/e2e node daemon/index.js --port 4399
 node .test/run-e2e.mjs
 ```
 
-`MODE` can be `good`, `degraded` (swapped + inflated), `truncated` (cut off), or `fail`.
+`MODE` can be `good`, `degraded` (swapped + inflated), `truncated` (cut off), or `fail` (every chat call returns 503 — used by `run-gateway.mjs` as the "cheap but broken" relay). The gateway end-to-end test (routing, failover, streaming, auth) reuses the same setup with 5103 switched to `MODE=fail`, then runs `node .test/run-gateway.mjs`.
+
+Additional self-contained checks:
+
+```bash
+node .test/check-routable-offers.mjs # paused/ignored/delisted offers stay out of routing and probes
+```
 
 ### Checking the language switch
 
