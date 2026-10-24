@@ -9,20 +9,71 @@
  */
 
 /**
- * 分组身份色 class（gchip-0 ~ gchip-7）：按分组名稳定哈希取色，
- * 同名必同色、改名才换色。「未指定」（空名）不参与取色，保持中性灰。
- *
- * 放在这个纯函数模块里导出，app.js 与免费页共用同一份——身份色的意义
- * 就是跨页面认出同一个分组，两处各写一遍哈希迟早漂移。
- * 颜色本身定义在 web/style.css 的 .gchip-N；呈现参考 upstream-ops：
- * 低饱和底 + 同色文字 + 同色细描边，只做识别不做强调。
+ * 厂商前缀表：deepseek-v4-flash → deepseek；gpt-5.3 与 gpt-5.3-codex 同厂。
+ * 放在这个纯函数模块里导出，app.js（忽略模型弹窗按厂牌分组）与胶囊配色共用。
  */
-export function groupColorClass(name) {
-  const n = String(name || '').trim()
-  if (!n) return ''
-  let h = 5381
-  for (let i = 0; i < n.length; i += 1) h = ((h << 5) + h + n.charCodeAt(i)) >>> 0
-  return `gchip-${h % 8}`
+export const VENDOR_LABEL = {
+  gpt: 'OpenAI',
+  o1: 'OpenAI',
+  o3: 'OpenAI',
+  o4: 'OpenAI',
+  codex: 'OpenAI',
+  claude: 'Anthropic',
+  gemini: 'Gemini',
+  grok: 'Grok',
+  llama: 'Llama',
+  mistral: 'Mistral',
+  deepseek: 'DeepSeek',
+  glm: '智谱 GLM',
+  chatglm: '智谱 GLM',
+  qwen: '通义千问',
+  kimi: 'Moonshot',
+  moonshot: 'Moonshot',
+  doubao: '豆包',
+  hunyuan: '腾讯混元',
+  ernie: '文心一言',
+  minimax: 'MiniMax',
+  abab: 'MiniMax',
+  spark: '讯飞星火',
+  yi: '零一万物',
+}
+
+/** 国产厂商前缀集合：胶囊统一蓝色 */
+const CN_PREFIXES = new Set([
+  'deepseek', 'glm', 'chatglm', 'qwen', 'kimi', 'moonshot', 'doubao',
+  'hunyuan', 'ernie', 'minimax', 'abab', 'spark', 'yi',
+])
+
+/** 海外主流厂商的专属色；其余海外厂牌与未识别的一律中性灰，不猜 */
+const OVERSEAS_CHIP = {
+  gpt: 'vchip-openai',
+  o1: 'vchip-openai',
+  o3: 'vchip-openai',
+  o4: 'vchip-openai',
+  codex: 'vchip-openai',
+  claude: 'vchip-anthropic',
+  gemini: 'vchip-google',
+}
+
+/**
+ * 模型名 → 厂商胶囊 class：国产=蓝（统一）、海外主流各家一色、
+ * 未识别=空（中性灰）。免费分组的 `.vchip-free` 不在这里判——
+ * 免费与否看价格（倍率 0 / 实际价 0），由调用方按数据判定。
+ */
+export function vendorChipClass(modelName) {
+  const prefix = String(modelName || '').toLowerCase().split(/[-_./:]/)[0]
+  if (!prefix) return ''
+  if (CN_PREFIXES.has(prefix)) return 'vchip-cn'
+  return OVERSEAS_CHIP[prefix] || ''
+}
+
+export function vendorOf(name) {
+  const prefix = String(name || '').toLowerCase().split(/[-_./:]/)[0]
+  return prefix || '其它'
+}
+
+export function vendorLabel(prefix) {
+  return VENDOR_LABEL[prefix] || prefix
 }
 
 const DAY_MS = 86400000
@@ -241,8 +292,10 @@ export function renderFreeRelayPane({ offers = [], providers = [], crossPane = '
       const { offer, score, gate } = row
       const fp = typeof score?.fingerprintRate === 'number' ? `${Math.round(score.fingerprintRate * 100)}%` : '—'
       const ttft = typeof score?.ttftMs === 'number' ? `${Math.round(score.ttftMs)}ms` : '—'
+      // 免费页整页都是免费供给：分组列统一免费色（与站点卡「免费 N」标记同款），
+      // 厂商由「模型」列自己表达，不抢分组的语义
       const group = offer.group
-        ? `<span class="gtag ${groupColorClass(offer.group)}">${esc(offer.group)}</span>`
+        ? `<span class="gtag vchip-free">${esc(offer.group)}</span>`
         : `<span style="color:var(--faint)">${esc(t('默认'))}</span>`
       const status = gate
         ? `<span class="badge warn" title="${esc(t(gate.why || gate.label))}">${esc(t(gate.label))}</span>`

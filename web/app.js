@@ -1,6 +1,6 @@
 /** 前端：无框架，全量状态 + 重渲染。 */
 import { getLang, onLangChange, restoreDom, setLang, t, translateDom } from './i18n.js'
-import { renderFreeRelayPane, groupColorClass } from './free-relay.js'
+import { renderFreeRelayPane, vendorChipClass, vendorOf, vendorLabel } from './free-relay.js'
 import { renderFreePlatformPane } from './free-platform.js'
 
 const $ = (sel, root = document) => root.querySelector(sel)
@@ -72,6 +72,29 @@ function ratioToneClass(rate) {
   if (!Number.isFinite(n)) return ''
   if (n > 2) return 'bad'
   if (n > 1.2) return 'warn'
+  return ''
+}
+
+/**
+ * 分组胶囊的厂商色（聚合判定）：组内全部免费 → 免费色（与站点卡「免费 N」
+ * 标记同款 info 蓝）；全部国产 → 国产蓝；恰好一家海外厂商 → 该厂专属色；
+ * 混合厂商或含未识别前缀 → 中性灰，不猜。
+ * 免费判定是展示层近似（倍率 0 或手填双零价），权威判定在服务端 isFreeOffer。
+ */
+function groupChipClass(groupOffers) {
+  if (!Array.isArray(groupOffers) || groupOffers.length === 0) return ''
+  const isFree = (o) =>
+    o.pricingMode === 'manual'
+      ? Number(o.inPrice) === 0 && Number(o.outPrice) === 0
+      : Number(o.ratio) === 0
+  if (groupOffers.every(isFree)) return 'vchip-free'
+  const chips = new Set()
+  for (const o of groupOffers) {
+    chips.add(vendorChipClass(o.modelKey || o.upstreamName) || 'unknown')
+  }
+  if (chips.has('unknown')) return ''
+  if (chips.size === 1) return [...chips][0]
+  if ([...chips].every((c) => c === 'vchip-cn')) return 'vchip-cn'
   return ''
 }
 
@@ -788,6 +811,7 @@ function providersHtml({ withForm = true, panel = '', actions = '' } = {}) {
         mixed: ratioValues.size > 1,
         siteRatio: siteRatios.size === 1 ? [...siteRatios][0] : '',
         custom: groupOffers.some((o) => o.ratioSource === 'custom'),
+        chipClass: groupChipClass(groupOffers),
       }]
     }))
     const groupRows = [...groupStats.entries()].map(([groupName, st]) => {
@@ -894,7 +918,7 @@ function providersHtml({ withForm = true, panel = '', actions = '' } = {}) {
         </div>
 
         <div class="prov-groups">
-          <span class="k" title="${t('胶囊底色只标识分组（同名同色），与价格无关；倍率数字仅加价时示警：>1.2 橙、>2 红，常态与分组文字同色')}">${groupNames.length ? `${groupNames.length} 个分组` : '还没有分组'}</span>
+          <span class="k" title="${t('胶囊底色标识模型厂商：国产=蓝、免费分组=蓝紫（与「免费 N」标记一致）；倍率数字仅加价时示警：>1.2 橙、>2 红')}">${groupNames.length ? `${groupNames.length} 个分组` : '还没有分组'}</span>
           <span class="prov-group-chips">
             ${groupNames.slice(0, 6).map((g) => {
               const st = groupStats.get(g) || {}
@@ -904,7 +928,7 @@ function providersHtml({ withForm = true, panel = '', actions = '' } = {}) {
                 : st.uniform !== '' && st.uniform !== undefined
                   ? `<span class="ratio-tone ${ratioToneClass(st.uniform)}">×${esc(st.uniform)}</span>`
                   : ''
-              return `<span class="group-chip ${groupColorClass(g)}">${g ? esc(g) : '未指定'}${tag}</span>`
+              return `<span class="group-chip ${st.chipClass || ''}">${g ? esc(g) : '未指定'}${tag}</span>`
             }).join('')}
             ${groupNames.length > 6 ? `<span class="group-chip">还有 ${groupNames.length - 6} 个</span>` : ''}
           </span>
@@ -922,17 +946,20 @@ function providersHtml({ withForm = true, panel = '', actions = '' } = {}) {
         <div class="prov-detail" hidden>
         <div data-pane="keys">
         <div class="keylist">
-          ${keys.length === 0 ? '<div class="hint">还没有 Key，加一个才能拉模型。</div>' : keys.map((k) => `
+          ${keys.length === 0 ? '<div class="hint">还没有 Key，加一个才能拉模型。</div>' : keys.map((k) => {
+            const keyOffers = offers.filter((o) => o.credentialId === k.id)
+            return `
             <div class="keyrow" data-credential="${esc(k.id)}">
               <span>${esc(k.label)}</span>
               <span class="tail">sk-••••${esc(k.tail || '????')}</span>
-              <button class="ghost tiny group-chip ${groupColorClass(k.group)}" data-act="open-group-picker" title="${k.group ? '这把 Key 属于这个分组，点这里换' : '还没选分组，点这里选（会顺便把倍率填好）'}">
+              <button class="ghost tiny group-chip ${k.group === '' ? '' : groupChipClass(keyOffers)}" data-act="open-group-picker" title="${k.group ? '这把 Key 属于这个分组，点这里换' : '还没选分组，点这里选（会顺便把倍率填好）'}">
                 ${k.group ? `分组 · ${esc(k.group)}` : '选分组'}
               </button>
-              <span class="tail">${offers.filter((o) => o.credentialId === k.id).length} 个模型</span>
+              <span class="tail">${keyOffers.length} 个模型</span>
               <span class="grow"></span>
               <button class="ghost danger" data-act="del-key">删除</button>
-            </div>`).join('')}
+            </div>`
+          }).join('')}
           <form class="inline-form" data-form="add-key">
             <input name="label" placeholder="标签" />
             <input name="secret" placeholder="sk-... 粘贴完整 Key" autocomplete="off" required />
@@ -1614,35 +1641,7 @@ let igGroupNames = new Map()
 // 折叠起来的厂牌（记住，重开弹窗仍是折叠的）
 const igCollapsed = new Set()
 
-/** 前缀即厂牌：deepseek-v4-flash → deepseek；gpt-5.3 和 gpt-5.3-codex 同组 */
-const VENDOR_LABEL = {
-  gpt: 'OpenAI',
-  o1: 'OpenAI',
-  o3: 'OpenAI',
-  o4: 'OpenAI',
-  claude: 'Anthropic',
-  deepseek: 'DeepSeek',
-  glm: '智谱 GLM',
-  chatglm: '智谱 GLM',
-  qwen: '通义千问',
-  kimi: 'Moonshot',
-  moonshot: 'Moonshot',
-  doubao: '豆包',
-  gemini: 'Gemini',
-  grok: 'Grok',
-  codex: 'Codex',
-  llama: 'Llama',
-  mistral: 'Mistral',
-}
-
-function vendorOf(name) {
-  const prefix = String(name || '').toLowerCase().split(/[-_./:]/)[0]
-  return prefix || '其它'
-}
-
-function vendorLabel(prefix) {
-  return VENDOR_LABEL[prefix] || prefix
-}
+// 厂牌前缀表与 vendorOf / vendorLabel 移到了 free-relay.js（胶囊配色与这里共用一份）
 
 /** 当前所有出现过的模型名 + 覆盖站点数（含已被忽略的，来自后端 modelIndex） */
 function knownModels() {
@@ -1845,7 +1844,7 @@ function renderDecision() {
               ? `<div class="sub mono">${esc(candidate.upstreamName)}</div>`
               : ''
           }</td>
-          <td>${candidate.group ? `<span class="badge ${groupColorClass(candidate.group)}">${esc(candidate.group)}</span>` : '<span style="color:var(--faint)">默认</span>'}</td>
+          <td>${candidate.group ? `<span class="badge ${vendorChipClass(candidate.upstreamName)}">${esc(candidate.group)}</span>` : '<span style="color:var(--faint)">默认</span>'}</td>
           <td class="num">${candidate.price === null ? '—' : priceText(candidate.price)}</td>
           <td class="num">${candidate.quality === null ? '—' : candidate.quality.toFixed(2)}</td>
           <td class="num">${candidate.effective === null ? '—' : priceText(candidate.effective)}</td>
@@ -2184,7 +2183,7 @@ function renderGateway() {
           <td style="color:var(--faint)">${new Date(r.ts).toLocaleTimeString('zh-CN')}</td>
           <td>${esc(r.keyName || '—')}</td>
           <td class="mono">${esc(r.model)}</td>
-          <td>${r.chosenProviderName ? `${esc(r.chosenProviderName)}${r.chosenGroup ? ` <span class="badge ${groupColorClass(r.chosenGroup)}">${esc(r.chosenGroup)}</span>` : ''}` : '<span class="badge danger">全部失败</span>'}</td>
+          <td>${r.chosenProviderName ? `${esc(r.chosenProviderName)}${r.chosenGroup ? ` <span class="badge ${r.pool === 'free' ? 'vchip-free' : vendorChipClass(r.model)}">${esc(r.chosenGroup)}</span>` : ''}` : '<span class="badge danger">全部失败</span>'}</td>
           <td class="num">${r.usage ? formatTokens((r.usage.prompt_tokens || 0) + (r.usage.completion_tokens || 0)) : '—'}</td>
           <td class="num">${r.attempts}</td>
           <td class="num">${r.ttftMs ? `${r.ttftMs}ms` : '—'}</td>
@@ -2775,7 +2774,7 @@ function renderMonitor() {
         <h3>最近倍率变动</h3>
         <span class="hint">${t('{n} 条', { n: (data.changes || []).length })}</span>
       </div>
-      <div class="legend-note">${t('胶囊底色只标识分组（同名同色），与价格无关；倍率数字仅加价时示警：>1.2 橙、>2 红，常态与分组文字同色')}</div>
+      <div class="legend-note">${t('胶囊底色标识模型厂商：国产=蓝、免费分组=蓝紫（与「免费 N」标记一致）；倍率数字仅加价时示警：>1.2 橙、>2 红')}</div>
       ${changeRows || '<div class="empty small"><p>还没有变动。第一次同步只记基线，之后才开始比较。</p></div>'}
     </div>`
 
@@ -2796,11 +2795,11 @@ function renderMonitor() {
       const balanceText = row.balance === null ? '—' : `${esc(currency)} ${money(row.balance)}`
       const thresholdText = row.threshold === null ? t('未设阈值') : `${esc(currency)} ${money(row.threshold)}`
       const groups = row.groups || []
-      // 倍率数字的语义色与站点卡、分组倍率弹窗共用 ratioToneClass——
-      // 胶囊底色仍是分组身份色，「底色认分组、数字看折扣」两条信息不混
+      // 变动流只有分组名 + 倍率，没有模型归属 → 厂商不可知，不猜；
+      // 倍率 0 的分组就是免费池，用免费色（与站点卡「免费 N」标记一致）
       const groupChips = groups
         .slice(0, 6)
-        .map((g) => `<span class="group-chip static ${groupColorClass(g.name)}">${esc(g.name)}${typeof g.rate === 'number' ? ` <span class="ratio-tone ${ratioToneClass(g.rate)}">×${g.rate}</span>` : ''}</span>`)
+        .map((g) => `<span class="group-chip static ${g.rate === 0 ? 'vchip-free' : ''}">${esc(g.name)}${typeof g.rate === 'number' ? ` <span class="ratio-tone ${ratioToneClass(g.rate)}">×${g.rate}</span>` : ''}</span>`)
         .join('')
       const more = groups.length > 6
         ? `<span class="hint">${t('还有 {n} 个', { n: groups.length - 6 })}</span>`
