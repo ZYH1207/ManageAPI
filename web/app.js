@@ -278,11 +278,11 @@ function headlineHtml() {
   const line = state.headline
   if (!line) return ''
   // 整句走 t()：中英语序不同，拆成片段翻会串行
-  const sentence = t('此刻 {model} 在 {provider} 最便宜，{price} / 百万 token，比最贵的一家省 {pct}%。', {
+  const sentence = t('同样用 {model}，现在选「{provider}」最划算：{price}/百万 token，比最贵的站省 {pct}%。', {
     model: esc(line.modelKey),
     provider: `<strong>${esc(line.providerName)}</strong>`,
     price: `<strong>${priceText(line.price)}</strong>`,
-    pct: `<strong>${line.spreadPct}%</strong>`,
+    pct: `<strong>${line.spreadPct}</strong>`,
   })
   // 不再挂「当前最优选择」小标题：一句话自己说清楚，标题交给页面头
   return `

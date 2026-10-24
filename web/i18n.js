@@ -578,10 +578,8 @@ Object.assign(EN, {
     'The token is your site login credential — used only to read balance and usage, never for chat. To get it: log in → F12 → Network → click any <code>/api/v1/</code> request → copy <code>Authorization</code> from Request Headers (drop the <code>Bearer </code> prefix). Tokens expire in 7–30 days; copy a fresh one when they do.',
 
   // 概览的一句话结论（带 <strong>）
-  '{model} 目前 {provider} 最便宜，{price}/百万 token，比最贵的省 {pct}%':
-    '{provider} is the cheapest for {model} at {price}/Mtok — {pct}% below the priciest',
-  '此刻 {model} 在 {provider} 最便宜，{price} / 百万 token，比最贵的一家省 {pct}%。':
-    'Right now {provider} is the cheapest for {model} — {price} / Mtok, {pct}% less than the priciest.',
+  '同样用 {model}，现在选「{provider}」最划算：{price}/百万 token，比最贵的站省 {pct}%。':
+    'For {model}, {provider} is the best deal right now: {price}/Mtok — {pct}% less than the priciest site.',
 })
 
 // 第三遍：按真实渲染出来的原文校正（词典 key 必须是「空白已归一化」的原文）

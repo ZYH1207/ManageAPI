@@ -287,7 +287,7 @@ export function headline(ranked, providers, isTrusted = () => true, focusModels 
   if (!best) best = [...groups].sort((a, b) => b.spreadPct - a.spreadPct)[0]
   if (!best) return null
 
-  // 排序口径是美元；文案暂时仍按人民币展示（显示币种开关是下一步的事）
+  // 排序口径是美元；text 固定按人民币，界面自己按显示币种格式化
   const priceUsd = Math.round(best.top.blendedUsdPerMtok * 10000) / 10000
   const price = Math.round(priceUsd * fxFor(settings) * 100) / 100
   const providerName = nameOf(best.top.providerId)
@@ -298,6 +298,6 @@ export function headline(ranked, providers, isTrusted = () => true, focusModels 
     priceUsd,
     spreadPct: best.spreadPct,
     // 一句人话，别写成「模型 X 目前站点 Y 最便宜」这种机器腔
-    text: `此刻 ${best.modelKey} 在 ${providerName} 最便宜，¥${price.toFixed(2)} / 百万 token，比最贵的一家省 ${best.spreadPct}%。`,
+    text: `同样用 ${best.modelKey}，现在选「${providerName}」最划算：¥${price.toFixed(2)}/百万 token，比最贵的站省 ${best.spreadPct}%。`,
   }
 }
