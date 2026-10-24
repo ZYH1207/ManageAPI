@@ -76,9 +76,9 @@ function ratioToneClass(rate) {
 }
 
 /**
- * 分组胶囊的厂商色（聚合判定）：组内全部免费 → 免费色（与站点卡「免费 N」
- * 标记同款 info 蓝）；全部国产 → 国产蓝；恰好一家海外厂商 → 该厂专属色；
- * 混合厂商或含未识别前缀 → 中性灰，不猜。
+ * 分组胶囊的厂商色（聚合判定）：组内全部免费 → 免费紫（与「免费 N」徽章同款）；
+ * 忽略识别不出前缀的模型后，全国产 → 国产蓝、恰好一家海外 → 该厂色；
+ * 混合厂商 → 中性灰。识别不出的模型不参与判断（不把整组拖成灰色）。
  * 免费判定是展示层近似（倍率 0 或手填双零价），权威判定在服务端 isFreeOffer。
  */
 function groupChipClass(groupOffers) {
@@ -90,12 +90,27 @@ function groupChipClass(groupOffers) {
   if (groupOffers.every(isFree)) return 'vchip-free'
   const chips = new Set()
   for (const o of groupOffers) {
-    chips.add(vendorChipClass(o.modelKey || o.upstreamName) || 'unknown')
+    const cls = vendorChipClass(o.modelKey || o.upstreamName)
+    if (cls) chips.add(cls)
   }
-  if (chips.has('unknown')) return ''
-  if (chips.size === 1) return [...chips][0]
+  if (chips.size === 0) return ''
   if ([...chips].every((c) => c === 'vchip-cn')) return 'vchip-cn'
+  if (chips.size === 1) return [...chips][0]
   return ''
+}
+
+/**
+ * 「站点 × 分组」→ 胶囊色。**同一分组在所有页面必须同色**，所以判定只看
+ * 该站该分组下全部供给的聚合，不看单行模型——站点卡、Key 行、比价未定价块、
+ * 智能决策、路由日志都调这一份。此前决策页按单行模型取色、站点卡按聚合，
+ * 同一分组两页两个颜色，就是这个函数要修的。
+ */
+function groupChipOf(providerId, groupName) {
+  const g = String(groupName || '')
+  const groupOffers = (state.offers || []).filter(
+    (o) => o.providerId === providerId && (o.group || '') === g,
+  )
+  return groupChipClass(groupOffers)
 }
 
 let toastTimer = null
@@ -952,7 +967,7 @@ function providersHtml({ withForm = true, panel = '', actions = '' } = {}) {
             <div class="keyrow" data-credential="${esc(k.id)}">
               <span>${esc(k.label)}</span>
               <span class="tail">sk-••••${esc(k.tail || '????')}</span>
-              <button class="ghost tiny group-chip ${k.group === '' ? '' : groupChipClass(keyOffers)}" data-act="open-group-picker" title="${k.group ? '这把 Key 属于这个分组，点这里换' : '还没选分组，点这里选（会顺便把倍率填好）'}">
+              <button class="ghost tiny group-chip ${groupChipOf(p.id, k.group)}" data-act="open-group-picker" title="${k.group ? '这把 Key 属于这个分组，点这里换' : '还没选分组，点这里选（会顺便把倍率填好）'}">
                 ${k.group ? `分组 · ${esc(k.group)}` : '选分组'}
               </button>
               <span class="tail">${keyOffers.length} 个模型</span>
@@ -1449,7 +1464,7 @@ function renderPricing() {
             return `
             <tr data-offer="${esc(offer.id)}">
               <td>${esc(providerName(offer.providerId))}</td>
-              <td class="mono">${esc(offer.upstreamName)}${offer.group ? ` <span class="badge">${esc(offer.group)}</span>` : ''}</td>
+              <td class="mono">${esc(offer.upstreamName)}${offer.group ? ` <span class="badge ${groupChipOf(offer.providerId, offer.group)}">${esc(offer.group)}</span>` : ''}</td>
               <td class="num" style="color:var(--faint)">${benchText}</td>
               <td class="num"><input type="number" step="0.001" placeholder="—" value="${offer.inPrice ?? ''}" data-field="inPrice" /></td>
               <td class="num"><input type="number" step="0.001" placeholder="—" value="${offer.outPrice ?? ''}" data-field="outPrice" /></td>
@@ -1844,7 +1859,7 @@ function renderDecision() {
               ? `<div class="sub mono">${esc(candidate.upstreamName)}</div>`
               : ''
           }</td>
-          <td>${candidate.group ? `<span class="badge ${vendorChipClass(candidate.upstreamName)}">${esc(candidate.group)}</span>` : '<span style="color:var(--faint)">默认</span>'}</td>
+          <td>${candidate.group ? `<span class="badge ${groupChipOf(candidate.providerId, candidate.group)}">${esc(candidate.group)}</span>` : '<span style="color:var(--faint)">默认</span>'}</td>
           <td class="num">${candidate.price === null ? '—' : priceText(candidate.price)}</td>
           <td class="num">${candidate.quality === null ? '—' : candidate.quality.toFixed(2)}</td>
           <td class="num">${candidate.effective === null ? '—' : priceText(candidate.effective)}</td>
@@ -2183,7 +2198,7 @@ function renderGateway() {
           <td style="color:var(--faint)">${new Date(r.ts).toLocaleTimeString('zh-CN')}</td>
           <td>${esc(r.keyName || '—')}</td>
           <td class="mono">${esc(r.model)}</td>
-          <td>${r.chosenProviderName ? `${esc(r.chosenProviderName)}${r.chosenGroup ? ` <span class="badge ${r.pool === 'free' ? 'vchip-free' : vendorChipClass(r.model)}">${esc(r.chosenGroup)}</span>` : ''}` : '<span class="badge danger">全部失败</span>'}</td>
+          <td>${r.chosenProviderName ? `${esc(r.chosenProviderName)}${r.chosenGroup ? ` <span class="badge ${r.pool === 'free' ? 'vchip-free' : groupChipOf(r.chosenProviderId, r.chosenGroup)}">${esc(r.chosenGroup)}</span>` : ''}` : '<span class="badge danger">全部失败</span>'}</td>
           <td class="num">${r.usage ? formatTokens((r.usage.prompt_tokens || 0) + (r.usage.completion_tokens || 0)) : '—'}</td>
           <td class="num">${r.attempts}</td>
           <td class="num">${r.ttftMs ? `${r.ttftMs}ms` : '—'}</td>
