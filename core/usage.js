@@ -151,7 +151,10 @@ export async function usageSummary({ days = 30 } = {}) {
     if (!rangeSet.has(day)) continue
     const dayTotal = byDay[day] || emptyRow()
     for (const [composite, row] of Object.entries(bucket)) {
-      const [keyId, providerId, model] = composite.split('|')
+      // 复合键是 keyId|providerId|model，model 排最后——模型名里含 | 时
+      // 剩余段重新 join 才能还原（前两段是内部生成的 id，不会含 |）
+      const [keyId, providerId, ...modelParts] = composite.split('|')
+      const model = modelParts.join('|')
       addRow(totals, row)
       addRow(dayTotal, row)
       if (!byKey[keyId]) byKey[keyId] = emptyRow()

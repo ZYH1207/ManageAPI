@@ -177,6 +177,13 @@ export function longTermScores(probes, traffic = {}, { halfLifeDays = 14, now = 
     byOffer.get(record.offerId).push(record)
   }
 
+  // 真实流量里出现过、但一次都没探过的 offer 也要给长期分（与 scoreOffers 同口径）：
+  // 概览页的站点排名靠它，只被真实使用、没轮到探针的站不该凭空从排名里消失。
+  // 此类条目没有探针记录，uptime 就是流量成功率、质量未知记 null。
+  for (const offerId of Object.keys(traffic || {})) {
+    if (!byOffer.has(offerId)) byOffer.set(offerId, [])
+  }
+
   // 单次探测的完整性：指纹 0.5 + 未截断 0.3 + 计费正常 0.2
   const qualityOf = (r) => {
     const fp = r.fingerprintOk === null || r.fingerprintOk === undefined ? null : r.fingerprintOk ? 1 : 0
@@ -240,7 +247,8 @@ export function longTermScores(probes, traffic = {}, { halfLifeDays = 14, now = 
       avgTtft,
       score,
       firstAt: records[0]?.ts ?? null,
-      lastAt: records[records.length - 1]?.ts ?? null,
+      // 没探过针、只有流量的条目，用流量窗口起点当「最近活跃时间」
+      lastAt: records[records.length - 1]?.ts ?? traffic?.[offerId]?.since ?? null,
     })
   }
   return result

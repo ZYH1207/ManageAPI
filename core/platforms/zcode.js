@@ -168,9 +168,15 @@ async function detectAppVersion() {
 }
 
 function parseLogTime(line) {
-  const match = String(line).match(/^\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})/)
+  const match = String(line).match(/^\[(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2})/)
   if (!match) return null
-  const at = Date.parse(`${match[1].replace(' ', 'T')}+08:00`)
+  // 日志时间戳没有时区后缀，它是客户端所在机器的本地时间，按本机时区解释。
+  // 此前硬编码 +08:00：客户端在别的时区运行时日志时间会被静默读偏，
+  // 表现为「12 小时窗口内找不到用量」
+  const [, y, mo, d, h, mi, s] = match
+  const at = new Date(
+    Number(y), Number(mo) - 1, Number(d), Number(h), Number(mi), Number(s),
+  ).getTime()
   return Number.isFinite(at) ? at : null
 }
 

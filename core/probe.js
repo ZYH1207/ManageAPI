@@ -250,11 +250,13 @@ export async function probeModel({ baseUrl, apiKey, model, timeoutMs = 45000 }) 
     const numbers = (second.text.match(/\d+/g) || []).map(Number)
     const highest = numbers.length ? Math.max(...numbers) : 0
     const reportedTokens = second.usage?.completion_tokens ?? null
-    // 两种截断信号：数字没数完，或上游把 max_tokens 压得远低于请求值
-    const cutByLength = second.finishReason === 'length' && highest < 120
+    // 两种截断信号（与 README 的判定依据一致）：
+    // 1. 数字没数到 120——正常模型会数完，被砍就到不了
+    // 2. finish_reason=length 但吐出的 token 远低于请求的 1500——站偷偷压了 max_tokens。
+    //    （此前的 cutByLength 条件被 1 完全包含，是重复判断）
     const cutByQuota =
       second.finishReason === 'length' && typeof reportedTokens === 'number' && reportedTokens < 1500 * 0.4
-    result.truncated = highest < 120 || cutByLength || cutByQuota
+    result.truncated = highest < 120 || cutByQuota
     result.truncationDetail = `最高数字 ${highest}，finish_reason=${second.finishReason ?? '未知'}，completion_tokens=${reportedTokens ?? '未返回'}`
   } catch (error) {
     result.truncationDetail = `截断检测失败：${error?.message || error}`

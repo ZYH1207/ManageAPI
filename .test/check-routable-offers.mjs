@@ -13,7 +13,7 @@
  */
 import { createServer } from 'node:http'
 import { spawn } from 'node:child_process'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, rm, readFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -154,6 +154,22 @@ try {
     'state.offers 不含被忽略的 model-b',
   )
   ok(sync2.sync.pruned >= 1, `model-b 被标记下线（pruned=${sync2.sync.pruned}）`)
+
+  // 模型列表恢复 → 再次同步 → model-b 复活。复活由 syncOffers 当场清 delistedAt
+  // （model-b 还在忽略表里，state.offers 看不到它，所以直接读 db 验证）
+  site1Models = ['model-a', 'model-b', 'model-c']
+  const sync3 = await call('POST', `/api/providers/${p1.id}/sync`)
+  const rawDb = JSON.parse(await readFile(join(HOME, 'db.json'), 'utf8'))
+  const rowB = rawDb.offers.find((o) => o.providerId === p1.id && o.upstreamName === 'model-b')
+  ok(rowB && !rowB.delistedAt, '下线过的 model-b 重新同步后当场复活（delistedAt 已清）')
+  ok(
+    sync3.sync.perKey.some((k) => k.revived >= 1),
+    `复活计数上报（perKey.revived=${sync3.sync.perKey.map((k) => k.revived).join(',')}）`,
+  )
+
+  // 恢复「已下线」状态并重新忽略，继续后面的探测断言
+  site1Models = ['model-a', 'model-c']
+  await call('POST', `/api/providers/${p1.id}/sync`)
 
   // 暂停乙站：整站不探针
   await call('PATCH', `/api/providers/${p2.id}`, { paused: true })

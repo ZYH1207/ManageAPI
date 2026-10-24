@@ -39,3 +39,44 @@ console.log('  fresh-ok     healthy   可用率 1.00  可路由 true')
 console.log('  stale-ok     stale     可路由 false（10 小时前，超过 6 小时有效期）')
 console.log('  probe-fail   unstable  可路由 false')
 console.log('  traffic-bad  unstable  可用率约 0.19  可路由 false（探针正常但真实流量失败多）')
+
+// ---------------------------------------------------------------- 断言部分
+// 上面的表是给人对照的；这里把关键行为钉成断言，跑挂了才叫失败。
+let failed = 0
+const ok = (cond, msg) => {
+  if (cond) console.log(`  ✓ ${msg}`)
+  else {
+    failed += 1
+    console.error(`  ✗ ${msg}`)
+  }
+}
+
+console.log('\n断言：短期评分')
+ok(scores.get('fresh-ok')?.status === 'healthy', '正常探针 → healthy')
+ok(isRoutable(scores.get('fresh-ok')) === true, 'healthy 可路由')
+ok(scores.get('stale-ok')?.stale === true && !isRoutable(scores.get('stale-ok')), '过期评分不可路由')
+ok(scores.get('traffic-bad')?.status === 'unstable', '探针正常但真实流量大面积失败 → unstable')
+
+console.log('\n断言：长期评分（longTermScores）')
+{
+  const { longTermScores } = await import('../core/score.js')
+  const long = longTermScores(probes, traffic, { now })
+  const fresh = long.get('fresh-ok')
+  ok(Boolean(fresh) && fresh.score > 0, '有探针的 offer 有长期分')
+  const bad = long.get('traffic-bad')
+  ok(Boolean(bad) && bad.uptime < 0.5, '流量失败的 offer 长期 uptime 偏低')
+
+  // 纯流量站：traffic 里有、probes 里一条都没有——概览排名靠长期分，
+  // 此前这类 offer 不进长期评分，天天在用的站会从站点排名里凭空消失
+  const trafficOnly = { 'traffic-only': { ok: 9, fail: 1, since: ago(0.5) } }
+  const long2 = longTermScores(probes, trafficOnly, { now })
+  const entry = long2.get('traffic-only')
+  ok(Boolean(entry), '只有流量、没探过针的 offer 也有长期分')
+  ok(entry && Math.abs(entry.uptime - 0.9) < 1e-9, '纯流量条目的 uptime 就是流量成功率（0.9）')
+  ok(entry && entry.avgQuality === null, '纯流量条目质量未知记 null（不编造）')
+  ok(entry && entry.score === 90, '纯流量条目得分 = uptime × 100（质量按 1）')
+  ok(entry && entry.lastAt === trafficOnly['traffic-only'].since, '纯流量条目 lastAt 用流量窗口起点')
+}
+
+console.log(failed === 0 ? '\n断言全部通过 ✓' : `\n${failed} 项断言失败`)
+if (failed > 0) process.exit(1)

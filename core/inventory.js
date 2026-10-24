@@ -294,10 +294,19 @@ export async function syncOffers(providerId, credentialId, models, group = '') {
         .map((o) => [`${o.group || ''}::${o.upstreamName}`, o]),
     )
     let added = 0
+    let revived = 0
     for (const upstreamName of models) {
       const dedupeKey = `${g}::${upstreamName}`
       if (existing.has(dedupeKey)) {
-        existing.get(dedupeKey).listedAt = nowIso()
+        const row = existing.get(dedupeKey)
+        row.listedAt = nowIso()
+        // 模型回来了就当场摘掉下线标记——「在不在」本来就是本函数的职责，
+        // 不能依赖调用方随后再跑一次 markDelisted 才复活（单用其一会出现
+        // 「模型明明回来了还显示下线」）
+        if (row.delistedAt) {
+          delete row.delistedAt
+          revived += 1
+        }
         continue
       }
       db.offers.push({
@@ -325,7 +334,7 @@ export async function syncOffers(providerId, credentialId, models, group = '') {
       })
       added += 1
     }
-    return { added, total: models.length }
+    return { added, revived, total: models.length }
   })
 }
 

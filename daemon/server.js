@@ -588,7 +588,9 @@ route('POST', /^\/api\/providers\/([\w-]+)\/sync$/, async (ctx) => {
       group: row.credential.group || '',
       count: row.models.length,
       removed: pruned.delisted,
-      revived: pruned.revived,
+      // 复活现在由 syncOffers 当场摘标记（revived），markDelisted 只负责标记消失的；
+      // 两者相加保持「本次同步复活了几个」的口径不变
+      revived: (saved.revived || 0) + pruned.revived,
     })
   }
 
@@ -1072,7 +1074,9 @@ route('POST', /^\/api\/providers\/([\w-]+)\/usage-check$/, async (ctx) => {
 
   for (const bucket of Object.values(usageData.days || {})) {
     for (const [composite, row] of Object.entries(bucket)) {
-      const [, providerId, model] = composite.split('|')
+      // model 排在复合键最后一段，名字里含 | 时剩余段重新 join（与 usage.js 同规则）
+      const [, providerId, ...modelParts] = composite.split('|')
+      const model = modelParts.join('|')
       if (providerId !== provider.id) continue
       estRequests += row.requests || 0
       estInput += row.input || 0
