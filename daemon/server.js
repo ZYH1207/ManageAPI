@@ -1393,6 +1393,9 @@ function quotaPatch(quota, previous) {
     cycleSize: quota.cycleSize ?? null,
     bonusTokens: quota.bonusTokens ?? previous?.bonusTokens ?? null,
     tenantKey: quota.tenantKey || previous?.tenantKey || '',
+    // ZCode 语义标记：remaining 含一次性赠量（不受周期闸门限制）。
+    // 本次没带就继承上次的——连接器升级过渡期不丢标记
+    remainingIncludesOneTime: Boolean(quota.remainingIncludesOneTime || previous?.remainingIncludesOneTime) || undefined,
     limit: null,
     used: null,
     window: windowFromReset(resetAt, previous?.window || 'day'),
