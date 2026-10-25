@@ -6,6 +6,7 @@
  * 也不会因为一次探测耗时较长而错过下一轮。
  */
 import * as store from '../core/store.js'
+import * as inv from '../core/inventory.js'
 import * as fxLib from '../core/fx.js'
 import { scoreOffers } from '../core/score.js'
 
@@ -67,13 +68,17 @@ export function startProbeScheduler({ runProbes, collectMonitor = null, logger =
 
     const intervalMinutes = Number(db.settings.probeIntervalMinutes) || 0
     if (intervalMinutes <= 0) return
-    if (db.offers.length === 0) return
+    // 到期候选只用「在役」供给（未下线/站点未暂停/未忽略）——与 runProbes 同口径。
+    // 此前直接对全量 db.offers 取前 10 个：下线行永久留在库前部且 lastProbeAt
+    // 不更新，一旦占满名额，每轮探测 0 个目标，在役供给被饿死、评分陆续过期
+    const routable = inv.routeableOffers(db)
+    if (routable.length === 0) return
 
     const scores = scoreOffers(db.probes, db.traffic, {
       maxAgeMs: (Number(db.settings.scoreMaxAgeHours) || 6) * 3600 * 1000,
     })
     const now = Date.now()
-    const due = db.offers
+    const due = routable
       .filter((offer) => {
         const score = scores.get(offer.id)
         if (!score || !score.lastProbeAt) return true

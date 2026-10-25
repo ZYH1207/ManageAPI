@@ -12,6 +12,10 @@
 
 import { offerCost } from './pricing.js'
 import { ensureFx } from './fx.js'
+// localDayKey 与 usage.js 同一份（usage 不回头 import 本文件，无循环）：
+// 花费曲线要拿这里的日键去 join usage 的天桶，两边必须同一口径——
+// 此前这里用 UTC 键，东八区每天凌晨 8 小时的用量对不上号
+import { localDayKey } from './usage.js'
 
 /** 各类时序数据的保留上限。按「每站每小时一个点」算，4000 点≈5 个站 1 个月。 */
 const KEEP = {
@@ -320,8 +324,9 @@ export function markAnnouncementsRead(db, ids) {
 
 function recentDays(count, now = new Date()) {
   const days = []
+  // 按本地日迭代而不是毫秒减法：毫秒减法在夏令时时区会产生重复/缺失的日键
   for (let i = count - 1; i >= 0; i -= 1) {
-    days.push(new Date(now.getTime() - i * 86400000).toISOString().slice(0, 10))
+    days.push(localDayKey(new Date(now.getFullYear(), now.getMonth(), now.getDate() - i)))
   }
   return days
 }
@@ -344,7 +349,10 @@ function buildBalanceSeries(m, days, settings = {}) {
   }
 
   return days.map((day) => {
-    const endOfDay = `${day}T23:59:59.999Z`
+    // 本地日的末尾（转 UTC ISO 再与 point.at 比较），与本地日键配套；
+    // 此前拼的 T23:59:59.999Z 是 UTC 日界，东八区每天会多吞 8 小时的点
+    const [y, mo, d] = day.split('-').map(Number)
+    const endOfDay = new Date(y, mo - 1, d, 23, 59, 59, 999).toISOString()
     let total = 0
     let counted = 0
     const perProvider = {}

@@ -13,7 +13,7 @@
  * 个人工具里「能用」通常比「严格」更重要。
  */
 import { offerCost } from './pricing.js'
-import { isRoutable, effectiveCost } from './score.js'
+import { isRoutable, effectiveCost, THRESHOLDS } from './score.js'
 import { normalizeModelKey } from './inventory.js'
 
 const INFINITY_COST = Number.POSITIVE_INFINITY
@@ -63,21 +63,23 @@ export function selectCandidates({ offers, providers, credentials, scores, bench
     // 太慢的直接排除，但仍保留在候选列表里——决策日志要能看出「为什么没选它」
     const tooSlow = maxTtftMs > 0 && typeof ttftMs === 'number' && ttftMs > maxTtftMs
 
-    // 把「为什么不可用」拆成人话，决策页直接显示
+    // 把「为什么不可用」拆成人话，决策页直接显示。
+    // 注意口径：fingerprint/truncation/billingRate 都是「正常比例」（未截断/未虚报），
+    // 给用户看的要换算成异常比例——此前直接把 80% 未截断显示成「截断 80%」，意思完全反了
     const reasons = []
     if (tooSlow) reasons.push('首字超限')
     if (score?.stale) reasons.push('评分过期')
-    if (typeof score?.availability === 'number' && score.availability < 0.8) {
+    if (typeof score?.availability === 'number' && score.availability < THRESHOLDS.availability) {
       reasons.push(`可用率 ${Math.round(score.availability * 100)}%`)
     }
     if (typeof score?.fingerprintRate === 'number' && score.fingerprintRate < 1) {
       reasons.push(`指纹 ${Math.round(score.fingerprintRate * 100)}%`)
     }
     if (typeof score?.truncationRate === 'number' && score.truncationRate < 1) {
-      reasons.push(`截断 ${Math.round(score.truncationRate * 100)}%`)
+      reasons.push(`截断 ${Math.round((1 - score.truncationRate) * 100)}%`)
     }
     if (typeof score?.billingRate === 'number' && score.billingRate < 1) {
-      reasons.push(`计费 ${Math.round(score.billingRate * 100)}%`)
+      reasons.push(`计费 ${Math.round((1 - score.billingRate) * 100)}%`)
     }
 
     return {

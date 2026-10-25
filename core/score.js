@@ -263,6 +263,12 @@ export function longTermScores(probes, traffic = {}, { halfLifeDays = 14, now = 
  */
 export function effectiveCost(priceUsdPerMtok, quality) {
   if (priceUsdPerMtok === null || priceUsdPerMtok === undefined) return null
-  const q = typeof quality === 'number' && quality > 0 ? Math.max(quality, 0.05) : 1
+  // 只有没有质量数据（null/undefined）才按 1 算；quality 恰为 0（探针全失败/
+  // 流量全败）是「完全坏」，走 0.05 下限把成本放大 20 倍——此前 0 被当成
+  // 「没探过」按 1 算，完全坏的站反而不降权
+  const q =
+    quality === null || quality === undefined || !Number.isFinite(quality)
+      ? 1
+      : Math.max(quality, 0.05)
   return priceUsdPerMtok / q
 }
