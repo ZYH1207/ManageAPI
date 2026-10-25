@@ -15,9 +15,7 @@ import { dirname, join } from 'node:path'
 import { dataDir } from './store.js'
 import { writeJsonAtomic } from './fsx.js'
 
-// master.key（明文模式）与 master.key.enc（主密码模式）二选一存在，
-// 不存在的自动跳过——两者必须随备份一起走，否则恢复后 Key 解不开
-const FILES = ['db.json', 'master.key', 'master.key.enc', 'benchmark.json', 'free.json', 'usage.json']
+const FILES = ['db.json', 'master.key', 'benchmark.json', 'free.json', 'usage.json']
 const BACKUP_NAME = /^\d{4}-\d{2}-\d{2}_\d{6}(?:-\d+)?$/
 
 let inFlight = null
@@ -99,11 +97,7 @@ async function doBackup({ reason = 'manual', keep = backupKeep() } = {}) {
     !parsed.credentials?.length &&
     !parsed.offers?.length &&
     !parsed.probes?.length
-  if (
-    empty &&
-    !(await exists(join(source, 'master.key'))) &&
-    !(await exists(join(source, 'master.key.enc')))
-  ) {
+  if (empty && !(await exists(join(source, 'master.key')))) {
     return { skipped: '当前是空库，跳过备份' }
   }
 
