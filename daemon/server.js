@@ -1566,42 +1566,45 @@ route('POST', /^\/api\/benchmarks\/import-plaza$/, async (ctx) => {
   const adminToken = await inv.revealAdminToken(provider.id)
   const pricing = await providers.fetchProviderPricing({ baseUrl: provider.baseUrl, adminToken })
 
-  const table = await bench.readBenchmarks()
-  const added = []
-  let skipped = 0
-  for (const model of pricing.models) {
-    const modelKey = inv.normalizeModelKey(model.name)
-    if (!modelKey) continue
-    if (model.inPrice === null && model.outPrice === null) {
-      skipped += 1
-      continue
+  // 读-改-写走 benchmark.js 的串行队列，与手动改价 / 载入参考价 / 从站导入互斥，
+  // 并发到达时不再互相覆盖
+  const result = await bench.mutateBenchmarks((table) => {
+    const added = []
+    let skipped = 0
+    for (const model of pricing.models) {
+      const modelKey = inv.normalizeModelKey(model.name)
+      if (!modelKey) continue
+      if (model.inPrice === null && model.outPrice === null) {
+        skipped += 1
+        continue
+      }
+      if (table[modelKey]) {
+        skipped += 1
+        continue
+      }
+      table[modelKey] = {
+        display: model.name,
+        in: model.inPrice,
+        out: model.outPrice,
+        offPeakIn: null,
+        offPeakOut: null,
+        currency: 'CNY',
+        source: `${pricing.source}:${provider.id}`,
+        updatedAt: new Date().toISOString(),
+      }
+      added.push({ modelKey, in: model.inPrice, out: model.outPrice })
     }
-    if (table[modelKey]) {
-      skipped += 1
-      continue
-    }
-    table[modelKey] = {
-      display: model.name,
-      in: model.inPrice,
-      out: model.outPrice,
-      offPeakIn: null,
-      offPeakOut: null,
-      currency: 'CNY',
-      source: `${pricing.source}:${provider.id}`,
-      updatedAt: new Date().toISOString(),
-    }
-    added.push({ modelKey, in: model.inPrice, out: model.outPrice })
-  }
-  if (added.length > 0) await bench.writeBenchmarks(table)
+    return { added, skipped }
+  })
 
   return {
     ...(await buildState()),
     plazaBenchResult: {
-      added: added.length,
-      skipped,
+      added: result.added.length,
+      skipped: result.skipped,
       total: pricing.models.length,
       source: pricing.source,
-      items: added,
+      items: result.added,
     },
   }
 })
@@ -1705,7 +1708,10 @@ function flushRouting() {
   if (!routingBuffer.length) return Promise.resolve()
   const batch = routingBuffer.splice(0, routingBuffer.length)
   return inv.recordRoutingBatch(batch).catch((error) => {
-    console.error('[网关] 决策日志写盘失败：', error)
+    // 写失败把本批塞回队头，下个 2 秒周期重试——决策日志是排查依据，
+    // 静默丢弃等于让「为什么选了它」永远查不到
+    console.error('[网关] 决策日志写盘失败，已回队重试：', error)
+    routingBuffer.unshift(...batch)
   })
 }
 
@@ -1737,7 +1743,19 @@ async function flushTraffic() {
   if (trafficBuffer.size === 0) return
   const snapshot = [...trafficBuffer.entries()]
   trafficBuffer.clear()
-  await inv.addTraffic(snapshot)
+  try {
+    await inv.addTraffic(snapshot)
+  } catch (error) {
+    // 写失败把快照合并回 buffer（累加而不是覆盖），下个 5 秒周期重试——
+    // 流量计数直接参与可用率评分，丢一批等于成败样本凭空消失
+    console.error('[网关] 流量计数写盘失败，已回队重试：', error)
+    for (const [offerId, entry] of snapshot) {
+      const current = trafficBuffer.get(offerId) || { ok: 0, fail: 0 }
+      current.ok += entry.ok
+      current.fail += entry.fail
+      trafficBuffer.set(offerId, current)
+    }
+  }
 }
 
 /**

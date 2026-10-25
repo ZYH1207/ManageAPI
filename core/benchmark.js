@@ -47,89 +47,113 @@ export async function writeBenchmarks(table) {
   return table
 }
 
-/** 单条写入/覆盖一个基准价。 */
-export async function setBenchmark(modelKey, entry) {
-  const table = await readBenchmarks()
-  const num = (v) => (v === null || v === undefined || v === '' ? null : Number(v))
-  table[modelKey] = {
-    display: entry.display || modelKey,
-    in: num(entry.in),
-    out: num(entry.out),
-    // 峰谷：留空表示该模型没有分时段定价
-    offPeakIn: num(entry.offPeakIn),
-    offPeakOut: num(entry.offPeakOut),
-    currency: entry.currency === 'CNY' ? 'CNY' : 'USD',
-    source: entry.source || 'manual',
-    updatedAt: new Date().toISOString(),
-  }
-  return writeBenchmarks(table)
+// 读-改-写串行化（与 store.mutate / usage.writeChain 同一套思路）：HTTP 天然并发，
+// 手动改价与「载入参考价 / 广场导入 / 从站导入」同时到达时，裸的读改写会
+// 后写覆盖先写、先完成的修改静默丢失。这里曾是全项目唯一没串行化的存储。
+let writeChain = Promise.resolve()
+
+/**
+ * 把一次「读-改-写」排进串行队列。mutate 函数拿到当前表、就地修改并返回；
+ * 写盘由队列统一完成。返回 mutate 的返回值。导出给 server.js 的
+ * import-plaza 等复合路径用，避免任何裸的「读→改→写」绕过队列。
+ */
+export function mutateBenchmarks(mutate) {
+  const job = writeChain.then(async () => {
+    const table = await readBenchmarks()
+    const result = await mutate(table)
+    await writeBenchmarks(table)
+    return result
+  })
+  // 失败不断链：下一个操作照常排队，但错误要冒给调用方
+  writeChain = job.catch(() => {})
+  return job
 }
 
-export async function deleteBenchmark(modelKey) {
-  const table = await readBenchmarks()
-  delete table[modelKey]
-  return writeBenchmarks(table)
+/** 单条写入/覆盖一个基准价。 */
+export function setBenchmark(modelKey, entry) {
+  return mutateBenchmarks((table) => {
+    const num = (v) => (v === null || v === undefined || v === '' ? null : Number(v))
+    table[modelKey] = {
+      display: entry.display || modelKey,
+      in: num(entry.in),
+      out: num(entry.out),
+      // 峰谷：留空表示该模型没有分时段定价
+      offPeakIn: num(entry.offPeakIn),
+      offPeakOut: num(entry.offPeakOut),
+      currency: entry.currency === 'CNY' ? 'CNY' : 'USD',
+      source: entry.source || 'manual',
+      updatedAt: new Date().toISOString(),
+    }
+    return table[modelKey]
+  })
+}
+
+export function deleteBenchmark(modelKey) {
+  return mutateBenchmarks((table) => {
+    delete table[modelKey]
+    return { deleted: modelKey }
+  })
 }
 
 /**
  * 把内置参考价里能匹配上的模型写入基准价表。
  * 只补缺失的，不覆盖已有条目——用户手填或从站导入的更可信。
  */
-export async function seedReferenceBenchmarks(modelKeys) {
-  const table = await readBenchmarks()
-  const added = []
-  const skipped = []
-  for (const key of modelKeys) {
-    if (!key) continue
-    const existing = table[key]
-    // 用户手填或从站导入的，绝不覆盖；只刷新之前由参考价写入的条目
-    if (existing && !String(existing.source || '').startsWith('reference:')) {
-      skipped.push(key)
-      continue
+export function seedReferenceBenchmarks(modelKeys) {
+  return mutateBenchmarks((table) => {
+    const added = []
+    const skipped = []
+    for (const key of modelKeys) {
+      if (!key) continue
+      const existing = table[key]
+      // 用户手填或从站导入的，绝不覆盖；只刷新之前由参考价写入的条目
+      if (existing && !String(existing.source || '').startsWith('reference:')) {
+        skipped.push(key)
+        continue
+      }
+      const ref = resolveReference(key)
+      if (!ref) {
+        skipped.push(key)
+        continue
+      }
+      table[key] = {
+        display: key,
+        in: ref.in,
+        out: ref.out,
+        offPeakIn: ref.offPeakIn ?? null,
+        offPeakOut: ref.offPeakOut ?? null,
+        currency: ref.currency,
+        source: `reference:${ref.matchedKey}`,
+        updatedAt: new Date().toISOString(),
+      }
+      added.push({ modelKey: key, matchedKey: ref.matchedKey, in: ref.in, out: ref.out, currency: ref.currency })
     }
-    const ref = resolveReference(key)
-    if (!ref) {
-      skipped.push(key)
-      continue
-    }
-    table[key] = {
-      display: key,
-      in: ref.in,
-      out: ref.out,
-      offPeakIn: ref.offPeakIn ?? null,
-      offPeakOut: ref.offPeakOut ?? null,
-      currency: ref.currency,
-      source: `reference:${ref.matchedKey}`,
-      updatedAt: new Date().toISOString(),
-    }
-    added.push({ modelKey: key, matchedKey: ref.matchedKey, in: ref.in, out: ref.out, currency: ref.currency })
-  }
-  await writeBenchmarks(table)
-  return { added, skipped, total: Object.keys(table).length }
+    return { added, skipped, total: Object.keys(table).length }
+  })
 }
 
 /**
  * 把某个站已填好的实际价，整体设为基准。
  * 找一个你确信「没虚标」的站，一键导入。
  */
-export async function importBenchmarksFrom(offers, providerId) {
-  const table = await readBenchmarks()
-  let imported = 0
-  for (const offer of offers) {
-    if (offer.providerId !== providerId) continue
-    if (offer.pricingMode === 'ratio') continue
-    if (offer.inPrice === null && offer.outPrice === null) continue
-    const key = offer.modelKey || offer.upstreamName
-    table[key] = {
-      display: offer.upstreamName,
-      in: offer.inPrice === null ? null : Number(offer.inPrice),
-      out: offer.outPrice === null ? null : Number(offer.outPrice),
-      currency: offer.currency === 'CNY' ? 'CNY' : 'USD',
-      source: `imported:${providerId}`,
-      updatedAt: new Date().toISOString(),
+export function importBenchmarksFrom(offers, providerId) {
+  return mutateBenchmarks((table) => {
+    let imported = 0
+    for (const offer of offers) {
+      if (offer.providerId !== providerId) continue
+      if (offer.pricingMode === 'ratio') continue
+      if (offer.inPrice === null && offer.outPrice === null) continue
+      const key = offer.modelKey || offer.upstreamName
+      table[key] = {
+        display: offer.upstreamName,
+        in: offer.inPrice === null ? null : Number(offer.inPrice),
+        out: offer.outPrice === null ? null : Number(offer.outPrice),
+        currency: offer.currency === 'CNY' ? 'CNY' : 'USD',
+        source: `imported:${providerId}`,
+        updatedAt: new Date().toISOString(),
+      }
+      imported += 1
     }
-    imported += 1
-  }
-  await writeBenchmarks(table)
-  return { imported, total: Object.keys(table).length }
+    return { imported, total: Object.keys(table).length }
+  })
 }
