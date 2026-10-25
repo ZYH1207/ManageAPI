@@ -77,10 +77,17 @@ export async function collectProviderSnapshots({ providerId = null, logger = con
         snap.models = pricing.models
         await inv.setTokenStatus(provider.id, { ok: true })
       } catch (error) {
-        errors.push(`倍率：${error.message}`)
-        // 401/403 才是令牌失效；超时、404、结构不对都不该给令牌判死刑
-        if (/HTTP (401|403)/.test(String(error?.message || ''))) {
-          await inv.setTokenStatus(provider.id, { ok: false, message: error.message })
+        // 404 = 这个站没有 Sub2API 的可用渠道接口（one-api/new-api 系就没有），
+        // 属于「不支持」而不是「采集失败」——记一行日志即可，不进 errors；
+        // 否则每轮采集都出一条 danger 告警（约一天 12 条/站），淹没真正的告警
+        if (/HTTP 404/.test(String(error?.message || ''))) {
+          logger.info?.(`[监控] ${provider.name}：无可用渠道接口（404），跳过倍率采集`)
+        } else {
+          errors.push(`倍率：${error.message}`)
+          // 401/403 才是令牌失效；超时、404、结构不对都不该给令牌判死刑
+          if (/HTTP (401|403)/.test(String(error?.message || ''))) {
+            await inv.setTokenStatus(provider.id, { ok: false, message: error.message })
+          }
         }
       }
     }

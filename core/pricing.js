@@ -161,8 +161,12 @@ export function rankByModel(offers, settings = {}, benchmarks = {}, isTrusted = 
     const statsRows = trustedRows.length > 0 ? trustedRows : rows
     const cheapest = statsRows[0]?.cost.blendedUsdPerMtok ?? null
     const priciest = statsRows.length > 1 ? statsRows[statsRows.length - 1].cost.blendedUsdPerMtok : null
+    // 0 是合法的「最便宜」（如 blendInputWeight=1 且输入价 0 的促销价），
+    // 判空必须用显式 null 比较——此前 cheapest=0 被 falsy 判掉，整组价差全没
     const spreadPct =
-      cheapest && priciest && priciest > 0 ? Math.round(((priciest - cheapest) / priciest) * 100) : null
+      cheapest !== null && priciest !== null && priciest > 0
+        ? Math.round(((priciest - cheapest) / priciest) * 100)
+        : null
     const cheapestId = statsRows[0]?.offer.id ?? null
 
     return {
@@ -195,7 +199,7 @@ export function rankByModel(offers, settings = {}, benchmarks = {}, isTrusted = 
         trusted: isTrusted(r.offer.id),
         isCheapest: r.offer.id === cheapestId,
         deltaPct:
-          cheapest && r.cost.blendedUsdPerMtok && isTrusted(r.offer.id)
+          cheapest !== null && cheapest > 0 && r.cost.blendedUsdPerMtok !== null && isTrusted(r.offer.id)
             ? Math.round(((r.cost.blendedUsdPerMtok - cheapest) / cheapest) * 100)
             : null,
       })),
@@ -228,7 +232,8 @@ export function summarize(offers, settings = {}, benchmarks = {}, isTrusted = ()
       if (rows.length < 2) return null
       const cheapest = rows[0].blendedUsdPerMtok
       const priciest = rows[rows.length - 1].blendedUsdPerMtok
-      if (!cheapest || !priciest || priciest <= 0) return null
+      // cheapest=0 合法（同 rankByModel 的处理）；priciest=0 时除零无意义
+      if (cheapest === null || priciest === null || priciest <= 0) return null
       return Math.round(((priciest - cheapest) / priciest) * 100)
     })
     .filter((value) => typeof value === 'number')
@@ -267,7 +272,8 @@ export function headline(ranked, providers, isTrusted = () => true, focusModels 
       if (rows.length < 2) return null
       const cheapest = rows[0].blendedUsdPerMtok
       const priciest = rows[rows.length - 1].blendedUsdPerMtok
-      if (!cheapest || !priciest || priciest <= 0) return null
+      // cheapest=0 合法（同 rankByModel 的处理）；priciest=0 时除零无意义
+      if (cheapest === null || priciest === null || priciest <= 0) return null
       return {
         modelKey: group.modelKey,
         top: rows[0],

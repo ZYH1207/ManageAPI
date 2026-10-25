@@ -128,8 +128,11 @@ function normalizeQuota(input) {
   }
   return {
     unit: ['credit', 'request', 'token'].includes(input.unit) ? input.unit : 'credit',
-    limit: num(input.limit, 0),
-    used: Math.max(0, num(input.used, 0)),
+    // limit/used 允许 null：自动连接的平台只知道「还剩多少」，连接器特意传 null
+    // 表示没有总量口径。此前 null 被篡改成 0——consume 永不判满、daysLeft 恒 null，
+    // 跨栏「按剩余天数排序」对自动平台整条失效。手动表单仍会填数字。
+    limit: optionalNumber(input.limit),
+    used: optionalNumber(input.used) ?? 0,
     remaining,
     cycleRemaining: optionalNumber(input.cycleRemaining),
     cycleSize: optionalNumber(input.cycleSize),

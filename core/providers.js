@@ -113,6 +113,9 @@ export async function tryBalance({ baseUrl, apiKey, adminToken, timeoutMs = 1000
   // 有管理令牌时优先走账户接口：Sub2API 用 /api/v1/user/profile，one-api 系用 /api/user/self
   if (adminToken) {
     let lastError = null
+    // 单独记鉴权失败：多 origin 轮询时「A 域名 401 + B 域名 404」的最后错误是 404，
+    // 只看 lastError 会把令牌失效漏掉——令牌永远不标红
+    let authError = null
     for (const origin of origins) {
       for (const path of ['/api/v1/user/profile', '/api/user/self']) {
         try {
@@ -145,10 +148,11 @@ export async function tryBalance({ baseUrl, apiKey, adminToken, timeoutMs = 1000
           }
         } catch (error) {
           lastError = error
+          if (/HTTP (401|403)/.test(String(error?.message || ''))) authError = error
         }
       }
     }
-    if (lastError && /401|403/.test(lastError.message)) {
+    if (authError) {
       return { ok: false, reason: '管理令牌已失效（401），请重新从浏览器复制一个，或手动填余额。' }
     }
   }
