@@ -822,43 +822,17 @@ route('POST', /^\/api\/providers\/([\w-]+)\/apply-group$/, async (ctx) => {
       }
 
       const key = offer.benchmarkKey || offer.modelKey || offer.upstreamName
+      // 落价三分支（免费优先 / 倍率模式 / 广场价×倍率）与 detect-groups 共用
+      // inv.applySitePricing——exact 只认本分组精确命中，全站回落价用它判免费会误伤
+      const via = inv.applySitePricing(offer, {
+        exact: byGroupModel.get(`${group}::${offer.modelKey}`) || null,
+        rate,
+        sitePrice: hit,
+        hasBench: Boolean(benchTable[key]),
+      })
+      if (via === 'ratio') viaRatio += 1
+      if (via === 'manual' && !benchTable[key]) missingBench.push(offer.upstreamName)
 
-      // 站点自己把模型标成 0 价：不管分组倍率是多少，这条就是免费。
-      // 「免费模型」这类分组往往倍率写 1（等于原价），真正免费体现在模型原价上，
-      // 先判这一条，否则会被「基准价 × 倍率」算成原价。
-      //
-      // 只认「本分组精确命中」：match() 在分组里找不到时会回落到全站同名模型，
-      // 那拿到的是别的分组的价格，用它判断免费会误伤。
-      const exact = byGroupModel.get(`${group}::${offer.modelKey}`)
-      const siteSaysFree = Boolean(exact) && exact.inPrice === 0 && exact.outPrice === 0
-
-      if (siteSaysFree) {
-        offer.pricingMode = 'manual'
-        offer.ratio = null
-        offer.inPrice = 0
-        offer.outPrice = 0
-        offer.currency = 'CNY'
-        offer.siteRatio = rate ?? null
-        offer.ratioSource = 'site'
-      } else if (benchTable[key] && rate) {
-        offer.ratio = rate
-        offer.siteRatio = rate
-        offer.ratioSource = 'site'
-        offer.pricingMode = 'ratio'
-        offer.inPrice = null
-        offer.outPrice = null
-        viaRatio += 1
-      } else {
-        const mult = rate ?? 1
-        if (hit.inPrice !== null) offer.inPrice = Math.round(hit.inPrice * mult * 1000) / 1000
-        if (hit.outPrice !== null) offer.outPrice = Math.round(hit.outPrice * mult * 1000) / 1000
-        offer.currency = 'CNY'
-        offer.pricingMode = 'manual'
-        offer.ratio = null
-        offer.siteRatio = rate ?? null
-        offer.ratioSource = 'site'
-        if (!benchTable[key]) missingBench.push(offer.upstreamName)
-      }
       // 行上标出它属于哪个分组，页面就不用再显示「默认分组」了
       if (group) offer.group = group
       offer.updatedAt = new Date().toISOString()
@@ -970,6 +944,8 @@ route('POST', /^\/api\/providers\/([\w-]+)\/detect-groups$/, async (ctx) => {
   }
 
   // 按每把 Key 自己的分组落倍率。只动属于该 Key 的行，互不干扰。
+  // 落价三分支（免费优先 / 倍率模式 / 广场价×倍率）与 apply-group 共用
+  // inv.applySitePricing——两处此前各写一遍，细节已经漂移过一次
   await store.mutate((d) => {
     for (const row of results) {
       if (!row.matched) continue
@@ -982,39 +958,13 @@ route('POST', /^\/api\/providers\/([\w-]+)\/detect-groups$/, async (ctx) => {
         // 分组名先写上——这一步不依赖价格表，读不到广场也该记住「你属于哪个分组」
         offer.group = row.group
 
-        // 站点自己标 0 价 → 就是免费，倍率写多少都不影响（「免费模型」分组常见倍率 1）。
-        // 只认本分组精确命中，不用 match() 的全站回落——那是别的分组的价格。
-        const exact = byGroupModel.get(`${row.group}::${offer.modelKey}`)
-        const siteSaysFree = Boolean(exact) && exact.inPrice === 0 && exact.outPrice === 0
-
-        if (siteSaysFree) {
-          offer.pricingMode = 'manual'
-          offer.ratio = null
-          offer.inPrice = 0
-          offer.outPrice = 0
-          offer.currency = 'CNY'
-          offer.siteRatio = typeof row.rate === 'number' ? row.rate : null
-          offer.ratioSource = 'site'
-        } else if (typeof row.rate === 'number' && benchTable[key]) {
-          // 倍率模式：只要基准价 + 倍率，不需要广场给的绝对价。
-          // 站慢或没开广场时这条路仍然能走通，是它最重要的价值。
-          offer.ratio = row.rate
-          offer.siteRatio = row.rate
-          offer.ratioSource = 'site'
-          offer.pricingMode = 'ratio'
-          offer.inPrice = null
-          offer.outPrice = null
-        } else if (hit) {
-          // 没有基准价，只能按广场给的绝对价 × 倍率直接填
-          const mult = typeof row.rate === 'number' ? row.rate : 1
-          if (hit.inPrice !== null) offer.inPrice = Math.round(hit.inPrice * mult * 1000) / 1000
-          if (hit.outPrice !== null) offer.outPrice = Math.round(hit.outPrice * mult * 1000) / 1000
-          offer.currency = 'CNY'
-          offer.pricingMode = 'manual'
-          offer.ratio = null
-          offer.siteRatio = typeof row.rate === 'number' ? row.rate : null
-          offer.ratioSource = 'site'
-        } else {
+        const via = inv.applySitePricing(offer, {
+          exact: byGroupModel.get(`${row.group}::${offer.modelKey}`) || null,
+          rate: row.rate,
+          sitePrice: hit,
+          hasBench: Boolean(benchTable[key]),
+        })
+        if (via === 'skip') {
           // 既没有基准价、也没有广场价：只记分组，价格留给用户自己填
           offer.updatedAt = new Date().toISOString()
           row.unpriced = (row.unpriced || 0) + 1

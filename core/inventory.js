@@ -588,6 +588,65 @@ export async function listProbes(limit = 100) {
  * 和「导入倍率」的区别只在于标记：这里写的是 ratioSource = 'custom'，
  * 站点原始值仍然留在 siteRatio 里，随时可以「恢复」。
  */
+/**
+ * 按站点给的分组价格信息给一条供给落价。apply-group（用户选分组）与
+ * detect-groups（后台识别分组）共用——此前两处各写一遍三分支，已经漂移过一次。
+ *
+ * 三分支（顺序固定）：
+ *  1. 站点把模型标成 0 价 → 免费（manual + 双零价）。「免费模型」分组往往倍率
+ *     写 1，真正免费体现在原价上，必须先判这条，否则会被「基准价 × 倍率」算回原价。
+ *     只认本分组精确命中（exact）——全站同名回落拿到的是别的分组的价格，判免费会误伤。
+ *  2. 有基准价且倍率已知 → 倍率模式（ratio = rate）。不依赖广场的绝对价，
+ *     站点没开模型广场时这条路仍然能走通。
+ *  3. 只有渠道/广场的模型原价 → 原价 × 倍率直接填绝对价（manual）。
+ *
+ * 只改价格字段，不碰 offer.group——分组归属是调用方的语义（一边按用户选择、
+ * 一边按后台识别）。返回落价方式：'free' | 'ratio' | 'manual' | 'skip'
+ * （skip = 信息不足，调用方只记分组、价格留给用户填）。
+ */
+export function applySitePricing(offer, { exact, rate, sitePrice, hasBench }) {
+  const siteRatio = typeof rate === 'number' ? rate : null
+
+  if (exact && exact.inPrice === 0 && exact.outPrice === 0) {
+    offer.pricingMode = 'manual'
+    offer.ratio = null
+    offer.inPrice = 0
+    offer.outPrice = 0
+    offer.currency = 'CNY'
+    offer.siteRatio = siteRatio
+    offer.ratioSource = 'site'
+    return 'free'
+  }
+
+  if (siteRatio !== null && hasBench) {
+    offer.ratio = siteRatio
+    offer.siteRatio = siteRatio
+    offer.ratioSource = 'site'
+    offer.pricingMode = 'ratio'
+    offer.inPrice = null
+    offer.outPrice = null
+    return 'ratio'
+  }
+
+  if (sitePrice) {
+    const mult = siteRatio ?? 1
+    if (sitePrice.inPrice !== null && sitePrice.inPrice !== undefined) {
+      offer.inPrice = Math.round(sitePrice.inPrice * mult * 1000) / 1000
+    }
+    if (sitePrice.outPrice !== null && sitePrice.outPrice !== undefined) {
+      offer.outPrice = Math.round(sitePrice.outPrice * mult * 1000) / 1000
+    }
+    offer.currency = 'CNY'
+    offer.pricingMode = 'manual'
+    offer.ratio = null
+    offer.siteRatio = siteRatio
+    offer.ratioSource = 'site'
+    return 'manual'
+  }
+
+  return 'skip'
+}
+
 export async function setGroupRatio(providerId, group, ratio) {
   return mutate((db) => {
     if (!db.providers.some((p) => p.id === providerId)) throw new Error(`站点不存在：${providerId}`)
@@ -602,7 +661,9 @@ export async function setGroupRatio(providerId, group, ratio) {
       if ((offer.group || '') !== name) continue
       offer.ratio = value
       offer.ratioSource = value === null ? null : value === offer.siteRatio ? 'site' : 'custom'
-      if (value !== null) offer.pricingMode = 'ratio'
+      // 清空倍率要同步回手填模式：pricingMode 是定价的权威开关（pricing.js 的约定），
+      // 留着 'ratio' + ratio=null + 无手填价会变成自相矛盾的「未定价」行
+      offer.pricingMode = value === null ? 'manual' : 'ratio'
       offer.updatedAt = nowIso()
       siteValues.add(offer.siteRatio ?? null)
       updated += 1
