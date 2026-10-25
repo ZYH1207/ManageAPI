@@ -4,7 +4,7 @@
  * 用法：node daemon/index.js [--port 4319] [--open]
  */
 import { createAppServer, flushGatewayBuffers } from './server.js'
-import { dataDir } from '../core/store.js'
+import { dataDir, isMasterKeyEncrypted, unlockWithPassword, setMasterPassword, clearMasterPassword } from '../core/store.js'
 import { ensureGatewayKeys } from '../core/inventory.js'
 import { acquireInstanceLock } from './instance-lock.js'
 import { backupKeep, backupNow, backupRoot, startBackupScheduler } from '../core/backup.js'
@@ -26,7 +26,60 @@ const preferredPort = Number(flag('port', process.env.PORT || 4319))
 const shouldOpen = Boolean(flag('open', false))
 const HOST = '127.0.0.1'
 
+// 主密码的取值顺序：命令行参数 → 环境变量。密码本身不落盘、不进日志。
+// flag 在「--password 后没跟值」时返回布尔 true，不能当密码用，只认字符串
+const rawPasswordFlag = flag('password', null)
+const masterPassword =
+  (typeof rawPasswordFlag === 'string' && rawPasswordFlag) || process.env.MANAGE_API_PASSWORD || null
+
 await mkdir(dataDir(), { recursive: true })
+
+// ---- 主密码的三个管理模式（都在锁之前处理，不碰业务数据）----
+// set / clear 的 flag 检查必须在「解锁分支」之前：否则 enc 已存在时
+// 解锁分支会把 --set/--clear 吞掉、照常启动服务
+if (flag('set-master-password', false)) {
+  // 迁移：明文 master.key → 主密码加密。只改密钥封装，不动业务数据。
+  try {
+    await setMasterPassword(masterPassword)
+    console.log('  已启用主密码：master.key 已加密为 master.key.enc，明文已删除。')
+    console.log('  今后启动需要 MANAGE_API_PASSWORD 或 --password 提供主密码。')
+  } catch (error) {
+    console.error(`  启用失败：${error.message}`)
+  }
+  process.exit(0)
+}
+if (flag('clear-master-password', false)) {
+  if (!masterPassword) {
+    console.error('  请用 MANAGE_API_PASSWORD 或 --password 提供当前主密码。')
+    process.exit(1)
+  }
+  try {
+    await clearMasterPassword(masterPassword)
+    console.log('  已关闭主密码：master.key 已恢复明文。')
+  } catch {
+    console.error('  主密码不正确，关闭失败。')
+  }
+  process.exit(0)
+}
+if (await isMasterKeyEncrypted()) {
+  // 已加密：解锁后才能碰库。缺密码就给出可执行的指引并退出
+  if (!masterPassword) {
+    console.error('')
+    console.error('  master.key 已启用主密码加密。')
+    console.error('  请用环境变量或参数提供主密码：')
+    console.error('    MANAGE_API_PASSWORD=<主密码> node daemon/index.js')
+    console.error('    node daemon/index.js --password <主密码>')
+    console.error('  忘记密码无法恢复数据（没有后门）。')
+    console.error('')
+    process.exit(1)
+  }
+  try {
+    await unlockWithPassword(masterPassword)
+  } catch {
+    console.error('  主密码不正确，解锁失败。')
+    process.exit(1)
+  }
+}
 
 /**
  * 先抢实例锁，再碰数据库。
