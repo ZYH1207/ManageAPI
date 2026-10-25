@@ -562,7 +562,7 @@ node .test/capture-shots.mjs
 - **按次计费** —— 现在只支持按 token 计价
 - **主密码派生密钥** —— 提升本地密钥强度
 - **免费额度池** —— ✅ 已完成（T0/T1/T2a/T2b 四个里程碑全部上线）：中转站免费模型与平台积分独立成页、独立排序，不参与付费比价。开发过程见 [`docs/free-api-plan.md`](docs/free-api-plan.md)；剩余的「平台额度接入网关」单列为下面一条。
-- **平台额度接入网关** —— 免费页平台栏的积分（WorkBuddy / CodeBuddy / ZCode）目前只是卡片上的数字，`/v1/chat/completions` 用不到。计划把它们变成和「中转站免费模型」同池的供给：本周期剩余做闸门、`ledger.consume()` 回写扣减、用尽自动落到下一个来源。方案、参考项目（[magpie](https://github.com/yetone/magpie)）与前置条件见 [`docs/free-api-plan.md`](docs/free-api-plan.md) 的 **T2c**。
+- **平台额度接入网关** —— ⏸ **暂停开发**。各平台对第三方调用检测严格（反代 / 客户端识别——ZCode 的额度接口已实测「只认客户端本体」），模拟客户端代发对话是对抗风控的军备竞赛，账号封禁风险由用户承担，与本项目「显式、不偷偷」的原则冲突。平台积分**保持只读展示**（余额、签到、剩余天数），不接入 `/v1/chat/completions`。原方案与决策记录见 [`docs/free-api-plan.md`](docs/free-api-plan.md) 的 **T2c**。
 - **站点登录态（参考 [upstream-ops](https://github.com/bejix/upstream-ops)）** —— 现在读中转站数据只靠「令牌 / API Key」这类静态凭据，拿不到用户中心的东西：今日消费、累计消费、订阅、公告、分组倍率的历史变动。upstream-ops 的做法是**用账号密码登录站点、自己维持会话**（`/api/user/login` + `refresh`，请求带 `Authorization` 或 Cookie，one-api 系还要带 `New-Api-User` 头），过期前 5 分钟自动续期。若要跟进，计划分四步：
   1. **先自动判定站点系别**（现在「类型」是让用户手填、默认「不确定」）：`provider.kind` 支持 `one-api / new-api / sub2api / unknown`，加一个只读探测——`GET /api/status` 有 `quota_per_unit` / `chat_link` 一类字段 → one-api 系（再看是否返回 `version`、能否 `GET /api/pricing` 区分 new-api）；`GET /api/v1/settings/public` 或 `/api/v1/groups/available` 通 → Sub2API；都不通 → `unknown`。结果写回 `provider.kind` 并记来源（`kindSource: 'auto' | 'manual'`，手填过的不被自动覆盖），添加站点时跑一次，探测失败不阻断保存。**登录接口、鉴权头、额度换算都要按系别分支，所以这是登录态的前置。**
   2. 新增「登录凭据」种类：账号密码单独加密存（`master.key` + AES-256-GCM，与现有 Key 同一套），只在需要时解密，且**不落日志、不回显**；

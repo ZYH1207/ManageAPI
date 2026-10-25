@@ -457,6 +457,9 @@ export function renderFreePlatformPane({
   // 卡片比表单字段宽：.grid 默认 minmax(190px) 在这个场景下会把配额文字挤换行
   return `
     ${stats}
+    <div class="note-card" style="margin-bottom:10px"><b>${esc(t('平台积分仅用于展示余额'))}</b><span class="desc" style="display:block;margin-top:2px">${esc(
+      t('各平台对第三方调用检测严格（反代/客户端识别），为避免账号风控，「把平台额度接入网关代发对话」已暂停开发。这里的积分只能看、不能通过网关消耗；要在客户端用，请去对应平台自己的入口。'),
+    )}</span></div>
     <div class="toolbar" style="margin:0 0 10px">
       <span class="hint" style="margin:0">${esc(t('额度是平台给的总量，用完自己更新；想自动读就点「连接」。'))}</span>
       <span class="grow"></span>
