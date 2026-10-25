@@ -2446,23 +2446,41 @@ function renderBenchmark() {
     })
     .sort((a, b) => a[0].localeCompare(b[0]))
 
-  const rows = entries.map(([key, entry]) => `
+  // 来源值的展示友好化（来源是低频诊断信息，降为模型列的小字，省一列宽度）
+  const sourceLabel = (source) => {
+    const s = String(source || 'manual')
+    if (s === 'manual') return ''
+    if (s === 'seed') return '内置'
+    if (s.startsWith('reference:')) return `参考价 · ${s.slice('reference:'.length)}`
+    if (s.startsWith('imported:')) return `从站导入`
+    return s
+  }
+
+  const rows = entries.map(([key, entry]) => {
+    const display = String(entry.display || '')
+    const src = sourceLabel(entry.source)
+    return `
     <tr data-benchmark="${esc(key)}">
-      <td class="mono">${esc(key)}</td>
-      <td>${esc(entry.display || key)}</td>
+      <td class="mono">
+        ${esc(key)}
+        ${display && display !== key ? `<div class="sub">${esc(display)}</div>` : ''}
+        ${src ? `<div class="sub" style="color:var(--faint)">${esc(src)}</div>` : ''}
+      </td>
       <td class="num"><input type="number" step="0.001" placeholder="—" value="${entry.in ?? ''}" data-field="in" /></td>
       <td class="num"><input type="number" step="0.001" placeholder="—" value="${entry.out ?? ''}" data-field="out" /></td>
-      <td class="num"><input type="number" step="0.001" placeholder="空闲" value="${entry.offPeakIn ?? ''}" data-field="offPeakIn" style="width:76px" /></td>
-      <td class="num"><input type="number" step="0.001" placeholder="空闲" value="${entry.offPeakOut ?? ''}" data-field="offPeakOut" style="width:76px" /></td>
+      <td class="num" style="white-space:nowrap">
+        <input type="number" step="0.001" placeholder="入" value="${entry.offPeakIn ?? ''}" data-field="offPeakIn" style="width:62px" title="空闲时段输入价（如 DeepSeek 半价时段），没有就留空" />
+        <input type="number" step="0.001" placeholder="出" value="${entry.offPeakOut ?? ''}" data-field="offPeakOut" style="width:62px" title="空闲时段输出价" />
+      </td>
       <td>
         <select data-field="currency" style="width:70px">
           <option value="USD" ${entry.currency !== 'CNY' ? 'selected' : ''}>USD</option>
           <option value="CNY" ${entry.currency === 'CNY' ? 'selected' : ''}>CNY</option>
         </select>
       </td>
-      <td class="mono" style="color:var(--faint)">${esc(entry.source || 'manual')}</td>
       <td class="num"><button class="ghost danger" data-act="del-benchmark">删除</button></td>
-    </tr>`).join('')
+    </tr>`
+  }).join('')
 
   const providerOptions = state.providers
     .map((p) => `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join('')
@@ -2509,11 +2527,12 @@ function renderBenchmark() {
     <div class="table-wrap">
       <table>
         <thead><tr>
-          <th>模型 key</th><th>显示名</th><th class="num">输入价</th><th class="num">输出价</th>
-          <th class="num">空闲输入</th><th class="num">空闲输出</th>
-          <th>币种</th><th>来源</th><th></th>
+          <th>模型 <span style="color:var(--faint);font-weight:400">（小字为显示名 / 来源）</span></th>
+          <th class="num">输入价</th><th class="num">输出价</th>
+          <th class="num">空闲价（入 / 出）</th>
+          <th>币种</th><th></th>
         </tr></thead>
-        <tbody>${rows || '<tr><td colspan="9" style="color:var(--faint);text-align:center;padding:24px">还没有基准价</td></tr>'}</tbody>
+        <tbody>${rows || '<tr><td colspan="6" style="color:var(--faint);text-align:center;padding:24px">还没有基准价</td></tr>'}</tbody>
       </table>
     </div>`
 }
