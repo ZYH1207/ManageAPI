@@ -1196,7 +1196,14 @@ route('PATCH', /^\/api\/offers\/([\w-]+)$/, async (ctx) => {
     if (b.inPrice !== undefined) offer.inPrice = nonNegative(b.inPrice, '输入单价')
     if (b.outPrice !== undefined) offer.outPrice = nonNegative(b.outPrice, '输出单价')
     if (b.currency !== undefined) offer.currency = b.currency === 'CNY' ? 'CNY' : 'USD'
-    if (b.priceUnit !== undefined) offer.priceUnit = b.priceUnit === 'per_1k' ? 'per_1k' : 'per_mtok'
+    if (b.priceUnit !== undefined) {
+      offer.priceUnit = pricing.PRICE_UNITS.includes(b.priceUnit) ? b.priceUnit : 'per_mtok'
+    }
+    // 倍率模式定义在 token 口径上（基准价 × 倍率 = 每百万 token 价）——
+    // 切到 ratio 时按次的单位自动回 per_mtok，避免出现 per_call + ratio 的死角
+    if (offer.pricingMode === 'ratio' && offer.priceUnit === 'per_call') {
+      offer.priceUnit = 'per_mtok'
+    }
     if (b.group !== undefined) {
       const name = String(b.group || '').trim()
       const clash = db.offers.some(
@@ -1210,8 +1217,9 @@ route('PATCH', /^\/api\/offers\/([\w-]+)$/, async (ctx) => {
       offer.group = name
     }
     // 从「倍率」切到「价格」时，把当前算出来的价格种进手填字段：
-    // 否则这条供给瞬间变成「未定价」并从比价表消失，看着像切换没生效
-    if (switchingToManual && (offer.inPrice == null || offer.outPrice == null)) {
+    // 否则这条供给瞬间变成「未定价」并从比价表消失，看着像切换没生效。
+    // per_call 除外：按次的单价与 token 折算价是两回事，用户传什么就用什么
+    if (switchingToManual && offer.priceUnit !== 'per_call' && (offer.inPrice == null || offer.outPrice == null)) {
       const asRatio = pricing.resolveOfferPrice({ ...offer, pricingMode: 'ratio' }, benchmarks)
       if (asRatio && asRatio.source === 'ratio') {
         offer.inPrice = asRatio.inPrice

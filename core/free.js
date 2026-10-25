@@ -26,6 +26,12 @@ export const FREE_BASE_PATH = '/free'
 export function isFreeOffer(offer, benchmarks = {}) {
   if (!offer) return false
 
+  // 按次计费（priceUnit='per_call'）：inPrice 即每次请求的价格，倍率与基准价
+  // 都不参与换算——每次 0 元就是免费
+  if (offer.priceUnit === 'per_call') {
+    return Number(offer.inPrice) === 0
+  }
+
   // 倍率为 0：pricing.js 的 resolveOfferPrice 要求 ratio > 0 才走倍率换算，
   // 0 会回落到手填价，所以这里单独识别一次。
   //

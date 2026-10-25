@@ -1213,3 +1213,9 @@ Object.assign(EN, {
   '各平台对第三方调用检测严格（反代/客户端识别），为避免账号风控，「把平台额度接入网关代发对话」已暂停开发。这里的积分只能看、不能通过网关消耗；要在客户端用，请去对应平台自己的入口。':
     'Vendors strictly detect third-party calls (proxy / client fingerprinting). To avoid account risk, "routing platform credits through the gateway" is on hold. Credits here are view-only and cannot be consumed via the gateway — use each vendor\u2019s own entry point instead.',
 })
+
+// 按次计费（priceUnit=per_call）
+Object.assign(EN, {
+  '综合成本': 'Blended cost',
+  '{sym}/百万 token，按次行显示 /次': '{sym}/M tok; per-call rows show /call',
+})

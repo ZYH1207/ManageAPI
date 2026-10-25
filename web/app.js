@@ -1464,7 +1464,7 @@ function renderPricing() {
       <table>
         <thead><tr>
           <th>站点</th><th>上游模型名</th><th class="num">基准价</th>
-          <th class="num">输入价</th><th class="num">输出价</th><th class="num">倍率</th><th></th>
+          <th class="num">输入价</th><th class="num">输出价</th><th class="num">倍率</th><th>单位 / 币种</th><th></th>
         </tr></thead>
         <tbody>
           ${state.unpriced.map((offer) => {
@@ -1478,9 +1478,20 @@ function renderPricing() {
               <td>${esc(providerName(offer.providerId))}</td>
               <td class="mono">${esc(offer.upstreamName)}${offer.group ? ` <span class="badge ${groupChipOf(offer.providerId, offer.group)}">${esc(offer.group)}</span>` : ''}</td>
               <td class="num" style="color:var(--faint)">${benchText}</td>
-              <td class="num"><input type="number" step="0.001" placeholder="—" value="${offer.inPrice ?? ''}" data-field="inPrice" /></td>
-              <td class="num"><input type="number" step="0.001" placeholder="—" value="${offer.outPrice ?? ''}" data-field="outPrice" /></td>
+              <td class="num"><input type="number" step="0.001" placeholder="—" value="${offer.inPrice ?? ''}" data-field="inPrice" ${offer.priceUnit === 'per_call' ? 'title="按次计费：这里填每次请求的价格"' : ''} /></td>
+              <td class="num"><input type="number" step="0.001" placeholder="—" value="${offer.priceUnit === 'per_call' ? '' : offer.outPrice ?? ''}" data-field="outPrice" ${offer.priceUnit === 'per_call' ? 'disabled title="按次计费不区分输入/输出"' : ''} /></td>
               <td class="num"><input class="ratio" type="number" step="0.01" placeholder="倍率" value="${offer.ratio ?? ''}" data-field="ratio" /></td>
+              <td>
+                <select data-field="priceUnit" style="width:64px" title="计价单位：按次 = 输入价填每次请求的价格">
+                  <option value="per_mtok" ${offer.priceUnit !== 'per_1k' && offer.priceUnit !== 'per_call' ? 'selected' : ''}>/M</option>
+                  <option value="per_1k" ${offer.priceUnit === 'per_1k' ? 'selected' : ''}>/1k</option>
+                  <option value="per_call" ${offer.priceUnit === 'per_call' ? 'selected' : ''}>/次</option>
+                </select>
+                <select data-field="currency" style="width:64px">
+                  <option value="USD" ${offer.currency === 'USD' ? 'selected' : ''}>USD</option>
+                  <option value="CNY" ${offer.currency === 'CNY' ? 'selected' : ''}>CNY</option>
+                </select>
+              </td>
               <td><button class="ghost tiny" data-act="mark-free" data-offer="${esc(offer.id)}" title="把输入/输出价都设为 0，这条就进免费池（不进比价和自动选站）">标为免费</button></td>
             </tr>`
           }).join('')}
@@ -1529,6 +1540,21 @@ function renderPricing() {
       // 模式只看 offer.pricingMode，不能拿 row.ratio 推断：
       // 切成「倍率」但还没填倍率时 ratio 是 null，会被误判成手动
       const mode = row.pricingMode === 'ratio' ? 'ratio' : 'manual'
+      const perCall = Boolean(row.perCall)
+      // 综合成本列：按次行显示「/次」，按 token 行显示「/百万 token」
+      const costCell = perCall
+        ? row.callPriceCny === null
+          ? '—'
+          : `<div>¥${money(row.callPriceCny)}<span class="sub">/次</span></div>`
+        : `${row.blendedCnyPerMtok === null ? '—' : priceText(row.blendedCnyPerMtok)}${
+            row.hasOffPeak && row.offPeakBlendedCnyPerMtok !== null ? `<div class="sub">空闲 ${priceText(row.offPeakBlendedCnyPerMtok)}</div>` : ''
+          }`
+      const unitSelect = `
+          <select data-field="priceUnit" style="width:64px" title="计价单位：按次 = 输入价填每次请求的价格">
+            <option value="per_mtok" ${row.priceUnit !== 'per_1k' && row.priceUnit !== 'per_call' ? 'selected' : ''}>/M</option>
+            <option value="per_1k" ${row.priceUnit === 'per_1k' ? 'selected' : ''}>/1k</option>
+            <option value="per_call" ${perCall ? 'selected' : ''}>/次</option>
+          </select>`
       const modeCell = `
         <div class="seg-mini">
           <button class="${mode === 'ratio' ? 'is-on' : ''}" data-act="offer-mode" data-mode="ratio" title="按分组倍率折算">倍率</button>
@@ -1541,17 +1567,18 @@ function renderPricing() {
         <td class="num sub-cell">${cacheCell}</td>
         <td><input class="group-input" type="text" placeholder="默认" value="${esc(row.group || '')}" data-field="group" /><button class="ghost tiny" data-act="dup-offer" title="按这个模型再建一个分组">＋</button></td>
         <td>${modeCell}</td>
-        <td class="num"><input type="number" step="0.001" placeholder="—" value="${row.inPrice ?? ''}" data-field="inPrice" ${mode === 'ratio' ? 'disabled title="当前按倍率算，切到「价格」才能填"' : ''} /></td>
-        <td class="num"><input type="number" step="0.001" placeholder="—" value="${row.outPrice ?? ''}" data-field="outPrice" ${mode === 'ratio' ? 'disabled title="当前按倍率算，切到「价格」才能填"' : ''} /></td>
+        <td class="num"><input type="number" step="0.001" placeholder="—" value="${row.inPrice ?? ''}" data-field="inPrice" ${mode === 'ratio' ? 'disabled title="当前按倍率算，切到「价格」才能填"' : perCall ? 'title="按次计费：这里填每次请求的价格"' : ''} /></td>
+        <td class="num"><input type="number" step="0.001" placeholder="—" value="${perCall ? '' : row.outPrice ?? ''}" data-field="outPrice" ${mode === 'ratio' || perCall ? 'disabled title="按次计费不区分输入/输出"' : ''} /></td>
         <td>
           <select data-field="currency" style="width:70px">
             <option value="USD" ${row.currency === 'USD' ? 'selected' : ''}>USD</option>
             <option value="CNY" ${row.currency === 'CNY' ? 'selected' : ''}>CNY</option>
           </select>
+          ${unitSelect}
         </td>
         <td class="num"><input class="ratio" type="number" step="0.01" placeholder="倍率" value="${row.ratio ?? ''}" data-field="ratio" ${mode === 'manual' ? 'disabled title="当前按手填单价算，切到「倍率」才能填"' : ''} /></td>
         <td class="num">${row.ttftMs ? `${row.ttftMs}ms` : '—'}</td>
-        <td class="num">${row.blendedCnyPerMtok === null ? '—' : priceText(row.blendedCnyPerMtok)}${row.hasOffPeak && row.offPeakBlendedCnyPerMtok !== null ? `<div class="sub">空闲 ${priceText(row.offPeakBlendedCnyPerMtok)}</div>` : ''}</td>
+        <td class="num">${costCell}</td>
         <td class="num">${row.isCheapest ? '<span class="badge ok">最便宜</span>' : row.deltaPct === null ? '—' : `+${row.deltaPct}%`}</td>
       </tr>`
     }).join('')
@@ -1571,7 +1598,7 @@ function renderPricing() {
             <th>模式</th>
             <th class="num">输入价</th><th class="num">输出价</th>
             <th>币种</th><th class="num">倍率</th>
-            <th class="num">首字</th><th class="num">${t('{sym}/百万 token', { sym: priceSym() })}</th><th class="num">价差</th>
+            <th class="num">首字</th><th class="num">${t('综合成本')}<div class="sub">${t('{sym}/百万 token，按次行显示 /次', { sym: priceSym() })}</div></th><th class="num">价差</th>
           </tr></thead>
           <tbody>${rows}</tbody>
         </table>`}

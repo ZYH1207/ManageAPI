@@ -394,6 +394,11 @@ function buildSpendSeries(usageData, offers, settings, benchmarks, days) {
       const offer = byKey.get(`${providerId}|${model}`)
       if (!offer) continue
       const cost = offerCost(offer, settings, benchmarks)
+      // 按次计费：花费 = 请求数 × 每次单价（token 数不参与）
+      if (cost.perCall) {
+        if (typeof cost.callPriceCny === 'number') sum += (row.requests || 0) * cost.callPriceCny
+        continue
+      }
       if (typeof cost.inCnyPerMtok === 'number') sum += ((row.input || 0) / 1e6) * cost.inCnyPerMtok
       if (typeof cost.outCnyPerMtok === 'number') sum += ((row.output || 0) / 1e6) * cost.outCnyPerMtok
     }

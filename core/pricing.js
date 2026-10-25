@@ -15,6 +15,9 @@ const UNIT_MULTIPLIER = {
   per_1k: 1000,
 }
 
+/** priceUnit 的合法值域（per_call 走独立的按次分支，不吃倍率换算） */
+export const PRICE_UNITS = ['per_mtok', 'per_1k', 'per_call']
+
 /** 人民币展示用的默认汇率；只在「把美元显示成人民币」时用到，不参与排序 */
 export const DISPLAY_FX_DEFAULT = 7.2
 
@@ -82,6 +85,42 @@ export function offerCost(offer, settings = {}, benchmarks = {}) {
     }
   }
 
+  // ---- 按次计费：inPrice 即「每次请求的价格」，outPrice 不适用。
+  // 与按 token 的供给量纲不同，token 口径字段全空——比价排序自然落到组尾，
+  // 前端按「/次」显示；免费判定走 free.js 的 per_call 分支。
+  if (offer.priceUnit === 'per_call') {
+    const raw = resolved.inPrice
+    const callUsd =
+      raw === null || !Number.isFinite(Number(raw))
+        ? null
+        : resolved.currency === 'CNY'
+          ? Number(raw) / fx
+          : Number(raw)
+    const callCny =
+      raw === null || !Number.isFinite(Number(raw))
+        ? null
+        : resolved.currency === 'CNY'
+          ? Number(raw)
+          : Number(raw) * fx
+    return {
+      perCall: true,
+      callPriceUsd: callUsd,
+      callPriceCny: callCny,
+      inUsdPerMtok: null,
+      outUsdPerMtok: null,
+      blendedUsdPerMtok: null,
+      offPeakInUsdPerMtok: null,
+      offPeakOutUsdPerMtok: null,
+      offPeakBlendedUsdPerMtok: null,
+      inCnyPerMtok: null,
+      outCnyPerMtok: null,
+      blendedCnyPerMtok: null,
+      offPeakBlendedCnyPerMtok: null,
+      hasOffPeak: false,
+      complete: false,
+    }
+  }
+
   // 人民币标价的供给按汇率折成美元，参与比较的一律是美元
   const toUsd = (price) => {
     if (price === null || !Number.isFinite(price)) return null
@@ -141,6 +180,17 @@ export function rankByModel(offers, settings = {}, benchmarks = {}, isTrusted = 
   for (const offer of offers) {
     const cost = offerCost(offer, settings, benchmarks)
     const row = { offer, cost }
+    // 按次计费：有单价的进正常分组（前端显示「/次」、不参与按 token 的
+    // 最便宜判定——量纲不同没法比），没填单价的才算未定价
+    if (cost.perCall) {
+      if (cost.callPriceUsd === null) unpriced.push(row)
+      else {
+        const key = offer.modelKey || offer.upstreamName
+        if (!groups.has(key)) groups.set(key, [])
+        groups.get(key).push(row)
+      }
+      continue
+    }
     if (cost.blendedUsdPerMtok === null) {
       unpriced.push(row)
       continue
@@ -151,14 +201,19 @@ export function rankByModel(offers, settings = {}, benchmarks = {}, isTrusted = 
   }
 
   const ranked = [...groups.entries()].map(([modelKey, rows]) => {
+    // 按次计价的行与按 token 的行量纲不同，不能同列比价：排在组尾，
+    // 彼此之间按每次单价升序
     rows.sort((a, b) => {
+      if (Boolean(a.cost.perCall) !== Boolean(b.cost.perCall)) return a.cost.perCall ? 1 : -1
+      if (a.cost.perCall) return a.cost.callPriceUsd - b.cost.callPriceUsd
       if (a.cost.complete !== b.cost.complete) return a.cost.complete ? -1 : 1
       return a.cost.blendedUsdPerMtok - b.cost.blendedUsdPerMtok
     })
 
-    const trustedRows = rows.filter((r) => isTrusted(r.offer.id))
-    // 全部不可信时退回全量，至少还能看出价格关系
-    const statsRows = trustedRows.length > 0 ? trustedRows : rows
+    // 最便宜 / 价差只在按 token 的行里算——把按次行混进来会得出假结论
+    const tokenRows = rows.filter((r) => !r.cost.perCall)
+    const trustedToken = tokenRows.filter((r) => isTrusted(r.offer.id))
+    const statsRows = trustedToken.length > 0 ? trustedToken : tokenRows
     const cheapest = statsRows[0]?.cost.blendedUsdPerMtok ?? null
     const priciest = statsRows.length > 1 ? statsRows[statsRows.length - 1].cost.blendedUsdPerMtok : null
     // 0 是合法的「最便宜」（如 blendInputWeight=1 且输入价 0 的促销价），
@@ -184,6 +239,9 @@ export function rankByModel(offers, settings = {}, benchmarks = {}, isTrusted = 
         benchmarkKey: r.offer.benchmarkKey ?? null,
         currency: r.offer.currency,
         priceUnit: r.offer.priceUnit,
+        // 按次计费行：blended* 全 null、perCall 标位 + 单次价（CNY 展示口径）
+        perCall: Boolean(r.cost.perCall),
+        callPriceCny: r.cost.callPriceCny ?? null,
         inPrice: r.offer.inPrice,
         outPrice: r.offer.outPrice,
         inUsdPerMtok: r.cost.inUsdPerMtok,
