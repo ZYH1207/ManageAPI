@@ -2433,6 +2433,10 @@ function fxNoteHtml() {
   return `<span class="hint ${days > 7 ? 'warn-text' : ''}">${text}</span>`
 }
 
+// 基准价分层：默认只展开「与本地供给相关」（模型在比价/路由里用得到）
+// 和「手动改过」的条目，其余（导入后没用上的）收进折叠区
+let benchShowAll = false
+
 function renderBenchmark() {
   const view = $('#view-benchmark')
   const filterText = filters.benchmark.trim().toLowerCase()
@@ -2446,6 +2450,24 @@ function renderBenchmark() {
     })
     .sort((a, b) => a[0].localeCompare(b[0]))
 
+  // 与本地供给相关的判定：基准 key 被任何一条供给引用（benchmarkKey /
+  // modelKey / upstreamName 任一命中）
+  const usedKeys = new Set()
+  for (const o of state.offers || []) {
+    for (const k of [o.benchmarkKey, o.modelKey, o.upstreamName]) {
+      if (k) usedKeys.add(String(k).toLowerCase())
+    }
+  }
+  const isRelevant = ([key, entry]) =>
+    usedKeys.has(key.toLowerCase()) || String(entry.source || '') === 'manual'
+  // 搜索时强制看全部（搜索意图就是找，别再分层）
+  const layering = !filterText && !benchShowAll
+  let matching = layering ? entries.filter(isRelevant) : entries
+  // 相关条目为空时不分层：新用户还没有供给，全部折叠会让页面空白，
+  // 看起来像「导入失败」——直接展示全部
+  if (layering && matching.length === 0 && entries.length > 0) matching = entries
+  const restCount = entries.length - matching.length
+
   // 来源值的展示友好化（来源是低频诊断信息，降为模型列的小字，省一列宽度）
   const sourceLabel = (source) => {
     const s = String(source || 'manual')
@@ -2456,7 +2478,7 @@ function renderBenchmark() {
     return s
   }
 
-  const rows = entries.map(([key, entry]) => {
+  const rows = matching.map(([key, entry]) => {
     const display = String(entry.display || '')
     const src = sourceLabel(entry.source)
     return `
@@ -2505,7 +2527,7 @@ function renderBenchmark() {
     </div>
     <div class="toolbar" style="margin:18px 0 10px">
       <input id="benchmark-search" class="search" type="search" placeholder="搜索模型名…" value="${esc(filters.benchmark)}" />
-      <span class="hint" style="margin:0">${entries.length} / ${Object.keys(state.benchmarks).length} 条</span>
+      <span class="hint" style="margin:0">${layering ? `${matching.length} 条与本地供给相关 · 共 ${entries.length} 条` : `共 ${entries.length} 条`}</span>
       <span style="flex:1"></span>
       <label class="field-inline" title="${t('只影响价格显示，不影响比较口径（比较一律按美元）')}">
         <span>${t('显示币种')}</span>
@@ -2533,6 +2555,13 @@ function renderBenchmark() {
           <th>币种</th><th></th>
         </tr></thead>
         <tbody>${rows || '<tr><td colspan="6" style="color:var(--faint);text-align:center;padding:24px">还没有基准价</td></tr>'}</tbody>
+        ${
+          layering && restCount > 0
+            ? `<tr><td colspan="6" style="text-align:center;padding:10px;border-top:1px dashed var(--border)">
+                 <button class="ghost tiny" data-act="bench-show-all">${t('显示其余 {n} 条（未匹配本地供给）', { n: restCount })}</button>
+               </td></tr>`
+            : ''
+        }
       </table>
     </div>`
 }
@@ -4003,6 +4032,13 @@ document.addEventListener('click', async (event) => {
     if (collapsedPanels.has(key)) collapsedPanels.delete(key)
     else collapsedPanels.add(key)
     render()
+    return
+  }
+
+  if (action === 'bench-show-all') {
+    benchShowAll = !benchShowAll
+    renderBenchmark()
+    translateDom($('#view-benchmark') || document.body)
     return
   }
 
