@@ -590,6 +590,15 @@ export async function fetchProviderPricing({ baseUrl, adminToken, kind }) {
     }
   } catch (error) {
     if (channelError) {
+      // 令牌失效（401/403，Sub2API 的 TOKEN_EXPIRED 属于这类）是最常见的失败原因，
+      // 给出可执行的指引而不是把两个技术错误串在一起——用户该知道下一步去哪
+      const authFailed = /HTTP (401|403)/.test(String(channelError.message || ''))
+      if (authFailed) {
+        throw new Error(
+          `站点令牌已失效（${channelError.message}）。到站点卡片点「令牌」重新填写并保存，然后再导入；` +
+            `模型广场也未开启（${error.message}）。`,
+        )
+      }
       throw new Error(
         `可用渠道读取失败（${channelError.message}），模型广场也不可用（${error.message}）`,
       )

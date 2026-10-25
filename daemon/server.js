@@ -712,6 +712,11 @@ async function loadProviderPricing(providerId, { fresh = false } = {}) {
     } catch (error) {
       const message = error.message || String(error)
       pricingCache.set(providerId, { at: Date.now(), error: message })
+      // 令牌失效要标到站点卡上（与监控采集/余额路径同一行为）：导入/选分组
+      // 失败的用户第一眼看的是卡片，401 沉默的话他不知道该去换令牌
+      if (/HTTP (401|403)/.test(message)) {
+        await inv.setTokenStatus(provider.id, { ok: false, message }).catch(() => {})
+      }
       throw new HttpError(502, message)
     }
   }
