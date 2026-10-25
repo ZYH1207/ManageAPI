@@ -141,6 +141,10 @@ function normalizeQuota(input) {
     bonusTokens: optionalNumber(input.bonusTokens),
     // 同一个租户可能有两张卡（国际版/国内版），上层靠它去重
     tenantKey: input.tenantKey ? String(input.tenantKey) : '',
+    // ZCode 语义标记：remaining 含一次性赠量（不受周期闸门限制）。
+    // remainingOf 在周期剩余为 0 时据此改用 remaining，而不是把「本周期用完」
+    // 误显示成「全部额度为 0」
+    remainingIncludesOneTime: Boolean(input.remainingIncludesOneTime),
     window: input.window === 'month' ? 'month' : 'day',
     resetAt: input.resetAt || null,
   }

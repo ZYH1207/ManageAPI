@@ -402,6 +402,10 @@ export function createZcodeConnector(options = {}) {
     return {
       unit: 'token',
       remaining: summary.remaining,
+      // 语义标记：ZCode 的 remaining 含一次性赠量（不受周期闸门限制）——
+      // 周期桶用尽时「立即可用」仍是 remaining，而不是 cycleRemaining 的 0。
+      // remainingOf 据此决定周期为 0 时显示哪个数（WorkBuddy 没有此标记）
+      remainingIncludesOneTime: true,
       cycleRemaining: summary.cycleRemaining,
       cycleSize: summary.cycleSize,
       refreshAt: summary.refreshAt ? new Date(summary.refreshAt).toISOString() : null,

@@ -48,11 +48,20 @@ function localDayKey(value = new Date()) {
 export function remainingOf(account) {
   const quota = account?.quota
   if (!quota) return 0
-  // 「本周期剩余」才是现在真能用的量。WorkBuddy 的免费订阅会出现
-  //   CapacityRemain（包内）= 100、CycleCapacityRemain（本周期）= 0
-  // 的情况：这个周期已经用满了，要等下个周期重置，只报 100 会让人以为还有额度。
+  // 「本周期剩余」优先，是为 WorkBuddy 的语义设计的：它的 remaining 是「包内
+  // 剩余」，免费订阅会出现包内=100、本周期=0 的情况——周期用满时包内的
+  // 100 现在用不了，只报 100 会让人以为还有额度。
   const cycle = Number(quota.cycleRemaining)
-  if (Number.isFinite(cycle)) return Math.max(0, cycle)
+  if (Number.isFinite(cycle)) {
+    // 但 ZCode 语义相反：remaining 含一次性赠量、不受周期闸门限制（连接器
+    // 用 remainingIncludesOneTime 声明）。周期桶用尽时「立即可用」仍是
+    // remaining——显示 0 会把 1.3 亿赠量说成没额度
+    if (quota.remainingIncludesOneTime) {
+      const remain = Number(quota.remaining)
+      if (Number.isFinite(remain)) return Math.max(0, remain)
+    }
+    return Math.max(0, cycle)
+  }
   // 连接器只能读到「还剩多少」，读不到「总量是多少」——那就直接用剩余量，
   // 别硬造一个 limit 出来（会造成「已用 0/113」这种假进度）
   const remain = Number(quota.remaining)
