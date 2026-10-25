@@ -935,6 +935,11 @@ a.icon-btn:hover { text-decoration: none; }
    没带（未指定、混合厂商、未识别、「还有 N 个」）保持原中性样式 */
 .group-chip[class*='vchip-'] { background: var(--g-bg); color: var(--g-fg); border-color: var(--g-ring); }
 .badge[class*='vchip-'] { background: var(--g-bg); color: var(--g-fg); }
+/* 站点系别徽章（ID_PROVIDER_KIND）：vendor=免费紫（特殊类）、三系中转统一蓝灰。
+   刻意不复用 .vchip-* 厂商品牌色——系别是软件系，套厂商色会语义误导 */
+.badge.kindchip-vendor { background: var(--vendor-free-soft); color: var(--vendor-free); }
+.badge.kindchip-relay { background: hsl(215 18% 93%); color: hsl(215 15% 38%); }
+[data-theme='dark'] .badge.kindchip-relay { background: hsl(215 15% 17%); color: hsl(215 20% 68%); }
 /* 免费页分组列的小胶囊（那里原本是纯文本） */
 .gtag {
   display: inline-block; font-size: 11px; padding: 1px 7px; border-radius: 6px;

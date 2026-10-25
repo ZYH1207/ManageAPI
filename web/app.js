@@ -397,7 +397,15 @@ const ICONS = {
   search: '<circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/>',
 }
 
-const ID_PROVIDER_KIND = { 'one-api': 'OneAPI', 'new-api': 'NewAPI', sub2api: 'Sub2API' }
+// 站点系别徽章：vendor（厂商直连）与三系中转各一档，unknown 不显示（没信息不标）。
+// 配色刻意不沿用分组胶囊的 .vchip-* 厂商品牌色——系别是「软件系」不是「模型厂商」，
+// NewAPI 套 ChatGPT 绿之类会造成语义误导；vendor 用免费紫区分特殊类，三系统一蓝灰
+const ID_PROVIDER_KIND = {
+  vendor: { label: '厂商直连', cls: 'kindchip-vendor' },
+  'one-api': { label: 'OneAPI', cls: 'kindchip-relay' },
+  'new-api': { label: 'NewAPI', cls: 'kindchip-relay' },
+  sub2api: { label: 'Sub2API', cls: 'kindchip-relay' },
+}
 
 function icon(name, cls = '') {
   const body = ICONS[name] || ''
@@ -871,7 +879,8 @@ function providersHtml({ withForm = true, panel = '', actions = '' } = {}) {
     }).join('')
     const hasCustom = offers.some((o) => o.ratioSource === 'custom')
 
-    const kindText = ID_PROVIDER_KIND[p.kind] || ''
+    const kindMeta = ID_PROVIDER_KIND[p.kind] || null
+    const kindText = kindMeta?.label || ''
     // 这个站有多少模型落在免费池里（后端算好名字，这里只数）
     const freeNames = Array.isArray(p.freeModels) ? p.freeModels : []
     // 告警阈值是人民币；站点余额多为美元，比较和显示都要先换成站点币种
@@ -891,7 +900,7 @@ function providersHtml({ withForm = true, panel = '', actions = '' } = {}) {
           <div class="prov-id">
             <b>${esc(p.name)}</b>
             ${p.baseUrl ? `<a class="icon-btn prov-open" href="${esc(p.baseUrl)}" target="_blank" rel="noreferrer" title="${t('打开站点后台')}">${icon('external')}</a>` : ''}
-            ${kindText ? `<span class="badge" title="${esc(p.kindSource === 'manual' ? t('系别由用户手动设置') : t('系别由自动探测得出，可在「识别系别」重新判断'))}">${esc(kindText)}</span>` : ''}
+            ${kindText ? `<span class="badge ${kindMeta.cls}" title="${esc(p.kindSource === 'manual' ? t('系别由用户手动设置') : t('系别由自动探测得出，可在「识别系别」重新判断'))}">${esc(kindText)}</span>` : ''}
             ${
               freeNames.length
                 ? `<span class="badge prov-free" title="${esc(t('免费模型：{list}', { list: freeNames.join('、') }))}">${icon('gift')}${t('免费 {n}', { n: freeNames.length })}</span>`
