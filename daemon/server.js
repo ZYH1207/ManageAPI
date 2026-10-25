@@ -479,8 +479,35 @@ route('PATCH', /^\/api\/settings$/, async (ctx) => {
 // ---------------------------------------------------------------- providers
 
 route('POST', /^\/api\/providers$/, async (ctx) => {
-  await inv.createProvider(ctx.body)
-  return buildState()
+  const created = await inv.createProvider(ctx.body)
+  const state = await buildState()
+  // 建站后顺手探测一次系别（只读、短超时、失败不阻断保存）：结果写回
+  // provider.kind，之后余额/公告/采集都能按系别走确定性路径
+  try {
+    const detected = await providers.detectProviderKind({ baseUrl: created.baseUrl })
+    await inv.updateProvider(created.id, { kind: detected.kind, kindSource: 'auto' })
+    const inState = state.providers.find((p) => p.id === created.id)
+    if (inState) {
+      inState.kind = detected.kind
+      inState.kindSource = 'auto'
+    }
+  } catch {
+    /* 探测失败不阻断：kind 保持 unknown */
+  }
+  return state
+})
+
+/** 重新识别站点系别（用户显式触发，允许覆盖任何旧值）。 */
+route('POST', /^\/api\/providers\/([\w-]+)\/detect-kind$/, async (ctx) => {
+  const db = await store.readDb()
+  const provider = db.providers.find((p) => p.id === ctx.params[0])
+  if (!provider) throw new HttpError(404, '站点不存在')
+  const detected = await providers.detectProviderKind({ baseUrl: provider.baseUrl })
+  await inv.updateProvider(provider.id, { kind: detected.kind, kindSource: 'auto' })
+  return {
+    ...(await buildState()),
+    kindResult: { kind: detected.kind, evidence: detected.evidence },
+  }
 })
 
 route('PATCH', /^\/api\/providers\/([\w-]+)$/, async (ctx) => {
@@ -676,7 +703,11 @@ async function loadProviderPricing(providerId, { fresh = false } = {}) {
   } else {
     try {
       const adminToken = await inv.revealAdminToken(provider.id)
-      pricing = await providers.fetchProviderPricing({ baseUrl: provider.baseUrl, adminToken })
+      pricing = await providers.fetchProviderPricing({
+        baseUrl: provider.baseUrl,
+        adminToken,
+        kind: provider.kind,
+      })
       pricingCache.set(providerId, { at: Date.now(), data: pricing })
     } catch (error) {
       const message = error.message || String(error)
@@ -1071,6 +1102,7 @@ route('POST', /^\/api\/providers\/([\w-]+)\/balance$/, async (ctx) => {
     baseUrl: provider.baseUrl,
     apiKeys,
     adminToken,
+    kind: provider.kind,
   })
   // 令牌失效会挂在 reason 里（HTTP 401/403）——顺手记下来，卡片上标红
   if (adminToken) {

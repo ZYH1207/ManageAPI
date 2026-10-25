@@ -47,6 +47,7 @@ export async function collectProviderSnapshots({ providerId = null, logger = con
           baseUrl: provider.baseUrl,
           apiKeys,
           adminToken,
+          kind: provider.kind,
           timeoutMs: 10000,
         })
         // ok:false 的 reason 由 applySnapshot 记成 info 级告警，不算采集失败
@@ -61,12 +62,16 @@ export async function collectProviderSnapshots({ providerId = null, logger = con
         baseUrl: provider.baseUrl,
         apiKey,
         adminToken,
+        kind: provider.kind,
       })
     } catch {
       /* 公告拿不到不影响任何判断 */
     }
 
     // ---------------------------------------------------------- 倍率与价格
+    // channels/available 对所有系别都试（404 已静默跳过、告警噪音已修）：
+    // 现实里存在「/api/status 出公告 + channels 出倍率」的混合站，按 kind
+    // 硬排除会误伤——系别分支保留在收益明确的 tryBalance/公告上
     if (adminToken) {
       try {
         const pricing = await providers.fetchAvailableChannels({

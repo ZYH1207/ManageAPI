@@ -95,15 +95,76 @@ export async function listModels({ baseUrl, apiKey, timeoutMs = 15000 }) {
 }
 
 /**
+ * 探测站点系别（只读，不改任何数据）。判定依据（见 README 路线图「站点登录态」）：
+ *   GET /api/status  有 quota_per_unit / chat_link / announcements → one-api 系
+ *                    且 data.version 有值，或 GET /api/pricing 也通  → new-api
+ *   GET /api/v1/settings/public 或 /api/v1/groups/available 通       → sub2api
+ *   都不通                                                            → unknown
+ *
+ * 探测失败（网络/超时）与「确定没有」都返回 unknown——调用方不阻断保存。
+ *
+ * @returns {Promise<{kind:'one-api'|'new-api'|'sub2api'|'unknown', evidence:string}>}
+ */
+export async function detectProviderKind({ baseUrl, timeoutMs = 5000 } = {}) {
+  const origins = originCandidates(baseUrl)
+  let sawStatus = false
+  let statusHint = ''
+
+  for (const origin of origins) {
+    // ---- one-api / new-api 系：/api/status 是公共接口
+    try {
+      const payload = await requestJson(`${origin}/api/status`, { timeoutMs })
+      const data = payload?.data ?? payload
+      const hints = ['quota_per_unit', 'chat_link', 'announcements', 'version', 'start_time']
+      const hit = hints.filter((k) => data && data[k] !== undefined)
+      if (hit.length > 0) {
+        sawStatus = true
+        // new-api 在 status 里带 version；没有 version 但 /api/pricing 通也是 new-api
+        if (data.version) {
+          return { kind: 'new-api', evidence: `/api/status 带 version=${String(data.version).slice(0, 40)}` }
+        }
+        statusHint = `status 命中 ${hit.join(',')}`
+        try {
+          await requestJson(`${origin}/api/pricing`, { timeoutMs })
+          return { kind: 'new-api', evidence: `${statusHint}；/api/pricing 通（new-api 特有）` }
+        } catch {
+          return { kind: 'one-api', evidence: statusHint }
+        }
+      }
+    } catch {
+      /* 下一个 origin / 下一类探测 */
+    }
+
+    // ---- Sub2API：/api/v1/settings/public 或 /api/v1/groups/available
+    for (const path of ['/api/v1/settings/public', '/api/v1/groups/available']) {
+      try {
+        await requestJson(`${origin}${path}`, { timeoutMs })
+        return { kind: 'sub2api', evidence: `${path} 通（Sub2API 专用）` }
+      } catch {
+        /* 下一个 */
+      }
+    }
+  }
+
+  return {
+    kind: 'unknown',
+    evidence: sawStatus ? `status 可达但无系别特征（${statusHint || '空'}）` : '各系特征接口均不可达',
+  }
+}
+
+/**
  * 尽力读取余额。读不到是常态，返回原因供界面提示，不抛错。
  *
  * 现实情况：one-api / new-api 的 /api/user/self 需要「用户访问令牌」（登录后
  * 在设置里生成），不是 sk- key；不少站直接关了这些接口；自建网关更是只有 /v1/*。
  * 所以失败时给出可执行的建议，而不是一个技术错误码。
  *
+ * kind 已知的站走确定性单路径（不再把另一个系的端点白试一遍）；
+ * unknown / 缺省保留双路径盲试探（判定失败的兜底，不劣于现状）。
+ *
  * @returns {{ok:boolean, remaining?:number, currency?:string, reason?:string}}
  */
-export async function tryBalance({ baseUrl, apiKey, adminToken, timeoutMs = 10000 }) {
+export async function tryBalance({ baseUrl, apiKey, adminToken, kind, timeoutMs = 10000 }) {
   // 模型厂商有专用余额接口，先试它——这类接口不认 one-api 的 /api/user/self
   const vendor = await readVendorBalance({ baseUrl, apiKey, timeoutMs, requestJson })
   if (vendor) return vendor
@@ -116,8 +177,16 @@ export async function tryBalance({ baseUrl, apiKey, adminToken, timeoutMs = 1000
     // 单独记鉴权失败：多 origin 轮询时「A 域名 401 + B 域名 404」的最后错误是 404，
     // 只看 lastError 会把令牌失效漏掉——令牌永远不标红
     let authError = null
+    // 系别已知的站只走自己的路径（/api/v1/user/profile 是 Sub2API 专用，
+    // /api/user/self 是 one-api/new-api 系）；unknown 保留双路径盲试探
+    const adminPaths =
+      kind === 'sub2api'
+        ? ['/api/v1/user/profile']
+        : kind === 'one-api' || kind === 'new-api'
+          ? ['/api/user/self']
+          : ['/api/v1/user/profile', '/api/user/self']
     for (const origin of origins) {
-      for (const path of ['/api/v1/user/profile', '/api/user/self']) {
+      for (const path of adminPaths) {
         try {
           const payload = await requestJson(`${origin}${path}`, { apiKey: adminToken, timeoutMs })
           const data = payload?.data ?? payload
@@ -291,11 +360,14 @@ export async function fetchAvailableChannels({ baseUrl, adminToken, timeoutMs = 
  *
  * @returns {Promise<Array<{sourceKey:string, title:string, content:string, publishedAt:string|null}>>}
  */
-export async function fetchAnnouncements({ baseUrl, apiKey, adminToken, timeoutMs = 8000 }) {
+export async function fetchAnnouncements({ baseUrl, apiKey, adminToken, kind, timeoutMs = 8000 }) {
   const origins = originCandidates(baseUrl)
   const token = adminToken || apiKey
   const out = []
   const seen = new Set()
+  // 系别已知的站只试自己的公告来源；unknown 双路都试
+  const tryStatus = kind !== 'sub2api'
+  const trySub2api = kind === 'sub2api' || kind === undefined || kind === null || kind === 'unknown'
 
   const push = (raw) => {
     if (!raw) return
@@ -320,26 +392,30 @@ export async function fetchAnnouncements({ baseUrl, apiKey, adminToken, timeoutM
   }
 
   for (const origin of origins) {
-    // 1) new-api 系：/api/status 里的 announcements 数组
-    try {
-      const payload = await requestJson(`${origin}/api/status`, { apiKey: token, timeoutMs })
-      const data = payload?.data ?? payload
-      const list = Array.isArray(data) ? data : data?.announcements
-      if (Array.isArray(list)) for (const item of list) push(item)
-      if (out.length > 0) return out
-    } catch {
-      /* 试下一个接口 */
+    // 1) new-api / one-api 系：/api/status 里的 announcements 数组
+    if (tryStatus) {
+      try {
+        const payload = await requestJson(`${origin}/api/status`, { apiKey: token, timeoutMs })
+        const data = payload?.data ?? payload
+        const list = Array.isArray(data) ? data : data?.announcements
+        if (Array.isArray(list)) for (const item of list) push(item)
+        if (out.length > 0) return out
+      } catch {
+        /* 试下一个接口 */
+      }
     }
 
     // 2) sub2api：/api/v1/announcements
-    try {
-      const payload = await requestJson(`${origin}/api/v1/announcements`, { apiKey: token, timeoutMs })
-      const data = payload?.data ?? payload
-      const list = Array.isArray(data) ? data : Array.isArray(data?.items) ? data.items : []
-      for (const item of list) push(item)
-      if (out.length > 0) return out
-    } catch {
-      /* 试下一个主机 */
+    if (trySub2api) {
+      try {
+        const payload = await requestJson(`${origin}/api/v1/announcements`, { apiKey: token, timeoutMs })
+        const data = payload?.data ?? payload
+        const list = Array.isArray(data) ? data : Array.isArray(data?.items) ? data.items : []
+        for (const item of list) push(item)
+        if (out.length > 0) return out
+      } catch {
+        /* 试下一个主机 */
+      }
     }
   }
 
@@ -478,9 +554,11 @@ export function matchTokenBySecret(items, secret) {
  *
  * @returns {Promise<{groups:Array<{name,rate}>, models:Array, byGroup:Array, source:string}>}
  */
-export async function fetchProviderPricing({ baseUrl, adminToken }) {
+export async function fetchProviderPricing({ baseUrl, adminToken, kind }) {
   let channelError = null
 
+  // channels 对所有系别都试（混合站可能同时有 status 公告与 channels 倍率）；
+  // 系别分支只保留在 tryBalance / 公告上——那里省的是 10 秒级的超时等待
   if (adminToken) {
     try {
       const result = await fetchAvailableChannels({ baseUrl, adminToken })

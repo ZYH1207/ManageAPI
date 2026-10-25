@@ -1219,3 +1219,9 @@ Object.assign(EN, {
   '综合成本': 'Blended cost',
   '{sym}/百万 token，按次行显示 /次': '{sym}/M tok; per-call rows show /call',
 })
+
+// 系别自动判定
+Object.assign(EN, {
+  '系别由用户手动设置': 'Vendor type set manually',
+  '系别由自动探测得出，可在「识别系别」重新判断': 'Vendor type auto-detected — re-run "Detect type" to judge again',
+})

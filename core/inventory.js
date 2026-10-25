@@ -83,7 +83,17 @@ export async function updateProvider(id, patch) {
     if (!provider) throw new Error(`站点不存在：${id}`)
     if (patch.name !== undefined) provider.name = String(patch.name).trim()
     if (patch.baseUrl !== undefined) provider.baseUrl = normalizeBaseUrl(patch.baseUrl)
-    if (patch.kind !== undefined) provider.kind = patch.kind
+    if (patch.kind !== undefined) {
+      // 系别白名单：vendor（厂商直连）/ relay（通用中转）/ unknown，
+      // 以及自动识别出的三系——识别来源见 kindSource
+      const KINDS = ['vendor', 'relay', 'unknown', 'one-api', 'new-api', 'sub2api']
+      if (!KINDS.includes(patch.kind)) throw new Error(`未知的站点类型：${patch.kind}`)
+      provider.kind = patch.kind
+    }
+    // kindSource 记录系别来源：auto（探测）/ manual（用户手选）。手填过的不被自动覆盖
+    if (patch.kindSource !== undefined) {
+      provider.kindSource = patch.kindSource === 'manual' ? 'manual' : 'auto'
+    }
     if (patch.note !== undefined) provider.note = patch.note
     // 暂停：站点留在网关里，但不接新请求、不探针、不进比价和决策
     if (patch.paused !== undefined) provider.paused = Boolean(patch.paused)

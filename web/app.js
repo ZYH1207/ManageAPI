@@ -394,6 +394,7 @@ const ICONS = {
   'chevron-up': '<path d="M6 15l6-6 6 6"/>',
   refresh: '<path d="M20 12a8 8 0 1 1-2.6-5.9"/><path d="M20 4v5h-5"/>',
   download: '<path d="M12 4v10"/><path d="M8 11l4 4 4-4"/><path d="M4 19h16"/>',
+  search: '<circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/>',
 }
 
 const ID_PROVIDER_KIND = { 'one-api': 'OneAPI', 'new-api': 'NewAPI', sub2api: 'Sub2API' }
@@ -890,7 +891,7 @@ function providersHtml({ withForm = true, panel = '', actions = '' } = {}) {
           <div class="prov-id">
             <b>${esc(p.name)}</b>
             ${p.baseUrl ? `<a class="icon-btn prov-open" href="${esc(p.baseUrl)}" target="_blank" rel="noreferrer" title="${t('打开站点后台')}">${icon('external')}</a>` : ''}
-            ${kindText ? `<span class="badge">${esc(kindText)}</span>` : ''}
+            ${kindText ? `<span class="badge" title="${esc(p.kindSource === 'manual' ? t('系别由用户手动设置') : t('系别由自动探测得出，可在「识别系别」重新判断'))}">${esc(kindText)}</span>` : ''}
             ${
               freeNames.length
                 ? `<span class="badge prov-free" title="${esc(t('免费模型：{list}', { list: freeNames.join('、') }))}">${icon('gift')}${t('免费 {n}', { n: freeNames.length })}</span>`
@@ -963,6 +964,7 @@ function providersHtml({ withForm = true, panel = '', actions = '' } = {}) {
           <button data-act="prov-panel" data-panel="rates">${icon('columns')}分组倍率</button>
           <button data-act="open-group-picker" title="从站点读分组，选你买的那个，倍率自动填到下面所有模型">${icon('columns')}导入倍率</button>
           <button data-act="usage-check" title="用管理令牌拉站方用量，和我们的估算对比">${icon('receipt')}用量核对</button>
+          <button data-act="detect-kind" title="只读探测：判断这个站是 one-api / new-api / Sub2API 哪一系，决定余额与公告走哪条接口">${icon('search')}识别系别</button>
           <button data-act="export">${icon('download')}导出配置</button>
         </div>
 
@@ -3973,6 +3975,21 @@ document.addEventListener('click', async (event) => {
     if (collapsedPanels.has(key)) collapsedPanels.delete(key)
     else collapsedPanels.add(key)
     render()
+    return
+  }
+
+  if (action === 'detect-kind') {
+    const providerId = actionButton.closest('[data-provider]').dataset.provider
+    await withBusy(actionButton, async () => {
+      state = await api('POST', `/api/providers/${providerId}/detect-kind`, {})
+      render()
+      const r = state.kindResult
+      if (r?.kind === 'unknown') {
+        toast(`没能识别系别：${r.evidence}`, true)
+      } else {
+        toast(`识别为 ${r.kind} 系（${r.evidence}）`)
+      }
+    })
     return
   }
 
