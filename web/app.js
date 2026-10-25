@@ -2096,7 +2096,7 @@ function renderProbes() {
       const hasDetail = score && score.samples > 0
       return `
         <tr data-offer="${esc(offer.id)}" ${hasDetail ? 'data-act="toggle-detail" tabindex="0" style="cursor:pointer"' : ''}>
-          <td class="mono">${esc(offer.upstreamName)}${offer.group ? ` <span class="badge">${esc(offer.group)}</span>` : ''}${hasDetail ? ' <span style="color:var(--faint);font-size:10px">▾</span>' : ''}</td>
+          <td class="mono">${esc(offer.upstreamName)}${offer.group ? ` <span class="badge ${groupChipOf(offer.providerId, offer.group)}">${esc(offer.group)}</span>` : ''}${hasDetail ? ' <span style="color:var(--faint);font-size:10px">▾</span>' : ''}</td>
           <td><span class="badge ${status.cls}">${status.label}</span></td>
           <td class="num">${pct(score?.availability)}</td>
           <td class="num">${pct(score?.fingerprintRate)}</td>
