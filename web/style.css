@@ -130,6 +130,15 @@ button.ghost:hover { background: var(--hover); color: var(--text); }
 button.danger { color: var(--danger); border-color: var(--danger-border); }
 button.danger:hover { background: var(--danger-soft); border-color: var(--danger); }
 button:disabled { opacity: 0.5; cursor: default; }
+/* busy 状态：内容不动（图标/子结构保留），只加转圈提示 */
+button.is-busy { opacity: 0.6; pointer-events: none; position: relative; }
+button.is-busy::after {
+  content: ''; display: inline-block; width: 10px; height: 10px;
+  margin-left: 6px; vertical-align: -1px; border-radius: 50%;
+  border: 2px solid currentColor; border-top-color: transparent;
+  animation: busy-spin 0.7s linear infinite;
+}
+@keyframes busy-spin { to { transform: rotate(360deg); } }
 
 input, select {
   font: inherit;

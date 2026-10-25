@@ -1046,11 +1046,28 @@ function providersHtml({ withForm = true, panel = '', actions = '' } = {}) {
     ${addForm}`
 }
 
+/** 同步设置面板与「立即同步 / 新增站点」按钮：renderMonitor 与 refreshSiteCards
+ *  共用——此前 refreshSiteCards（搜索/翻页局部重绘）不带这两块，搜索一敲字面板就消失 */
+function syncPanelHtml(data = monitorData || {}) {
+  return `
+    <div class="sync-panel">
+      <input type="number" min="0" step="5" id="monitor-interval" placeholder="同步间隔（分钟）" title="同步间隔（分钟），0 = 关闭" value="${data.settings?.monitorIntervalMinutes ?? 30}" />
+      <input type="number" min="0" step="0.5" id="monitor-warn" placeholder="告警阈值（$）" title="余额告警阈值（美元），0 = 不告警" value="${data.settings?.balanceWarnUsd ?? 1.5}" />
+      <button class="primary" data-act="monitor-save-settings">保存</button>
+    </div>`
+}
+
+function syncActionsHtml() {
+  return `
+    <button data-act="monitor-collect">${icon('refresh')}立即同步</button>
+    <button class="primary" data-act="add-provider">${icon('plus')}新增站点</button>`
+}
+
 /** 只重画监控页里的站点卡（搜索、翻页时用，不重新拉数据） */
 function refreshSiteCards() {
   const host = $('#monitor-sites-host')
   if (!host) return
-  host.innerHTML = providersHtml({ withForm: false })
+  host.innerHTML = providersHtml({ withForm: false, panel: syncPanelHtml(), actions: syncActionsHtml() })
   bindSiteSearch()
   translateDom(host)
 }
@@ -1060,6 +1077,7 @@ function bindSiteSearch() {
   if (!input || input.dataset.bound) return
   input.dataset.bound = '1'
   input.addEventListener('input', () => {
+    if (imeComposing) return // 拼音组合中不重绘（见 document input 委托处的说明）
     siteQuery = input.value
     sitePage = 1
     refreshSiteCards()
@@ -1619,6 +1637,9 @@ async function refreshState({ silent = false } = {}) {
   try {
     const next = await api('GET', `/api/state${light ? '?light=1' : ''}`)
     state = light && state ? { ...state, ...next } : next
+    // 用量页默认 30 天与 state.usage 同口径：清掉旧快照轮询才能生效
+    // （此前点过范围按钮后快照永不清空，用量页一直渲染旧数据）
+    if (usageRange === 30) usageData = null
     render()
     if (scroller) scroller.scrollTop = scrollTop
   } catch (error) {
@@ -2848,16 +2869,8 @@ function renderMonitor() {
 
   // 同步设置不单独占一行，挂在「站点余额与分组」的卡片头上——
   // 它和下面那排站点卡是同一件事：改完间隔/阈值，顺手就在这儿点「立即同步」。
-  const syncPanel = `
-    <div class="sync-panel">
-      <input type="number" min="0" step="5" id="monitor-interval" placeholder="同步间隔（分钟）" title="同步间隔（分钟），0 = 关闭" value="${data.settings?.monitorIntervalMinutes ?? 30}" />
-      <input type="number" min="0" step="0.5" id="monitor-warn" placeholder="告警阈值（$）" title="余额告警阈值（美元），0 = 不告警" value="${data.settings?.balanceWarnUsd ?? 1.5}" />
-      <button class="primary" data-act="monitor-save-settings">保存</button>
-    </div>`
-
-  const syncActions = `
-    <button data-act="monitor-collect">${icon('refresh')}立即同步</button>
-    <button class="primary" data-act="add-provider">${icon('plus')}新增站点</button>`
+  const syncPanel = syncPanelHtml(data)
+  const syncActions = syncActionsHtml()
 
   const sitesCard = `
     <div class="sites-section">
@@ -2997,15 +3010,23 @@ async function loadMonitor(days = monitorDays) {
 
 // ------------------------------------------------------------------ 事件
 
+/** 按钮级 busy 包装：只禁用 + 加转圈样式，不动节点内容。
+ *  此前保存/恢复 textContent——API 报错时不走 render，SVG 图标和
+ *  chips 里的 span 结构会被拍平成纯文本且不再自愈 */
 async function withBusy(button, fn) {
-  const original = button?.textContent
-  if (button) { button.disabled = true; button.textContent = '处理中…' }
+  if (button) {
+    button.disabled = true
+    button.classList.add('is-busy')
+  }
   try {
     await fn()
   } catch (error) {
     toast(error.message, true)
   } finally {
-    if (button) { button.disabled = false; button.textContent = original }
+    if (button) {
+      button.disabled = false
+      button.classList.remove('is-busy')
+    }
   }
 }
 
@@ -3406,6 +3427,8 @@ document.addEventListener('click', async (event) => {
       usageData = res.usage
       usageRange = days
       renderUsage()
+      // renderUsage 内部不走 t()，英文界面下靠这层 DOM 翻译兜底
+      translateDom($('#view-usage') || document.body)
     })
     return
   }
@@ -3425,6 +3448,8 @@ document.addEventListener('click', async (event) => {
   if (action === 'overview-issues-toggle') {
     overviewIssuesOpen = !overviewIssuesOpen
     renderOverview()
+    // renderOverview 内部不走 t()，英文界面下靠这层 DOM 翻译兜底
+    translateDom($('#view-overview') || document.body)
     return
   }
 
@@ -3518,6 +3543,7 @@ document.addEventListener('click', async (event) => {
   if (action === 'platform-add') {
     platformFormOpen = true
     renderFree()
+    translateDom($('#view-free') || document.body)
     $('#pf-label')?.focus()
     return
   }
@@ -3525,6 +3551,7 @@ document.addEventListener('click', async (event) => {
   if (action === 'platform-cancel') {
     platformFormOpen = false
     renderFree()
+    translateDom($('#view-free') || document.body)
     return
   }
 
@@ -4415,7 +4442,18 @@ document.addEventListener('change', async (event) => {
   await toggleIgnoredModel(box.dataset.ig, box.checked)
 })
 
+// 中文输入法组合期间（拼音候选框弹出）不触发搜索重绘——每键重建 DOM
+// 会打断组合输入，拼音打到一半候选框就消失。组合结束时补发一次 input，
+// 兜住「compositionend 后浏览器不再发 input」的顺序差异
+let imeComposing = false
+document.addEventListener('compositionstart', () => { imeComposing = true })
+document.addEventListener('compositionend', (event) => {
+  imeComposing = false
+  event.target?.dispatchEvent?.(new Event('input', { bubbles: true }))
+})
+
 document.addEventListener('input', (event) => {
+  if (imeComposing) return
   const id = event.target.id
   // 忽略模型弹窗里的搜索：只重画弹窗，不动页面
   if (id === 'ig-search') {
