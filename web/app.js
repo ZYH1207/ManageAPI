@@ -2466,7 +2466,8 @@ function renderBenchmark() {
   // 相关条目为空时不分层：新用户还没有供给，全部折叠会让页面空白，
   // 看起来像「导入失败」——直接展示全部
   if (layering && matching.length === 0 && entries.length > 0) matching = entries
-  const restCount = entries.length - matching.length
+  const relevantCount = entries.filter(isRelevant).length
+  const restCount = entries.length - (layering ? matching.length : relevantCount)
 
   // 来源值的展示友好化（来源是低频诊断信息，降为模型列的小字，省一列宽度）
   const sourceLabel = (source) => {
@@ -2560,7 +2561,11 @@ function renderBenchmark() {
             ? `<tr><td colspan="6" style="text-align:center;padding:10px;border-top:1px dashed var(--border)">
                  <button class="ghost tiny" data-act="bench-show-all">${t('显示其余 {n} 条（未匹配本地供给）', { n: restCount })}</button>
                </td></tr>`
-            : ''
+            : benchShowAll && !filterText && relevantCount < entries.length
+              ? `<tr><td colspan="6" style="text-align:center;padding:10px;border-top:1px dashed var(--border)">
+                   <button class="ghost tiny" data-act="bench-show-all">${t('收起，只看与本地供给相关的 {n} 条', { n: relevantCount })}</button>
+                 </td></tr>`
+              : ''
         }
       </table>
     </div>`

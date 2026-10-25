@@ -1225,3 +1225,9 @@ Object.assign(EN, {
   '系别由用户手动设置': 'Vendor type set manually',
   '系别由自动探测得出，可在「识别系别」重新判断': 'Vendor type auto-detected — re-run "Detect type" to judge again',
 })
+
+// 基准价分层折叠
+Object.assign(EN, {
+  '显示其余 {n} 条（未匹配本地供给）': 'Show {n} more (not referenced by local supplies)',
+  '收起，只看与本地供给相关的 {n} 条': 'Collapse — show only the {n} referenced by local supplies',
+})
