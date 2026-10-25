@@ -2469,25 +2469,32 @@ function renderBenchmark() {
   const relevantCount = entries.filter(isRelevant).length
   const restCount = entries.length - (layering ? matching.length : relevantCount)
 
-  // 来源值的展示友好化（来源是低频诊断信息，降为模型列的小字，省一列宽度）
+  // 来源值的展示友好化（来源是低频诊断信息，降为模型列的小字，省一列宽度）。
+  // imported: 带站点名——「从站导入」不说是哪个站，用户对不上号
   const sourceLabel = (source) => {
     const s = String(source || 'manual')
     if (s === 'manual') return ''
     if (s === 'seed') return '内置'
     if (s.startsWith('reference:')) return `参考价 · ${s.slice('reference:'.length)}`
-    if (s.startsWith('imported:')) return `从站导入`
+    if (s.startsWith('imported:')) {
+      const pid = s.slice('imported:'.length)
+      return `从站导入 · ${state.providers.find((p) => p.id === pid)?.name || pid}`
+    }
     return s
   }
 
   const rows = matching.map(([key, entry]) => {
+    // 次要信息合并成一行小字（显示名 · 来源），避免两行堆在 key 底下
+    const extras = []
     const display = String(entry.display || '')
+    if (display && display !== key) extras.push(display)
     const src = sourceLabel(entry.source)
+    if (src) extras.push(src)
     return `
     <tr data-benchmark="${esc(key)}">
       <td class="mono">
         ${esc(key)}
-        ${display && display !== key ? `<div class="sub">${esc(display)}</div>` : ''}
-        ${src ? `<div class="sub" style="color:var(--faint)">${esc(src)}</div>` : ''}
+        ${extras.length ? `<div class="sub" style="color:var(--faint)">${esc(extras.join(' · '))}</div>` : ''}
       </td>
       <td class="num"><input type="number" step="0.001" placeholder="—" value="${entry.in ?? ''}" data-field="in" /></td>
       <td class="num"><input type="number" step="0.001" placeholder="—" value="${entry.out ?? ''}" data-field="out" /></td>
