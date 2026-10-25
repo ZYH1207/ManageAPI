@@ -114,14 +114,18 @@ function scoresFor(db) {
  */
 async function freePlatformState() {
   try {
-    const [list, accounts] = await Promise.all([platforms.listPlatforms(), platforms.listAccounts()])
+    // 整个函数只读一次 free.json：此前 listPlatforms/listAccounts/
+    // getActiveAccount/daysLeft 各自 readFreeDb，P 个平台 = 2P+2 次全量
+    // JSON.parse，而 buildState 是每个写接口和 15 秒轮询的必经之路
+    const freeDb = await platforms.readFreeDb()
+    const accounts = freeDb.accounts
     // secret 是加密后的 token，绝不该出现在前端状态里；只给一个「有没有」的布尔
     const safeAccounts = accounts.map(({ secret, ...rest }) => ({ ...rest, hasSecret: Boolean(secret) }))
-    const enriched = []
-    for (const platform of list) {
+    const enriched = freeDb.platforms.map((platform) => {
       const mine = safeAccounts.filter((a) => a.platformId === platform.id)
-      const active = await platforms.getActiveAccount(platform.id)
-      const left = await platforms.daysLeft(active?.id || mine[0]?.id || '')
+      const activeId = freeDb.activeAccount?.[platform.id] || null
+      const active = activeId ? accounts.find((a) => a.id === activeId) : null
+      const left = platforms.daysLeftInDb(freeDb, active?.id || mine[0]?.id || '')
       // 需要登录的平台（connector 不是 manual）必须有 token 才算「已连接」；
       // 手动平台只要有账号就算——它本来就不发请求。
       const needsLogin = platform.connectorId && platform.connectorId !== 'manual'
@@ -129,15 +133,15 @@ async function freePlatformState() {
       // 连接器有没有实现签到，决定前端显不显示「签到」按钮
       const connector = platforms.getConnector(platform.connectorId)
       const canCheckin = Boolean(connector && typeof connector.checkin === 'function')
-      enriched.push({
+      return {
         ...platform,
         canCheckin,
         accounts: mine,
         activeAccountId: active?.id || null,
         daysLeft: left,
         connected,
-      })
-    }
+      }
+    })
     return { platforms: enriched, accounts: safeAccounts }
   } catch (error) {
     return { platforms: [], accounts: [], platformError: error.message || String(error) }
@@ -146,7 +150,10 @@ async function freePlatformState() {
 
 /** 组装前端需要的全量视图。 */
 async function buildState({ light = false } = {}) {
-  const db = await store.readDb()
+  // 只读视图走 mtime 缓存（网关热路径同一份）：buildState 被 40 个写接口和
+  // 15 秒轮询调用，此前每次全量 JSON.parse（db.json 已到 MB 级，约 15ms/次）。
+  // 本函数及它调用的评分/比价/决策全部是纯读——约定见 readDbCached 的注释。
+  const db = await store.readDbCached()
   const benchmarks = await bench.readBenchmarks()
   const scoreMap = scoresFor(db)
   const maxTtftMs = Number(db.settings.maxTtftMs) || 0

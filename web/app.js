@@ -61,6 +61,14 @@ function priceText(cny) {
   return v === null ? '—' : `${priceSym()}${money(v)}`
 }
 
+/** 日期时间（本机时区，固定 MM-DD HH:mm）：路由日志可能跨天，只有时分秒没法分辨 */
+function fmtDateTime(iso) {
+  const d = new Date(iso)
+  if (!Number.isFinite(d.getTime())) return '—'
+  const pad = (n) => String(n).padStart(2, '0')
+  return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
+}
+
 /** 余额状态徽章：档位全站统一——≤0 红（真没钱了）、低于阈值黄（该充值）、
  *  阈值关闭（0）不亮警告。此前站点页黄、监控页红，同一状态两种解读 */
 function balanceBadge(balance, threshold) {
@@ -664,7 +672,7 @@ function paintGroupModal(body) {
       const covered = g.modelCount
       return `
         <label class="${on ? 'on' : ''}" data-act="pick-group" data-pick-group="${esc(g.name)}">
-          <input type="radio" name="pick-group" value="${esc(g.name)}" ${on ? 'checked' : ''} tabindex="-1" />
+          <input type="radio" name="pick-group" value="${esc(g.name)}" ${on ? 'checked' : ''} />
           <span class="gname">${esc(g.name)}${g.isCurrent ? ' <span class="badge">当前</span>' : ''}</span>
           <span class="grate">${g.rate === null ? '—' : `×${g.rate}`}</span>
           <span class="gcount">${covered} 个模型</span>
@@ -2049,7 +2057,7 @@ function renderProbes() {
       const status = PROBE_STATUS[score?.status || 'unknown']
       const hasDetail = score && score.samples > 0
       return `
-        <tr data-offer="${esc(offer.id)}" ${hasDetail ? 'data-act="toggle-detail" style="cursor:pointer"' : ''}>
+        <tr data-offer="${esc(offer.id)}" ${hasDetail ? 'data-act="toggle-detail" tabindex="0" style="cursor:pointer"' : ''}>
           <td class="mono">${esc(offer.upstreamName)}${offer.group ? ` <span class="badge">${esc(offer.group)}</span>` : ''}${hasDetail ? ' <span style="color:var(--faint);font-size:10px">▾</span>' : ''}</td>
           <td><span class="badge ${status.cls}">${status.label}</span></td>
           <td class="num">${pct(score?.availability)}</td>
@@ -2202,7 +2210,7 @@ function renderGateway() {
     ? `<tr><td colspan="9" style="text-align:center;color:var(--faint);padding:28px">还没有请求经过网关</td></tr>`
     : routing.map((r) => `
         <tr>
-          <td style="color:var(--faint)">${new Date(r.ts).toLocaleTimeString('zh-CN')}</td>
+          <td style="color:var(--faint)">${fmtDateTime(r.ts)}</td>
           <td>${esc(r.keyName || '—')}</td>
           <td class="mono">${esc(r.model)}</td>
           <td>${r.chosenProviderName ? `${esc(r.chosenProviderName)}${r.chosenGroup ? ` <span class="badge ${r.pool === 'free' ? 'vchip-free' : groupChipOf(r.chosenProviderId, r.chosenGroup)}">${esc(r.chosenGroup)}</span>` : ''}` : '<span class="badge danger">全部失败</span>'}</td>
@@ -3054,7 +3062,7 @@ function renderContacts() {
     .map((c) => {
       const copyable = c.type === 'qq' || c.type === 'email'
       return `
-      <div class="contact-card" data-act="${copyable ? 'copy-contact' : 'open-contact'}" data-value="${esc(c.value)}">
+      <div class="contact-card" role="button" tabindex="0" data-act="${copyable ? 'copy-contact' : 'open-contact'}" data-value="${esc(c.value)}">
         <span class="contact-icon"><svg viewBox="0 0 24 24">${CONTACT_ICONS[c.type] || CONTACT_ICONS.link}</svg></span>
         <span class="contact-text">
           <b>${esc(c.label)}</b>
@@ -3218,6 +3226,15 @@ document.addEventListener('click', (event) => {
 })
 
 document.addEventListener('keydown', (event) => {
+  // 探针行与联系卡是 div/tr 挂 data-act，键盘进不去——Tab 聚焦后 Enter/空格等效点击
+  if ((event.key === 'Enter' || event.key === ' ') && event.target instanceof HTMLElement) {
+    const activatable = event.target.closest?.('[data-act][tabindex="0"], .contact-card[role="button"]')
+    if (activatable) {
+      event.preventDefault()
+      activatable.click()
+      return
+    }
+  }
   if (event.key !== 'Escape') return
   closeLangMenu()
   for (const id of ['help-modal', 'contact-modal', 'group-modal', 'pf-accounts-modal', 'add-provider-modal', 'prov-modal']) {
@@ -4356,6 +4373,13 @@ document.addEventListener('click', (event) => {
 }, true)
 
 document.addEventListener('change', async (event) => {
+  // 分组选择弹窗的 radio：键盘（Tab + 方向键）也能选——radio 此前 tabindex=-1，
+  // 键盘完全无法选择分组
+  if (event.target.matches?.('input[name="pick-group"]')) {
+    groupPicker.selected = event.target.value
+    markSelectedGroup()
+    return
+  }
   const group = event.target.closest?.('[data-ig-group]')
   if (group) {
     await toggleVendorGroup(group.dataset.igGroup, group.checked)

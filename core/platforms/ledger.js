@@ -140,8 +140,12 @@ export async function checkin(accountId, { reward = 0, unit, note = '每日签�
  *
  * 没有额度或没有消耗记录时返回 null —— 「不知道」和「0 天」是两回事。
  */
-export async function daysLeft(accountId) {
-  const db = await readFreeDb()
+/**
+ * 从已有的 free db 对象直接算 daysLeft（不重新读文件）。
+ * freePlatformState（buildState）每轮会对每个平台调一次——此前经过
+ * daysLeft → readFreeDb，P 个平台 = P 次全量 JSON.parse。
+ */
+export function daysLeftInDb(db, accountId) {
   const account = db.accounts.find((a) => a.id === accountId)
   if (!account?.quota) return null
 
@@ -163,4 +167,9 @@ export async function daysLeft(accountId) {
 
   // 留一位小数：整数天会把 1.2 天和 1.9 天压成同一个数，排序就失去意义了
   return Math.round((remaining / (spent / RATE_WINDOW_DAYS)) * 10) / 10
+}
+
+export async function daysLeft(accountId) {
+  const db = await readFreeDb()
+  return daysLeftInDb(db, accountId)
 }
