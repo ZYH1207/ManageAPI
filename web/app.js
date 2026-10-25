@@ -61,6 +61,15 @@ function priceText(cny) {
   return v === null ? '—' : `${priceSym()}${money(v)}`
 }
 
+/** 余额状态徽章：档位全站统一——≤0 红（真没钱了）、低于阈值黄（该充值）、
+ *  阈值关闭（0）不亮警告。此前站点页黄、监控页红，同一状态两种解读 */
+function balanceBadge(balance, threshold) {
+  if (balance === null || balance === undefined) return `<span class="badge">${t('无数据')}</span>`
+  if (Number(threshold) > 0 && balance <= 0) return `<span class="badge danger">${t('低于阈值')}</span>`
+  if (Number(threshold) > 0 && balance <= threshold) return `<span class="badge warn">${t('低于阈值')}</span>`
+  return `<span class="badge ok">${t('正常')}</span>`
+}
+
 /**
  * 倍率数字的颜色档位（全站三处共用：监控变动流、站点卡分组胶囊、分组倍率弹窗）。
  * 常态（含折扣）与分组文字同色、仅加粗——「颜色只用来表达状态，不用来分区」：
@@ -504,11 +513,6 @@ function renderOverview() {
     const offers = state.offers.filter((o) => o.providerId === provider.id)
     const healthy = offers.filter((o) => scores[o.id]?.routable).length
     const hasQuota = typeof provider.quotaRemaining === 'number'
-    const quota = hasQuota
-      ? provider.currency === 'USD'
-        ? provider.quotaRemaining * rateCny()
-        : provider.quotaRemaining
-      : 0
     const rank = rankingMap.get(provider.id)
     const issue = issueMap.get(provider.id)
     const dotClass = issue ? (issue.severe ? 'red' : 'yellow') : rank ? 'green' : 'gray'
@@ -761,7 +765,6 @@ function renderUsageCheck(providerId) {
       <div class="keyrow" style="border:none;padding-bottom:4px">
         <span style="color:var(--muted);font-size:12px">扣费核对</span>
         <span class="grow"></span>
-        <button class="ghost tiny" data-act="close-usage-check">关闭</button>
       </div>
       ${check.error ? `<div class="hint" style="padding:2px 0 6px">没拉到站方数据：${esc(check.error)}</div>` : ''}
       <div style="font-size:12px;line-height:1.9;padding:2px 0 6px">
@@ -869,11 +872,8 @@ function providersHtml({ withForm = true, panel = '', actions = '' } = {}) {
     const inUsd = p.currency === 'USD'
     const warnLocal = warnUsd > 0 ? (inUsd ? warnUsd : warnUsd * fxRate) : 0
     const warnSign = inUsd ? '$' : '¥'
-    const overThreshold = hasQuota && warnUsd > 0 && quota < warnLocal
     const statusBadge = hasQuota
-      ? overThreshold
-        ? '<span class="badge warn">低于阈值</span>'
-        : '<span class="badge ok">正常</span>'
+      ? balanceBadge(quota, warnLocal)
       : '<span class="badge">余额未录入</span>'
 
     return `
@@ -1201,8 +1201,6 @@ function openProvPanel(button, pane) {
   // 克隆体脱离了站点卡的 [data-provider] 祖先；不补上的话弹窗里的
   // 添加 Key 表单、分组倍率行内编辑都会 closest 不到站点 id 而抛错
   fragment.dataset.provider = card.dataset.provider
-  // 弹窗头部已经有关闭按钮，pane 里那个自带的「关闭」去掉
-  fragment.querySelectorAll('[data-act="close-usage-check"]').forEach((node) => node.remove())
   for (const node of fragment.querySelectorAll('[data-pane]')) {
     if (node.dataset.pane !== pane) node.remove()
   }
@@ -1210,8 +1208,6 @@ function openProvPanel(button, pane) {
   if (pane === 'rates' && !fragment.querySelector('[data-pane="rates"]')) {
     fragment.innerHTML = `<div class="hint">${t('还没有读到分组倍率。点「导入倍率」从站点读一次，或在下面手动填。')}</div>`
   }
-  // 分组倍率面板里不需要余额输入
-  if (pane === 'rates') fragment.querySelector('.keyrow[style*="border-top:none"]')?.remove()
   body.innerHTML = ''
   body.appendChild(fragment)
   const paneTitle = { keys: '密钥', rates: '分组倍率', usage: '用量核对' }[pane] || '详情'
@@ -1244,16 +1240,6 @@ function freeSegHtml(relayCount, platformCount) {
       ${label}<span class="seg-count">${count}</span>
     </button>`
   return `<div class="seg">${btn('relay', '中转站免费模型', relayCount)}${btn('platform', '平台积分', platformCount)}</div>`
-}
-
-function freeStats(items) {
-  return `<div class="stats">${items
-    .map(
-      ([k, v, unit]) => `
-    <div class="stat"><div class="k">${esc(k)}</div>
-    <div class="v">${esc(v)}${unit ? `<small>${unit}</small>` : ''}</div></div>`,
-    )
-    .join('')}</div>`
 }
 
 /** 中转站侧：交给 web/free-relay.js 渲染（闸门与排序在 core/rank-free.js） */
@@ -2537,7 +2523,13 @@ function monitorChartSvg(balanceSeries = [], spendSeries = []) {
   }
   const headroom = (max - min) * 0.2
   max += headroom
-  const spendMax = Math.max(1, ...spendSeries.map((d) => d.cny || 0))
+  // 花费柱与右轴也按显示币种换算（余额轴早已换算）：
+  // 否则切到 USD 时右轴数字（CNY 原值）与柱子悬停提示（$）对不上
+  const spendView = (cny) => {
+    const v = dispPrice(cny || 0)
+    return v === null ? 0 : v
+  }
+  const spendMax = Math.max(1, ...spendSeries.map((d) => spendView(d.cny)))
 
   const x = (i) => padL + (n === 1 ? innerW / 2 : (i / (n - 1)) * innerW)
   const yBalance = (v) => padT + innerH - ((v - min) / (max - min)) * innerH
@@ -2578,7 +2570,7 @@ function monitorChartSvg(balanceSeries = [], spendSeries = []) {
     .map((d, i) => {
       const cny = d.cny || 0
       if (cny <= 0) return ''
-      const height = Math.max((cny / spendMax) * innerH, 1)
+      const height = Math.max((spendView(cny) / spendMax) * innerH, 1)
       return `<rect class="spend-bar" x="${(x(i) - barWidth / 2).toFixed(1)}" y="${(padT + innerH - height).toFixed(1)}" width="${barWidth.toFixed(1)}" height="${height.toFixed(1)}" rx="2"><title>${esc(d.day)} · ${priceSym()}${money(dispPrice(cny))}</title></rect>`
     })
     .join('')
@@ -2820,12 +2812,7 @@ function renderMonitor() {
     .map((row) => {
       const prov = (state.providers || []).find((p) => p.id === row.providerId) || {}
       const kindLabel = ID_PROVIDER_KIND[prov.kind]
-      const low = row.threshold !== null && row.balance !== null && row.balance <= row.threshold
-      const badge = row.balance === null
-        ? '<span class="badge">无数据</span>'
-        : low
-          ? `<span class="badge danger">${t('低于阈值')}</span>`
-          : '<span class="badge ok">正常</span>'
+      const badge = balanceBadge(row.balance, row.threshold)
       const currency = row.currency || 'CNY'
       const balanceText = row.balance === null ? '—' : `${esc(currency)} ${money(row.balance)}`
       const thresholdText = row.threshold === null ? t('未设阈值') : `${esc(currency)} ${money(row.threshold)}`
@@ -3237,6 +3224,10 @@ document.addEventListener('keydown', (event) => {
     const modal = document.getElementById(id)
     if (modal && !modal.hidden) modal.hidden = true
   }
+  // 动态创建的诊断弹窗与通知面板也一并收起
+  document.getElementById('diagnose-box')?.remove()
+  const notify = $('#notify-panel')
+  if (notify && !notify.hidden) notify.hidden = true
 })
 
 document.addEventListener('click', async (event) => {
@@ -3391,11 +3382,6 @@ document.addEventListener('click', async (event) => {
   const provPanelBtn = event.target.closest('[data-act="prov-panel"]')
   if (provPanelBtn) {
     openProvPanel(provPanelBtn, provPanelBtn.dataset.panel === 'rates' ? 'rates' : 'keys')
-    return
-  }
-  if (event.target.closest('[data-act="toggle-sync-settings"]')) {
-    const extra = document.querySelector('.sync-extra')
-    if (extra) extra.hidden = !extra.hidden
     return
   }
 
@@ -3805,43 +3791,6 @@ document.addEventListener('click', async (event) => {
     return
   }
 
-  if (action === 'sync') {
-    await withBusy(actionButton, async () => {
-      const result = await api('POST', `/api/providers/${providerId}/sync`, {})
-      state = result
-      render()
-      const sync = result.sync
-      const removed = sync.removed.length ? `，${sync.removed.length} 个已下线` : ''
-      const failed = sync.failures?.length ? `，${sync.failures.length} 把 Key 失败` : ''
-      toast(`拉到 ${sync.fetched} 个模型，新增 ${sync.added}${removed}${failed}（${sync.elapsedMs}ms）`)
-      // 多 Key 时把「每把各拉到几个」说清楚：总数是并集，两把 Key 权限不同就会多于单把
-      if (sync.perKey?.length > 1) {
-        setTimeout(
-          () => toast(sync.perKey.map((k) => `${k.label} ${k.count} 个`).join(' · ') + '（合计去重）'),
-          1500,
-        )
-      }
-      // 有 Key 失败时说清是哪一把、为什么——不然用户不知道新加的 Key 到底有没有用上
-      if (sync.failures?.length) {
-        setTimeout(
-          () => toast(`失败的 Key：${sync.failures.map((f) => `${f.label}（${f.error}）`).join('；')}`, true),
-          3000,
-        )
-      }
-    })
-    return
-  }
-
-  if (action === 'balance') {
-    await withBusy(actionButton, async () => {
-      const result = await api('POST', `/api/providers/${providerId}/balance`, {})
-      state = result
-      render()
-      toast(result.balance.ok ? `余额已更新` : result.balance.reason, !result.balance.ok)
-    })
-    return
-  }
-
   if (action === 'export') {
     const includeKey = confirm('导出内容会包含完整 API Key，确认？\n\n取消则导出脱敏版本。')
     try {
@@ -3999,41 +3948,6 @@ document.addEventListener('click', async (event) => {
       const card = document.querySelector(`.prov-card[data-provider="${providerId}"]`)
       if (card) openProvPanel(card, 'usage')
       toast(failure ? `没拉到站方数据：${failure}` : '已拉取站方数据', Boolean(failure))
-    })
-    return
-  }
-
-  if (action === 'close-usage-check') {
-    const providerId = actionButton.closest('[data-provider]').dataset.provider
-    delete usageCheckResults[providerId]
-    render()
-    return
-  }
-
-  if (action === 'detect-groups') {
-    await withBusy(actionButton, async () => {
-      try {
-        const result = await api('POST', `/api/providers/${providerId}/detect-groups`, {})
-        state = result
-        render()
-        const r = result.detectResult
-        const ok = r.results.filter((x) => x.matched)
-        const bad = r.results.filter((x) => !x.matched)
-        if (ok.length === 0) {
-          toast(`没匹配上：${bad.map((b) => `${b.label}（${b.reason}）`).join('；')}`, true)
-          return
-        }
-        toast(
-          ok
-            .map((x) => `${x.label} → ${x.group}${x.rate !== null ? ` ×${x.rate}` : ''}${x.updated ? `（${x.updated} 个模型）` : ''}`)
-            .join(' · '),
-        )
-        if (bad.length) {
-          setTimeout(() => toast(`未识别：${bad.map((b) => b.label).join('、')}`, true), 2200)
-        }
-      } catch (error) {
-        toast(error.message, true)
-      }
     })
     return
   }
@@ -4271,6 +4185,10 @@ document.addEventListener('submit', async (event) => {
   const gwForm = event.target.closest('[data-form="add-gwkey"]')
   if (gwForm) {
     event.preventDefault()
+    // 提交期间禁用：双击会连建两把 Key
+    const submitBtn = gwForm.querySelector('button[type="submit"], button:not([type])')
+    if (submitBtn?.disabled) return
+    if (submitBtn) submitBtn.disabled = true
     const data = Object.fromEntries(new FormData(gwForm))
     try {
       state = await api('POST', '/api/gateway/keys', {
@@ -4282,6 +4200,7 @@ document.addEventListener('submit', async (event) => {
       toast('Key 已创建')
     } catch (error) {
       toast(error.message, true)
+      if (submitBtn) submitBtn.disabled = false
     }
     return
   }
@@ -4289,6 +4208,9 @@ document.addEventListener('submit', async (event) => {
   const form = event.target.closest('[data-form="add-key"]')
   if (!form) return
   event.preventDefault()
+  const keySubmitBtn = form.querySelector('button[type="submit"], button:not([type])')
+  if (keySubmitBtn?.disabled) return
+  if (keySubmitBtn) keySubmitBtn.disabled = true
   const providerId = form.closest('[data-provider]').dataset.provider
   const data = Object.fromEntries(new FormData(form))
   try {
@@ -4297,6 +4219,7 @@ document.addEventListener('submit', async (event) => {
     toast('Key 已加密保存')
   } catch (error) {
     toast(error.message, true)
+    if (keySubmitBtn) keySubmitBtn.disabled = false
   }
 })
 
@@ -4306,8 +4229,9 @@ document.addEventListener('submit', async (event) => {
 let dragProviderId = null
 
 function clearDropMarks() {
-  document.querySelectorAll('.prov-card.drop-before, .prov-card.drop-after, .prov-card.dragging')
-    .forEach((node) => node.classList.remove('drop-before', 'drop-after', 'dragging'))
+  document
+    .querySelectorAll('.prov-card.drop-before, .prov-card.drop-after, .prov-card.dragging, .drop-zone.active')
+    .forEach((node) => node.classList.remove('drop-before', 'drop-after', 'dragging', 'active'))
 }
 
 document.addEventListener('dragstart', (event) => {
@@ -4676,6 +4600,9 @@ document.addEventListener('change', async (event) => {
   }
   const input = event.target.closest('[data-act="fx"]')
   if (!input) return
+  // 清空或非正数不提交：Number('') 是 0，直接 PATCH 会把 0 存进设置
+  // 并切入手动模式，界面显示与存储不一致
+  if (!(Number(input.value) > 0)) return
   try {
     // 手填 = 手动模式，自动任务不再覆盖
     state = await api('PATCH', '/api/settings', { fxUsdCny: Number(input.value) })

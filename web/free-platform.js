@@ -312,7 +312,8 @@ export function renderFreePlatformPane({
   const cards = list.map((platform) => {
     const isOn = isConnected(platform)
     const pfAccounts = allAccounts.filter((a) => a.platformId === platform.id)
-    const quota = aggregateQuota(pfAccounts)
+    // 与顶部汇总同口径：同租户两账号（国际版/国内版双卡）只按一份算，否则卡上额度翻倍
+    const quota = aggregateQuota(dedupeByTenant(pfAccounts))
     const name = platform.label || platform.connectorId || '—'
     const unitLabel = t(UNIT_LABEL[quota?.unit] || '积分')
     // 剩余量跟着额度单位走：请求次数说成「积分」会让人误以为还有钱没用

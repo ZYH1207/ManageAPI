@@ -950,8 +950,6 @@ a.icon-btn:hover { text-decoration: none; }
 /* 胶囊里的「混合」小字：不是价位状态，用弱化样式与倍率数字区分 */
 .chip-note { font-size: 10px; opacity: 0.75; font-weight: 400; }
 
-.sync-extra { display: inline-flex; align-items: flex-end; gap: 8px; }
-.sync-extra[hidden] { display: none; }
 /* 同步设置：两行——上面一行是间隔/阈值输入 + 最右的保存，下面一行是立即同步/新增站点 */
 .sync-row { display: flex; align-items: flex-end; gap: 8px; }
 .sync-row .field { margin: 0; }
