@@ -611,12 +611,9 @@ node .test/capture-shots.mjs
 - **主密码派生密钥** —— 提升本地密钥强度
 - **免费额度池** —— ✅ 已完成（T0/T1/T2a/T2b 四个里程碑全部上线）：中转站免费模型与平台积分独立成页、独立排序，不参与付费比价。开发过程见 [`docs/free-api-plan.md`](docs/free-api-plan.md)；剩余的「平台额度接入网关」单列为下面一条。
 - **平台额度接入网关** —— ⏸ **暂停开发**。各平台对第三方调用检测严格（反代 / 客户端识别——ZCode 的额度接口已实测「只认客户端本体」），模拟客户端代发对话是对抗风控的军备竞赛，账号封禁风险由用户承担，与本项目「显式、不偷偷」的原则冲突。平台积分**保持只读展示**（余额、签到、剩余天数），不接入 `/v1/chat/completions`。原方案与决策记录见 [`docs/free-api-plan.md`](docs/free-api-plan.md) 的 **T2c**。
-- **站点登录态（参考 [upstream-ops](https://github.com/bejix/upstream-ops)）** —— 现在读中转站数据只靠「令牌 / API Key」这类静态凭据，拿不到用户中心的东西：今日消费、累计消费、订阅、公告、分组倍率的历史变动。upstream-ops 的做法是**用账号密码登录站点、自己维持会话**（`/api/user/login` + `refresh`，请求带 `Authorization` 或 Cookie，one-api 系还要带 `New-Api-User` 头），过期前 5 分钟自动续期。若要跟进，计划分四步：
-  1. ✅ **自动判定站点系别**（已完成）：`provider.kind` 支持 `one-api / new-api / sub2api / unknown`，添加站点时自动探测一次（站点卡「识别系别」可重测）——`GET /api/status` 有 `quota_per_unit` / `chat_link` / `announcements` 一类字段 → one-api 系（`version` 或 `GET /api/pricing` 通 → new-api）；`GET /api/v1/settings/public` 或 `/api/v1/groups/available` 通 → Sub2API；都不通 → `unknown`。来源记在 `kindSource`（`auto` / `manual`）；余额与公告的获取已按系别走确定性路径（unknown 保留盲试探兜底）。**登录接口、鉴权头、额度换算都要按系别分支，这是登录态的前置。**
-  2. 新增「登录凭据」种类：账号密码单独加密存（`master.key` + AES-256-GCM，与现有 Key 同一套），只在需要时解密，且**不落日志、不回显**；
-  3. 先只接一家（one-api 系）跑通「登录 → 读 `/api/user/self` 与 `/api/log/self/stat` → 得到今日/累计消费」；
-  4. 再考虑公告、订阅用量与分组倍率的历史快照。
-  风险已知：可能触发验证码 / 2FA / 异地登录风控（upstream-ops 靠 capslover 等打码服务绕过，本项目不打算内置打码），以及账号密码泄露面比 Key 大。所以定位是「可选增强」：不登录也要能正常用，登录了才多出消费与公告数据。
+- **站点登录态（参考 [upstream-ops](https://github.com/bejix/upstream-ops)）** —— ✅ **基础已上线**：账号密码登录（Sub2API / one-api / new-api 协议，验证码 / 2FA 站不支持）、令牌自动续期（401 触发，10 分钟冷却）、手动令牌不被覆盖（`adminTokenSource` 区分来源）、站点卡片登录态状态灯（绿=已登录 / 黄=有令牌非登录态或已失效 / 红=什么都没有）。**剩余**：登录态能拿到的增量数据还没接——今日/累计消费（one-api 系 `/api/log/self/stat`）、订阅用量、公告的已读管理、分组倍率的历史快照。风险不变：可能触发验证码 / 2FA / 异地登录风控，本项目不内置打码；定位仍是「可选增强」，不登录也能正常用。
+- **余额概览的站点小卡片改进** —— 监控页余额概览图下面那排站点小胶囊目前是「只同步这个站」的快捷按钮（点击只采该站余额），但没有任何可点击的视觉提示，看起来像图例，和图也没有对应关系。两个方向待选：①保持快捷同步定位，加同步图标与 hover 效果让「能点」可见；②升级为图例交互——图改成「总余额 + 各站分线」，点击胶囊切换该站分线（需要后端按站点吐余额序列）。
+- **站点卡片充值入口** —— 可行性初判：各中转站的充值走的是**他们自己的支付页**（易支付/卡密等），没有公开的充值 API，工具侧代充既不可行也不该做（涉及支付凭据）。可行的形态是**深链**：站点卡片加「充值」按钮，直接跳转到该站后台的充值页（Sub2API 系有固定路由；one-api 系看 `chat_link` / topup 路由，unknown 站就跳站点首页）。纯跳转、不碰支付，与「显式、不偷偷」原则一致。待做。
 - **DSH 插件形态** —— 不只是搬进侧边栏：注册成 DSH 的 provider，让 agent 的每次真实对话都参与选站并回写评分。方案见 [`docs/dsh-plugin-plan.md`](docs/dsh-plugin-plan.md)
 
 ---
