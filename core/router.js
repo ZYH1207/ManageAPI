@@ -97,6 +97,10 @@ export function selectCandidates({ offers, providers, credentials, scores, bench
       effective: effectiveCost(price, quality),
       effectiveUsd: effectiveCost(priceUsd, quality),
       status: score?.status || 'unknown',
+      // 证据量与置信度：1 个样本的「健康」和 10 个样本的「健康」确定性差很多，
+      // 界面必须能看出来，否则用户会以为 healthy 等于「已验证可靠」
+      samples: (score?.samples || 0) + (score?.trafficSamples || 0),
+      confidence: score?.confidence ?? null,
       // 冷却中（额度不足/限流/模型不在分组）：不是坏站，但此刻不派过去
       blocked: score?.blocked || null,
       statusReason: reasons.join(' · ') || null,
@@ -163,6 +167,8 @@ export function explain(candidates) {
     tooSlow: Boolean(c.tooSlow),
     ttftMs: c.ttftMs,
     status: c.status,
+    samples: c.samples,
+    confidence: c.confidence,
     // 冷却中（额度不足/限流/模型不在分组）：决策页用它显示「额度不足 · 冷却中」，
     // 不然用户看到一条看着健康的站却没被选，会以为评分出错
     blocked: c.blocked ? { kind: c.blocked.kind, until: c.blocked.until } : null,

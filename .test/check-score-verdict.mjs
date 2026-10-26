@@ -116,7 +116,39 @@ console.log('[5] 真实流量过期后不再计入（否则一小时前的失败
   ok(long.get('f5').uptime === 1, `长期评分忽略过期流量（实际 ${long.get('f5').uptime}）`)
 }
 
-console.log('[6] 正常与长期评分不受影响')
+console.log('[6] 证据新鲜度统一：任何有效证据都算数，不只看探针')
+{
+  // 探针 7 小时前，但 10 分钟前有真实调用失败（站点故障）：证据是新鲜的，
+  // 不能判「过期」把失败信号盖掉
+  const freshFail = score([{ offerId: 'e1', ok: true, ts: ago(7), ...base }], {
+    e1: { ok: 0, fail: 1, since: ago(0.3), lastFailAt: new Date(now - 10 * 60000).toISOString() },
+  }).get('e1')
+  ok(freshFail.stale === false, '真实失败也是新鲜证据 → 不判过期')
+  ok(freshFail.status === 'inconclusive', `1 次失败证据不足（实际 ${freshFail.status}）`)
+  ok(freshFail.evidenceAgeMs < 3600000, '证据年龄取自最近一次真实调用')
+
+  // 探针 7 小时前 + 没有任何真实流量 → 过期
+  const noEvidence = score([{ offerId: 'e2', ok: true, ts: ago(7), ...base }]).get('e2')
+  ok(noEvidence.stale === true, '只有旧探针 → 过期')
+
+  // 过期流量不算证据
+  const oldTraffic = score([{ offerId: 'e3', ok: true, ts: ago(7), ...base }], {
+    e3: { ok: 5, fail: 0, since: ago(3), lastOkAt: ago(3) },
+  }).get('e3')
+  ok(oldTraffic.stale === true, '流量记录本身已过期 → 不能续命')
+}
+
+console.log('[7] 置信度：healthy 也分证据厚薄')
+{
+  const one = score([{ offerId: 'c1', ok: true, ts: ago(0.1), ...base }]).get('c1')
+  ok(one.status === 'healthy' && one.confidence === 'low', `1 个样本 → 健康但低置信（${one.confidence}）`)
+  const three = score([1, 2, 3].map(() => ({ offerId: 'c2', ok: true, ts: ago(0.1), ...base }))).get('c2')
+  ok(three.confidence === 'medium', `3 个样本 → 中置信（${three.confidence}）`)
+  const ten = score(Array.from({ length: 10 }, () => ({ offerId: 'c3', ok: true, ts: ago(0.1), ...base }))).get('c3')
+  ok(ten.confidence === 'high', `10 个样本 → 高置信（${ten.confidence}）`)
+}
+
+console.log('[8] 正常与长期评分不受影响')
 {
   const s = score([{ offerId: 'e', ok: true, ts: ago(0.1), ...base }])
   ok(s.get('e').status === 'healthy', '正常 → 健康')

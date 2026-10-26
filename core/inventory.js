@@ -838,11 +838,13 @@ export async function addTraffic(entries, windowMs = TRAFFIC_WINDOW_MS) {
         row.since = nowIso
         row.kinds = {}
         row.lastOkAt = null
+        row.lastFailAt = null
         row.quality = { samples: 0, bad: 0 }
       }
       row.ok += delta.ok || 0
       row.fail += delta.fail || 0
       if (delta.ok) row.lastOkAt = nowIso
+      if (delta.fail) row.lastFailAt = nowIso
       // 真实响应的质量信号（空回答 / 计费虚报）：探针之外的第二类完整性证据
       if (delta.quality) {
         if (!row.quality || typeof row.quality !== 'object') row.quality = { samples: 0, bad: 0 }

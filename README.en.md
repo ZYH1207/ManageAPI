@@ -226,13 +226,31 @@ States: `healthy`, `degraded`, `unstable` (real outages > 20%, at least 3 sample
 
 Six hours by default, adjustable on the Probes page. An expired score is not used — **stale data is more dangerous than no data**, because it makes you think you already checked.
 
-Exception: **successful real traffic within the last hour keeps a supply alive**. A real call proves it is serving right now; it should not be dropped just because this probe round has not reached it yet.
+**"Expired" is about the last piece of usable evidence, not the last probe.** Probes and real calls are both evidence; whichever is newer wins:
+
+- not probed for 7 hours, but called for real 10 minutes ago -> **not expired**, and a failure there surfaces honestly as `unstable` instead of being hidden behind "expired"
+- not probed for 7 hours and no real traffic at all -> expired
+- the traffic record itself is older than its 1-hour window -> not evidence (that is last round's history, not the current state)
+
+The two clocks must agree: validity is "how many probe rounds may be missed", so **the probe interval may not exceed half the validity** (rejected when saving), otherwise every supply would expire between two rounds — exactly the trap that setting both to 6 hours fell into.
 
 That is also why scheduled probing exists: without it, scores eventually all expire and routing degrades into picking the cheapest.
 
 Auto-probe can be set to an interval (1 hour by default, can be off). The scheduler wakes every minute and picks supplies that are due (up to 10). Using "check + due" instead of a long timer means config changes apply instantly and a slow probe never makes the next round late.
 
-The interval is **adaptive**: healthy supplies use your interval, everything else (unhealthy / inconclusive / expired / never probed) is re-probed at a third of it (10 minutes minimum) so problem sites get fresh evidence quickly. Cooling supplies are skipped. Probes run 4-way concurrent so one slow round cannot stall for tens of minutes.
+The interval is **adaptive**: healthy supplies use your interval, everything else (unhealthy / inconclusive / expired / integrity suspicions / never probed) is re-probed at a third of it (10 minutes minimum) so problem sites get fresh evidence quickly. Cooling supplies are skipped. Probes run 4-way concurrent so one slow round cannot stall for tens of minutes.
+
+### Sample count sets confidence
+
+`healthy` means "nothing wrong given the evidence we have", not "verified reliable" — one successful sample and ten successful samples both read healthy, with very different certainty. So every supply carries a **confidence** level:
+
+| Samples (probes + real calls) | Confidence |
+|---|---|
+| >= 10 | high |
+| 3 - 9 | medium |
+| < 3 | low (the UI shows "N samples") |
+
+Confidence is disclosure only, it never changes routing — few samples do not mean unusable, just not yet measured enough.
 
 ### Real traffic counts too
 

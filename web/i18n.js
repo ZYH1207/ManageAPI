@@ -769,6 +769,12 @@ Object.assign(EN, {
   '评分过期': 'Score expired',
   '没有可信样本': 'No usable samples',
   '证据不足': 'Not enough evidence',
+  '置信度高': 'high confidence',
+  '置信度中': 'medium confidence',
+  '置信度低（样本少）': 'low confidence (few samples)',
+  '最近证据': 'Latest evidence',
+  '最近一次有效证据（探针或真实调用）': 'Most recent evidence (probe or real call)',
+  '探针：': 'probe: ',
   // 冷却中的供给（额度不足 / 限流 / 模型不在分组）：不是坏了，只是此刻别派过去
   '额度不足': 'Out of credit',
   '单次预算超限': 'Request over budget',

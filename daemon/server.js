@@ -429,6 +429,21 @@ route('PATCH', /^\/api\/settings$/, async (ctx) => {
       if (!Number.isFinite(v) || v <= 0) throw new HttpError(400, '评分有效期必须大于 0')
       db.settings.scoreMaxAgeHours = v
     }
+    // 两个时钟必须自洽：有效期是「允许错过几轮探测」，间隔比有效期还长的话，
+    // 每条供给都会在两次探测之间整段过期（之前踩过：间隔和有效期都是 6 小时，
+    // 一到点就集体掉出路由池）。这里直接挡住，别让配置自己打自己。
+    // 只在本次真的改了这两项时校验——否则旧配置会卡住其它无关设置
+    if (ctx.body.probeIntervalMinutes !== undefined || ctx.body.scoreMaxAgeHours !== undefined) {
+      if (db.settings.probeIntervalMinutes > 0) {
+        const maxAgeMinutes = (Number(db.settings.scoreMaxAgeHours) || 6) * 60
+        if (db.settings.probeIntervalMinutes > maxAgeMinutes / 2) {
+          throw new HttpError(
+            400,
+            `探测间隔（${db.settings.probeIntervalMinutes} 分钟）不能超过评分有效期（${maxAgeMinutes} 分钟）的一半，否则每条供给都会在两轮探测之间过期`,
+          )
+        }
+      }
+    }
     if (ctx.body.maxTtftMs !== undefined) {
       const v = Number(ctx.body.maxTtftMs)
       if (!Number.isFinite(v) || v < 0) throw new HttpError(400, '首字延迟上限不能为负')

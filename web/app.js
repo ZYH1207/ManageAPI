@@ -1957,7 +1957,11 @@ function renderDecision() {
           }</td>
           <td>${candidate.group ? `<span class="badge ${groupChipOf(candidate.providerId, candidate.group)}">${esc(candidate.group)}</span>` : '<span style="color:var(--faint)">默认</span>'}</td>
           <td class="num">${candidate.price === null ? '—' : priceText(candidate.price)}</td>
-          <td class="num">${candidate.quality === null ? '—' : candidate.quality.toFixed(2)}</td>
+          <td class="num">${candidate.quality === null ? '—' : candidate.quality.toFixed(2)}${
+            candidate.confidence && candidate.confidence !== 'high'
+              ? `<div class="sub">${candidate.samples} ${t('样本')}</div>`
+              : ''
+          }</td>
           <td class="num">${candidate.effective === null ? '—' : priceText(candidate.effective)}</td>
           <td class="num">${candidate.ttftMs === null ? '—' : `${candidate.ttftMs}ms`}</td>
           <td><span class="badge ${badge.cls}">${badge.label}</span>${candidate.statusReason ? `<div class="sub">${esc(candidate.statusReason)}</div>` : ''}</td>
@@ -2006,6 +2010,12 @@ const PROBE_STATUS = {
   unknown: { label: '未探测', cls: '' },
 }
 
+// 置信度：同样的「健康」，1 个样本和 10 个样本的确定性差很多
+const CONFIDENCE_LABEL = { high: '置信度高', medium: '置信度中', low: '置信度低（样本少）' }
+function confidenceLabel(level) {
+  return t(CONFIDENCE_LABEL[level] || '置信度低（样本少）')
+}
+
 function pct(value) {
   if (value === null || value === undefined) return '—'
   return `${Math.round(value * 100)}%`
@@ -2051,6 +2061,9 @@ function probeDetailHtml(score) {
           : ''}
         <div class="detail-line">质量 <b>${fmt(score.quality)}</b>
           <span class="dim">= 可用率 × 完整性，低于 0.8 就不参与路由</span></div>
+        <div class="detail-line">证据 <b>${(score.samples || 0) + (score.trafficSamples || 0)}</b> 个样本
+          <span class="dim">（探针 ${score.samples || 0} + 真实调用 ${score.trafficSamples || 0}）·
+          最近一次 ${relTime(score.evidenceAt)} · 置信度 ${confidenceLabel(score.confidence)}</span></div>
       </div>
       <div>
         <div class="detail-title">最近一次探测的证据</div>
@@ -2116,6 +2129,10 @@ function renderProbes() {
         </label>
         <span class="hint" style="margin:0">0 = 不限；超过上限的供给不参与路由</span>
       </div>
+      <div class="hint" style="margin-top:8px">
+        有效期决定「允许错过几轮探测」：最近一次有效证据（探针或真实调用）超过它就判过期。
+        探测间隔不能超过有效期的一半，否则供给会在两轮探测之间整段过期。
+      </div>
       <div class="switch-row">
         <label class="switch">
           <input type="checkbox" id="allow-untrusted" ${allowUntrusted ? 'checked' : ''} />
@@ -2148,7 +2165,12 @@ function renderProbes() {
       // 但路由会跳过它。此时不再并排显示「未探测」——那是两回事，容易看串
       const statusCell = score?.blocked
         ? `<span class="badge warn">${esc(blockedLabel(score.blocked))}</span>`
-        : `<span class="badge ${status.cls}">${status.label}</span>`
+        : `<span class="badge ${status.cls}">${status.label}</span>${
+            // 证据量：同样的「健康」，1 个样本和 10 个样本确定性差很多
+            score && score.confidence !== 'high'
+              ? `<div class="sub">${(score.samples || 0) + (score.trafficSamples || 0)} ${t('样本')}</div>`
+              : ''
+          }`
       return `
         <tr data-offer="${esc(offer.id)}" ${hasDetail ? 'data-act="toggle-detail" tabindex="0" style="cursor:pointer"' : ''}>
           <td class="mono">${esc(offer.upstreamName)}${offer.group ? ` <span class="badge ${groupChipOf(offer.providerId, offer.group)}">${esc(offer.group)}</span>` : ''}${hasDetail ? ' <span style="color:var(--faint);font-size:10px">▾</span>' : ''}</td>
@@ -2158,7 +2180,7 @@ function renderProbes() {
           <td class="num">${pct(score?.truncationRate)}</td>
           <td class="num">${pct(score?.billingRate)}</td>
           <td class="num">${score?.ttftMs ? `${score.ttftMs}ms` : '—'}</td>
-          <td style="color:var(--faint)">${relTime(score?.lastProbeAt)}</td>
+          <td style="color:var(--faint)" title="${esc(t('探针：'))}${relTime(score?.lastProbeAt)}">${relTime(score?.evidenceAt)}</td>
           <td class="num"><button class="ghost" data-act="probe">探测</button></td>
         </tr>
         <tr class="detail-row" data-detail-for="${esc(offer.id)}" ${new URLSearchParams(location.search).has('expand') ? '' : 'hidden'}>
@@ -2182,7 +2204,7 @@ function renderProbes() {
             <th>模型</th><th>状态</th>
             <th class="num">可用率</th><th class="num">指纹</th>
             <th class="num">截断</th><th class="num">计费</th>
-            <th class="num">TTFT</th><th>上次探测</th><th></th>
+            <th class="num">TTFT</th><th title="${esc(t('最近一次有效证据（探针或真实调用）'))}">${t('最近证据')}</th><th></th>
           </tr></thead>
           <tbody>${rows}</tbody>
         </table>`}

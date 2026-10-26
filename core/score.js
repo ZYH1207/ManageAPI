@@ -35,10 +35,12 @@ export const THRESHOLDS = {
  */
 export const MIN_SAMPLES_FOR_VERDICT = 3
 
-function ratio(values) {
-  if (values.length === 0) return null
-  return values.filter(Boolean).length / values.length
-}
+/**
+ * 证据量分级：多少个样本才算「结论站得住」。
+ * 注意这只是**置信度标注**，不是放行条件——1 个成功样本仍然算健康（能连上就是
+ * 能连上），但界面必须能看出「这个 healthy 只有 1 个样本」。
+ */
+export const CONFIDENCE_SAMPLES = { high: 10, medium: 3 }
 
 function median(numbers) {
   const list = numbers.filter((n) => typeof n === 'number' && Number.isFinite(n)).sort((a, b) => a - b)
@@ -220,9 +222,30 @@ export function scoreOffers(probes, traffic = {}, options = {}) {
 
     const lastProbeAt = recent[recent.length - 1]?.ts ?? null
     const ageMs = lastProbeAt ? now - new Date(lastProbeAt).getTime() : null
-    // 真实流量的成功是更新的证据：最近 1 小时有成功调用就说明站点正在正常服务，
-    // 不能因为这一轮探针还没轮到它就把整条供给判过期、踢出路由
-    const stale = ageMs !== null && ageMs > maxAgeMs && trafficOk === 0
+
+    // ---- 证据新鲜度：一个概念，两个来源
+    // 判「这份评分还作不作数」看的是「最后一次有效证据」，而不是「最后一次探针」。
+    // 真实调用（成功或失败）同样是证据：一个站 7 小时没被探过、但 10 分钟前刚
+    // 被真实调用过，它既不过期、也不该因为「探针旧」而掩盖掉新鲜失败信号。
+    // 以前这里只认探针 + 一条「有成功流量就免死」的特例，特例之外的情况都算错。
+    const trafficLastAt = Math.max(
+      tsOf(trafficRow?.lastOkAt),
+      tsOf(trafficRow?.lastFailAt),
+      unavailableAt,
+    )
+    const evidenceAt = Math.max(tsOf(lastProbeAt), trafficLastAt)
+    const evidenceAgeMs = evidenceAt > 0 ? now - evidenceAt : null
+    const stale = evidenceAgeMs !== null && evidenceAgeMs > maxAgeMs
+
+    // 证据量决定「这个结论有多可信」：1 个样本的成功和 10 个样本的成功，
+    // 都叫 healthy，但确定性完全不同。界面要能把这件事说清楚
+    const totalEvidence = probeOk + probeOutage + trafficOk + trafficFail
+    const confidence =
+      totalEvidence >= CONFIDENCE_SAMPLES.high
+        ? 'high'
+        : totalEvidence >= CONFIDENCE_SAMPLES.medium
+          ? 'medium'
+          : 'low'
 
     // 最近一次探测的原始证据，供界面展开查看「为什么判它可疑」
     const last = recent[recent.length - 1] || null
@@ -275,6 +298,10 @@ export function scoreOffers(probes, traffic = {}, options = {}) {
       latencyMs: median(recent.map((r) => r.latencyMs)),
       lastProbeAt,
       ageMs,
+      // 证据新鲜度（探针或真实流量，取最近一次）与置信度（样本量）
+      evidenceAt: evidenceAt > 0 ? new Date(evidenceAt).toISOString() : null,
+      evidenceAgeMs,
+      confidence,
       stale,
       lastError: [...recent].reverse().find((r) => !r.ok)?.error ?? null,
       lastProbe: last
