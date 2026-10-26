@@ -15,6 +15,7 @@ import * as pricing from '../core/pricing.js'
 import * as bench from '../core/benchmark.js'
 import * as providers from '../core/providers.js'
 import { scoreOffers, isRoutable, longTermScores } from '../core/score.js'
+import { classifyFailure } from '../core/failure.js'
 import { selectCandidates, listPublicModels, explain } from '../core/router.js'
 import { splitOffers, resolvePool, FREE_PREFIX, FREE_BASE_PATH } from '../core/free.js'
 import { rankFreePool } from '../core/rank-free.js'
@@ -1804,11 +1805,16 @@ function queueRouting(entry) {
 const trafficBuffer = new Map()
 let trafficTimer = null
 
-function bufferTraffic(offerId, ok) {
+function bufferTraffic(offerId, ok, error) {
   if (!offerId) return
-  const entry = trafficBuffer.get(offerId) || { ok: 0, fail: 0 }
+  const entry = trafficBuffer.get(offerId) || { ok: 0, fail: 0, kinds: {} }
   if (ok) entry.ok += 1
-  else entry.fail += 1
+  else {
+    // 只有站点故障算 fail；额度/限流/模型不在分组单独计数，不拉低可用率
+    const { kind, countsAsOutage } = classifyFailure(error)
+    if (countsAsOutage) entry.fail += 1
+    else entry.kinds[kind] = (entry.kinds[kind] || 0) + 1
+  }
   trafficBuffer.set(offerId, entry)
   if (!trafficTimer) {
     trafficTimer = setTimeout(() => {
@@ -1829,9 +1835,12 @@ async function flushTraffic() {
     // 流量计数直接参与可用率评分，丢一批等于成败样本凭空消失
     console.error('[网关] 流量计数写盘失败，已回队重试：', error)
     for (const [offerId, entry] of snapshot) {
-      const current = trafficBuffer.get(offerId) || { ok: 0, fail: 0 }
+      const current = trafficBuffer.get(offerId) || { ok: 0, fail: 0, kinds: {} }
       current.ok += entry.ok
       current.fail += entry.fail
+      for (const [kind, count] of Object.entries(entry.kinds || {})) {
+        current.kinds[kind] = (current.kinds[kind] || 0) + count
+      }
       trafficBuffer.set(offerId, current)
     }
   }
@@ -2238,7 +2247,7 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
           ttftMs: result.ttftMs,
           ok: !result.streamError,
         })
-        bufferTraffic(candidate.offer.id, !result.streamError)
+        bufferTraffic(candidate.offer.id, !result.streamError, result.streamError)
         // 免费池的额度必须跟着真实调用扣：以前只有手动填的接口能改 freeQuota，
         // 于是「额度用尽」永远判不出来，网关会一直往一个已经空了的池子里发请求。
         if (pool === 'free') {
@@ -2256,7 +2265,7 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
         error: result.error,
         ms: Date.now() - attemptStarted,
       })
-      bufferTraffic(candidate.offer.id, false)
+      bufferTraffic(candidate.offer.id, false, result.error)
     } catch (error) {
       if (clientAbort.signal.aborted) return
       failures.push({
@@ -2265,7 +2274,7 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
         error: error.message || String(error),
         ms: Date.now() - attemptStarted,
       })
-      bufferTraffic(candidate.offer.id, false)
+      bufferTraffic(candidate.offer.id, false, error.message || String(error))
     }
   }
 

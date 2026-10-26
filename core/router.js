@@ -68,6 +68,8 @@ export function selectCandidates({ offers, providers, credentials, scores, bench
     // 给用户看的要换算成异常比例——此前直接把 80% 未截断显示成「截断 80%」，意思完全反了
     const reasons = []
     if (tooSlow) reasons.push('首字超限')
+    // 冷却中（额度不足/限流/模型不在分组）由状态标签单独表达，不塞进 reasons——
+    // 决策页那一格已经显示「额度不足 · 冷却中」，再拼一遍等于同一句话说两次
     if (score?.stale) reasons.push('评分过期')
     if (typeof score?.availability === 'number' && score.availability < THRESHOLDS.availability) {
       reasons.push(`可用率 ${Math.round(score.availability * 100)}%`)
@@ -96,6 +98,8 @@ export function selectCandidates({ offers, providers, credentials, scores, bench
       effective: effectiveCost(price, quality),
       effectiveUsd: effectiveCost(priceUsd, quality),
       status: score?.status || 'unknown',
+      // 冷却中（额度不足/限流/模型不在分组）：不是坏站，但此刻不派过去
+      blocked: score?.blocked || null,
       statusReason: reasons.join(' · ') || null,
       ttftMs,
     }
@@ -160,6 +164,9 @@ export function explain(candidates) {
     tooSlow: Boolean(c.tooSlow),
     ttftMs: c.ttftMs,
     status: c.status,
+    // 冷却中（额度不足/限流/模型不在分组）：决策页用它显示「额度不足 · 冷却中」，
+    // 不然用户看到一条看着健康的站却没被选，会以为评分出错
+    blocked: c.blocked ? { kind: c.blocked.kind, until: c.blocked.until } : null,
     statusReason: c.statusReason ?? null,
   }))
 }

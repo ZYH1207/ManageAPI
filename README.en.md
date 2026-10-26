@@ -186,10 +186,21 @@ Click any row to expand it: you see how the score was computed and the raw evide
 Two dimensions, kept **separate**:
 
 ```
-availability = (successful probes + successful real requests) / all samples
+availability = (successful probes + successful real requests) / (successes + real outages)
 integrity    = fingerprint pass × 0.5 + not-truncated × 0.3 + normal billing × 0.2
 quality      = availability × integrity
 ```
+
+**Failures are attributed before they count** (`core/failure.js`):
+
+| Upstream response | Counts as outage? | Handling |
+|---|---|---|
+| 5xx, timeout, connection failure, non-JSON body | yes | lowers availability |
+| Out of balance / over budget (402, 403 `INSUFFICIENT_BALANCE`) | no | 30-minute cooldown |
+| Rate limited (429) | no | 5-minute cooldown |
+| Model not in this group (404 `model not supported` / `not in group`) | no | 60-minute cooldown |
+
+The "no" rows are not instability — that supply simply cannot serve right now (top up, wait out the limit, pick another group). Counting them as outages paints a wall of red for sites that only ran out of credit and drowns the real failures. Cooling supplies are skipped by routing and come back automatically after the cooldown or after one successful call; the UI labels them "out of credit / rate limited / model unavailable · cooling down" rather than "unstable".
 
 Below 0.8 on either dimension means unusable; by default it sinks to the back and is only a last resort.
 
@@ -199,21 +210,25 @@ Below 0.8 on either dimension means unusable; by default it sinks to the back an
 > discount wins, but they can genuinely return swapped or truncated answers; the trade-off is yours. The TTFT limit
 > is separate and unaffected.
 
-States: `healthy`, `degraded`, `unstable`, `stale`, `unknown`.
+States: `healthy`, `degraded`, `unstable` (real outages > 20%, at least 3 samples), `inconclusive` (failures but fewer than 3 samples: not routable, not flagged), `stale`, `unknown`.
 
 ### Scores expire
 
 Six hours by default, adjustable on the Probes page. An expired score is not used — **stale data is more dangerous than no data**, because it makes you think you already checked.
 
+Exception: **successful real traffic within the last hour keeps a supply alive**. A real call proves it is serving right now; it should not be dropped just because this probe round has not reached it yet.
+
 That is also why scheduled probing exists: without it, scores eventually all expire and routing degrades into picking the cheapest.
 
 Auto-probe can be set to an interval (1 hour by default, can be off). The scheduler wakes every minute and picks supplies that are due (up to 10). Using "check + due" instead of a long timer means config changes apply instantly and a slow probe never makes the next round late.
 
+The interval is **adaptive**: healthy supplies use your interval, everything else (unhealthy / inconclusive / expired / never probed) is re-probed at a third of it (10 minutes minimum) so problem sites get fresh evidence quickly. Cooling supplies are skipped. Probes run 4-way concurrent so one slow round cannot stall for tens of minutes.
+
 ### Real traffic counts too
 
-Probes are synthetic and cannot see "5xx at peak hours". Every forwarded request also counts toward that site's availability. In practice: a site with healthy probes but three consecutive real failures drops to 63% availability, turns `unstable`, and gets skipped.
+Probes are synthetic and cannot see "5xx at peak hours". Every forwarded request also counts toward that site's availability, and its failures are attributed the same way (credit/rate-limit failures do not count). In practice: a site with healthy probes but three consecutive real failures drops to 63% availability, turns `unstable`, and gets skipped.
 
-Traffic counts roll on a 1-hour window — a site that broke in the morning and recovered in the afternoon should not be punished all day.
+Traffic counts roll on a 1-hour window, validated on both the write and the read side — a site that broke in the morning and recovered in the afternoon should not be punished all day.
 
 ---
 
@@ -398,6 +413,7 @@ core/              Host-agnostic core (no framework dependencies)
   model-plaza.js     Model plaza parsing (group ratios + base prices)
   probe.js           Fingerprint / truncation / billing / cache probes
   score.js           Short-term scores (with TTL) and long-term scores (time decay)
+  failure.js         Failure attribution: outage vs credit / rate limit / model missing (with cooldowns)
   router.js          Candidate filtering and ordering
   usage.js           Usage aggregation (day × key × site × model)
   free.js            Free-pool detection: actual price = 0, free/ prefix, entry parsing

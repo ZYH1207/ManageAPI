@@ -2,8 +2,11 @@
  * 评分层：把探测记录和真实流量压成路由可直接消费的几个数。
  *
  * 两个维度分开算，不要混成一个加权和：
- *   availability —— 连得上吗、成功率高不高（探针 + 真实流量合并）
+ *   availability —— 连得上吗、成功率高不高（探针 + 真实流量合并，只算真正的故障）
  *   integrity    —— 连上了，但结果可不可信（掉包 / 截断 / 虚报，只来自探针）
+ *
+ * 额度不足 / 限流 / 模型不在分组不算「连不上」：它们让供给进入冷却，
+ * 不拉低可用率（详见 core/failure.js）。
  *
  * 路由时的用法是「硬约束 + 有效成本」：
  *   任一维度不达标直接排除；剩下的按 价格 ÷ 质量 排序。
@@ -11,6 +14,8 @@
  * 时效很重要：探针数据会过期。一个站昨天健康、今天掉包了，
  * 如果评分还停在昨天，路由会继续用它——所以过期的评分一律不放行。
  */
+
+import { classifyFailure, cooldownUntil } from './failure.js'
 
 const DEFAULT_WINDOW = 20
 const DEFAULT_MAX_AGE_MS = 6 * 3600 * 1000
@@ -89,6 +94,9 @@ export function scoreOffers(probes, traffic = {}, options = {}) {
     const fresh = records.filter((r) => now - new Date(r.ts).getTime() <= maxAgeMs)
     const recent = (fresh.length > 0 ? fresh : records).slice(-window)
     const probeSamples = recent.length
+    // 可用率只认「新鲜」的探针：记录全部过期时不能拿旧数据充当现况证据，
+    // 那条供给的可用率只由窗口内的真实流量说话（没有流量就是 null）
+    const evidence = fresh.slice(-window)
 
     // 完整性只统计「真的测到了这一项」的记录：探测失败的记录里这些字段是
     // undefined（请求都没成功，谈不上指纹/截断），不能当成「没通过」——
@@ -108,13 +116,66 @@ export function scoreOffers(probes, traffic = {}, options = {}) {
     const integrity = totalWeight === 0 ? null : parts.reduce((sum, p) => sum + p.value * p.weight, 0) / totalWeight
 
     // 可用率合并探针与真实流量：探针样本少，真实请求更能反映实际状况。
-    // 流量只认窗口内的（1 小时），过期的失败不能一直压着站点
-    const probeOk = recent.filter((r) => r.ok).length
+    // 流量只认窗口内的（1 小时），过期的失败不能一直压着站点。
+    // 额度不足 / 限流 / 模型不在分组不是「站点坏了」：它们不进分母，
+    // 只让这条供给进入冷却，否则一堆只是没余额的站会长期挂红，
+    // 真正的故障（502、卡死）反而被淹没
     const trafficRow = freshTraffic(traffic?.[offerId], now, trafficMaxAgeMs)
     const trafficOk = trafficRow?.ok || 0
     const trafficFail = trafficRow?.fail || 0
-    const totalSamples = probeSamples + trafficOk + trafficFail
+    const trafficKinds = trafficRow?.kinds || {}
+    let trafficUnavailable = 0
+    for (const entry of Object.values(trafficKinds)) trafficUnavailable += Number(entry?.n) || 0
+
+    let probeOk = 0
+    let probeOutage = 0
+    let probeUnavailable = 0
+    let unavailableAt = 0
+    let unavailableKind = null
+    let successAt = 0
+    for (const record of evidence) {
+      const tsMs = new Date(record.ts).getTime()
+      if (record.ok) {
+        probeOk += 1
+        if (tsMs > successAt) successAt = tsMs
+        continue
+      }
+      const { kind, countsAsOutage } = classifyFailure(record.error)
+      if (countsAsOutage) {
+        probeOutage += 1
+        continue
+      }
+      probeUnavailable += 1
+      if (tsMs > unavailableAt) {
+        unavailableAt = tsMs
+        unavailableKind = kind
+      }
+    }
+
+    // 流量侧同口径：最后一次成功与最后一次「暂时不可用」谁更近，决定是否还在冷却。
+    // 落盘的是 ISO 字符串，必须按时间解析（Number() 会得到 NaN）
+    const tsOf = (value) => {
+      if (value === null || value === undefined || value === '') return 0
+      const ms = typeof value === 'number' ? value : new Date(value).getTime()
+      return Number.isFinite(ms) ? ms : 0
+    }
+    if (tsOf(trafficRow?.lastOkAt) > successAt) successAt = tsOf(trafficRow.lastOkAt)
+    for (const [kind, entry] of Object.entries(trafficKinds)) {
+      const lastAt = tsOf(entry?.lastAt)
+      if (lastAt > unavailableAt) {
+        unavailableAt = lastAt
+        unavailableKind = kind
+      }
+    }
+
+    const totalSamples = probeOk + probeOutage + trafficOk + trafficFail
     const availability = totalSamples === 0 ? null : (probeOk + trafficOk) / totalSamples
+
+    // 冷却期内不放行，但不当成「坏站」：额度充上、限流过去就自动恢复，
+    // 判断依据是「最后一次不可用失败」晚于「最后一次成功」
+    const blockedUntil =
+      unavailableKind && unavailableAt > successAt ? cooldownUntil(unavailableKind, unavailableAt) : 0
+    const blocked = blockedUntil > now ? { kind: unavailableKind, until: blockedUntil } : null
 
     const quality =
       availability === null || integrity === null ? availability ?? integrity : availability * integrity
@@ -128,7 +189,9 @@ export function scoreOffers(probes, traffic = {}, options = {}) {
 
     const lastProbeAt = recent[recent.length - 1]?.ts ?? null
     const ageMs = lastProbeAt ? now - new Date(lastProbeAt).getTime() : null
-    const stale = ageMs !== null && ageMs > maxAgeMs
+    // 真实流量的成功是更新的证据：最近 1 小时有成功调用就说明站点正在正常服务，
+    // 不能因为这一轮探针还没轮到它就把整条供给判过期、踢出路由
+    const stale = ageMs !== null && ageMs > maxAgeMs && trafficOk === 0
 
     // 最近一次探测的原始证据，供界面展开查看「为什么判它可疑」
     const last = recent[recent.length - 1] || null
@@ -149,13 +212,22 @@ export function scoreOffers(probes, traffic = {}, options = {}) {
     else if (availability !== null && availability < THRESHOLDS.availability) {
       // 样本不足的失败：明确标「证据不足」，界面不显示成可疑/不稳定
       status = 'inconclusive'
+    } else if (availability === null) {
+      // 只有额度/限流这类「暂时不可用」的失败：没有任何可靠性证据，不算健康
+      status = 'unknown'
     } else status = 'healthy'
 
     scores.set(offerId, {
       offerId,
       samples: probeSamples,
       trafficSamples: trafficOk + trafficFail,
+      trafficUnavailable,
       trafficStale: Boolean(traffic?.[offerId]) && trafficRow === null,
+      // 样本拆分：参与可用率的是 ok + outage；unavailable 不进分母
+      outageSamples: probeOutage + trafficFail,
+      unavailableSamples: probeUnavailable + trafficUnavailable,
+      // 冷却中的供给：不参与路由，但不是「坏」，额度/限流恢复后自动回来
+      blocked,
       availability,
       fingerprintRate,
       truncationRate,
@@ -201,6 +273,8 @@ export function isRoutable(score) {
   if (!score || score.samples === 0) return false
   if (score.stale) return false
   if (score.status === 'inconclusive') return false
+  // 冷却中（额度不足/限流/模型不在分组）：不是坏站，但此刻派过去只会失败
+  if (score.blocked) return false
   if (score.availability !== null && score.availability < THRESHOLDS.availability) return false
   if (score.integrity !== null && score.integrity < THRESHOLDS.integrity) return false
   return true

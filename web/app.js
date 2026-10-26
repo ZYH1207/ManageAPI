@@ -1881,6 +1881,13 @@ async function toggleVendorGroup(key, checked) {
 
 // --------------------------------------------------------------- 决策视图
 
+// 冷却原因：额度不足 / 限流 / 模型不在分组——不是站坏了，别让人以为评分出错
+const BLOCKED_LABEL = { quota: '额度不足', 'rate-limit': '限流中', 'model-missing': '模型不可用' }
+function blockedLabel(blocked) {
+  const label = BLOCKED_LABEL[blocked?.kind] || '暂时不可用'
+  return `${t(label)} · ${t('冷却中')}`
+}
+
 function decisionState(candidate) {
   if (candidate.tooSlow) return { label: t('太慢'), cls: 'warn' }
   // 探针说可疑，但因为「放行可疑供给」开着，它照样参与选站——标出来别让人误以为是健康的
@@ -1889,6 +1896,7 @@ function decisionState(candidate) {
     label: passed ? `${label} · ${t('已放行')}` : label,
     cls: passed ? 'warn' : cls,
   })
+  if (candidate.blocked) return tag(blockedLabel(candidate.blocked), 'warn')
   if (candidate.status === 'stale') return tag(t('评分过期'), 'warn')
   if (candidate.status === 'degraded') return tag(t('结果可疑'), 'warn')
   if (candidate.status === 'unstable') return tag(t('不稳定'), 'danger')
@@ -2123,10 +2131,15 @@ function renderProbes() {
       const score = state.scores[offer.id]
       const status = PROBE_STATUS[score?.status || 'unknown']
       const hasDetail = score && score.samples > 0
+      // 冷却中（额度不足/限流/模型不在分组）单独标出来：可用率看不出问题，
+      // 但路由会跳过它。此时不再并排显示「未探测」——那是两回事，容易看串
+      const statusCell = score?.blocked
+        ? `<span class="badge warn">${esc(blockedLabel(score.blocked))}</span>`
+        : `<span class="badge ${status.cls}">${status.label}</span>`
       return `
         <tr data-offer="${esc(offer.id)}" ${hasDetail ? 'data-act="toggle-detail" tabindex="0" style="cursor:pointer"' : ''}>
           <td class="mono">${esc(offer.upstreamName)}${offer.group ? ` <span class="badge ${groupChipOf(offer.providerId, offer.group)}">${esc(offer.group)}</span>` : ''}${hasDetail ? ' <span style="color:var(--faint);font-size:10px">▾</span>' : ''}</td>
-          <td><span class="badge ${status.cls}">${status.label}</span></td>
+          <td>${statusCell}</td>
           <td class="num">${pct(score?.availability)}</td>
           <td class="num">${pct(score?.fingerprintRate)}</td>
           <td class="num">${pct(score?.truncationRate)}</td>

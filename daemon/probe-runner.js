@@ -31,42 +31,57 @@ export async function runProbes({ providerId, offerId, offerIds, limit = 5 } = {
   targets = targets.filter((offer) => credentialFor(offer))
   if (!offerId) targets = targets.slice(0, limit)
 
-  const results = []
-  for (const offer of targets) {
-    const provider = db.providers.find((p) => p.id === offer.providerId)
-    if (!provider) continue
-    const credential = credentialFor(offer)
-    const apiKey = await inv.revealSecret(credential.id)
-    if (!apiKey) {
-      results.push({ offerId: offer.id, providerId: offer.providerId, ok: false, error: 'Key 解密失败' })
-      continue
+  // 4 路并发：一轮 10 个目标串行跑满 45 秒超时时要 7 分钟以上，
+  // 站点会在这期间持续处于「探针过期」而掉出路由池。写盘仍由 mutate 串行，
+  // 并发只影响网络等待，不影响数据一致性
+  const CONCURRENCY = 4
+  const results = new Array(targets.length)
+  let cursor = 0
+  const worker = async () => {
+    while (cursor < targets.length) {
+      const index = cursor
+      cursor += 1
+      const offer = targets[index]
+      const provider = db.providers.find((p) => p.id === offer.providerId)
+      if (!provider) continue
+      const credential = credentialFor(offer)
+      const apiKey = await inv.revealSecret(credential.id)
+      if (!apiKey) {
+        results[index] = { offerId: offer.id, providerId: offer.providerId, ok: false, error: 'Key 解密失败' }
+        continue
+      }
+      const record = await probeModel({
+        baseUrl: provider.baseUrl,
+        apiKey,
+        model: offer.upstreamName,
+        timeoutMs: db.settings.probeTimeoutMs || 45000,
+      })
+      // 先只收集结果，落盘在批量网络异常判断之后（见下）
+      results[index] = { offerId: offer.id, providerId: offer.providerId, ...record }
     }
-    const record = await probeModel({
-      baseUrl: provider.baseUrl,
-      apiKey,
-      model: offer.upstreamName,
-      timeoutMs: db.settings.probeTimeoutMs || 45000,
-    })
-    const row = { offerId: offer.id, providerId: offer.providerId, ...record }
-    results.push(row)
-    // 先只收集结果，落盘在批量网络异常判断之后（见下）
   }
+  await Promise.all(
+    Array.from({ length: Math.min(CONCURRENCY, targets.length) }, () => worker()),
+  )
 
   // ---- 批量网络异常防护：本机断网/代理挂了时，一轮探测会「所有站一起失败」。
   // 那不是站点的问题，写进评分会让几十条供给同时变红（真实踩过：代理断线
-  // 造成 9 条 fetch failed）。判据：失败样本 ≥3 且其中网络类错误占比 ≥60%
-  // → 本轮整体作废，不写任何探针记录（下次探测重新取样）。
-  const failed = results.filter((r) => r.ok === false)
+  // 造成 9 条 fetch failed）。判据：失败样本 ≥3、网络类错误占比 ≥60%，
+  // 且这些网络失败跨了 ≥2 个站——只挂一个站（哪怕它下面 10 个模型全挂）
+  // 是那个站的问题，必须照常记账，否则真故障永远测不出来。
+  const failed = results.filter((r) => r && r.ok === false)
   const netFailed = failed.filter((r) =>
     /timeout|aborted|fetch failed|ECONN|ENOTFOUND|EAI_AGAIN|socket|网络/i.test(String(r.error || '')),
   )
+  const netProviders = new Set(netFailed.map((r) => r.providerId))
   const localNetworkOutage =
-    failed.length >= 3 && netFailed.length / failed.length >= 0.6
+    failed.length >= 3 && netFailed.length / failed.length >= 0.6 && netProviders.size >= 2
   if (localNetworkOutage) {
-    return results.map((r) => ({ ...r, skipped: 'local-network-outage' }))
+    return results.filter(Boolean).map((r) => ({ ...r, skipped: 'local-network-outage' }))
   }
 
   for (const record of results) {
+    if (!record) continue
     if (record.error === 'Key 解密失败') continue // 没有真实探测，不写评分
     const { skipped, ...clean } = record
     await inv.recordProbe({
@@ -74,5 +89,5 @@ export async function runProbes({ providerId, offerId, offerIds, limit = 5 } = {
       modelKey: targets.find((t) => t.id === record.offerId)?.modelKey,
     })
   }
-  return results
+  return results.filter(Boolean)
 }

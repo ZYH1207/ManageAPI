@@ -4,6 +4,10 @@
  * 每分钟检查一次：哪些供给距上次探测已超过设定间隔，挑最多 10 个去探。
  * 用「检查 + 到期判断」而不是「长间隔 setInterval」，这样改配置能立即生效，
  * 也不会因为一次探测耗时较长而错过下一轮。
+ *
+ * 间隔是自适应的：健康站按用户设定的基础间隔，其它站（不健康 / 证据不足 /
+ * 过期 / 从没探过）按 1/3 间隔（最少 10 分钟）补测——问题站点应该尽快拿到
+ * 新证据，而不是等一整轮。冷却中的供给（额度不足/限流）直接跳过，探了也是白探。
  */
 import * as store from '../core/store.js'
 import * as inv from '../core/inventory.js'
@@ -13,6 +17,7 @@ import { scoreOffers } from '../core/score.js'
 const MAX_PER_TICK = 10
 const CHECK_INTERVAL_MS = 60000
 const FIRST_RUN_DELAY_MS = 5000
+const RETRY_INTERVAL_FLOOR_MIN = 10
 
 export function startProbeScheduler({ runProbes, collectMonitor = null, logger = console }) {
   let running = false
@@ -68,6 +73,8 @@ export function startProbeScheduler({ runProbes, collectMonitor = null, logger =
 
     const intervalMinutes = Number(db.settings.probeIntervalMinutes) || 0
     if (intervalMinutes <= 0) return
+    // 不健康 / 证据不足 / 过期的供给加密补测，让问题站点尽快拿到新证据
+    const retryMinutes = Math.max(RETRY_INTERVAL_FLOOR_MIN, Math.round(intervalMinutes / 3))
     // 到期候选只用「在役」供给（未下线/站点未暂停/未忽略）——与 runProbes 同口径。
     // 此前直接对全量 db.offers 取前 10 个：下线行永久留在库前部且 lastProbeAt
     // 不更新，一旦占满名额，每轮探测 0 个目标，在役供给被饿死、评分陆续过期
@@ -82,7 +89,11 @@ export function startProbeScheduler({ runProbes, collectMonitor = null, logger =
       .filter((offer) => {
         const score = scores.get(offer.id)
         if (!score || !score.lastProbeAt) return true
-        return now - new Date(score.lastProbeAt).getTime() >= intervalMinutes * 60000
+        // 冷却中（额度不足/限流/模型不在分组）探了也是白探：等冷却结束再验
+        if (score.blocked && score.blocked.until > now) return false
+        const healthy = score.status === 'healthy'
+        const minutes = healthy ? intervalMinutes : retryMinutes
+        return now - new Date(score.lastProbeAt).getTime() >= minutes * 60000
       })
       .slice(0, MAX_PER_TICK)
 

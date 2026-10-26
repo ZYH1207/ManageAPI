@@ -820,21 +820,38 @@ const TRAFFIC_WINDOW_MS = 3600 * 1000
 /**
  * 累加真实请求的成败。窗口超过 1 小时就重置——
  * 一个站上午挂了下午恢复了，不该被上午的失败一直拖累。
+ *
+ * fail 只记「站点故障」（5xx、超时、连接失败）；额度不足 / 限流 / 模型不在分组
+ * 记在 kinds 里，不参与可用率，只用来给供给侧设冷却（见 core/failure.js）。
  */
 export async function addTraffic(entries, windowMs = TRAFFIC_WINDOW_MS) {
   if (!entries || entries.length === 0) return null
   return mutate((db) => {
     if (!db.traffic || typeof db.traffic !== 'object') db.traffic = {}
     const now = Date.now()
+    const nowIso = new Date(now).toISOString()
     for (const [offerId, delta] of entries) {
-      const row = db.traffic[offerId] || { ok: 0, fail: 0, since: new Date(now).toISOString() }
+      const row = db.traffic[offerId] || { ok: 0, fail: 0, since: nowIso, kinds: {} }
       if (now - new Date(row.since).getTime() > windowMs) {
         row.ok = 0
         row.fail = 0
-        row.since = new Date(now).toISOString()
+        row.since = nowIso
+        row.kinds = {}
+        row.lastOkAt = null
       }
       row.ok += delta.ok || 0
       row.fail += delta.fail || 0
+      if (delta.ok) row.lastOkAt = nowIso
+      if (delta.kinds) {
+        if (!row.kinds || typeof row.kinds !== 'object') row.kinds = {}
+        for (const [kind, count] of Object.entries(delta.kinds)) {
+          if (!count) continue
+          const current = row.kinds[kind] || { n: 0, lastAt: null }
+          current.n += count
+          current.lastAt = nowIso
+          row.kinds[kind] = current
+        }
+      }
       db.traffic[offerId] = row
     }
     return db.traffic
