@@ -103,6 +103,8 @@ export async function updateProvider(id, patch) {
     if (encryptedAdmin !== undefined) {
       provider.adminToken = encryptedAdmin
       provider.adminTokenTail = encryptedAdmin ? String(patch.adminToken).trim().slice(-6) : null
+      // 来源要记：手动填的令牌（'manual'）不被自动续期覆盖；清空时一并清掉
+      provider.adminTokenSource = encryptedAdmin ? 'manual' : null
       // 换令牌（包括清空）都把上一次的失效结论清掉，重新判
       provider.tokenStatus = null
       provider.tokenStatusAt = null

@@ -1234,6 +1234,10 @@ Object.assign(EN, {
   '综合成本': 'Blended cost',
   '{sym}/M · 按次行 /次': '{sym}/M · per-call rows /call',
   '币种 / 单位': 'Currency / unit',
+  '未填站点令牌：余额、公告、分组识别、用量核对都不可用': 'No site token: balance, announcements, group detection and usage checks are all unavailable',
+  '登录态有效：账号密码登录的令牌，过期会自动续期': 'Logged in: the token comes from account login and renews itself',
+  '令牌已失效：余额、公告、分组识别暂时不可用，请重新登录或填入新令牌': 'Token expired: balance, announcements and group detection are down — log in again or paste a new one',
+  '已填站点令牌（非登录态）：功能可用，但不会自动续期': 'Site token filled (not a login session): works, but does not renew itself',
   '计费单位：由站点声明的计费形式识别而来；手动修改请到「站点」页的模型行': 'Unit: detected from the site-declared billing mode; edit it on the site page if needed',
   '该行的 Key 没有分组': 'The key of this row has no group',
 })

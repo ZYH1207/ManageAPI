@@ -69,6 +69,21 @@ function fmtDateTime(iso) {
   return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
 }
 
+/** 站点登录态状态灯（卡片上站点名左边的小圆点）：
+ *  绿=账号密码登录有效；黄=有令牌但不是可用登录态（手填的 / 登录令牌已失效）；
+ *  红=什么都没有——余额、公告、分组识别这些登录态功能全是哑的 */
+function loginLightDot(p) {
+  const dot = (cls, title) => `<span class="dot login-dot ${cls}" title="${esc(title)}"></span>`
+  if (!p.hasAdminToken) return dot('red', t('未填站点令牌：余额、公告、分组识别、用量核对都不可用'))
+  if (p.adminTokenSource === 'login' && p.tokenStatus !== 'invalid') {
+    return dot('green', t('登录态有效：账号密码登录的令牌，过期会自动续期'))
+  }
+  if (p.tokenStatus === 'invalid') {
+    return dot('yellow', t('令牌已失效：余额、公告、分组识别暂时不可用，请重新登录或填入新令牌'))
+  }
+  return dot('yellow', t('已填站点令牌（非登录态）：功能可用，但不会自动续期'))
+}
+
 /** 余额状态徽章：档位全站统一——≤0 红（真没钱了）、低于阈值黄（该充值）、
  *  阈值关闭（0）不亮警告。此前站点页黄、监控页红，同一状态两种解读 */
 function balanceBadge(balance, threshold) {
@@ -906,6 +921,7 @@ function providersHtml({ withForm = true, panel = '', actions = '' } = {}) {
       <div class="card prov-card${p.paused ? ' is-paused' : ''}" data-provider="${esc(p.id)}" data-has-token="${p.hasAdminToken ? '1' : '0'}">
         <div class="prov-head">
           <div class="prov-id">
+            ${loginLightDot(p)}
             <b>${esc(p.name)}</b>
             ${p.baseUrl ? `<a class="icon-btn prov-open" href="${esc(p.baseUrl)}" target="_blank" rel="noreferrer" title="${t('打开站点后台')}">${icon('external')}</a>` : ''}
             ${kindText ? `<span class="badge ${kindMeta.cls}" title="${esc(p.kindSource === 'manual' ? t('系别由用户手动设置') : t('系别由自动探测得出，可在「识别系别」重新判断'))}">${esc(kindText)}</span>` : ''}

@@ -853,6 +853,9 @@ button.sm { padding: 4px 9px; font-size: 12px; }
 .prov-head .hint { white-space: nowrap; }
 .prov-head { display: flex; align-items: center; gap: 10px; }
 .prov-id { display: flex; align-items: center; gap: 8px; min-width: 0; }
+/* 登录态状态灯：绿=已登录，黄=有令牌但非登录态，红=什么都没有（见 loginLightDot） */
+.prov-id .login-dot { width: 7px; height: 7px; margin-right: 0; flex: none; }
+
 .prov-id b {
   font-size: 15px; font-weight: 600;
   max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
