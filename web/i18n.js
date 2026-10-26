@@ -767,8 +767,11 @@ Object.assign(EN, {
   '额度用尽': 'Quota used up',
   '未探测': 'Not probed',
   '评分过期': 'Score expired',
+  '没有可信样本': 'No usable samples',
+  '证据不足': 'Not enough evidence',
   // 冷却中的供给（额度不足 / 限流 / 模型不在分组）：不是坏了，只是此刻别派过去
   '额度不足': 'Out of credit',
+  '单次预算超限': 'Request over budget',
   '限流中': 'Rate limited',
   '模型不可用': 'Model unavailable',
   '暂时不可用': 'Temporarily unavailable',

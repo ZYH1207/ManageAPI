@@ -71,6 +71,9 @@ export function selectCandidates({ offers, providers, credentials, scores, bench
     // 冷却中（额度不足/限流/模型不在分组）由状态标签单独表达，不塞进 reasons——
     // 决策页那一格已经显示「额度不足 · 冷却中」，再拼一遍等于同一句话说两次
     if (score?.stale) reasons.push('评分过期')
+    // 探针全被额度/限流挡住时，可用率没有分母（null）——这不是「能用」，
+    // 而是「没有任何可靠性证据」，必须说清楚，否则用户看不懂为什么没选它
+    if (score && score.availability === null && !score.blocked) reasons.push('没有可信样本')
     if (typeof score?.availability === 'number' && score.availability < THRESHOLDS.availability) {
       reasons.push(`可用率 ${Math.round(score.availability * 100)}%`)
     }

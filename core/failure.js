@@ -17,6 +17,8 @@
 /** 各类「暂时不可用」的冷却时长：多久之后值得再试一次 */
 export const UNAVAILABLE_COOLDOWN_MS = {
   quota: 30 * 60 * 1000,
+  // 单次预算超限只说明这一单太大，5 分钟后照常参与竞争
+  budget: 5 * 60 * 1000,
   'rate-limit': 5 * 60 * 1000,
   'model-missing': 60 * 60 * 1000,
 }
@@ -24,11 +26,18 @@ export const UNAVAILABLE_COOLDOWN_MS = {
 /** 冷却原因的中文说明，决策页直接展示 */
 export const UNAVAILABLE_LABEL = {
   quota: '额度不足',
+  budget: '单次预算超限',
   'rate-limit': '限流中',
   'model-missing': '模型不可用',
 }
 
 const RULES = [
+  {
+    // 单次请求的预算/上限被拒（REQUEST_BUDGET_EXCEEDED）：这一次请求太大，
+    // 不代表这条供给不能用——换个小的就过了。给个短冷却，别把它晾半小时
+    kind: 'budget',
+    test: /request[_\s-]?budget[_\s-]?exceeded|本次预计需要|单次.{0,4}(预算|上限)/i,
+  },
   {
     kind: 'quota',
     test: /insufficient[_\s-]?balance|insufficient[_\s-]?quota|quota[_\s-]?exceeded|budget[_\s-]?exceeded|余额不足|额度不足|额度已用|欠费/i,
@@ -45,7 +54,7 @@ const RULES = [
 
 /**
  * @param {string} message 上游错误文本（探针的 error 字段或网关的失败原因）
- * @returns {{kind: 'quota'|'model-missing'|'rate-limit'|null, countsAsOutage: boolean}}
+ * @returns {{kind: 'quota'|'budget'|'model-missing'|'rate-limit'|null, countsAsOutage: boolean}}
  */
 export function classifyFailure(message) {
   const text = String(message || '')

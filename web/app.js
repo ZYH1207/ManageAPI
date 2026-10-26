@@ -1882,7 +1882,12 @@ async function toggleVendorGroup(key, checked) {
 // --------------------------------------------------------------- 决策视图
 
 // 冷却原因：额度不足 / 限流 / 模型不在分组——不是站坏了，别让人以为评分出错
-const BLOCKED_LABEL = { quota: '额度不足', 'rate-limit': '限流中', 'model-missing': '模型不可用' }
+const BLOCKED_LABEL = {
+  quota: '额度不足',
+  budget: '单次预算超限',
+  'rate-limit': '限流中',
+  'model-missing': '模型不可用',
+}
 function blockedLabel(blocked) {
   const label = BLOCKED_LABEL[blocked?.kind] || '暂时不可用'
   return `${t(label)} · ${t('冷却中')}`
@@ -1900,6 +1905,9 @@ function decisionState(candidate) {
   if (candidate.status === 'stale') return tag(t('评分过期'), 'warn')
   if (candidate.status === 'degraded') return tag(t('结果可疑'), 'warn')
   if (candidate.status === 'unstable') return tag(t('不稳定'), 'danger')
+  // 样本不足的失败：不参与路由，但也不是「可用」——以前这里漏了，直接掉到
+  // 下面的默认分支显示成「可用」，和旁边的「可用率 0%」自相矛盾
+  if (candidate.status === 'inconclusive') return tag(t('证据不足'), '')
   if (candidate.status === 'unknown') return tag(t('未探测'), '')
   return { label: t('可用'), cls: 'ok' }
 }

@@ -275,7 +275,12 @@ export function isRoutable(score) {
   if (score.status === 'inconclusive') return false
   // 冷却中（额度不足/限流/模型不在分组）：不是坏站，但此刻派过去只会失败
   if (score.blocked) return false
-  if (score.availability !== null && score.availability < THRESHOLDS.availability) return false
+  // 一条可靠性样本都没有（探针全是额度/限流失败，归因后不进分母）时不能放行：
+  // 这种供给的质量会退化成 null（有效成本按 1 算），等于纯按价格把最没有
+  // 证据的那条排到前面。以前这类失败算故障，可用率是 0 自然挡住；归因之后
+  // 必须显式要求「有证据」，否则「没测过」就变成了「合格」
+  if (score.availability === null) return false
+  if (score.availability < THRESHOLDS.availability) return false
   if (score.integrity !== null && score.integrity < THRESHOLDS.integrity) return false
   return true
 }
