@@ -478,6 +478,19 @@ route('PATCH', /^\/api\/settings$/, async (ctx) => {
 
 // ---------------------------------------------------------------- providers
 
+/** 账号密码登录：拿到的 token 写入 adminToken，下游全部读取逻辑复用。 */
+route('POST', /^\/api\/providers\/([\w-]+)\/login$/, async (ctx) => {
+  const { user, password } = ctx.body || {}
+  if (!user || !password) throw new HttpError(400, '账号和密码都不能为空')
+  const result = await inv.loginWithCredentials(ctx.params[0], { user, password })
+  invalidatePricing(ctx.params[0])
+  return {
+    ...(await buildState()),
+    loginResult: { ok: true, kind: result.kind, via: result.via },
+  }
+})
+
+/** 新增站点：建库后自动探测一次系别（失败不阻断保存）。 */
 route('POST', /^\/api\/providers$/, async (ctx) => {
   const created = await inv.createProvider(ctx.body)
   const state = await buildState()
@@ -712,12 +725,26 @@ async function loadProviderPricing(providerId, { fresh = false } = {}) {
     } catch (error) {
       const message = error.message || String(error)
       pricingCache.set(providerId, { at: Date.now(), error: message })
-      // 令牌失效要标到站点卡上（与监控采集/余额路径同一行为）：导入/选分组
-      // 失败的用户第一眼看的是卡片，401 沉默的话他不知道该去换令牌
+      // 令牌失效：登录过的站先自动重登一次（冷却 10 分钟），成功就用新令牌
+      // 重取一次；手动令牌/重登失败才标红到站点卡
       if (/HTTP (401|403)/.test(message)) {
-        await inv.setTokenStatus(provider.id, { ok: false, message }).catch(() => {})
+        const relogin = await inv.autoRelogin(provider.id)
+        if (relogin.ok) {
+          invalidatePricing(provider.id)
+          const retried = await providers.fetchProviderPricing({
+            baseUrl: provider.baseUrl,
+            adminToken: relogin.token,
+            kind: provider.kind,
+          })
+          pricingCache.set(providerId, { at: Date.now(), data: retried })
+          pricing = retried
+        } else {
+          await inv.setTokenStatus(provider.id, { ok: false, message }).catch(() => {})
+          throw new HttpError(502, `${message}（${relogin.reason}）`)
+        }
+      } else {
+        throw new HttpError(502, message)
       }
-      throw new HttpError(502, message)
     }
   }
 
@@ -1109,7 +1136,27 @@ route('POST', /^\/api\/providers\/([\w-]+)\/balance$/, async (ctx) => {
     adminToken,
     kind: provider.kind,
   })
-  // 令牌失效会挂在 reason 里（HTTP 401/403）——顺手记下来，卡片上标红
+  // 令牌失效会挂在 reason 里（HTTP 401/403）——登录过的站先自动重登一次
+  // 再试；手动令牌/重登失败才标红到卡片
+  if (adminToken && !result.ok && /HTTP (401|403)/.test(String(result.reason || ''))) {
+    const relogin = await inv.autoRelogin(provider.id)
+    if (relogin.ok) {
+      const retried = await providers.tryBalanceWithKeys({
+        baseUrl: provider.baseUrl,
+        apiKeys,
+        adminToken: relogin.token,
+        kind: provider.kind,
+      })
+      if (retried.ok) {
+        await inv.updateProvider(provider.id, {
+          quotaRemaining: retried.remaining,
+          currency: retried.currency,
+        })
+        return { ...(await buildState()), balance: retried }
+      }
+      result.reason = retried.reason || result.reason
+    }
+  }
   if (adminToken) {
     const bad = /HTTP (401|403)/.test(String(result.reason || ''))
     if (bad) await inv.setTokenStatus(provider.id, { ok: false, message: result.reason, status: 401 })

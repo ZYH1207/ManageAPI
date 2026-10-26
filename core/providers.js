@@ -16,16 +16,18 @@ function describeHttpError(status, bodyText) {
   return `请求失败（HTTP ${status}）${snippet ? `：${snippet}` : ''}`
 }
 
-async function requestJson(url, { apiKey, timeoutMs = 15000, headers = {} } = {}) {
+async function requestJson(url, { apiKey, timeoutMs = 15000, headers = {}, method = 'GET', body } = {}) {
   let response
   try {
     response = await fetch(url, {
-      method: 'GET',
+      method,
       headers: {
         Accept: 'application/json',
+        ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
         ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
         ...headers,
       },
+      body: body === undefined ? undefined : String(body),
       signal: AbortSignal.timeout(timeoutMs),
     })
   } catch (error) {
@@ -605,4 +607,89 @@ export async function fetchProviderPricing({ baseUrl, adminToken, kind }) {
     }
     throw new Error('该站没有开启模型广场。填一个「令牌」就能读「可用渠道」，那里数据更全。')
   }
+}
+
+// ------------------------------------------------------------------ 登录态
+//
+// 站点账号密码登录，拿到「与手动令牌同级的鉴权凭据」写回 adminToken——
+// 余额/公告/用量核对/分组识别全部现有逻辑零改动复用。协议按系别分支：
+//   sub2api            POST /api/v1/auth/login {email, password}
+//                      → data.{access_token, refresh_token, expires_in}（Bearer）
+//   one-api / new-api  POST /api/user/login {username, password}
+//                      → data.{token, id}（new-api 请求还要带 New-Api-User: <id> 头）
+// 两种协议的产物统一为 { token, userId, refreshToken }——编排层（inventory）
+// 负责写回 adminToken / refreshTokenEnc 与失效重试。
+//
+// 红线：站点开启验证码（Turnstile/腾讯/2FA）时明确报错，不做打码绕过。
+
+const LOGIN_HINTS = /captcha|turnstile|验证码|2fa|totp/i
+
+/**
+ * 账号密码登录。kind 已知走对应端点，unknown 按 sub2api → one-api 顺序都试。
+ * @returns {Promise<{token:string, userId:string|null, refreshToken:string|null, kind:string}>}
+ */
+export async function loginProvider({ baseUrl, kind, user, password, timeoutMs = 12000 }) {
+  const name = String(user || '').trim()
+  if (!name || !password) throw new Error('账号和密码都不能为空')
+
+  const attempts =
+    kind === 'sub2api'
+      ? ['sub2api']
+      : kind === 'one-api' || kind === 'new-api'
+        ? ['one-api']
+        : ['sub2api', 'one-api']
+
+  const errors = []
+  for (const flavor of attempts) {
+    try {
+      if (flavor === 'sub2api') {
+        const origin = originOf(baseUrl, { stripApiPrefix: true }) || originOf(baseUrl)
+        const payload = await requestJson(`${origin}/api/v1/auth/login`, {
+          method: 'POST',
+          timeoutMs,
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email: name, password }),
+        })
+        const d = payload?.data ?? payload
+        const token = d?.access_token || d?.accessToken
+        if (!token) throw new Error(`登录响应里没有 access_token：${JSON.stringify(d).slice(0, 120)}`)
+        return {
+          token,
+          userId: String(d?.user?.id ?? '') || null,
+          refreshToken: d?.refresh_token || null,
+          kind: 'sub2api',
+        }
+      }
+      // one-api / new-api：{username, password} → data.token（new-api 用 id 配 New-Api-User 头）
+      const origin = originOf(baseUrl)
+      const payload = await requestJson(`${origin}/api/user/login`, {
+        method: 'POST',
+        timeoutMs,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: name, password }),
+      })
+      if (payload && payload.success === false) {
+        throw new Error(payload.message || '登录被拒绝')
+      }
+      const d = payload?.data ?? payload
+      const token = d?.token
+      if (!token) throw new Error(`登录响应里没有 token：${JSON.stringify(d).slice(0, 120)}`)
+      return {
+        token,
+        userId: d?.id !== undefined && d?.id !== null ? String(d.id) : null,
+        refreshToken: null,
+        kind: 'new-api',
+      }
+    } catch (error) {
+      const msg = String(error?.message || error)
+      // 验证码/2FA 是硬边界：站点要求人机验证时立即明确报错，不换端点重试
+      if (LOGIN_HINTS.test(msg)) {
+        throw new Error(
+          `该站登录需要人机验证（${msg.slice(0, 120)}）。请手动在站点后台生成「令牌」填入，本工具不做验证码绕过。`,
+        )
+      }
+      errors.push(`${flavor}: ${msg.slice(0, 120)}`)
+    }
+  }
+  throw new Error(`登录失败（${errors.join('；')}）`)
 }

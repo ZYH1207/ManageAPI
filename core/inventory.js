@@ -6,6 +6,8 @@ import { randomUUID, randomBytes } from 'node:crypto'
 import { readDb, mutate, encryptSecret, decryptSecret } from './store.js'
 // quota.js 只依赖内置类型，不回头 import 本文件，不会形成循环
 import { normalizeQuota, resetIfDue, consumeQuota } from './quota.js'
+// 登录态编排：凭据解密后调 providers 的登录协议（providers 不回头 import 本文件，无循环）
+import * as providers from './providers.js'
 
 export function newId(prefix) {
   return `${prefix}_${randomUUID().slice(0, 8)}`
@@ -868,5 +870,143 @@ export async function publicState() {
     })),
     offers: db.offers,
     probeCount: db.probes.length,
+  }
+}
+
+// ------------------------------------------------------------------ 登录态
+
+/** 自动重登的冷却：同一站 10 分钟内不重复自动登录（防止反复触发站点风控） */
+const RELOGIN_COOLDOWN_MS = 10 * 60 * 1000
+const reloginAt = new Map()
+
+export function reloginAllowed(providerId, now = Date.now()) {
+  const last = reloginAt.get(providerId) || 0
+  return now - last >= RELOGIN_COOLDOWN_MS
+}
+
+/** 记录一次自动重登尝试（无论成败），进入冷却 */
+export function markRelogin(providerId, now = Date.now()) {
+  reloginAt.set(providerId, now)
+}
+
+/** 手动登录成功后清掉冷却，让自动续期立刻可用 */
+export function clearReloginCooldown(providerId) {
+  reloginAt.delete(providerId)
+}
+
+/**
+ * 账号密码登录并把凭据写回站点。产物（access token）写入现有
+ * adminToken 字段——下游余额/公告/用量核对/分组识别零改动复用；
+ * Sub2API 的 refresh token 单独加密存（旋转式，续期时更新）。
+ *
+ * 登录成功同时把 kind 修正为登录实际使用的系别（unknown 站的双端点
+ * 试探结果是免费可靠的系别证据）。
+ */
+export async function loginWithCredentials(providerId, { user, password }) {
+  const db = await readDb()
+  const provider = db.providers.find((p) => p.id === providerId)
+  if (!provider) throw new Error(`站点不存在：${providerId}`)
+
+  const result = await providers.loginProvider({
+    baseUrl: provider.baseUrl,
+    kind: provider.kind === 'relay' ? undefined : provider.kind,
+    user,
+    password,
+  })
+
+  const encrypted = await encryptSecret(JSON.stringify({ user, password }))
+  const tokenEnc = await encryptSecret(result.token)
+  const refreshEnc = result.refreshToken ? await encryptSecret(result.refreshToken) : null
+
+  await mutate((db) => {
+    const p = db.providers.find((x) => x.id === providerId)
+    if (!p) return
+    p.adminToken = tokenEnc
+    p.adminTokenTail = String(result.token).slice(-6)
+    p.adminTokenSource = 'login'
+    p.loginCred = encrypted
+    p.refreshTokenEnc = refreshEnc
+    // 双端点试探的结果就是系别证据（unknown 站也能借此归位）
+    if (result.kind) {
+      p.kind = result.kind
+      p.kindSource = 'auto'
+    }
+    p.tokenStatus = 'ok'
+    p.tokenStatusAt = nowIso()
+    p.tokenStatusMessage = null
+    p.updatedAt = nowIso()
+  })
+  clearReloginCooldown(providerId)
+  return { kind: result.kind, via: result.refreshToken ? 'sub2api' : 'one-api' }
+}
+
+/**
+ * 401 时的自动续期：用已存的登录凭据重新登录、写回 adminToken。
+ * 冷却内直接返回「不可用」（调用方按普通 401 处理，不硬刚站点风控）；
+ * 手动令牌（adminTokenSource='manual'）不自动覆盖——用户手动填的
+ * 说明他知道自己有什么，自动换掉反而丢信息。
+ *
+ * @returns {{ok:boolean, token?:string, reason?:string}}
+ */
+export async function autoRelogin(providerId) {
+  const db = await readDb()
+  const provider = db.providers.find((p) => p.id === providerId)
+  if (!provider?.loginCred) return { ok: false, reason: '没有登录凭据' }
+  if (provider.adminTokenSource === 'manual') {
+    return { ok: false, reason: '手动令牌不做自动覆盖' }
+  }
+  if (!reloginAllowed(providerId)) {
+    return { ok: false, reason: '自动重登冷却中（10 分钟内已尝试过）' }
+  }
+  markRelogin(providerId)
+  try {
+    const plain = JSON.parse(await decryptSecret(provider.loginCred))
+    const result = await providers.loginProvider({
+      baseUrl: provider.baseUrl,
+      kind: provider.kind === 'relay' ? undefined : provider.kind,
+      user: plain.user,
+      password: plain.password,
+    })
+    const tokenEnc = await encryptSecret(result.token)
+    const refreshEnc = result.refreshToken ? await encryptSecret(result.refreshToken) : null
+    await mutate((db) => {
+      const p = db.providers.find((x) => x.id === providerId)
+      if (!p) return
+      p.adminToken = tokenEnc
+      p.adminTokenTail = String(result.token).slice(-6)
+      p.adminTokenSource = 'login'
+      if (refreshEnc) p.refreshTokenEnc = refreshEnc
+      p.tokenStatus = 'ok'
+      p.tokenStatusAt = nowIso()
+      p.tokenStatusMessage = null
+      p.updatedAt = nowIso()
+    })
+    return { ok: true, token: result.token }
+  } catch (error) {
+    const message = error.message || String(error)
+    await mutate((db) => {
+      const p = db.providers.find((x) => x.id === providerId)
+      if (p) {
+        p.tokenStatus = 'invalid'
+        p.tokenStatusAt = nowIso()
+        p.tokenStatusMessage = message
+        p.updatedAt = nowIso()
+      }
+    })
+    return { ok: false, reason: message }
+  }
+}
+
+/**
+ * 揭开登录凭据（仅供「重新登录」的编排使用）；没有返回 null。
+ */
+export async function revealLoginCred(providerId) {
+  const db = await readDb()
+  const provider = db.providers.find((p) => p.id === providerId)
+  if (!provider?.loginCred) return null
+  try {
+    return JSON.parse(await decryptSecret(provider.loginCred))
+  } catch {
+    return null
   }
 }

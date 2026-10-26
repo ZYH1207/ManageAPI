@@ -974,6 +974,7 @@ function providersHtml({ withForm = true, panel = '', actions = '' } = {}) {
           <button data-act="open-group-picker" title="从站点读分组，选你买的那个，倍率自动填到下面所有模型">${icon('columns')}导入倍率</button>
           <button data-act="usage-check" title="用管理令牌拉站方用量，和我们的估算对比">${icon('receipt')}用量核对</button>
           <button data-act="detect-kind" title="只读探测：判断这个站是 one-api / new-api / Sub2API 哪一系，决定余额与公告走哪条接口">${icon('search')}识别系别</button>
+          <button data-act="open-login" title="用站点后台的账号密码登录，自动获取并续期令牌——令牌过期不再需要手动换">${icon('key')}账号登录</button>
           <button data-act="export">${icon('download')}导出配置</button>
         </div>
 
@@ -1147,6 +1148,26 @@ function bindAddProviderForm() {
       toast(error.message, true)
     }
   })
+}
+
+/** 账号密码登录弹窗：登录产物写入 adminToken，现有读取逻辑全部复用 */
+function openLoginModal(providerId) {
+  const modal = $('#login-modal')
+  if (!modal) return
+  const provider = (state.providers || []).find((p) => p.id === providerId)
+  $('#login-modal-title').textContent = `${provider?.name || '站点'} · 账号登录`
+  const form = $('#form-login')
+  form.dataset.provider = providerId
+  form.elements.user.value = ''
+  form.elements.password.value = ''
+  modal.hidden = false
+  translateDom(modal)
+  setTimeout(() => form.elements.user?.focus(), 60)
+}
+
+function closeLoginModal() {
+  const modal = $('#login-modal')
+  if (modal) modal.hidden = true
 }
 
 /** 新增站点：把模板塞进弹窗，弹窗关掉再清空（避免旧输入残留） */
@@ -3335,7 +3356,7 @@ document.addEventListener('keydown', (event) => {
   }
   if (event.key !== 'Escape') return
   closeLangMenu()
-  for (const id of ['help-modal', 'contact-modal', 'group-modal', 'pf-accounts-modal', 'add-provider-modal', 'prov-modal']) {
+  for (const id of ['help-modal', 'contact-modal', 'group-modal', 'pf-accounts-modal', 'add-provider-modal', 'prov-modal', 'login-modal']) {
     const modal = document.getElementById(id)
     if (modal && !modal.hidden) modal.hidden = true
   }
@@ -4054,6 +4075,17 @@ document.addEventListener('click', async (event) => {
     return
   }
 
+  if (action === 'open-login') {
+    const providerId = actionButton.closest('[data-provider]')?.dataset.provider
+    if (providerId) openLoginModal(providerId)
+    return
+  }
+
+  if (action === 'close-login') {
+    closeLoginModal()
+    return
+  }
+
   if (action === 'detect-kind') {
     const providerId = actionButton.closest('[data-provider]').dataset.provider
     await withBusy(actionButton, async () => {
@@ -4319,6 +4351,27 @@ document.addEventListener('click', async (event) => {
 })
 
 document.addEventListener('submit', async (event) => {
+  const loginForm = event.target.closest('#form-login')
+  if (loginForm) {
+    event.preventDefault()
+    const submitBtn = loginForm.querySelector('button[type="submit"]')
+    if (submitBtn?.disabled) return
+    if (submitBtn) submitBtn.disabled = true
+    const providerId = loginForm.dataset.provider
+    const data = Object.fromEntries(new FormData(loginForm))
+    try {
+      state = await api('POST', `/api/providers/${providerId}/login`, { user: data.user, password: data.password })
+      closeLoginModal()
+      render()
+      const via = state.loginResult?.via === 'sub2api' ? 'Sub2API' : 'OneAPI/NewAPI'
+      toast(`登录成功（${via}），令牌已自动获取并开始续期`)
+    } catch (error) {
+      toast(error.message, true)
+      if (submitBtn) submitBtn.disabled = false
+    }
+    return
+  }
+
   const gwForm = event.target.closest('[data-form="add-gwkey"]')
   if (gwForm) {
     event.preventDefault()

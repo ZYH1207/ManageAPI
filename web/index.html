@@ -914,6 +914,31 @@
     </div>
   </div>
 
+  <div id="login-modal" class="modal" hidden>
+    <div class="modal-backdrop" data-act="close-login"></div>
+    <div class="modal-panel" style="width:min(420px,calc(100vw - 40px))">
+      <div class="modal-head">
+        <h3 id="login-modal-title">账号登录</h3>
+        <button class="ghost" data-act="close-login">关闭</button>
+      </div>
+      <div class="modal-body">
+        <form id="form-login" class="grid">
+          <p class="hint" style="margin:0 0 8px">用站点后台的账号密码登录，工具会自动获取并续期令牌（Sub2API / OneAPI / NewAPI 自动识别）。凭据加密存在本机，不上传。</p>
+          <label>账号（邮箱或用户名）
+            <input name="user" required autocomplete="off" />
+          </label>
+          <label>密码
+            <input name="password" type="password" required autocomplete="off" />
+          </label>
+          <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:4px">
+            <button type="button" class="ghost" data-act="close-login">取消</button>
+            <button type="submit" class="primary">登录</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+
   <div id="add-provider-modal" class="modal" hidden>
     <div class="modal-backdrop" data-act="close-add-provider"></div>
     <div class="modal-panel" style="width:min(680px,calc(100vw - 40px))">
