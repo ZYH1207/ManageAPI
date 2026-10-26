@@ -61,6 +61,17 @@ function priceText(cny) {
   return v === null ? '—' : `${priceSym()}${money(v)}`
 }
 
+/**
+ * 金额显示：余额这类「站点原生币种」的数值（p.currency 说它是 USD 就是 USD）。
+ * 先折成人民币口径，再走 dispPrice 按全局显示币种出——
+ * 以前余额直接用站点币种硬拼 ¥/$ 符号，顶栏切到人民币它还是显示美元
+ */
+function dispAmount(value, currency) {
+  const n = Number(value)
+  if (value === null || value === undefined || !Number.isFinite(n)) return null
+  return dispPrice(currency === 'CNY' ? n : n * rateCny())
+}
+
 /** 日期时间（本机时区，固定 MM-DD HH:mm）：路由日志可能跨天，只有时分秒没法分辨 */
 function fmtDateTime(iso) {
   const d = new Date(iso)
@@ -571,7 +582,7 @@ function renderOverview() {
         <td class="num">${scoreCell}</td>
         <td class="num">${offers.length}</td>
         <td class="num">${healthy ? `<span class="badge ok">${healthy}</span>` : '<span class="badge">0</span>'}</td>
-        <td class="num">${hasQuota ? `${provider.currency === 'USD' ? '$' : '¥'}${money(provider.quotaRemaining)}` : '<span style="color:var(--faint)">未录入</span>'}</td>
+        <td class="num">${hasQuota ? `${priceSym()}${money(dispAmount(provider.quotaRemaining, provider.currency))}` : '<span style="color:var(--faint)">未录入</span>'}</td>
         <td class="num">${state.credentials.filter((c) => c.providerId === provider.id).length}</td>
       </tr>`
   }).join('')
@@ -906,15 +917,14 @@ function providersHtml({ withForm = true, panel = '', actions = '' } = {}) {
     const kindText = kindMeta?.label || ''
     // 这个站有多少模型落在免费池里（后端算好名字，这里只数）
     const freeNames = Array.isArray(p.freeModels) ? p.freeModels : []
-    // 告警阈值是人民币；站点余额多为美元，比较和显示都要先换成站点币种
+    // 告警阈值设置里存的是美元；quota 已折成人民币，比较必须同口径——
+    // 以前 USD 站拿「人民币余额」对「美元阈值」，实际阈值被放大了 7 倍。
+    // 展示按全局显示币种走（priceSym/dispPrice）
     const fxRate = rateCny()
-    // 阈值设置里存的是美元，展示时换成站点币种
     const warnUsd = Number(state.settings.balanceWarnUsd ?? state.settings.balanceWarnCny) || 0
-    const inUsd = p.currency === 'USD'
-    const warnLocal = warnUsd > 0 ? (inUsd ? warnUsd : warnUsd * fxRate) : 0
-    const warnSign = inUsd ? '$' : '¥'
+    const warnCny = warnUsd > 0 ? warnUsd * fxRate : 0
     const statusBadge = hasQuota
-      ? balanceBadge(quota, warnLocal)
+      ? balanceBadge(quota, warnCny)
       : '<span class="badge">余额未录入</span>'
 
     return `
@@ -946,7 +956,7 @@ function providersHtml({ withForm = true, panel = '', actions = '' } = {}) {
         <div class="prov-tiles">
           <div data-provider="${esc(p.id)}">
             <span class="k">余额</span>
-            <b>${hasQuota ? `${p.currency === 'CNY' ? '¥' : '$'}${money(p.quotaRemaining)}` : '—'}</b>
+            <b>${hasQuota ? `${priceSym()}${money(dispAmount(p.quotaRemaining, p.currency))}` : '—'}</b>
           </div>
           <div>
             <span class="k">已定价</span>
@@ -961,7 +971,7 @@ function providersHtml({ withForm = true, panel = '', actions = '' } = {}) {
         <div class="prov-tiles prov-tiles--2">
           <div>
             <span class="k">阈值 · 状态</span>
-            <b>${warnUsd > 0 ? `${warnSign}${money(warnLocal)} · ` : ''}${statusBadge}</b>
+            <b>${warnUsd > 0 ? `${priceSym()}${money(dispPrice(warnCny))} · ` : ''}${statusBadge}</b>
           </div>
           <div>
             <span class="k">令牌</span>
@@ -2959,7 +2969,7 @@ function renderMonitor() {
       const dot = row.balance === null ? 'yellow' : low ? 'red' : 'green'
       return `<button class="monitor-chip" data-monitor-provider="${esc(row.providerId)}" title="只同步这个站">
         <span class="dot ${dot}"></span>${esc(row.name)}
-        <span class="monitor-chip-value">${row.balance === null ? '无数据' : `${row.currency === 'CNY' ? '¥' : '$'}${money(row.balance)}`}</span>
+        <span class="monitor-chip-value">${row.balance === null ? '无数据' : `${priceSym()}${money(dispAmount(row.balance, row.currency))}`}</span>
       </button>`
     })
     .join('')
