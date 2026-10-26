@@ -20,6 +20,13 @@ export const THRESHOLDS = {
   integrity: 0.8,
 }
 
+/**
+ * 判定「确定坏」所需的最少失败样本数。样本更少时失败只说明「还没测出来」，
+ * 判 unknown（不参与路由）而不是 unstable——否则探针间隔 6 小时、
+ * 一轮只测到 1 次失败，这条供给就会在下一轮之前一直挂红。
+ */
+export const MIN_SAMPLES_FOR_VERDICT = 3
+
 function ratio(values) {
   if (values.length === 0) return null
   return values.filter(Boolean).length / values.length
@@ -62,9 +69,13 @@ export function scoreOffers(probes, traffic = {}, options = {}) {
     const recent = (fresh.length > 0 ? fresh : records).slice(-window)
     const probeSamples = recent.length
 
-    const fingerprintRate = ratio(recent.filter((r) => r.fingerprintOk !== null).map((r) => r.fingerprintOk))
-    const truncationRate = ratio(recent.filter((r) => r.truncated !== null).map((r) => r.truncated === false))
-    const billingRate = ratio(recent.filter((r) => r.billingInflated !== null).map((r) => r.billingInflated === false))
+    // 完整性只统计「真的测到了这一项」的记录：探测失败的记录里这些字段是
+    // undefined（请求都没成功，谈不上指纹/截断），不能当成「没通过」——
+    // 否则一次失败就会把 integrity 拉到 0，被误判成 degraded（掉包）
+    const has = (r, key) => r[key] !== null && r[key] !== undefined
+    const fingerprintRate = ratio(recent.filter((r) => has(r, 'fingerprintOk')).map((r) => r.fingerprintOk))
+    const truncationRate = ratio(recent.filter((r) => has(r, 'truncated')).map((r) => r.truncated === false))
+    const billingRate = ratio(recent.filter((r) => has(r, 'billingInflated')).map((r) => r.billingInflated === false))
 
     // 某一项还没测出来时不惩罚，用其余项归一，避免新站被误判
     const parts = [
@@ -100,12 +111,23 @@ export function scoreOffers(probes, traffic = {}, options = {}) {
     // 最近一次探测的原始证据，供界面展开查看「为什么判它可疑」
     const last = recent[recent.length - 1] || null
 
+    // 完整性（指纹/截断/计费）是「单次即可定性」的证据：一次指纹不符就是掉包，
+    // 不需要多次确认；而可用率是统计量——样本太少时的失败只代表「还没测出来」，
+    // 判 unknown 而不是 unstable（不参与路由，但不挂红、不催用户去修）
+    const availabilityVerdict =
+      availability !== null &&
+      availability < THRESHOLDS.availability &&
+      totalSamples >= MIN_SAMPLES_FOR_VERDICT
+
     let status = 'unknown'
     if (probeSamples === 0) status = 'unknown'
     else if (stale) status = 'stale'
-    else if (availability !== null && availability < THRESHOLDS.availability) status = 'unstable'
     else if (integrity !== null && integrity < THRESHOLDS.integrity) status = 'degraded'
-    else status = 'healthy'
+    else if (availabilityVerdict) status = 'unstable'
+    else if (availability !== null && availability < THRESHOLDS.availability) {
+      // 样本不足的失败：明确标「证据不足」，界面不显示成可疑/不稳定
+      status = 'inconclusive'
+    } else status = 'healthy'
 
     scores.set(offerId, {
       offerId,
@@ -147,10 +169,15 @@ export function scoreOffers(probes, traffic = {}, options = {}) {
   return scores
 }
 
-/** 能不能参与路由。样本太少、已过期、任一维度不达标都不放行。 */
+/**
+ * 能不能参与路由。样本太少、已过期、任一维度不达标都不放行。
+ * inconclusive（样本不足的失败）同样不放行——宁可少用一个站，
+ * 也不要把一个「可能已经坏了」的站派上流量；但它在界面上不算「可疑」。
+ */
 export function isRoutable(score) {
   if (!score || score.samples === 0) return false
   if (score.stale) return false
+  if (score.status === 'inconclusive') return false
   if (score.availability !== null && score.availability < THRESHOLDS.availability) return false
   if (score.integrity !== null && score.integrity < THRESHOLDS.integrity) return false
   return true

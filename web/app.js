@@ -1984,6 +1984,8 @@ const PROBE_STATUS = {
   healthy: { label: '健康', cls: 'ok' },
   degraded: { label: '结果可疑', cls: 'warn' },
   unstable: { label: '不稳定', cls: 'danger' },
+  // 样本不足的失败：不参与路由，但不算「确定坏了」——不该催用户去修
+  inconclusive: { label: '证据不足', cls: '' },
   stale: { label: '评分过期', cls: 'warn' },
   unknown: { label: '未探测', cls: '' },
 }
