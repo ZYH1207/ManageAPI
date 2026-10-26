@@ -63,7 +63,42 @@ console.log('[4] 真的掉包仍然单次即判')
   ok(Math.abs(s.get('d').integrity - 0.5) < 1e-9, `完整性按权重折算（实际 ${s.get('d').integrity}）`)
 }
 
-console.log('[5] 正常与长期评分不受影响')
+console.log('[5] 真实流量过期后不再计入（否则一小时前的失败永远洗不掉）')
+{
+  // 窗口内的失败照常拉低可用率
+  const fresh = score([{ offerId: 'f', ok: true, ts: ago(0.1), ...base }], {
+    f: { ok: 1, fail: 1, since: ago(0.5) },
+  })
+  ok(fresh.get('f').trafficSamples === 2, '窗口内流量计入样本')
+  ok(fresh.get('f').availability === 2 / 3, `窗口内：2 成功 1 失败（实际 ${fresh.get('f').availability}）`)
+  ok(fresh.get('f').status === 'unstable', '窗口内失败达到阈值 → 不稳定')
+
+  // 同一条记录过了窗口就完全不算：站点回到探针口径
+  const stale = score([{ offerId: 'f2', ok: true, ts: ago(0.1), ...base }], {
+    f2: { ok: 1, fail: 1, since: ago(3) },
+  })
+  ok(stale.get('f2').trafficSamples === 0, '过期流量不计样本')
+  ok(stale.get('f2').trafficStale === true, '标记流量已过期')
+  ok(stale.get('f2').availability === 1, `过期后只看探针（实际 ${stale.get('f2').availability}）`)
+  ok(stale.get('f2').status === 'healthy', '过期失败不再把站点判成不稳定')
+
+  // 只有过期流量、没有探针：没有任何可用的新鲜证据，不能凭空给个可用率
+  const onlyStale = score([], { f3: { ok: 0, fail: 1, since: ago(5) } })
+  ok(onlyStale.get('f3').availability === null, '只有过期流量时可用率为空')
+  ok(isRoutable(onlyStale.get('f3')) === false, '没有新鲜证据不放行')
+
+  // 缺 since 的旧数据无法证明在窗口内，按过期处理
+  const noSince = score([], { f4: { ok: 5, fail: 0 } })
+  ok(noSince.get('f4').trafficSamples === 0, '缺少 since 的流量不计入')
+
+  // 长期评分同样不吃过期流量
+  const long = longTermScores([{ offerId: 'f5', ok: true, ts: ago(0.1), ...base }], {
+    f5: { ok: 0, fail: 9, since: ago(4) },
+  }, { now })
+  ok(long.get('f5').uptime === 1, `长期评分忽略过期流量（实际 ${long.get('f5').uptime}）`)
+}
+
+console.log('[6] 正常与长期评分不受影响')
 {
   const s = score([{ offerId: 'e', ok: true, ts: ago(0.1), ...base }])
   ok(s.get('e').status === 'healthy', '正常 → 健康')

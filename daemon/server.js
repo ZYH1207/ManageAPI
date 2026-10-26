@@ -1900,9 +1900,13 @@ async function forwardToUpstream({ candidate, body, res, attemptIndex, pool = 'p
   // 超时口径是「空闲」而不是「总时长」：长回答连续有字节就不该被杀掉，
   // 只有连续 STREAM_IDLE_MS 没收到任何东西才当上游卡死。
   let timer = null
+  let idleTimedOut = false
   const armTimer = (ms) => {
     if (timer) clearTimeout(timer)
-    timer = setTimeout(() => controller.abort(), ms)
+    timer = setTimeout(() => {
+      idleTimedOut = true
+      controller.abort()
+    }, ms)
   }
   const touch = () => armTimer(STREAM_IDLE_MS)
   armTimer(STREAM_IDLE_MS)
@@ -1936,6 +1940,12 @@ async function forwardToUpstream({ candidate, body, res, attemptIndex, pool = 'p
     })
   } catch (error) {
     cleanup()
+    // 空闲超时和客户端断开都是 AbortError，但成因完全不同：前者是站卡死（要记账），
+    // 后者不是站的错（上层按 clientSignal 排除）。错误文本必须能区分，否则
+    // 路由日志里只剩一句 This operation was aborted，排查时看不出所以然
+    if (idleTimedOut) {
+      return { committed: false, error: `上游 ${STREAM_IDLE_MS / 1000} 秒无响应（首字超时）` }
+    }
     return { committed: false, error: `连接失败：${error.message}` }
   }
 
@@ -2057,9 +2067,10 @@ async function forwardToUpstream({ candidate, body, res, attemptIndex, pool = 'p
   } catch (error) {
     await reader.cancel().catch(() => {})
     cleanup()
-    if (!committed) return { committed: false, error: `流中断：${error.message}` }
+    const reason = idleTimedOut ? `上游流中断（${STREAM_IDLE_MS / 1000} 秒无数据）` : error.message
+    if (!committed) return { committed: false, error: `流中断：${reason}` }
     if (!res.writableEnded) res.end()
-    return { committed: true, usage, ttftMs, streamError: error.message }
+    return { committed: true, usage, ttftMs, streamError: reason }
   }
 
   cleanup()

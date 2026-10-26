@@ -14,6 +14,8 @@
 
 const DEFAULT_WINDOW = 20
 const DEFAULT_MAX_AGE_MS = 6 * 3600 * 1000
+/** 真实流量的统计窗口：与 inventory.addTraffic 的写入口径保持一致（1 小时） */
+const DEFAULT_TRAFFIC_MAX_AGE_MS = 3600 * 1000
 
 export const THRESHOLDS = {
   availability: 0.8,
@@ -40,6 +42,24 @@ function median(numbers) {
 }
 
 /**
+ * 取「还在窗口内」的真实流量计数，过期的一律当作没有。
+ *
+ * 写入侧（addTraffic）只在**下一条流量到来时**才重置窗口：一个站被用过一次、
+ * 失败 1 次之后就不再被路由，这条记录永远不会被重置，却会被读取侧一直当成
+ * 最新证据——站点于是永久停在「可用率 50% / 不稳定」上。窗口必须由读的这边
+ * 也把关，两端口径一致才算数。
+ */
+function freshTraffic(row, now, maxAgeMs) {
+  if (!row) return null
+  const since = new Date(row.since).getTime()
+  // 没有起点（旧数据）就无法证明它还在窗口内，按过期处理：
+  // 宁可少一份证据（探针补位），也不留一份永远洗不掉的失败账
+  if (!Number.isFinite(since)) return null
+  if (now - since > maxAgeMs) return null
+  return row
+}
+
+/**
  * @param {Array} probes 探针记录
  * @param {Object} traffic offerId → { ok, fail, since } 真实流量计数
  * @param {{window?:number, maxAgeMs?:number, now?:number}} options
@@ -48,6 +68,7 @@ function median(numbers) {
 export function scoreOffers(probes, traffic = {}, options = {}) {
   const window = options.window ?? DEFAULT_WINDOW
   const maxAgeMs = options.maxAgeMs ?? DEFAULT_MAX_AGE_MS
+  const trafficMaxAgeMs = options.trafficMaxAgeMs ?? DEFAULT_TRAFFIC_MAX_AGE_MS
   const now = options.now ?? Date.now()
 
   const byOffer = new Map()
@@ -86,9 +107,10 @@ export function scoreOffers(probes, traffic = {}, options = {}) {
     const totalWeight = parts.reduce((sum, p) => sum + p.weight, 0)
     const integrity = totalWeight === 0 ? null : parts.reduce((sum, p) => sum + p.value * p.weight, 0) / totalWeight
 
-    // 可用率合并探针与真实流量：探针样本少，真实请求更能反映实际状况
+    // 可用率合并探针与真实流量：探针样本少，真实请求更能反映实际状况。
+    // 流量只认窗口内的（1 小时），过期的失败不能一直压着站点
     const probeOk = recent.filter((r) => r.ok).length
-    const trafficRow = traffic?.[offerId]
+    const trafficRow = freshTraffic(traffic?.[offerId], now, trafficMaxAgeMs)
     const trafficOk = trafficRow?.ok || 0
     const trafficFail = trafficRow?.fail || 0
     const totalSamples = probeSamples + trafficOk + trafficFail
@@ -133,6 +155,7 @@ export function scoreOffers(probes, traffic = {}, options = {}) {
       offerId,
       samples: probeSamples,
       trafficSamples: trafficOk + trafficFail,
+      trafficStale: Boolean(traffic?.[offerId]) && trafficRow === null,
       availability,
       fingerprintRate,
       truncationRate,
@@ -196,7 +219,11 @@ export function isRoutable(score) {
  * @param {Object} traffic offerId → { ok, fail, since } 最近 1 小时的真实流量
  * @returns {Map<string, {total, weightedSamples, uptime, avgQuality, avgTtft, score, firstAt, lastAt}>}
  */
-export function longTermScores(probes, traffic = {}, { halfLifeDays = 14, now = Date.now() } = {}) {
+export function longTermScores(
+  probes,
+  traffic = {},
+  { halfLifeDays = 14, now = Date.now(), trafficMaxAgeMs = DEFAULT_TRAFFIC_MAX_AGE_MS } = {},
+) {
   const byOffer = new Map()
   for (const record of probes) {
     if (!record.offerId) continue
@@ -252,8 +279,9 @@ export function longTermScores(probes, traffic = {}, { halfLifeDays = 14, now = 
       }
     }
 
-    // 真实流量：窗口是最近 1 小时，等同于最新数据，权重按 1 计
-    const trafficRow = traffic?.[offerId]
+    // 真实流量：窗口是最近 1 小时，等同于最新数据，权重按 1 计；
+    // 超出窗口的历史流量既不新、也不能当作长期表现（探针已经覆盖长期），直接不计
+    const trafficRow = freshTraffic(traffic?.[offerId], now, trafficMaxAgeMs)
     const trafficOk = trafficRow?.ok || 0
     const trafficFail = trafficRow?.fail || 0
     const trafficTotal = trafficOk + trafficFail
