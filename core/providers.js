@@ -577,9 +577,13 @@ export async function fetchProviderPricing({ baseUrl, adminToken, kind }) {
     const { byModel, groupList, allEntries } = flattenPlaza(plazaGroups)
     const toModel = (m) => ({
       name: m.name,
-      // 和 channels 保持同一语义：这里给「原价」（未乘倍率），倍率由调用方按分组套
-      inPrice: m.baseIn,
-      outPrice: m.baseOut,
+      // 和 channels 保持同一语义：这里给「原价」（未乘倍率），倍率由调用方按分组套。
+      // 按次/按张计费的模型没有 token 单价，别硬塞一个数字进去
+      inPrice: m.billingMode === 'token' ? m.baseIn : null,
+      outPrice: m.billingMode === 'token' ? m.baseOut : null,
+      billingMode: m.billingMode || 'token',
+      // 按次单价（元/次，已按站点算法乘过倍率）；token 计费时为 null
+      callPrice: m.callPrice ?? null,
       group: m.groupName || null,
     })
     return {

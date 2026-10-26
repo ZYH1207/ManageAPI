@@ -633,11 +633,34 @@ export async function listProbes(limit = 100) {
  *  3. 只有渠道/广场的模型原价 → 原价 × 倍率直接填绝对价（manual）。
  *
  * 只改价格字段，不碰 offer.group——分组归属是调用方的语义（一边按用户选择、
- * 一边按后台识别）。返回落价方式：'free' | 'ratio' | 'manual' | 'skip'
+ * 一边按后台识别）。返回落价方式：'free' | 'percall' | 'ratio' | 'manual' | 'skip'
  * （skip = 信息不足，调用方只记分组、价格留给用户填）。
  */
 export function applySitePricing(offer, { exact, rate, sitePrice, hasBench }) {
   const siteRatio = typeof rate === 'number' ? rate : null
+
+  // ---- 按次计费：站点在模型广场里声明了 billing_mode=per_request / image。
+  // 这类供给的单价是「每次多少钱」，和 token 口径量纲不同——塞进 per_mtok 会让
+  // 比价页把 ¥1/次 当成 ¥1/百万 token 来比，结论完全错。倍率已在 model-plaza
+  // 里按站点的算法（含生图独立倍率）折算过，这里直接用
+  if (sitePrice && sitePrice.billingMode && sitePrice.billingMode !== 'token') {
+    const call = Number(sitePrice.callPrice)
+    if (sitePrice.callPrice === null || sitePrice.callPrice === undefined || !Number.isFinite(call)) {
+      return 'skip'
+    }
+    offer.priceUnit = 'per_call'
+    offer.inPrice = Math.round(call * 1000) / 1000
+    offer.outPrice = null
+    offer.currency = 'CNY'
+    offer.pricingMode = 'manual'
+    offer.ratio = null
+    offer.siteRatio = siteRatio
+    offer.ratioSource = 'site'
+    return 'percall'
+  }
+
+  // 从按次切回按量：不清掉单位的话，per_call 会带着 token 价格一起留着
+  if (offer.priceUnit === 'per_call') offer.priceUnit = 'per_mtok'
 
   if (exact && exact.inPrice === 0 && exact.outPrice === 0) {
     offer.pricingMode = 'manual'

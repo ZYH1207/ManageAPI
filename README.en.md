@@ -424,7 +424,8 @@ The daemon binds `127.0.0.1` only, has no authentication, and must not be expose
 - **Balance is usually unreadable.** one-api's `/api/user/self` needs a "user access token" rather than an `sk-` key; many sites disable these endpoints; Sub2API's account APIs sit under `/api/v1/*` and only accept a login session. Workaround: click **Token** on the site card and paste a site login token (once per backend account, shared by the whole site). If it still fails, type the balance in — the tool never guesses.
 - **Only `/v1/chat/completions` and `/v1/models` are proxied.** Embeddings, images and other endpoints are not.
 - **Usage depends on the upstream returning `usage`.** A few sites do not, even when asked; those requests record 0 tokens but still count as requests.
-- **Price units are per-million and per-thousand tokens only.** Per-request billing is not supported.
+- **Per-request supplies never enter the "cheapest" comparison.** Units are `/M` (per million tokens), `/1k`, and `/call` (the input price is the price per request); per-call and per-token are different dimensions and cannot be converted — per-call rows show "¥X/call", sort at the end of the group, and are excluded from the price spread. Monitoring estimates spend as requests × unit price.
+  **The billing form is detected from the model plaza**: when its `billing_mode` is `per_request` / `image`, imported prices land as per-call, with the unit price = `per_request_price` × group multiplier (image groups use `image_rate_multiplier`) — the same arithmetic the site itself uses. Without a plaza (or when reading prices from available channels) the billing form is unknown and token pricing is assumed; you can switch the unit to `/call` manually.
 - **One instance at a time.** The daemon refuses a second instance with `daemon.lock`; do not bypass the lock by starting two processes.
 
 ---

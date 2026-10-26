@@ -906,6 +906,7 @@ route('POST', /^\/api\/providers\/([\w-]+)\/apply-group$/, async (ctx) => {
 
   let updated = 0
   let viaRatio = 0
+  let viaPercall = 0
   const unmatched = []
   const missingBench = []
 
@@ -937,6 +938,7 @@ route('POST', /^\/api\/providers\/([\w-]+)\/apply-group$/, async (ctx) => {
         hasBench: Boolean(benchTable[key]),
       })
       if (via === 'ratio') viaRatio += 1
+      if (via === 'percall') viaPercall += 1
       if (via === 'manual' && !benchTable[key]) missingBench.push(offer.upstreamName)
 
       // 行上标出它属于哪个分组，页面就不用再显示「默认分组」了
@@ -953,6 +955,7 @@ route('POST', /^\/api\/providers\/([\w-]+)\/apply-group$/, async (ctx) => {
       rate,
       updated,
       viaRatio,
+      viaPercall,
       unmatched,
       missingBench,
       source: pricing.source,

@@ -759,6 +759,8 @@ async function applyPickedGroup(button) {
     const parts = [`${keyPrefix}「${r.group || '未指定分组'}」已应用`]
     if (r.rate !== null) parts.push(`倍率 ×${r.rate}`)
     parts.push(`${r.updated} 个模型`)
+    // 按次计费的模型单价是「每次多少元」，和 token 口径分开报，免得用户以为漏了
+    if (r.viaPercall) parts.push(`其中 ${r.viaPercall} 个按次计费`)
     if (r.unmatched?.length) parts.push(`${r.unmatched.length} 个未匹配`)
     toast(parts.join('，'))
     if (r.missingBench?.length) {
@@ -1601,7 +1603,7 @@ function renderPricing() {
       return `
       <tr class="${row.isCheapest ? 'cheapest' : ''}" data-offer="${esc(row.offerId)}">
         <td>${esc(providerName(row.providerId))}</td>
-        <td class="mono">${esc(row.upstreamName)}${badge}</td>
+        <td class="mono">${esc(row.upstreamName)}${badge}${perCall ? ' <span class="badge">按次</span>' : ''}</td>
         <td class="num sub-cell">${cacheCell}</td>
         <td>${row.group ? `<span class="badge ${groupChipOf(row.providerId, row.group)}">${esc(row.group)}</span>` : '<span style="color:var(--faint)">默认</span>'}<button class="ghost tiny" data-act="dup-offer" title="同一个模型在另一档套餐里也有时，复制一条单独跟踪（分组归属跟随 Key，行内不可直接改）">＋</button></td>
         <td>${modeCell}</td>

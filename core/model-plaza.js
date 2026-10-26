@@ -80,6 +80,11 @@ export function flattenPlaza(groups) {
     const models = Array.isArray(group.models) ? group.models : []
     const rate = Number(group.rate_multiplier)
     const multiplier = Number.isFinite(rate) && rate > 0 ? rate : 1
+    // 生图/视频分组可以单独设倍率（image_rate_independent=true 时不再用分组倍率）。
+    // 站点前端算价就是 `per_request_price × 这个倍率`，我们必须同口径
+    const imageIndependent = Boolean(group.image_rate_independent)
+    const imageMultiplierRaw = Number(group.image_rate_multiplier)
+    const imageMultiplier = Number.isFinite(imageMultiplierRaw) ? imageMultiplierRaw : multiplier
 
     groupList.push({
       id: group.id,
@@ -98,12 +103,30 @@ export function flattenPlaza(groups) {
       const off = model.official_pricing || {}
       const baseIn = perMtok(p.input_price)
       const baseOut = perMtok(p.output_price)
+      // 计费形式由站点声明：token（按量）/ per_request（按次）/ image（按张）。
+      // 以前完全没读这个字段，于是「按次计费」分组的模型被当成按 token 计价，
+      // 比价页把 ¥X/次 当成 ¥X/百万 token 来比——量纲完全不同，结论必错
+      const billingMode = p.billing_mode === 'per_request' || p.billing_mode === 'image' ? p.billing_mode : 'token'
+      // 按次价：优先顶层；分档价（intervals）里带 per_request_price 的取第一档
+      const tierCall = (Array.isArray(p.intervals) ? p.intervals : []).find(
+        (row) => row && row.per_request_price !== null && row.per_request_price !== undefined,
+      )?.per_request_price
+      const callBaseRaw = p.per_request_price ?? tierCall ?? null
+      const callMultiplier = billingMode === 'image' && imageIndependent ? imageMultiplier : multiplier
+      const callPrice =
+        callBaseRaw === null || !Number.isFinite(Number(callBaseRaw))
+          ? null
+          : Math.round(Number(callBaseRaw) * callMultiplier * 1000) / 1000
       const entry = {
         name: model.name,
         groupName: group.name,
         rateMultiplier: Number.isFinite(rate) ? rate : null,
         baseIn,
         baseOut,
+        billingMode,
+        // 按次单价（元/次，已按站点算法乘过倍率）；token 计费时为 null
+        callPrice,
+        callPriceTiered: p.per_request_price == null && tierCall != null,
         // 实际价 = 原价 × 倍率
         inPrice: baseIn === null ? null : Math.round(baseIn * multiplier * 1000) / 1000,
         outPrice: baseOut === null ? null : Math.round(baseOut * multiplier * 1000) / 1000,
@@ -122,7 +145,9 @@ export function flattenPlaza(groups) {
   for (const [key, list] of buckets) {
     const tally = new Map()
     for (const entry of list) {
-      const sig = `${entry.baseIn}|${entry.baseOut}`
+      // 计费形式和价格一起进签名：同一个模型在「按次」分组和「按 token」分组
+      // 是两条不同的供给，不能当成同一个价合并
+      const sig = `${entry.billingMode}|${entry.baseIn}|${entry.baseOut}|${entry.callPrice}`
       const row = tally.get(sig) || { entry, count: 0 }
       row.count += 1
       tally.set(sig, row)
