@@ -1232,7 +1232,9 @@ Object.assign(EN, {
 // 按次计费（priceUnit=per_call）
 Object.assign(EN, {
   '综合成本': 'Blended cost',
-  '{sym}/百万 token，按次行显示 /次': '{sym}/M tok; per-call rows show /call',
+  '{sym}/M · 按次行 /次': '{sym}/M · per-call rows /call',
+  '币种 / 单位': 'Currency / unit',
+  '该行的 Key 没有分组': 'The key of this row has no group',
 })
 
 // 系别自动判定

@@ -1605,7 +1605,7 @@ function renderPricing() {
         <td>${esc(providerName(row.providerId))}</td>
         <td class="mono">${esc(row.upstreamName)}${badge}${perCall ? ' <span class="badge">按次</span>' : ''}</td>
         <td class="num sub-cell">${cacheCell}</td>
-        <td>${row.group ? `<span class="badge ${groupChipOf(row.providerId, row.group)}">${esc(row.group)}</span>` : '<span style="color:var(--faint)">默认</span>'}<button class="ghost tiny" data-act="dup-offer" title="同一个模型在另一档套餐里也有时，复制一条单独跟踪（分组归属跟随 Key，行内不可直接改）">＋</button></td>
+        <td><span class="group-chip-cell">${row.group ? `<span class="badge ${groupChipOf(row.providerId, row.group)}" title="${esc(row.group)}">${esc(row.group)}</span>` : `<span style="color:var(--faint)" title="${t('该行的 Key 没有分组')}">${t('默认')}</span>`}<button class="ghost tiny" data-act="dup-offer" title="同一个模型在另一档套餐里也有时，复制一条单独跟踪（分组归属跟随 Key，行内不可直接改）">＋</button></span></td>
         <td>${modeCell}</td>
         <td class="num"><input type="number" step="0.001" placeholder="—" value="${row.inPrice ?? ''}" data-field="inPrice" ${mode === 'ratio' ? 'disabled title="当前按倍率算，切到「价格」才能填"' : perCall ? 'title="按次计费：这里填每次请求的价格"' : ''} /></td>
         <td class="num"><input type="number" step="0.001" placeholder="—" value="${perCall ? '' : row.outPrice ?? ''}" data-field="outPrice" ${mode === 'ratio' || perCall ? 'disabled title="按次计费不区分输入/输出"' : ''} /></td>
@@ -1637,8 +1637,8 @@ function renderPricing() {
             <th>站点</th><th>上游模型名</th><th class="num">缓存</th><th>分组</th>
             <th>模式</th>
             <th class="num">输入价</th><th class="num">输出价</th>
-            <th>币种</th><th class="num">倍率</th>
-            <th class="num">首字</th><th class="num">${t('综合成本')}<div class="sub">${t('{sym}/百万 token，按次行显示 /次', { sym: priceSym() })}</div></th><th class="num">价差</th>
+            <th>币种 / 单位</th><th class="num">倍率</th>
+            <th class="num">首字</th><th class="num">${t('综合成本')}<div class="sub">${t('{sym}/M · 按次行 /次', { sym: priceSym() })}</div></th><th class="num">价差</th>
           </tr></thead>
           <tbody>${rows}</tbody>
         </table>`}

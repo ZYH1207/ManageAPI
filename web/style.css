@@ -1179,7 +1179,8 @@ button.with-icon { display: inline-flex; align-items: center; gap: 6px; white-sp
 .form-actions { display: flex; justify-content: flex-end; margin-top: 12px; }
 
 /* ---------------------------------------------------------------- tables */
-.table-wrap { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; margin-bottom: 16px; }
+/* 宽表横向滚动而不是裁掉：以前 overflow:hidden 会把比价表右侧整列裁没 */
+.table-wrap { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); overflow-x: auto; margin-bottom: 16px; }
 table { width: 100%; border-collapse: collapse; font-size: 13px; }
 thead th {
   text-align: left; font-weight: 500; color: var(--faint); font-size: 11px;
@@ -1325,12 +1326,51 @@ button.group-chip:hover { color: var(--accent); }
 }
 [data-theme='dark'] .cur-switch button.is-on { box-shadow: 0 1px 2px rgba(0, 0, 0, .5); }
 
-/* 比价表列多，把内边距和输入框压窄，12 列才放得下 */
+/* 比价表列多，把内边距和输入框压窄，12 列才放得下。
+   列宽有下限：容器再窄也横向滚，绝不把单元格挤到看不清 */
+.pricing-table { min-width: 1000px; }
 .pricing-table th, .pricing-table td { padding-left: 8px; padding-right: 8px; }
 .pricing-table td input[type='number'] { width: 64px; padding: 4px 6px; }
 .pricing-table td input.group-input { width: 84px; }
 .pricing-table .seg-mini button { padding: 0 6px; }
 .pricing-table .sub { font-size: 11px; }
+
+/* 模型名与分组超长时省略号：分组列曾把整张表撑到 270px+，
+   把右侧的成本/价差直接挤出可视区。全名放在 title 里，悬停可见 */
+.pricing-table td.mono, .pricing-table td.mono .badge,
+.pricing-table td .group-chip-cell .badge {
+  max-width: 190px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.pricing-table td .group-chip-cell { max-width: 200px; display: inline-flex; align-items: center; gap: 4px; }
+
+/* 综合成本 / 价差两列右侧吸附：横向滚动时始终可见——这两列才是比价要看的东西 */
+.pricing-table th:nth-last-child(-n+2), .pricing-table td:nth-last-child(-n+2) {
+  position: sticky; right: 0; z-index: 1;
+  background: var(--surface);
+  box-shadow: -6px 0 6px -6px rgba(0, 0, 0, .25);
+}
+[data-theme='dark'] .pricing-table th:nth-last-child(-n+2), [data-theme='dark'] .pricing-table td:nth-last-child(-n+2) {
+  box-shadow: -6px 0 6px -6px rgba(0, 0, 0, .6);
+}
+/* 站点列左侧吸附：滚动后也知道这一行是谁家的 */
+.pricing-table th:first-child, .pricing-table td:first-child {
+  position: sticky; left: 0; z-index: 1;
+  background: var(--surface);
+  box-shadow: 6px 0 6px -6px rgba(0, 0, 0, .25);
+}
+[data-theme='dark'] .pricing-table th:first-child, [data-theme='dark'] .pricing-table td:first-child {
+  box-shadow: 6px 0 6px -6px rgba(0, 0, 0, .6);
+}
+/* 吸附列的背景要跟上行状态，否则悬停/最便宜的高亮会从下面漏出来。
+   注意 --success-soft 是半透明色：吸附单元格必须把它叠在不透明的 surface 上，
+   否则横向滚动时被盖住的单元格会透出来 */
+.pricing-table tbody tr.cheapest td:first-child,
+.pricing-table tbody tr.cheapest td:nth-last-child(-n+2) {
+  background-color: var(--surface);
+  background-image: linear-gradient(var(--success-soft), var(--success-soft));
+}
+.pricing-table tbody tr:hover td:first-child,
+.pricing-table tbody tr:hover td:nth-last-child(-n+2) { background: var(--surface-2); }
 
 /* 比价表里的两段小切换（倍率 / 价格） */
 .seg-mini { display: inline-flex; padding: 2px; gap: 2px; background: var(--hover); border: 1px solid var(--border); border-radius: 7px; }
