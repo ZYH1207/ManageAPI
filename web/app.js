@@ -1589,12 +1589,11 @@ function renderPricing() {
         : `${row.blendedCnyPerMtok === null ? '—' : priceText(row.blendedCnyPerMtok)}${
             row.hasOffPeak && row.offPeakBlendedCnyPerMtok !== null ? `<div class="sub">空闲 ${priceText(row.offPeakBlendedCnyPerMtok)}</div>` : ''
           }`
-      const unitSelect = `
-          <select data-field="priceUnit" style="width:64px" title="计价单位：按次 = 输入价填每次请求的价格">
-            <option value="per_mtok" ${row.priceUnit !== 'per_1k' && row.priceUnit !== 'per_call' ? 'selected' : ''}>/M</option>
-            <option value="per_1k" ${row.priceUnit === 'per_1k' ? 'selected' : ''}>/1k</option>
-            <option value="per_call" ${perCall ? 'selected' : ''}>/次</option>
-          </select>`
+      // 计费单位是站点声明、识别出来的（模型广场 billing_mode），不是每行手选的
+      // 配置项——所以只读展示。真要手动改（比如站点没开广场识别不到），去「站点」页
+      const unitBadge = `<span class="badge unit-badge" title="${t('计费单位：由站点声明的计费形式识别而来；手动修改请到「站点」页的模型行')}">${
+        perCall ? t('/次') : row.priceUnit === 'per_1k' ? t('/1k') : t('/M')
+      }</span>`
       const modeCell = `
         <div class="seg-mini">
           <button class="${mode === 'ratio' ? 'is-on' : ''}" data-act="offer-mode" data-mode="ratio" title="按分组倍率折算">倍率</button>
@@ -1610,11 +1609,13 @@ function renderPricing() {
         <td class="num"><input type="number" step="0.001" placeholder="—" value="${row.inPrice ?? ''}" data-field="inPrice" ${mode === 'ratio' ? 'disabled title="当前按倍率算，切到「价格」才能填"' : perCall ? 'title="按次计费：这里填每次请求的价格"' : ''} /></td>
         <td class="num"><input type="number" step="0.001" placeholder="—" value="${perCall ? '' : row.outPrice ?? ''}" data-field="outPrice" ${mode === 'ratio' || perCall ? 'disabled title="按次计费不区分输入/输出"' : ''} /></td>
         <td>
-          <select data-field="currency" style="width:70px">
-            <option value="USD" ${row.currency === 'USD' ? 'selected' : ''}>USD</option>
-            <option value="CNY" ${row.currency === 'CNY' ? 'selected' : ''}>CNY</option>
-          </select>
-          ${unitSelect}
+          <div class="unit-cell">
+            <select data-field="currency" style="width:70px">
+              <option value="USD" ${row.currency === 'USD' ? 'selected' : ''}>USD</option>
+              <option value="CNY" ${row.currency === 'CNY' ? 'selected' : ''}>CNY</option>
+            </select>
+            ${unitBadge}
+          </div>
         </td>
         <td class="num"><input class="ratio" type="number" step="0.01" placeholder="倍率" value="${row.ratio ?? ''}" data-field="ratio" ${mode === 'manual' ? 'disabled title="当前按手填单价算，切到「倍率」才能填"' : ''} /></td>
         <td class="num">${row.ttftMs ? `${row.ttftMs}ms` : '—'}</td>

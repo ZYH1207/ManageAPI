@@ -1334,6 +1334,9 @@ button.group-chip:hover { color: var(--accent); }
 .pricing-table td input.group-input { width: 84px; }
 .pricing-table .seg-mini button { padding: 0 6px; }
 .pricing-table .sub { font-size: 11px; }
+/* 币种下拉 + 只读的计费单位标记（单位由站点计费形式识别，不在比价页手选） */
+.pricing-table .unit-cell { display: inline-flex; flex-direction: column; gap: 4px; align-items: flex-start; }
+.pricing-table .unit-badge { font-variant-numeric: tabular-nums; }
 
 /* 模型名与分组超长时省略号：分组列曾把整张表撑到 270px+，
    把右侧的成本/价差直接挤出可视区。全名放在 title 里，悬停可见 */

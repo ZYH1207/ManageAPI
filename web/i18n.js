@@ -1234,6 +1234,7 @@ Object.assign(EN, {
   '综合成本': 'Blended cost',
   '{sym}/M · 按次行 /次': '{sym}/M · per-call rows /call',
   '币种 / 单位': 'Currency / unit',
+  '计费单位：由站点声明的计费形式识别而来；手动修改请到「站点」页的模型行': 'Unit: detected from the site-declared billing mode; edit it on the site page if needed',
   '该行的 Key 没有分组': 'The key of this row has no group',
 })
 
