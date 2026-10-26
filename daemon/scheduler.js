@@ -91,7 +91,11 @@ export function startProbeScheduler({ runProbes, collectMonitor = null, logger =
         if (!score || !score.lastProbeAt) return true
         // 冷却中（额度不足/限流/模型不在分组）探了也是白探：等冷却结束再验
         if (score.blocked && score.blocked.until > now) return false
-        const healthy = score.status === 'healthy'
+        // 「健康但有完整性疑点」也要加密探测：截断/虚报要 2 个样本才定性，
+        // 只测到 1 次异常时状态还是 healthy，若按基础间隔等一小时才补第二针，
+        // 真砍额度的站会被放过一小时。这里让它走重试间隔，20 分钟内见分晓
+        const integritySuspect = score.integrity !== null && score.integrity < 0.999
+        const healthy = score.status === 'healthy' && !integritySuspect
         const minutes = healthy ? intervalMinutes : retryMinutes
         return now - new Date(score.lastProbeAt).getTime() >= minutes * 60000
       })

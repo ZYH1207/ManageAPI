@@ -2044,6 +2044,11 @@ function probeDetailHtml(score) {
           <span class="dim">= 探针 ${score.samples} 次 + 真实流量 ${score.trafficSamples} 次的成功率</span></div>
         <div class="detail-line">完整性 <b>${fmt(score.integrity)}</b>
           <span class="dim">= 指纹 ${pctv(score.fingerprintRate)}×0.5 + 未截断 ${pctv(score.truncationRate)}×0.3 + 计费正常 ${pctv(score.billingRate)}×0.2</span></div>
+        <div class="detail-line dim">通过率按 (通过+1)/(样本+1) 平滑：样本少时一次异常只轻微降权，判「结果可疑」另有更严的原始证据规则</div>
+        ${score.realQualitySamples
+          ? `<div class="detail-line">真实响应抽样 <b>${score.realQualitySamples}</b> 次
+              <span class="dim">异常 ${score.realBadRate === null ? '样本不足，暂不判定' : `${pctv(score.realBadRate)}（空回答 / 计费虚报）`}</span></div>`
+          : ''}
         <div class="detail-line">质量 <b>${fmt(score.quality)}</b>
           <span class="dim">= 可用率 × 完整性，低于 0.8 就不参与路由</span></div>
       </div>

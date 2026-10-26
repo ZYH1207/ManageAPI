@@ -77,14 +77,10 @@ export function selectCandidates({ offers, providers, credentials, scores, bench
     if (typeof score?.availability === 'number' && score.availability < THRESHOLDS.availability) {
       reasons.push(`可用率 ${Math.round(score.availability * 100)}%`)
     }
-    if (typeof score?.fingerprintRate === 'number' && score.fingerprintRate < 1) {
-      reasons.push(`指纹 ${Math.round(score.fingerprintRate * 100)}%`)
-    }
-    if (typeof score?.truncationRate === 'number' && score.truncationRate < 1) {
-      reasons.push(`截断 ${Math.round((1 - score.truncationRate) * 100)}%`)
-    }
-    if (typeof score?.billingRate === 'number' && score.billingRate < 1) {
-      reasons.push(`计费 ${Math.round((1 - score.billingRate) * 100)}%`)
+    // 完整性只说「哪一项不合格」，不再拿平滑后的通过率当理由：
+    // 平滑值 50% 可能只是「测了 1 次、错了 1 次」，写成「指纹 50%」会误导
+    if (Array.isArray(score?.integrityFaults) && score.integrityFaults.length > 0) {
+      reasons.push(score.integrityFaults.join(' · '))
     }
 
     return {

@@ -59,8 +59,26 @@ console.log('[4] 真的掉包仍然单次即判')
 {
   const s = score([{ offerId: 'd', ok: true, ts: ago(0.1), ...base, fingerprintOk: false }])
   ok(s.get('d').status === 'degraded', '单次指纹不符 → 结果可疑')
-  // 指纹 0×0.5 + 未截断 1×0.3 + 计费 1×0.2 = 0.5（加权归一，不是字面 0）
-  ok(Math.abs(s.get('d').integrity - 0.5) < 1e-9, `完整性按权重折算（实际 ${s.get('d').integrity}）`)
+  ok(s.get('d').integrityFaults.includes('指纹不符'), '明确给出不合格项')
+  // 平滑后：指纹 1/2=0.5×0.5 + 未截断 1×0.3 + 计费 1×0.2 = 0.75
+  // （以前是硬 0，一次探针异常就把成本翻倍；现在只轻微降权，靠 integrityFaults 拦下）
+  ok(Math.abs(s.get('d').integrity - 0.75) < 1e-9, `完整性按平滑值折算（实际 ${s.get('d').integrity}）`)
+}
+
+console.log('[4b] 截断/虚报要 2 个样本才定性，单次异常只轻微降权')
+{
+  const once = score([{ offerId: 't1', ok: true, ts: ago(0.1), ...base, truncated: true }]).get('t1')
+  ok(once.status === 'healthy', `单次截断不下结论（实际 ${once.status}）`)
+  ok(once.integrity < 1 && once.integrity > 0.8, `但质量轻微下降（实际 ${once.integrity.toFixed(3)}）`)
+  ok(isRoutable(once) === true, '仍然可路由')
+
+  const twice = score([
+    { offerId: 't2', ok: true, ts: ago(0.1), ...base, truncated: true },
+    { offerId: 't2', ok: true, ts: ago(0.2), ...base, truncated: true },
+  ]).get('t2')
+  ok(twice.status === 'degraded', `连续 2 次截断 → 结果可疑（实际 ${twice.status}）`)
+  ok(twice.integrityFaults.includes('输出截断'), '不合格项写清楚了')
+  ok(isRoutable(twice) === false, '不可路由')
 }
 
 console.log('[5] 真实流量过期后不再计入（否则一小时前的失败永远洗不掉）')

@@ -831,17 +831,24 @@ export async function addTraffic(entries, windowMs = TRAFFIC_WINDOW_MS) {
     const now = Date.now()
     const nowIso = new Date(now).toISOString()
     for (const [offerId, delta] of entries) {
-      const row = db.traffic[offerId] || { ok: 0, fail: 0, since: nowIso, kinds: {} }
+      const row = db.traffic[offerId] || { ok: 0, fail: 0, since: nowIso, kinds: {}, quality: { samples: 0, bad: 0 } }
       if (now - new Date(row.since).getTime() > windowMs) {
         row.ok = 0
         row.fail = 0
         row.since = nowIso
         row.kinds = {}
         row.lastOkAt = null
+        row.quality = { samples: 0, bad: 0 }
       }
       row.ok += delta.ok || 0
       row.fail += delta.fail || 0
       if (delta.ok) row.lastOkAt = nowIso
+      // 真实响应的质量信号（空回答 / 计费虚报）：探针之外的第二类完整性证据
+      if (delta.quality) {
+        if (!row.quality || typeof row.quality !== 'object') row.quality = { samples: 0, bad: 0 }
+        row.quality.samples += delta.quality.samples || 0
+        row.quality.bad += delta.quality.bad || 0
+      }
       if (delta.kinds) {
         if (!row.kinds || typeof row.kinds !== 'object') row.kinds = {}
         for (const [kind, count] of Object.entries(delta.kinds)) {

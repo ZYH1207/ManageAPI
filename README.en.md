@@ -204,6 +204,16 @@ The "no" rows are not instability — that supply simply cannot serve right now 
 
 Below 0.8 on either dimension means unusable; by default it sinks to the back and is only a last resort.
 
+**How integrity (is the answer trustworthy?) is judged** — raw evidence only, never an average:
+
+| Check | Verdict rule | Why |
+|---|---|---|
+| Fingerprint mismatch | **single shot** | swapping is deterministic; a network glitch does not change the answer into a different number |
+| Truncated output / inflated usage | **2 samples** | one may be a cut stream rather than a broken site |
+| Real-response anomalies (empty answer / inflated billing) | **5 samples, >20% bad** | the gateway can only verify these two objective signals |
+
+Displayed pass rates are **smoothed** as `(pass+1)/(samples+1)`: with little evidence they stay near 100% and only converge once samples accumulate. A single odd probe therefore costs a few percent of quality instead of halving it and doubling the effective cost — **the penalty must match the strength of the evidence**.
+
 > **Want suspicious sites to be usable?** The Probes page has an **Allow suspicious supplies** switch. When on,
 > supplies flagged for fingerprint mismatch / truncation / inflated usage / expired scores are no longer pushed back —
 > they compete on effective cost like everything else. Half the quality doubles the cost, so only a large enough
@@ -229,6 +239,8 @@ The interval is **adaptive**: healthy supplies use your interval, everything els
 Probes are synthetic and cannot see "5xx at peak hours". Every forwarded request also counts toward that site's availability, and its failures are attributed the same way (credit/rate-limit failures do not count). In practice: a site with healthy probes but three consecutive real failures drops to 63% availability, turns `unstable`, and gets skipped.
 
 Traffic counts roll on a 1-hour window, validated on both the write and the read side — a site that broke in the morning and recovered in the afternoon should not be punished all day.
+
+The gateway also samples two objective quality signals on **successful real responses**: **empty answer** (200, finished normally, but no content at all) and **inflated billing** (reported `prompt_tokens` more than 4× the estimated request size — gross inflation only). Fingerprint and truncation need a controlled prompt, so only probes can check those. Samples only affect scoring at 5 samples / 20% bad; below that they are recorded but not judged.
 
 ---
 
@@ -414,6 +426,7 @@ core/              Host-agnostic core (no framework dependencies)
   probe.js           Fingerprint / truncation / billing / cache probes
   score.js           Short-term scores (with TTL) and long-term scores (time decay)
   failure.js         Failure attribution: outage vs credit / rate limit / model missing (with cooldowns)
+  quality-signals.js Real-response quality sampling: empty answer / inflated billing (token estimate)
   router.js          Candidate filtering and ordering
   usage.js           Usage aggregation (day × key × site × model)
   free.js            Free-pool detection: actual price = 0, free/ prefix, entry parsing

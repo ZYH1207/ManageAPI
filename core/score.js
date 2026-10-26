@@ -16,6 +16,7 @@
  */
 
 import { classifyFailure, cooldownUntil } from './failure.js'
+import { REAL_QUALITY_MIN_SAMPLES, REAL_QUALITY_BAD_RATE } from './quality-signals.js'
 
 const DEFAULT_WINDOW = 20
 const DEFAULT_MAX_AGE_MS = 6 * 3600 * 1000
@@ -102,9 +103,20 @@ export function scoreOffers(probes, traffic = {}, options = {}) {
     // undefined（请求都没成功，谈不上指纹/截断），不能当成「没通过」——
     // 否则一次失败就会把 integrity 拉到 0，被误判成 degraded（掉包）
     const has = (r, key) => r[key] !== null && r[key] !== undefined
-    const fingerprintRate = ratio(recent.filter((r) => has(r, 'fingerprintOk')).map((r) => r.fingerprintOk))
-    const truncationRate = ratio(recent.filter((r) => has(r, 'truncated')).map((r) => r.truncated === false))
-    const billingRate = ratio(recent.filter((r) => has(r, 'billingInflated')).map((r) => r.billingInflated === false))
+    const fpChecks = recent.filter((r) => has(r, 'fingerprintOk'))
+    const trChecks = recent.filter((r) => has(r, 'truncated'))
+    const blChecks = recent.filter((r) => has(r, 'billingInflated'))
+    const fpPass = fpChecks.filter((r) => r.fingerprintOk).length
+    const trPass = trChecks.filter((r) => r.truncated === false).length
+    const blPass = blChecks.filter((r) => r.billingInflated === false).length
+
+    // 平滑通过率：等价于「先记一次通过」，样本越少越接近 1，样本多了才收敛到真实值。
+    // 这样一次探针异常只会让质量轻微下降（~5~15%），而不是把质量砸到 0.5 让成本翻倍——
+    // 惩罚力度必须和证据强度匹配。判定「是否掉包」另有更严的规则（见下）
+    const smooth = (pass, total) => (total === 0 ? null : (pass + 1) / (total + 1))
+    const fingerprintRate = smooth(fpPass, fpChecks.length)
+    const truncationRate = smooth(trPass, trChecks.length)
+    const billingRate = smooth(blPass, blChecks.length)
 
     // 某一项还没测出来时不惩罚，用其余项归一，避免新站被误判
     const parts = [
@@ -115,12 +127,31 @@ export function scoreOffers(probes, traffic = {}, options = {}) {
     const totalWeight = parts.reduce((sum, p) => sum + p.weight, 0)
     const integrity = totalWeight === 0 ? null : parts.reduce((sum, p) => sum + p.value * p.weight, 0) / totalWeight
 
+    // 「结果可疑」的判定不看平滑值，看原始证据：
+    //   指纹——单次不符即判（掉包是确定性的，网络抖动不会让答案变成别的数）
+    //   截断 / 虚报——至少 2 个样本才下结论（单次异常可能是流被切断，不是站的问题）
+    //   真实响应——空回答 / 计费虚报，样本 ≥5 且异常率 >20% 才判（网关能验的
+    //              只有这两类客观异常，指纹和截断需要受控 prompt，探针才做得到）
+    const integrityFaults = []
+    if (fpChecks.length > 0 && fpPass < fpChecks.length) integrityFaults.push('指纹不符')
+    if (trChecks.length >= 2 && trPass / trChecks.length < THRESHOLDS.integrity) integrityFaults.push('输出截断')
+    if (blChecks.length >= 2 && blPass / blChecks.length < THRESHOLDS.integrity) integrityFaults.push('用量虚报')
+
     // 可用率合并探针与真实流量：探针样本少，真实请求更能反映实际状况。
     // 流量只认窗口内的（1 小时），过期的失败不能一直压着站点。
     // 额度不足 / 限流 / 模型不在分组不是「站点坏了」：它们不进分母，
     // 只让这条供给进入冷却，否则一堆只是没余额的站会长期挂红，
     // 真正的故障（502、卡死）反而被淹没
     const trafficRow = freshTraffic(traffic?.[offerId], now, trafficMaxAgeMs)
+
+    // 真实响应的质量信号（空回答 / 计费虚报）：探针之外的第二类完整性证据。
+    // 网关能验的只有这两类客观异常（指纹和截断需要受控 prompt），
+    // 所以门槛放高：样本 ≥5 且异常率 >20% 才判
+    const realQuality = trafficRow?.quality || null
+    const realSamples = Number(realQuality?.samples) || 0
+    const realBad = Number(realQuality?.bad) || 0
+    const realBadRate = realSamples >= REAL_QUALITY_MIN_SAMPLES ? realBad / realSamples : null
+    if (realBadRate !== null && realBadRate > REAL_QUALITY_BAD_RATE) integrityFaults.push('真实响应异常')
     const trafficOk = trafficRow?.ok || 0
     const trafficFail = trafficRow?.fail || 0
     const trafficKinds = trafficRow?.kinds || {}
@@ -207,7 +238,7 @@ export function scoreOffers(probes, traffic = {}, options = {}) {
     let status = 'unknown'
     if (probeSamples === 0) status = 'unknown'
     else if (stale) status = 'stale'
-    else if (integrity !== null && integrity < THRESHOLDS.integrity) status = 'degraded'
+    else if (integrityFaults.length > 0) status = 'degraded'
     else if (availabilityVerdict) status = 'unstable'
     else if (availability !== null && availability < THRESHOLDS.availability) {
       // 样本不足的失败：明确标「证据不足」，界面不显示成可疑/不稳定
@@ -222,6 +253,9 @@ export function scoreOffers(probes, traffic = {}, options = {}) {
       samples: probeSamples,
       trafficSamples: trafficOk + trafficFail,
       trafficUnavailable,
+      // 真实响应的质量抽样（空回答 / 计费虚报）：样本不足时 badRate 为 null
+      realQualitySamples: realSamples,
+      realBadRate,
       trafficStale: Boolean(traffic?.[offerId]) && trafficRow === null,
       // 样本拆分：参与可用率的是 ok + outage；unavailable 不进分母
       outageSamples: probeOutage + trafficFail,
@@ -233,6 +267,8 @@ export function scoreOffers(probes, traffic = {}, options = {}) {
       truncationRate,
       billingRate,
       integrity,
+      // 具体是哪一项不合格（指纹不符 / 输出截断 / 用量虚报），界面直接展示
+      integrityFaults,
       quality,
       cacheHitRate,
       ttftMs: median(recent.map((r) => r.ttftMs)),
@@ -281,6 +317,9 @@ export function isRoutable(score) {
   // 必须显式要求「有证据」，否则「没测过」就变成了「合格」
   if (score.availability === null) return false
   if (score.availability < THRESHOLDS.availability) return false
+  // 完整性看「有没有确凿的不合格项」，不看平滑后的分数：
+  // 平滑值低只说明证据多且都不好，具体判定由 integrityFaults 给出
+  if (Array.isArray(score.integrityFaults) && score.integrityFaults.length > 0) return false
   if (score.integrity !== null && score.integrity < THRESHOLDS.integrity) return false
   return true
 }

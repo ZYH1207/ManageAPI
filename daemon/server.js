@@ -16,6 +16,7 @@ import * as bench from '../core/benchmark.js'
 import * as providers from '../core/providers.js'
 import { scoreOffers, isRoutable, longTermScores } from '../core/score.js'
 import { classifyFailure } from '../core/failure.js'
+import { checkRealResponse, estimateRequestTokens } from '../core/quality-signals.js'
 import { selectCandidates, listPublicModels, explain } from '../core/router.js'
 import { splitOffers, resolvePool, FREE_PREFIX, FREE_BASE_PATH } from '../core/free.js'
 import { rankFreePool } from '../core/rank-free.js'
@@ -1805,15 +1806,21 @@ function queueRouting(entry) {
 const trafficBuffer = new Map()
 let trafficTimer = null
 
-function bufferTraffic(offerId, ok, error) {
+function bufferTraffic(offerId, ok, error, quality) {
   if (!offerId) return
-  const entry = trafficBuffer.get(offerId) || { ok: 0, fail: 0, kinds: {} }
+  const entry = trafficBuffer.get(offerId) || { ok: 0, fail: 0, kinds: {}, quality: { samples: 0, bad: 0 } }
   if (ok) entry.ok += 1
   else {
     // 只有站点故障算 fail；额度/限流/模型不在分组单独计数，不拉低可用率
     const { kind, countsAsOutage } = classifyFailure(error)
     if (countsAsOutage) entry.fail += 1
     else entry.kinds[kind] = (entry.kinds[kind] || 0) + 1
+  }
+  // 真实响应的质量信号（空回答/计费虚报）：探针之外的第二类完整性证据
+  if (quality) {
+    entry.quality = entry.quality || { samples: 0, bad: 0 }
+    entry.quality.samples += 1
+    if (quality.bad) entry.quality.bad += 1
   }
   trafficBuffer.set(offerId, entry)
   if (!trafficTimer) {
@@ -1835,11 +1842,16 @@ async function flushTraffic() {
     // 流量计数直接参与可用率评分，丢一批等于成败样本凭空消失
     console.error('[网关] 流量计数写盘失败，已回队重试：', error)
     for (const [offerId, entry] of snapshot) {
-      const current = trafficBuffer.get(offerId) || { ok: 0, fail: 0, kinds: {} }
+      const current = trafficBuffer.get(offerId) || { ok: 0, fail: 0, kinds: {}, quality: { samples: 0, bad: 0 } }
       current.ok += entry.ok
       current.fail += entry.fail
       for (const [kind, count] of Object.entries(entry.kinds || {})) {
         current.kinds[kind] = (current.kinds[kind] || 0) + count
+      }
+      if (entry.quality) {
+        current.quality = current.quality || { samples: 0, bad: 0 }
+        current.quality.samples += entry.quality.samples || 0
+        current.quality.bad += entry.quality.bad || 0
       }
       trafficBuffer.set(offerId, current)
     }
@@ -1985,7 +1997,20 @@ async function forwardToUpstream({ candidate, body, res, attemptIndex, pool = 'p
     if (payload?.error) return { committed: false, error: payload.error.message || '上游返回 error 字段' }
     res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', ...headers })
     res.end(JSON.stringify(payload))
-    return { committed: true, usage: payload.usage || null, ttftMs: null }
+    // 真实响应的质量信号（空回答 / 计费虚报），只记录不在这里判定
+    const choice = payload?.choices?.[0]
+    const message = choice?.message || {}
+    return {
+      committed: true,
+      usage: payload.usage || null,
+      ttftMs: null,
+      realCheck: {
+        contentChars: (message.content || '').length + (message.reasoning_content || '').length,
+        hasToolCalls: Boolean(message.tool_calls?.length),
+        finishReason: choice?.finish_reason ?? null,
+        promptTokens: payload?.usage?.prompt_tokens ?? null,
+      },
+    }
   }
 
   const reader = upstreamRes.body.getReader()
@@ -1994,6 +2019,10 @@ async function forwardToUpstream({ candidate, body, res, attemptIndex, pool = 'p
   let committed = false
   let usage = null
   let ttftMs = null
+  // 流式响应的质量信号：累计正文长度、是否出现工具调用、结束原因
+  let contentChars = 0
+  let hasToolCalls = false
+  let finishReason = null
 
   const commit = () => {
     if (committed) return
@@ -2037,6 +2066,16 @@ async function forwardToUpstream({ candidate, body, res, attemptIndex, pool = 'p
         }
 
         if (parsed?.usage) usage = parsed.usage
+
+        // 累计真实响应的质量信号（空回答 / 工具调用 / 结束原因）
+        const choice = Array.isArray(parsed?.choices) ? parsed.choices[0] : null
+        if (choice) {
+          const delta = choice.delta || {}
+          if (typeof delta.content === 'string') contentChars += delta.content.length
+          if (typeof delta.reasoning_content === 'string') contentChars += delta.reasoning_content.length
+          if (Array.isArray(delta.tool_calls) && delta.tool_calls.length > 0) hasToolCalls = true
+          if (choice.finish_reason) finishReason = choice.finish_reason
+        }
 
         // 第一个事件就是错误：还没提交，可以换站
         if (!committed && parsed?.error) {
@@ -2083,7 +2122,12 @@ async function forwardToUpstream({ candidate, body, res, attemptIndex, pool = 'p
   }
 
   cleanup()
-  return { committed: true, usage, ttftMs }
+  return {
+    committed: true,
+    usage,
+    ttftMs,
+    realCheck: { contentChars, hasToolCalls, finishReason, promptTokens: usage?.prompt_tokens ?? null },
+  }
 }
 
 async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = false) {
@@ -2200,6 +2244,8 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
 
   const started = Date.now()
   const failures = []
+  // 请求规模估算（只用于「计费是否明显虚报」的量级判断，不追求精确）
+  const requestTokens = estimateRequestTokens(body)
 
   for (let index = 0; index < candidates.length; index += 1) {
     const candidate = candidates[index]
@@ -2247,7 +2293,15 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
           ttftMs: result.ttftMs,
           ok: !result.streamError,
         })
-        bufferTraffic(candidate.offer.id, !result.streamError, result.streamError)
+        bufferTraffic(
+          candidate.offer.id,
+          !result.streamError,
+          result.streamError,
+          // 只有成功响应才谈得上「空回答/计费虚报」；断流已经算失败了
+          result.streamError || !result.realCheck
+            ? null
+            : checkRealResponse({ ...result.realCheck, requestTokens }),
+        )
         // 免费池的额度必须跟着真实调用扣：以前只有手动填的接口能改 freeQuota，
         // 于是「额度用尽」永远判不出来，网关会一直往一个已经空了的池子里发请求。
         if (pool === 'free') {
