@@ -148,7 +148,13 @@ async function api(method, path, body, extraHeaders = null) {
     body: body ? JSON.stringify(body) : undefined,
   })
   const data = await res.json().catch(() => ({}))
-  if (!res.ok) throw new Error(data.error || `请求失败（${res.status}）`)
+  if (!res.ok) {
+    const error = new Error(data.error || `请求失败（${res.status}）`)
+    // 把响应体挂上去：调用方要判断 needConfirm 之类的结构化错误
+    error.status = res.status
+    error.data = data
+    throw error
+  }
   return data
 }
 
@@ -1597,7 +1603,7 @@ function renderPricing() {
         <td>${esc(providerName(row.providerId))}</td>
         <td class="mono">${esc(row.upstreamName)}${badge}</td>
         <td class="num sub-cell">${cacheCell}</td>
-        <td><input class="group-input" type="text" placeholder="默认" value="${esc(row.group || '')}" data-field="group" /><button class="ghost tiny" data-act="dup-offer" title="按这个模型再建一个分组">＋</button></td>
+        <td>${row.group ? `<span class="badge ${groupChipOf(row.providerId, row.group)}">${esc(row.group)}</span>` : '<span style="color:var(--faint)">默认</span>'}<button class="ghost tiny" data-act="dup-offer" title="同一个模型在另一档套餐里也有时，复制一条单独跟踪（分组归属跟随 Key，行内不可直接改）">＋</button></td>
         <td>${modeCell}</td>
         <td class="num"><input type="number" step="0.001" placeholder="—" value="${row.inPrice ?? ''}" data-field="inPrice" ${mode === 'ratio' ? 'disabled title="当前按倍率算，切到「价格」才能填"' : perCall ? 'title="按次计费：这里填每次请求的价格"' : ''} /></td>
         <td class="num"><input type="number" step="0.001" placeholder="—" value="${perCall ? '' : row.outPrice ?? ''}" data-field="outPrice" ${mode === 'ratio' || perCall ? 'disabled title="按次计费不区分输入/输出"' : ''} /></td>
@@ -4359,8 +4365,25 @@ document.addEventListener('submit', async (event) => {
     if (submitBtn) submitBtn.disabled = true
     const providerId = loginForm.dataset.provider
     const data = Object.fromEntries(new FormData(loginForm))
+    const doLogin = (confirmUnknown = false) =>
+      api('POST', `/api/providers/${providerId}/login`, {
+        user: data.user,
+        password: data.password,
+        ...(confirmUnknown ? { confirmUnknown: true } : {}),
+      })
     try {
-      state = await api('POST', `/api/providers/${providerId}/login`, { user: data.user, password: data.password })
+      let result
+      try {
+        result = await doLogin(false)
+      } catch (error) {
+        // 系别识别不出：登录会向站点发一次错误协议的失败登录，先让用户确认
+        if (error.data?.needConfirm && confirm(error.message)) {
+          result = await doLogin(true)
+        } else {
+          throw error
+        }
+      }
+      state = result
       closeLoginModal()
       render()
       const via = state.loginResult?.via === 'sub2api' ? 'Sub2API' : 'OneAPI/NewAPI'

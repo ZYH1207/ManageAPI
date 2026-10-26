@@ -34,12 +34,18 @@ const ok = (cond, msg) => {
 let seq = 0
 const validTokens = new Set(['good-access-token'])
 let lockLogin = false // 模拟站点风控：true 时登录接口拒绝
+let detectable = true // false 时系别探测接口全部 404（模拟识别不出系别的站）
 const up = createServer((req, res) => {
   const url = new URL(req.url, 'http://x')
   const send = (status, body) => {
     res.writeHead(status, { 'Content-Type': 'application/json' })
     res.end(JSON.stringify(body))
   }
+  // 系别探测：settings/public 通 → sub2api（登录前先只读识别，零风险）
+  if (url.pathname === '/api/v1/settings/public') {
+    return detectable ? send(200, { data: {} }) : send(404, {})
+  }
+  if (url.pathname === '/api/status') return send(404, {})
   if (url.pathname === '/api/v1/auth/login') {
     let raw = ''
     req.on('data', (c) => (raw += c))
@@ -94,11 +100,12 @@ try {
     await new Promise((r) => setTimeout(r, 150))
   }
 
-  console.log('[1] 建站（自动系别探测会命中 sub2api 的 settings/public？mock 没有 → unknown）')
+  console.log('[1] 建站（settings/public 通 → 自动识别为 sub2api）')
   {
     const { data } = await api('POST', '/api/providers', { name: '登录验证站', baseUrl: `${UP}/v1` })
     const p = data.providers.find((x) => x.name === '登录验证站')
     ok(Boolean(p?.id), '站点已建')
+    ok(p?.kind === 'sub2api', `建站自动识别系别（实际 ${p?.kind}）`)
     await api('POST', '/api/credentials', { providerId: p.id, secret: 'sk-x' })
   }
 
@@ -114,6 +121,30 @@ try {
     // 凭据不回显：state 里不该出现明文密码
     const raw = JSON.stringify(r.data)
     ok(!raw.includes('pw-12345'), 'state 里不出现明文密码')
+  }
+
+  console.log('[2b] 系别识别不出 → 登录先返回 409 需确认，确认后才双协议试探')
+  {
+    detectable = false
+    // 地址不能和 [1] 重复（建站接口按 baseUrl 去重）
+    const { data } = await api('POST', '/api/providers', { name: '未知系别站', baseUrl: `${UP}/api2/v1` })
+    const p2 = data.providers.find((x) => x.name === '未知系别站')
+    ok(p2?.kind === 'unknown', `建站时识别不出系别（实际 ${p2?.kind}）`)
+    await api('POST', '/api/credentials', { providerId: p2.id, secret: 'sk-y' })
+
+    const refused = await api('POST', `/api/providers/${p2.id}/login`, { user: 'user@x.test', password: 'pw-12345' })
+    ok(refused.status === 409 && refused.data.needConfirm === true, `未确认时返回 409 needConfirm（status=${refused.status}）`)
+
+    const confirmed = await api('POST', `/api/providers/${p2.id}/login`, {
+      user: 'user@x.test',
+      password: 'pw-12345',
+      confirmUnknown: true,
+    })
+    ok(confirmed.status === 200 && confirmed.data.loginResult?.ok, '确认后双协议试探登录成功')
+    ok(confirmed.data.providers.find((p) => p.id === p2.id)?.kind !== 'unknown', '登录成功把系别修正为实际协议')
+    detectable = true
+    // 清掉这个站，避免影响后面的断言（providers[0] 才是主角）
+    await api('DELETE', `/api/providers/${p2.id}`)
   }
 
   console.log('[3] 令牌过期 → 401 自动重登 → 恢复')

@@ -47,9 +47,11 @@ const MAX_GATEWAY_BODY = 64 * 1024 * 1024
 const STREAM_IDLE_MS = 120000
 
 class HttpError extends Error {
-  constructor(status, message) {
+  constructor(status, message, extra = null) {
     super(message)
     this.status = status
+    // 附加字段会并进错误响应（如 needConfirm）——前端据此决定是否弹确认
+    this.extra = extra
   }
 }
 
@@ -480,13 +482,29 @@ route('PATCH', /^\/api\/settings$/, async (ctx) => {
 
 /** 账号密码登录：拿到的 token 写入 adminToken，下游全部读取逻辑复用。 */
 route('POST', /^\/api\/providers\/([\w-]+)\/login$/, async (ctx) => {
-  const { user, password } = ctx.body || {}
+  const { user, password, confirmUnknown } = ctx.body || {}
   if (!user || !password) throw new HttpError(400, '账号和密码都不能为空')
-  const result = await inv.loginWithCredentials(ctx.params[0], { user, password })
-  invalidatePricing(ctx.params[0])
-  return {
-    ...(await buildState()),
-    loginResult: { ok: true, kind: result.kind, via: result.via },
+  try {
+    const result = await inv.loginWithCredentials(ctx.params[0], {
+      user,
+      password,
+      confirmUnknown: confirmUnknown === true,
+    })
+    invalidatePricing(ctx.params[0])
+    // 令牌刚恢复可用：顺手跑一轮该站采集（余额 / 公告 / 分组倍率），
+    // 不用等 30 分钟调度——用户看到登录成功时，数据也应该跟着回来
+    collectProviderSnapshots({ providerId: ctx.params[0] }).catch(() => {})
+    return {
+      ...(await buildState()),
+      loginResult: { ok: true, kind: result.kind, via: result.via },
+    }
+  } catch (error) {
+    // 系别识别不出、需要用户确认双协议试探：409 + needConfirm，
+    // 前端弹确认后带 confirmUnknown 重发
+    if (error?.needConfirm) {
+      throw new HttpError(409, error.message, { needConfirm: true, evidence: error.evidence || null })
+    }
+    throw error
   }
 })
 
@@ -865,7 +883,8 @@ route('POST', /^\/api\/providers\/([\w-]+)\/apply-group$/, async (ctx) => {
   // 记下这把 Key 属于哪个分组，下次打开就不用再选
   const prevGroup = target.group || ''
   if (group !== prevGroup) {
-    await inv.updateCredential(target.id, { group })
+    // 用户在「导入倍率」里手选的分组：标记 manual，之后自动识别不覆盖
+    await inv.updateCredential(target.id, { group, groupSource: 'manual' })
   }
 
   let updated = 0
@@ -999,7 +1018,10 @@ route('POST', /^\/api\/providers\/([\w-]+)\/detect-groups$/, async (ctx) => {
       })
       continue
     }
-    await inv.updateCredential(credential.id, { group })
+    // 后台识别只写 auto：用户在「导入倍率」里手选过的分组是商务事实，
+    // 后台令牌列表的线索不能覆盖它（识别结果仍会显示在结果里）
+    const manualPinned = credential.groupSource === 'manual'
+    if (!manualPinned) await inv.updateCredential(credential.id, { group, groupSource: 'auto' })
     // 令牌里直接带了倍率就用它（Sub2API），否则查价格表
     const rate = typeof hit.rate === 'number' ? hit.rate : (rateOfGroup.get(group) ?? null)
     results.push({
@@ -1009,6 +1031,8 @@ route('POST', /^\/api\/providers\/([\w-]+)\/detect-groups$/, async (ctx) => {
       group,
       tokenName: hit.name || '',
       rate,
+      // 手选过的 Key 后台识别不覆盖，但倍率仍按后台分组落价（分组归属不动）
+      pinned: manualPinned,
       updated: 0,
     })
   }
@@ -1019,6 +1043,9 @@ route('POST', /^\/api\/providers\/([\w-]+)\/detect-groups$/, async (ctx) => {
   await store.mutate((d) => {
     for (const row of results) {
       if (!row.matched) continue
+      // 手选过分组的 Key：分组归属与倍率都不动（用户买的那一档是商务事实），
+      // 只在结果里报告后台识别到的分组供参考
+      if (row.pinned) continue
       for (const offer of d.offers) {
         if (offer.providerId !== provider.id) continue
         if (offer.credentialId !== row.credentialId) continue
@@ -2420,7 +2447,9 @@ export function createAppServer() {
             ? 500
             : 400
       if (status >= 500) console.error(`[api] ${method} ${pathname} 失败：`, error)
-      if (!res.writableEnded) json(res, status, { error: error.message || String(error) })
+      if (!res.writableEnded) {
+        json(res, status, { error: error.message || String(error), ...(error?.extra || {}) })
+      }
     }
   })
 }

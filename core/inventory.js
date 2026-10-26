@@ -228,7 +228,20 @@ export async function updateCredential(id, patch) {
     const credential = db.credentials.find((c) => c.id === id)
     if (!credential) throw new Error(`凭据不存在：${id}`)
     if (patch.label !== undefined) credential.label = patch.label
-    if (patch.group !== undefined) credential.group = String(patch.group || '').trim()
+    if (patch.group !== undefined) {
+      const next = String(patch.group || '').trim()
+      // 归属来源：手选（用户明确指定）优先于自动识别——后台令牌列表识别的
+      // 分组只是线索，用户买了哪一档才是商务事实。auto 写入不覆盖 manual。
+      const source = patch.groupSource === 'auto' ? 'auto' : 'manual'
+      if (source === 'auto' && credential.groupSource === 'manual' && next !== credential.group) {
+        // 跳过：保留用户手选
+      } else {
+        credential.group = next
+        credential.groupSource = source
+      }
+    } else if (patch.groupSource !== undefined) {
+      credential.groupSource = patch.groupSource === 'auto' ? 'auto' : 'manual'
+    }
     if (patch.expiresAt !== undefined) credential.expiresAt = patch.expiresAt
     return credential
   })
@@ -367,10 +380,17 @@ export async function duplicateOffer(id, { group }) {
         o.upstreamName === source.upstreamName,
     )
     if (exists) throw new Error(`该站「${name}」分组下已经有同名模型了`)
+    // 分组是 Key 的属性：复制到新分组时改挂该组的 Key（没有就留空，
+    // 路由会按「同分组 Key」回落到该站的任意 Key）——不能让新行继续
+    // 挂着别的分组的 Key，否则分组归属和实际鉴权就脱节了
+    const groupCred = db.credentials.find(
+      (c) => c.providerId === source.providerId && (c.group || '') === name,
+    )
     const copy = {
       ...source,
       id: newId('o'),
       group: name,
+      credentialId: groupCred?.id ?? null,
       listedAt: nowIso(),
       updatedAt: nowIso(),
     }
@@ -899,17 +919,45 @@ export function clearReloginCooldown(providerId) {
  * adminToken 字段——下游余额/公告/用量核对/分组识别零改动复用；
  * Sub2API 的 refresh token 单独加密存（旋转式，续期时更新）。
  *
+ * **登录前先只读识别系别**（零风险）：系别确定就走确定性端点；识别不出
+ * 才退化为双端点试探——那会向站点发一次「错误协议」的失败登录，部分站
+ * 对失败登录有风控计数，所以必须由用户显式确认（confirmUnknown）。
+ *
  * 登录成功同时把 kind 修正为登录实际使用的系别（unknown 站的双端点
  * 试探结果是免费可靠的系别证据）。
  */
-export async function loginWithCredentials(providerId, { user, password }) {
+export async function loginWithCredentials(providerId, { user, password, confirmUnknown = false }) {
   const db = await readDb()
   const provider = db.providers.find((p) => p.id === providerId)
   if (!provider) throw new Error(`站点不存在：${providerId}`)
 
+  const AUTH_KINDS = ['sub2api', 'one-api', 'new-api']
+  let kind = AUTH_KINDS.includes(provider.kind) ? provider.kind : null
+  let detected = null
+  if (!kind) {
+    // 只读探测：/api/status、/api/v1/settings/public 等，不产生任何写操作
+    detected = await providers
+      .detectProviderKind({ baseUrl: provider.baseUrl, timeoutMs: 5000 })
+      .catch(() => ({ kind: 'unknown', evidence: '探测失败' }))
+    if (AUTH_KINDS.includes(detected.kind)) kind = detected.kind
+  }
+  if (!kind) {
+    // 系别识别不出：双端点试探会向站点发错误协议的登录请求（可能失败）
+    if (!confirmUnknown) {
+      const error = new Error(
+        `无法识别站点系别（${detected?.evidence || '探测无结果'}）。将依次尝试 Sub2API 与 OneAPI/NewAPI 两种登录协议，` +
+          '其中一次是「错误协议」的失败登录（部分站会据此计风控），确认继续？',
+      )
+      error.needConfirm = true
+      error.evidence = detected?.evidence || null
+      throw error
+    }
+    kind = undefined // 用户确认后才双试
+  }
+
   const result = await providers.loginProvider({
     baseUrl: provider.baseUrl,
-    kind: provider.kind === 'relay' ? undefined : provider.kind,
+    kind,
     user,
     password,
   })
