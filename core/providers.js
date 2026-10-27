@@ -107,15 +107,20 @@ export async function listModels({ baseUrl, apiKey, timeoutMs = 15000 }) {
  *
  * @returns {Promise<{kind:'one-api'|'new-api'|'sub2api'|'unknown', evidence:string}>}
  */
-export async function detectProviderKind({ baseUrl, timeoutMs = 5000 } = {}) {
+export async function detectProviderKind({ baseUrl, timeoutMs = 5000, adminToken = '' } = {}) {
   const origins = originCandidates(baseUrl)
   let sawStatus = false
   let statusHint = ''
 
+  // 识别请求带上 adminToken / API Key：部分站的系别特征接口需要登录才可达
+  // （匿名探测返回 401/403 时带令牌重试往往就通了），不带就只能靠匿名可达的特征
+  const authHeaders = {}
+  if (adminToken) authHeaders.Authorization = `Bearer ${adminToken}`
+
   for (const origin of origins) {
     // ---- one-api / new-api 系：/api/status 是公共接口
     try {
-      const payload = await requestJson(`${origin}/api/status`, { timeoutMs })
+      const payload = await requestJson(`${origin}/api/status`, { timeoutMs, apiKey: adminToken })
       const data = payload?.data ?? payload
       const hints = ['quota_per_unit', 'chat_link', 'announcements', 'version', 'start_time']
       const hit = hints.filter((k) => data && data[k] !== undefined)
@@ -127,7 +132,7 @@ export async function detectProviderKind({ baseUrl, timeoutMs = 5000 } = {}) {
         }
         statusHint = `status 命中 ${hit.join(',')}`
         try {
-          await requestJson(`${origin}/api/pricing`, { timeoutMs })
+          await requestJson(`${origin}/api/pricing`, { timeoutMs, apiKey: adminToken })
           return { kind: 'new-api', evidence: `${statusHint}；/api/pricing 通（new-api 特有）` }
         } catch {
           return { kind: 'one-api', evidence: statusHint }
@@ -137,10 +142,11 @@ export async function detectProviderKind({ baseUrl, timeoutMs = 5000 } = {}) {
       /* 下一个 origin / 下一类探测 */
     }
 
-    // ---- Sub2API：/api/v1/settings/public 或 /api/v1/groups/available
+    // ---- Sub2API：/api/v1/settings/public 或 /api/v1/groups/available。
+    // groups/available 常要求登录，带令牌能识别出匿名探测不出的站
     for (const path of ['/api/v1/settings/public', '/api/v1/groups/available']) {
       try {
-        await requestJson(`${origin}${path}`, { timeoutMs })
+        await requestJson(`${origin}${path}`, { timeoutMs, apiKey: adminToken })
         return { kind: 'sub2api', evidence: `${path} 通（Sub2API 专用）` }
       } catch {
         /* 下一个 */

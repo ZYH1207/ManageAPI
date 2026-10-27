@@ -560,7 +560,18 @@ route('POST', /^\/api\/providers\/([\w-]+)\/detect-kind$/, async (ctx) => {
   const db = await store.readDb()
   const provider = db.providers.find((p) => p.id === ctx.params[0])
   if (!provider) throw new HttpError(404, '站点不存在')
-  const detected = await providers.detectProviderKind({ baseUrl: provider.baseUrl })
+  // 带令牌识别：部分站的系别特征接口要求登录（匿名 401/403），
+  // 优先 adminToken，其次第一把可用的 API Key
+  const adminToken = await inv.revealAdminToken(provider.id)
+  const apiKeys = (
+    await Promise.all(
+      db.credentials
+        .filter((c) => c.providerId === provider.id)
+        .map((c) => inv.revealSecret(c.id)),
+    )
+  ).filter(Boolean)
+  const auth = adminToken || apiKeys[0] || ''
+  const detected = await providers.detectProviderKind({ baseUrl: provider.baseUrl, adminToken: auth })
   await inv.updateProvider(provider.id, { kind: detected.kind, kindSource: 'auto' })
   return {
     ...(await buildState()),

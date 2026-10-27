@@ -770,6 +770,8 @@ Object.assign(EN, {
   '没有可信样本': 'No usable samples',
   '证据不足': 'Not enough evidence',
   '花费': 'Spend',
+  '识别系别': 'Detect type',
+  '用站点令牌探测这个站是哪一系（one-api / new-api / Sub2API）。匿名探测不出的站，带令牌再试一次往往就能识别': 'Detect which type this site is (one-api / new-api / Sub2API). Sites that fail anonymous probing often succeed with a token',
   '余额合计': 'Total balance',
   '读不到账单': 'No bill',
   '{n} 个站点账单': 'Bills from {n} sites',
