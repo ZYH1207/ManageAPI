@@ -860,12 +860,14 @@ button.sm { padding: 4px 9px; font-size: 12px; }
 .prov-tiles--3 b { font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .prov-tiles input.unit-price { width: 100%; padding: 2px 6px; font-size: 13px; font-weight: 600; }
 
-/* 花费卡：模型消费 / 实际消费并列 + 今天·本周·本月切换 */
-.spend-pair { display: inline-flex; align-items: baseline; gap: 5px; }
-.spend-pair b { font-weight: 600; }
-.spend-pair .spend-sep { color: var(--faint); font-weight: 400; }
+/* 花费卡：两个金额各自带一行小标签（标签在上、数字在下）+ 时间段切换 */
+.spend-pair { display: inline-flex; align-items: flex-start; gap: 14px; }
+.spend-item { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.spend-tag { font-size: 10px; color: var(--faint); font-weight: 400; letter-spacing: 0.2px; white-space: nowrap; }
+.spend-tag--actual { color: var(--accent); opacity: 0.8; }
+.spend-pair b { font-weight: 600; line-height: 1.25; }
 .spend-pair .spend-actual { color: var(--accent); }
-.spend-range { display: inline-flex; gap: 2px; margin-left: 8px; vertical-align: 2px; }
+.spend-range { display: inline-flex; gap: 2px; margin-left: 8px; vertical-align: 4px; }
 .spend-range button {
   border: none; background: none; cursor: pointer; padding: 1px 5px;
   font-size: 10px; color: var(--faint); border-radius: 4px; line-height: 1.4;

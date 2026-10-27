@@ -779,6 +779,8 @@ Object.assign(EN, {
   '本周': 'This week',
   '本月': 'This month',
   '模型消费 / 实际消费': 'Model spend / actual spend',
+  '模型消费': 'Model spend',
+  '实际消费': 'Actual spend',
   '实际按站点单价折算': 'actual uses the site unit price',
   '置信度高': 'high confidence',
   '置信度中': 'medium confidence',

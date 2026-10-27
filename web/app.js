@@ -2892,13 +2892,15 @@ function spendStat(range) {
   const seg = `<span class="spend-range">${SPEND_RANGES.map(
     (r) => `<button class="${r.key === range ? 'is-on' : ''}" data-spend-range="${r.key}">${t(r.label)}</button>`,
   ).join('')}</span>`
+  // 两个金额各自带一行小标签（模型消费 / 实际消费），标签在数字上方，
+  // 这样不用在卡片底部再挤一行被省略号截断的说明
   return {
     k: `${t('花费')} · ${t(label)}`,
-    // v 里放 HTML：两个金额 + 时间段切换，所以下面渲染时要用 innerHTML 分支
-    vHtml: `<span class="spend-pair"><b>${priceSym()}${money(dispPrice(summary.estimated))}</b>
-      <span class="spend-sep">/</span>
-      <b class="spend-actual">${priceSym()}${money(dispPrice(summary.actual))}</b></span>${seg}`,
-    sub: `${t('模型消费 / 实际消费')}${Math.abs(summary.actual - summary.estimated) < 0.005 ? '' : ` · ${t('实际按站点单价折算')}`}`,
+    vHtml: `<span class="spend-pair">
+        <span class="spend-item"><span class="spend-tag">${t('模型消费')}</span><b>${priceSym()}${money(dispPrice(summary.estimated))}</b></span>
+        <span class="spend-item"><span class="spend-tag spend-tag--actual">${t('实际消费')}</span><b class="spend-actual">${priceSym()}${money(dispPrice(summary.actual))}</b></span>
+      </span>${seg}`,
+    sub: '',
     ic: 'receipt',
     tint: 'tint-warn',
   }
@@ -2960,7 +2962,7 @@ function renderMonitor() {
     },
     {
       // 花费卡：模型消费（站点口径估算）与实际消费（钱包里真正少掉的钱）并列。
-      // 实际消费 = 估算 × 站点单价，单价不填时美元站按市场汇率、人民币站按 1
+      // 实际消费 = 估算 × (站点单价 ÷ 市场汇率)；不填单价时系数为 1，两数相同
       ...spendStat(spendRange),
     },
     {
@@ -2985,7 +2987,7 @@ function renderMonitor() {
         <div class="stat-main">
           <div class="k">${esc(item.k)}</div>
           <div class="v">${item.vHtml ?? esc(item.v)}</div>
-          <div class="sub">${esc(item.sub)}</div>
+          ${item.sub ? `<div class="sub">${esc(item.sub)}</div>` : ''}
         </div>
         <div class="stat-icon ${item.tint}">${icon(item.ic)}</div>
       </div>`,
