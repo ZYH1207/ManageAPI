@@ -365,6 +365,9 @@ function render() {
   renderGateway()
   renderUsage()
   renderBenchmark()
+  // 分组抽屉挂在 body 上，不在任何 view 里；一键同步 / 改倍率 / 自动轮询改了 state，
+  // 它得跟着重画（paintGroupModels 会保留滚动位置，不然 15 秒一跳回到顶部）
+  paintGroupModels()
 
   const badges = $('#topbar-badges')
   if (badges) {
@@ -1033,12 +1036,15 @@ function providersHtml({ withForm = true, panel = '', actions = '' } = {}) {
     ])]
     const groupStats = new Map(groupNames.map((groupName) => {
       const groupOffers = offers.filter((o) => (o.group || '') === groupName)
+      // 模型数取台账全量（含被忽略的）：这里显示的数要和「点开分组看到的清单」对得上，
+      // 用 filtered offers 的话，忽略了一堆模型的站会出现「1 个模型」却点开一堆。
+      const listed = state.modelsByGroup?.[p.id]?.[groupName]
       const ratioValues = new Set(groupOffers.map((o) => (o.ratio === null || o.ratio === undefined ? '' : String(o.ratio))))
       const siteRatios = new Set(
         groupOffers.map((o) => (o.siteRatio === null || o.siteRatio === undefined ? '' : String(o.siteRatio))),
       )
       return [groupName, {
-        count: groupOffers.length,
+        count: Array.isArray(listed) ? listed.length : groupOffers.length,
         uniform: ratioValues.size === 1 ? [...ratioValues][0] : '',
         mixed: ratioValues.size > 1,
         siteRatio: siteRatios.size === 1 ? [...siteRatios][0] : '',
@@ -1058,7 +1064,12 @@ function providersHtml({ withForm = true, panel = '', actions = '' } = {}) {
         : st.uniform !== '' && st.uniform !== undefined
           ? `<span class="ratio-tone ${ratioToneClass(st.uniform)}">×${esc(st.uniform)}</span>`
           : ''
-      return `<span class="group-chip ${st.chipClass || ''}">${g ? esc(g) : '未指定'}${tag}${
+      // 胶囊本身就是入口：点开右侧的悬浮抽屉，看这个分组里到底有哪些模型。
+      // 用 span + role 而不是 button，是因为里面还要嵌一个「删分组」按钮（button 不能套 button），
+      // 点删除键时 closest('[data-act]') 命中的是里面的按钮，不会误开抽屉。
+      return `<span class="group-chip ${st.chipClass || ''}" role="button" tabindex="0" data-act="open-group-models" data-provider="${esc(p.id)}" data-group="${esc(g)}" title="${esc(
+        t('点开看这个分组里的模型'),
+      )}">${g ? esc(g) : t('未指定')}${tag}${
         g
           ? `<button class="chip-x" data-act="del-group" data-provider="${esc(p.id)}" data-group="${esc(g)}" title="删掉这个分组（Key 保留，可重新导入）">${icon('trash')}</button>`
           : ''
@@ -1080,7 +1091,9 @@ function providersHtml({ withForm = true, panel = '', actions = '' } = {}) {
       return `
         <div class="keyrow" data-group-ratio="${esc(groupName)}">
           <span>${groupName ? esc(groupName) : '<span style="color:var(--faint)">未指定分组</span>'}</span>
-          <span class="tail">${st.count} 个模型</span>
+          <button class="ghost tiny gs-count" data-act="open-group-models" data-provider="${esc(p.id)}" data-group="${esc(groupName)}" title="${esc(
+            t('点开看这个分组里的模型'),
+          )}">${st.count} 个模型</button>
           <span class="grow"></span>
           ${mixed ? '<span style="color:var(--warn);font-size:11px">混合</span>' : ''}
           ${
@@ -1492,6 +1505,138 @@ function closeProvPanel() {
   const body = $('#prov-modal-body')
   if (modal) modal.hidden = true
   if (body) body.innerHTML = ''
+}
+
+// --------------------------------------------------------- 分组模型悬浮抽屉
+//
+// 站点卡上的分组胶囊（以及「分组倍率」里的「N 个模型」）点一下，右侧拉出一块悬浮面板，
+// 回答一个只有本地台账能回答的问题：这个分组里到底有哪些模型。
+//
+// 站点接口只给「分组名录」+「平台级模型表」，两者并列，谁属于哪个分组它没说——
+// 交叉相乘会编出不存在的组合。真正把模型绑到分组上的是「这个分组下的 Key 同步回来了哪些
+// 模型」，所以数据只认后端算好的 state.modelsByGroup，前端不再自己拼一份。
+
+/** 当前打开的抽屉：{ providerId, group }；null = 关闭 */
+let groupSheet = null
+
+function openGroupModels(providerId, group = '') {
+  const sheet = $('#group-models')
+  if (!sheet) return
+  // 换分组就从头看：沿用上一组的滚动位置会让人以为在同一个清单里往下滑
+  const switched = !groupSheet || groupSheet.providerId !== providerId || groupSheet.group !== group
+  groupSheet = { providerId, group: group || '' }
+  paintGroupModels()
+  const body = $('#group-models-body')
+  if (switched && body) body.scrollTop = 0
+  sheet.hidden = false
+  translateDom(sheet)
+}
+
+function closeGroupModels() {
+  const sheet = $('#group-models')
+  if (sheet) sheet.hidden = true
+  groupSheet = null
+}
+
+/** 重画抽屉内容：自动轮询、一键同步、改倍率之后都得跟着变 */
+function paintGroupModels() {
+  if (!groupSheet) return
+  const { providerId, group } = groupSheet
+  const sheet = $('#group-models')
+  const body = $('#group-models-body')
+  if (!sheet || !body) return
+
+  const provider = (state.providers || []).find((p) => p.id === providerId)
+  const site = state.modelsByGroup?.[providerId]
+  const models = site?.[group] || []
+  const keys = (state.credentials || []).filter(
+    (c) => c.providerId === providerId && (c.group || '') === group,
+  )
+  // 分组被删掉了（卡片垃圾桶 / 分组倍率面板 / 比价页都能删）→ 抽屉没有存在意义，直接收起
+  if (!site || (!(group in site) && keys.length === 0)) {
+    closeGroupModels()
+    return
+  }
+
+  const siteEl = $('#group-models-site')
+  const titleEl = $('#group-models-title')
+  if (siteEl) siteEl.textContent = provider?.name || ''
+  if (titleEl) titleEl.textContent = group || t('未指定分组')
+
+  // 内容没变就不重写：15 秒自动轮询会重画页面，每次重建 DOM 会把用户正在选的
+  // 模型名 / 滚动的滚动位置全部打回。（语言、显示币种、汇率也算进签名，
+  // 它们一变价格文字就该跟着变。）
+  const sig = JSON.stringify([
+    getLang(),
+    showUsd(),
+    rateCny(),
+    provider?.name || '',
+    group,
+    models,
+    keys.map((k) => k.label),
+  ])
+  if (body.dataset.sig === sig) return
+  body.dataset.sig = sig
+
+  const scrollTop = body.scrollTop
+  const ignoredCount = models.filter((m) => m.ignored).length
+  const rows = models
+    .map((m) => {
+      const flags = [
+        m.free ? `<span class="badge ok">${t('免费')}</span>` : '',
+        m.perCall ? `<span class="badge">${t('按次')}</span>` : '',
+        m.ignored ? `<span class="badge">${t('已忽略')}</span>` : '',
+      ]
+        .filter(Boolean)
+        .join('')
+      const ratio =
+        m.ratio === null || m.ratio === undefined
+          ? ''
+          : `<span class="ratio-tone ${ratioToneClass(m.ratio)}">×${esc(m.ratio)}</span>`
+      // 价格用后端算好的实际价（已乘倍率）：原价 × 倍率是计费口径，显示原价会骗人
+      const price = m.perCall
+        ? m.callCny === null || m.callCny === undefined
+          ? '<span class="gs-unpriced">—</span>'
+          : `${priceText(m.callCny)}<span class="sub">/次</span>`
+        : m.inCny === null && m.outCny === null
+          ? `<span class="gs-unpriced">${t('未定价')}</span>`
+          : `${priceText(m.inCny)}<span class="gs-sep"> / </span>${priceText(m.outCny)}`
+      return `<div class="gs-row${m.ignored ? ' is-ignored' : ''}">
+        <span class="gs-name mono">${esc(m.name)}</span>
+        ${ratio}${flags}
+        <span class="grow"></span>
+        <span class="gs-price">${price}</span>
+      </div>`
+    })
+    .join('')
+
+  const head = `
+    <div class="gs-meta">
+      <span class="hint">${t('{n} 个模型', { n: models.length })}${
+        keys.length ? ` · ${t('{n} 把 Key 在这个分组', { n: keys.length })}` : ''
+      }</span>
+      <span class="grow"></span>
+      <span class="hint">${t('价格：输入 / 输出，每百万 token')}</span>
+    </div>`
+
+  const empty = `
+    <div class="empty small">
+      <p>${t('这个分组还没同步过模型。')}</p>
+      <p class="hint">${
+        keys.length
+          ? t('点站点卡的「一键同步」，会按这把 Key 的分组拉一次。')
+          : t('这个分组没有挂 Key（多半是比价页「＋」复制出来的），不会有模型同步进来。')
+      }</p>
+    </div>`
+
+  const foot =
+    ignoredCount > 0
+      ? `<p class="hint gs-foot">${t('其中 {n} 个已忽略：不参与比价、决策、探针和网关。', { n: ignoredCount })}</p>`
+      : ''
+
+  body.innerHTML = `${models.length ? head : ''}${models.length ? `<div class="gs-list">${rows}</div>` : empty}${foot}`
+  body.scrollTop = scrollTop
+  translateDom(body)
 }
 
 // --------------------------------------------------------------- 免费池视图
@@ -3847,6 +3992,8 @@ document.addEventListener('keydown', (event) => {
   document.getElementById('diagnose-box')?.remove()
   const notify = $('#notify-panel')
   if (notify && !notify.hidden) notify.hidden = true
+  // 分组模型抽屉也是悬浮层，Esc 一并收
+  closeGroupModels()
 })
 
 document.addEventListener('click', async (event) => {
@@ -4086,6 +4233,20 @@ document.addEventListener('click', async (event) => {
     renderOverview()
     // renderOverview 内部不走 t()，英文界面下靠这层 DOM 翻译兜底
     translateDom($('#view-overview') || document.body)
+    return
+  }
+
+  if (action === 'open-group-models') {
+    // data-group 可能是空串（「未指定分组」那颗胶囊），所以取不到时默认为空串，
+    // 不能用 falsy 判断「没有分组」
+    const target = actionButton.dataset.provider || providerId
+    if (!target) return
+    openGroupModels(target, actionButton.dataset.group || '')
+    return
+  }
+
+  if (action === 'close-group-models') {
+    closeGroupModels()
     return
   }
 
@@ -4570,18 +4731,21 @@ document.addEventListener('click', async (event) => {
       actionButton.dataset.provider || actionButton.closest('[data-provider]')?.dataset.provider
     const group = actionButton.dataset.group || ''
     if (!providerId || !group) return
-    const rows = state.offers.filter(
-      (o) => o.providerId === providerId && (o.group || '') === group,
-    )
     const keys = state.credentials.filter(
       (c) => c.providerId === providerId && (c.group || '') === group,
     )
+    // 模型数用台账全量（与卡片上「N 个模型」、抽屉里的清单同口径）。
+    // 用 filtered state.offers 数的话，忽略了一大堆模型的站会出现「只删 1 个」而实际删掉几十条。
+    const listed = state.modelsByGroup?.[providerId]?.[group]
+    const rowCount = Array.isArray(listed)
+      ? listed.length
+      : state.offers.filter((o) => o.providerId === providerId && (o.group || '') === group).length
     // 两种来源后果不同，确认框里必须分开说清楚，不然用户不知道 Key 会不会被带走
     const question = keys.length
-      ? `删除分组「${group}」？\n\n· 这个分组下的 ${rows.length} 个模型记录会被删掉\n· 挂在它上面的 Key（${keys
+      ? `删除分组「${group}」？\n\n· 这个分组下的 ${rowCount} 个模型记录会被删掉\n· 挂在它上面的 Key（${keys
           .map((k) => k.label)
           .join('、')}）保留，只清掉分组归属\n· 之后在那把 Key 那行点「选分组」重新导入，模型和倍率会一起回来`
-      : `删除分组「${group}」？\n\n· 这个分组下的 ${rows.length} 个模型记录会被删掉\n· 这个分组没有挂着 Key（多半是比价页「＋」复制出来的），删掉就没了`
+      : `删除分组「${group}」？\n\n· 这个分组下的 ${rowCount} 个模型记录会被删掉\n· 这个分组没有挂着 Key（多半是比价页「＋」复制出来的），删掉就没了`
     if (!confirm(question)) return
     await withBusy(actionButton, async () => {
       const result = await api('POST', `/api/providers/${providerId}/delete-group`, { group })

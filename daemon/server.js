@@ -25,7 +25,7 @@ import {
 } from '../core/wire.js'
 import { selectCandidates, listPublicModels, explain, admissionFailure } from '../core/router.js'
 import { snapTtftMs, ttftTierTable, describeTtftLimit } from '../core/latency.js'
-import { splitOffers, resolvePool, FREE_PREFIX, FREE_BASE_PATH } from '../core/free.js'
+import { splitOffers, isFreeOffer, resolvePool, FREE_PREFIX, FREE_BASE_PATH } from '../core/free.js'
 import { rankFreePool } from '../core/rank-free.js'
 import * as platforms from '../core/platforms/index.js'
 import { recordUsage, usageSummary, tokensUsedByKey, resetUsage, readUsage, localMonthStart } from '../core/usage.js'
@@ -191,6 +191,44 @@ async function buildState({ light = false } = {}) {
   const liveOffers = inv.routeableOffers(db)
   const { paid: paidOffers, free: freeOffers } = splitOffers(liveOffers, benchmarks)
 
+  // 「站点卡上点开分组看模型」用的台账：providerId → 分组名 → 模型清单。
+  //
+  // 为什么只认本地台账：站点接口给的是「分组名录」+「平台级模型表」，两者是并列的，
+  // 谁属于哪个分组接口没说过——交叉相乘会编出不存在的组合。真正把模型绑到分组上的，
+  // 是「这个分组下的 Key 同步回来了哪些模型」，也就只有 db.offers 知道。
+  //
+  // 口径：**全量**（被忽略的也列，打标记）+ 去掉已下线。这里回答的是「站点上这个
+  // 分组里有什么」，不是「哪些会参与比价」；按 routeableOffers 过滤的话，忽略过模型的
+  // 用户看到的分组会几乎全空（本地真实数据里 208 条供给被忽略了 203 条）。
+  const modelsByGroup = {}
+  {
+    const ignored = inv.ignoredModelSet(db)
+    for (const offer of db.offers) {
+      if (offer.delistedAt) continue
+      const name = String(offer.upstreamName || offer.modelKey || '').trim()
+      if (!name) continue
+      const key = inv.normalizeModelKey(offer.modelKey || offer.upstreamName || '')
+      // 价格走 offerCost：和比价/花费同一份换算（倍率模式的实际价、按次分支）
+      const cost = pricing.offerCost(offer, db.settings, benchmarks)
+      const entry = {
+        name,
+        ratio: offer.ratio === null || offer.ratio === undefined ? null : Number(offer.ratio),
+        free: isFreeOffer(offer, benchmarks),
+        ignored: Boolean(key) && ignored.has(key),
+        perCall: Boolean(cost.perCall),
+        inCny: cost.inCnyPerMtok,
+        outCny: cost.outCnyPerMtok,
+        callCny: cost.callPriceCny ?? null,
+      }
+      const groupKey = offer.group || ''
+      const site = (modelsByGroup[offer.providerId] ||= {})
+      ;(site[groupKey] ||= []).push(entry)
+    }
+    for (const site of Object.values(modelsByGroup)) {
+      for (const list of Object.values(site)) list.sort((a, b) => a.name.localeCompare(b.name))
+    }
+  }
+
   const { ranked, unpriced } = pricing.rankByModel(paidOffers, db.settings, benchmarks, isTrusted)
   const summary = pricing.summarize(paidOffers, db.settings, benchmarks, isTrusted)
 
@@ -328,6 +366,8 @@ async function buildState({ light = false } = {}) {
       expiresAt: c.expiresAt,
     })),
     offers: liveOffers,
+    // 分组 → 模型清单（见上面 modelsByGroup 的注释；与 offers 的区别是含被忽略的供给）
+    modelsByGroup,
     // 全部模型（含被忽略的）与覆盖站点数：忽略模型弹窗要用，不能从过滤后的 offers 推
     modelIndex: (() => {
       const counts = new Map()

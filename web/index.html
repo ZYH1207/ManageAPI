@@ -249,6 +249,11 @@
               · <b>Key 自带的分组</b> —— Key 保留，只清掉分组归属；之后在 Key 那一行点「选分组」重新导入，
               模型和倍率会一起回来（不需要先手动同步）
             </p>
+            <p>
+              <b>看某个分组里到底有哪些模型</b>：点站点卡上的分组胶囊（或「分组倍率」那一行的「N 个模型」），
+              右侧会拉出一块悬浮面板，列出这个分组同步到的全部模型和<b>实际价</b>（已乘倍率）。
+              被忽略的模型也在清单里，标着「已忽略」；已经下线的模型不显示。Esc 或点面板外的背景关闭。
+            </p>
 
             <h4 class="doc-h4">免费</h4>
             <p>
@@ -607,6 +612,12 @@
               · <b>A group on a key</b> — the key stays; only the group assignment is cleared. Click “Pick group” on
               that key to import the group again; its models and ratios come back (no manual sync needed)
             </p>
+            <p>
+              <b>Seeing what is inside a group</b>: click a group chip on a site card (or the “N models” count in a
+              group-ratio row) and a panel slides in from the right, listing every model synced under that group with
+              its <b>effective price</b> (ratio applied). Ignored models are listed and tagged “Ignored”; delisted ones
+              are not shown. Press Esc or click the backdrop to close.
+            </p>
 
             <h4 class="doc-h4">Free</h4>
             <p>
@@ -944,6 +955,21 @@
       </div>
       <div class="modal-body" id="prov-modal-body"></div>
     </div>
+  </div>
+
+  <!-- 分组模型：点站点卡上的分组胶囊，右侧拉开一块悬浮面板。只读展示，不改数据 -->
+  <div id="group-models" class="sheet" hidden>
+    <div class="sheet-backdrop" data-act="close-group-models"></div>
+    <aside class="sheet-panel" role="dialog" aria-modal="true" aria-labelledby="group-models-title">
+      <div class="sheet-head">
+        <div class="sheet-title">
+          <span class="hint" id="group-models-site"></span>
+          <h3 id="group-models-title">分组</h3>
+        </div>
+        <button class="ghost" data-act="close-group-models">关闭</button>
+      </div>
+      <div class="sheet-body" id="group-models-body"></div>
+    </aside>
   </div>
 
   <div id="login-modal" class="modal" hidden>

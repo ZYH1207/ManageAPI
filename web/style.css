@@ -334,6 +334,72 @@ input:focus, select:focus {
   color: var(--text);
 }
 
+/* ------------------------------------------------ 分组模型悬浮抽屉（右侧）
+   悬浮层而不是居中弹窗：它回答的是「这个分组里有什么」，是站点卡那一行的延伸，
+   从右边拉出来不会把下面的卡片顶走，关掉就地回到浏览位置。 */
+.sheet { position: fixed; inset: 0; z-index: 110; display: flex; justify-content: flex-end; }
+.sheet[hidden] { display: none; }
+.sheet-backdrop { position: absolute; inset: 0; background: rgba(15, 26, 23, 0.28); backdrop-filter: blur(2px); }
+.sheet-panel {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  width: min(430px, calc(100vw - 24px));
+  height: 100%;
+  background: var(--surface);
+  border-left: 1px solid var(--border);
+  box-shadow: -18px 0 44px rgba(15, 26, 23, 0.16);
+  animation: sheet-in 160ms ease-out;
+}
+@keyframes sheet-in {
+  from { transform: translateX(20px); opacity: 0.35; }
+  to { transform: none; opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) { .sheet-panel { animation: none; } }
+.sheet-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 18px 12px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.sheet-title { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.sheet-title .hint { margin: 0; font-size: 11px; }
+.sheet-title h3 { font-size: 15px; font-weight: 600; overflow-wrap: anywhere; }
+.sheet-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 12px 18px 22px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--muted);
+}
+.gs-meta { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.gs-meta .hint { margin: 0; font-size: 11px; }
+.gs-list { display: flex; flex-direction: column; }
+.gs-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding: 6px 2px;
+  border-bottom: 1px solid var(--divider);
+  min-width: 0;
+}
+.gs-row:last-child { border-bottom: none; }
+.gs-name { font-size: 12.5px; color: var(--text); overflow-wrap: anywhere; }
+/* 已忽略的模型仍然列出来（它就在这个分组里），但弱下去，别和「会用到的」抢注意力 */
+.gs-row.is-ignored .gs-name { color: var(--faint); }
+.gs-row.is-ignored .gs-price { color: var(--faint); }
+.gs-price { margin-left: auto; font-size: 12px; white-space: nowrap; }
+.gs-price .sub { font-size: 10px; color: var(--faint); }
+.gs-unpriced { color: var(--faint); }
+.gs-sep { color: var(--faint); }
+.gs-foot { margin: 12px 0 0; font-size: 11px; }
+
 /* ------------------------------------------------------------- 联系我们 */
 .contact-intro {
   display: flex;
@@ -973,6 +1039,12 @@ a.icon-btn:hover { text-decoration: none; }
   color: var(--accent); font-weight: 500;
 }
 .prov-group-chips .group-chip:hover { border-color: var(--accent); }
+/* 胶囊现在是入口（点开右侧模型抽屉）：光标和聚焦圈把「能点」说出来，
+   否则它看着仍像一枚只能看的标签。 */
+.prov-group-chips .group-chip[data-act='open-group-models'] { cursor: pointer; }
+.prov-group-chips .group-chip[data-act='open-group-models']:focus-visible {
+  outline: 2px solid var(--accent); outline-offset: 1px;
+}
 /* 分组胶囊上的删除键：平时的透明度压到几乎看不见，hover 才亮出来——胶囊是信息展示，
    不该让「删」这个动作抢走注意力，但也不能像以前那样根本没有入口 */
 .prov-group-chips .group-chip .chip-x {
@@ -1281,6 +1353,13 @@ button.with-icon { display: inline-flex; align-items: center; gap: 6px; white-sp
   font-size: 13px;
 }
 .keyrow .tail { font-family: ui-monospace, "Cascadia Code", Consolas, monospace; color: var(--muted); }
+/* 「N 个模型」是入口：点开看这组里具体有哪些模型 */
+.keyrow .gs-count {
+  padding: 0 6px; margin-right: -6px;
+  border: 1px solid transparent; border-radius: 6px; background: none;
+  color: var(--muted); font-size: 12px;
+}
+.keyrow .gs-count:hover { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
 .keyrow .grow { flex: 1; }
 .keyrow input { width: 96px; padding: 3px 8px; }
 

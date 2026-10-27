@@ -301,6 +301,16 @@ export async function revealSecret(credentialId) {
 // ------------------------------------------------------------------- offers
 
 /**
+ * 被忽略模型的归一化集合。
+ *
+ * 归一化口径只有这一份：routeableOffers 用它过滤供给，「站点卡分组里的模型」用它打
+ * 「已忽略」标记——两边各写一遍 trim/大小写，迟早一边认得出、另一边认不出。
+ */
+export function ignoredModelSet(db) {
+  return new Set((db.settings?.ignoredModels || []).map((name) => normalizeModelKey(String(name))))
+}
+
+/**
  * 真正「在役」的供给：没下线（delistedAt）、站点没暂停（paused）、模型没被忽略（ignoredModels）。
  * 这是三条过滤规则的唯一实现——比价 / 概览 / 智能决策 / 网关 / 免费池 / 探针目标都从这里取，
  * 任何一侧自己再写一遍迟早漂移（曾出过「暂停站点仍被派流量」「下线模型仍被探测白烧额度」）。
@@ -308,9 +318,7 @@ export async function revealSecret(credentialId) {
  */
 export function routeableOffers(db) {
   const pausedIds = new Set(db.providers.filter((p) => p.paused).map((p) => p.id))
-  const ignored = new Set(
-    (db.settings?.ignoredModels || []).map((name) => normalizeModelKey(String(name))),
-  )
+  const ignored = ignoredModelSet(db)
   return db.offers.filter((offer) => {
     if (offer.delistedAt) return false
     if (pausedIds.has(offer.providerId)) return false

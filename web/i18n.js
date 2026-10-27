@@ -1297,3 +1297,21 @@ Object.assign(EN, {
   '显示其余 {n} 条（未匹配本地供给）': 'Show {n} more (not referenced by local supplies)',
   '收起，只看与本地供给相关的 {n} 条': 'Collapse — show only the {n} referenced by local supplies',
 })
+
+// 分组模型悬浮抽屉（点站点卡上的分组胶囊打开）
+Object.assign(EN, {
+  '点开看这个分组里的模型': 'Open the models in this group',
+  '已忽略': 'Ignored',
+  '按次': 'Per call',
+  '/次': '/call',
+  '未定价': 'No price',
+  '{n} 把 Key 在这个分组': '{n} key(s) on this group',
+  '价格：输入 / 输出，每百万 token': 'Price: input / output per million tokens',
+  '这个分组还没同步过模型。': 'No models synced for this group yet.',
+  '点站点卡的「一键同步」，会按这把 Key 的分组拉一次。':
+    'Hit "Sync all" on the site card — it pulls models under this key\u2019s group.',
+  '这个分组没有挂 Key（多半是比价页「＋」复制出来的），不会有模型同步进来。':
+    'No key is attached to this group (it was probably copied with "+" on the pricing page), so no models will sync in.',
+  '其中 {n} 个已忽略：不参与比价、决策、探针和网关。':
+    '{n} of them are ignored: they stay out of pricing, decisions, probes and the gateway.',
+})
