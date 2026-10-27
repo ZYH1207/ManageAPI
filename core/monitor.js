@@ -382,18 +382,9 @@ function buildBalanceSeries(m, days, settings = {}) {
  * 用来画趋势、判断量级足够。
  */
 /**
- * 默认单价：1 个**标价单位**折多少人民币，也就是「模型消费」一直在用的折算。
- * 判断依据是**这条供给自己的标价币种**（offer.currency），不是站点余额币种——
- * 同一个站可以同时有 CNY 标价和 USD 标价的模型（实测 codexpert 就是），
- * 拿余额币种去套会把人民币标价的供给也打上 1/6.68 的折扣。
+ * 站点填的单价：1 个**站点额度单位**值多少人民币（= 充值时实际付的 ÷ 到账额度）。
+ * 没填返回 null。这是「实际消费」唯一需要的额外输入。
  */
-function defaultUnitPrice(currency, settings) {
-  if (currency === 'CNY') return 1
-  const fx = Number(ensureFx(settings).rates.CNY)
-  return Number.isFinite(fx) && fx > 0 ? fx : 7.2
-}
-
-/** 站点填的单价（1 个标价单位值多少人民币）；没填返回 null */
 export function siteUnitPrice(provider) {
   const explicit = Number(provider?.unitPrice)
   return Number.isFinite(explicit) && explicit > 0 ? explicit : null
@@ -402,19 +393,22 @@ export function siteUnitPrice(provider) {
 /**
  * 实际消费相对「模型消费」的系数。
  *
- * **模型消费已经是人民币**（标价 × 各自的默认折算），所以不能再乘一次单价——
- * 那等于把汇率乘两遍（实测 ¥9.5 放大成 ¥62）。真正要比的是「站点单价
- * 相对**该供给标价币种**的默认单价」：
- *   没填单价            → 1.0（两个数完全相同）
- *   USD 标价 + 单价 1   → 1/6.68 ≈ 0.15
- *   CNY 标价 + 单价 1   → 1.0（本来就是元，1:1 没有折扣可言）
+ * 注意 **offer.currency 不能用来判断折扣**——那是「我们内部基准价表的币种」
+ * （resolveOfferPrice 返回 base.currency），跟站点怎么卖额度无关：实测
+ * codexpert / 秋 / 哈利恩 全部标成 CNY，即使它们的余额和计费都是美元。
+ *
+ * 真正的关系只有一条：「模型消费」里的美元额度是按**市场汇率**折算成人民币的，
+ * 而站点实际卖你额度的价格是**站点单价**。所以
+ *   实际消费 = 模型消费 × (站点单价 ÷ 市场汇率)
+ *   没填单价     → 系数 1.0（两数完全相同，行为与改前一致）
+ *   单价 1、市场 6.68 → 系数 0.15（充 1 元得 1 美元，真实花费只有估算的 15%）
  */
-export function spendFactorOf(provider, currency, settings) {
+export function spendFactorOf(provider, settings) {
   const site = siteUnitPrice(provider)
   if (site === null) return 1
-  const base = defaultUnitPrice(currency, settings)
-  if (!(base > 0)) return 1
-  return site / base
+  const fx = Number(ensureFx(settings).rates.CNY)
+  const market = Number.isFinite(fx) && fx > 0 ? fx : 7.2
+  return site / market
 }
 
 /** 按天聚合花费：estimated = 站点口径估算（原逻辑不变），actual = 乘以站点单价 */
@@ -441,7 +435,7 @@ function spendByDay(usageData, offers, settings, benchmarks, providerById) {
       if (!sum) continue
       acc.estimated += sum
       // 系数按「这条供给的标价币种」算，不是按站点余额币种
-      acc.actual += sum * spendFactorOf(providerById.get(providerId), offer.currency, settings)
+      acc.actual += sum * spendFactorOf(providerById.get(providerId), settings)
     }
     dayMap.set(day, acc)
   }

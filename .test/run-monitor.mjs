@@ -154,15 +154,12 @@ console.log('\n断言：花费双口径')
 {
   const { spendFactorOf, buildSpendSummary } = await import('../core/monitor.js')
   const settings = { fx: { rates: { CNY: 6.68 } } }
-  // 系数按「这条供给的标价币种」算，不是站点余额币种
-  check('不填单价时系数=1（两数相同）', spendFactorOf({}, 'USD', settings) === 1)
-  check('USD 标价 + 单价 1 → 1/6.68', Math.abs(spendFactorOf({ unitPrice: 1 }, 'USD', settings) - 1 / 6.68) < 1e-9)
-  check('CNY 标价 + 单价 1 → 1（本来就是元）', spendFactorOf({ unitPrice: 1 }, 'CNY', settings) === 1)
-  check('USD 标价 + 单价填市场汇率 → 无折扣', Math.abs(spendFactorOf({ unitPrice: 6.68 }, 'USD', settings) - 1) < 1e-9)
-  check('非法单价按未填处理', spendFactorOf({ unitPrice: 0 }, 'USD', settings) === 1)
-  check('同站混标价：USD 折、CNY 不折',
-    spendFactorOf({ unitPrice: 1 }, 'USD', settings) < 0.2 && spendFactorOf({ unitPrice: 1 }, 'CNY', settings) === 1)
-  check('实际消费不会超过模型消费（1:1 站）', spendFactorOf({ unitPrice: 1 }, 'USD', settings) < 1)
+  // 系数只跟「站点单价 vs 市场汇率」有关
+  check('不填单价时系数=1（两数相同）', spendFactorOf({}, settings) === 1)
+  check('单价 1、市场 6.68 → 1/6.68', Math.abs(spendFactorOf({ unitPrice: 1 }, settings) - 1 / 6.68) < 1e-9)
+  check('单价填市场汇率 → 无折扣', Math.abs(spendFactorOf({ unitPrice: 6.68 }, settings) - 1) < 1e-9)
+  check('非法单价按未填处理', spendFactorOf({ unitPrice: 0 }, settings) === 1)
+  check('1:1 充值的站实际消费低于模型消费', spendFactorOf({ unitPrice: 1 }, settings) < 0.2)
 
   const d = (offset) => {
     const t = new Date()
