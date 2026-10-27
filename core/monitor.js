@@ -382,40 +382,39 @@ function buildBalanceSeries(m, days, settings = {}) {
  * 用来画趋势、判断量级足够。
  */
 /**
- * 默认单价：不做任何假定时，1 个站点货币单位折多少人民币。
- * 美元站按市场汇率、人民币站按 1——也就是「模型消费」一直在用的那套折算。
+ * 默认单价：1 个**标价单位**折多少人民币，也就是「模型消费」一直在用的折算。
+ * 判断依据是**这条供给自己的标价币种**（offer.currency），不是站点余额币种——
+ * 同一个站可以同时有 CNY 标价和 USD 标价的模型（实测 codexpert 就是），
+ * 拿余额币种去套会把人民币标价的供给也打上 1/6.68 的折扣。
  */
-function defaultUnitPrice(provider, settings) {
-  if (provider?.currency === 'CNY') return 1
+function defaultUnitPrice(currency, settings) {
+  if (currency === 'CNY') return 1
   const fx = Number(ensureFx(settings).rates.CNY)
   return Number.isFinite(fx) && fx > 0 ? fx : 7.2
 }
 
-/**
- * 站点单价：1 个站点货币单位值多少人民币。**只用于「实际消费」这件展示**——
- * 内部比价、路由、有效成本全部仍走站点口径，不受它影响。
- *
- * 默认按币种推导：美元站取当前市场汇率（没填就是「按美元真价算」），
- * 人民币站取 1。填了就以用户为准：充 ¥5 到账 $5 → 1.0；充 ¥100 到账 $120 → 0.83。
- */
-export function unitPriceOf(provider, settings) {
+/** 站点填的单价（1 个标价单位值多少人民币）；没填返回 null */
+export function siteUnitPrice(provider) {
   const explicit = Number(provider?.unitPrice)
-  if (Number.isFinite(explicit) && explicit > 0) return explicit
-  return defaultUnitPrice(provider, settings)
+  return Number.isFinite(explicit) && explicit > 0 ? explicit : null
 }
 
 /**
- * 实际消费相对「模型消费」的调整系数。
+ * 实际消费相对「模型消费」的系数。
  *
- * **模型消费已经是人民币**（站点美元 × 市场汇率），所以不能再乘一次单价——
- * 那等于乘两遍汇率（实测会把 ¥9.5 放大成 ¥62）。真正要比的是「站点单价
- * 相对默认单价的比」：不填单价 → 1.0（两数相同）；1:1 充值站（单价 1、
- * 市场 6.68）→ 0.1497，即真实花费只有按市场汇率估算的 15%。
+ * **模型消费已经是人民币**（标价 × 各自的默认折算），所以不能再乘一次单价——
+ * 那等于把汇率乘两遍（实测 ¥9.5 放大成 ¥62）。真正要比的是「站点单价
+ * 相对**该供给标价币种**的默认单价」：
+ *   没填单价            → 1.0（两个数完全相同）
+ *   USD 标价 + 单价 1   → 1/6.68 ≈ 0.15
+ *   CNY 标价 + 单价 1   → 1.0（本来就是元，1:1 没有折扣可言）
  */
-export function spendFactorOf(provider, settings) {
-  const base = defaultUnitPrice(provider, settings)
+export function spendFactorOf(provider, currency, settings) {
+  const site = siteUnitPrice(provider)
+  if (site === null) return 1
+  const base = defaultUnitPrice(currency, settings)
   if (!(base > 0)) return 1
-  return unitPriceOf(provider, settings) / base
+  return site / base
 }
 
 /** 按天聚合花费：estimated = 站点口径估算（原逻辑不变），actual = 乘以站点单价 */
@@ -441,7 +440,8 @@ function spendByDay(usageData, offers, settings, benchmarks, providerById) {
       }
       if (!sum) continue
       acc.estimated += sum
-      acc.actual += sum * spendFactorOf(providerById.get(providerId), settings)
+      // 系数按「这条供给的标价币种」算，不是按站点余额币种
+      acc.actual += sum * spendFactorOf(providerById.get(providerId), offer.currency, settings)
     }
     dayMap.set(day, acc)
   }
