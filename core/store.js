@@ -15,7 +15,20 @@ import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto'
 import { defaultMonitor, ensureMonitor } from './monitor.js'
 import { writeJsonAtomic } from './fsx.js'
 
-const DB_VERSION = 3
+const DB_VERSION = 4
+
+/**
+ * 归一化分组名。定义在存储层（零依赖），台账层再导出——两边共用同一份，
+ * 不允许各自写一份 trim，那正是「同步去重键与写入口径不一致」的根源。
+ *
+ * 分组名是从站点后台 / 令牌列表抄来的，经常带尾随或连续空白
+ * （实测「国模-0045 p哥」与「国模-0045 p哥 」只差一个尾随空格）。
+ */
+export function normalizeGroup(value) {
+  return String(value ?? '')
+    .trim()
+    .replace(/\s+/g, ' ')
+}
 
 /** 写盘串行链（见 mutate） */
 let writeChain = Promise.resolve()
@@ -153,7 +166,126 @@ export async function decryptSecret(blob) {
  *   Key 上的旧字段保留不删，万一要回滚还能读。
  *
  * v2 → v3：新增 monitor（余额快照 / 倍率变动 / 公告 / 告警），纯追加，补齐默认值即可。
+ *
+ * v3 → v4：分组名归一化 + 收敛重复供给。
+ *   病因：写 offer 时分组名没归一化（detect-groups 直接把令牌列表的原样写下去，
+ *   带尾随空格），而同步时用 trim 过的名字做去重键——两边口径不同，每轮
+ *   「同步 + 识别分组」都匹配不上旧行，于是再插一整套。实测一个模型积到 7 份，
+ *   比价页同一站点同一分组刷出 7 行一模一样的。
+ *   处理：归一化所有分组名；按「站点 + 分组 + 模型名」收敛，重复行上的
+ *   探针/流量/手动排序全部重挂到保留行，不丢证据。
  */
+function collapseDuplicateOffers(db) {
+  const offers = Array.isArray(db.offers) ? db.offers : []
+  for (const credential of db.credentials || []) {
+    credential.group = normalizeGroup(credential.group)
+  }
+
+  const byKey = new Map()
+  for (const offer of offers) {
+    offer.group = normalizeGroup(offer.group)
+    const key = `${offer.providerId}||${offer.group}||${offer.upstreamName}`
+    const prev = byKey.get(key)
+    if (!prev) {
+      byKey.set(key, offer)
+      continue
+    }
+    // 保留「数据更值钱」的那条：手填过价格的优先，其次有真实流量/探针的，
+    // 最后才看谁更新。顺序不能反——先比 listedAt 会挑中刚插进来还没填价的新行
+    const rank = (o) => [
+      o.inPrice != null || o.ratio != null ? 1 : 0,
+      db.traffic?.[o.id] ? 1 : 0,
+      db.probes?.some((p) => p.offerId === o.id) ? 1 : 0,
+      String(o.updatedAt || ''),
+    ]
+    const a = rank(prev)
+    const b = rank(offer)
+    let winner = prev
+    let loser = offer
+    for (let i = 0; i < a.length; i += 1) {
+      if (a[i] === b[i]) continue
+      const better = b[i] > a[i] ? offer : prev
+      winner = better
+      loser = b[i] > a[i] ? prev : offer
+      break
+    }
+    byKey.set(key, winner)
+    loser.__mergedInto = winner.id
+  }
+
+  if (byKey.size === offers.length) return { removed: 0, remapped: 0 }
+
+  const alive = new Set([...byKey.values()].map((o) => o.id))
+  const byId = new Map(offers.map((o) => [o.id, o]))
+  const remap = new Map()
+  for (const offer of offers) {
+    if (alive.has(offer.id)) continue
+    // 合并可能是链式的（o_b → o_a → o_c）：胜者本身可能后来又被别人赢了，
+    // 所以要一直追到真正存活的那行为止，否则探针会重挂到另一条死行上
+    let target = offer.__mergedInto
+    const guard = new Set([offer.id])
+    while (target && !alive.has(target) && !guard.has(target)) {
+      guard.add(target)
+      target = byId.get(target)?.__mergedInto
+    }
+    remap.set(offer.id, alive.has(target) ? target : null)
+  }
+  for (const offer of offers) delete offer.__mergedInto
+
+  // 探针记录不删，改指向保留行——证据是花额度买来的，重挂比丢弃合理
+  let remapped = 0
+  for (const probe of db.probes || []) {
+    const target = remap.get(probe.offerId)
+    if (!target) continue
+    probe.offerId = target
+    remapped += 1
+  }
+
+  // 流量计数合并：这些行本来就是同一份供给被拆开的，成败各自累加才还原真实样本
+  if (db.traffic && typeof db.traffic === 'object') {
+    for (const [deadId, target] of remap) {
+      if (!target) continue
+      const row = db.traffic[deadId]
+      if (!row) continue
+      const into = db.traffic[target]
+      if (!into) {
+        db.traffic[target] = row
+      } else {
+        into.ok = (into.ok || 0) + (row.ok || 0)
+        into.fail = (into.fail || 0) + (row.fail || 0)
+        into.quality = {
+          samples: (into.quality?.samples || 0) + (row.quality?.samples || 0),
+          bad: (into.quality?.bad || 0) + (row.quality?.bad || 0),
+        }
+        for (const [kind, count] of Object.entries(row.kinds || {})) {
+          into.kinds = into.kinds || {}
+          into.kinds[kind] = (into.kinds[kind] || 0) + count
+        }
+      }
+      delete db.traffic[deadId]
+    }
+  }
+
+  // 手动排序：同一条供给的重复 id 去掉，保留首次出现的位置
+  if (db.manualOrder && typeof db.manualOrder === 'object') {
+    for (const [modelKey, order] of Object.entries(db.manualOrder)) {
+      if (!Array.isArray(order)) continue
+      const seen = new Set()
+      const next = []
+      for (const oid of order) {
+        const id = remap.get(String(oid)) || String(oid)
+        if (seen.has(id)) continue
+        seen.add(id)
+        next.push(id)
+      }
+      if (next.length === 0) delete db.manualOrder[modelKey]
+      else db.manualOrder[modelKey] = next
+    }
+  }
+
+  db.offers = offers.filter((o) => alive.has(o.id))
+  return { removed: remap.size, remapped }
+}
 function migrate(db) {
   const version = Number(db.version) || 1
   if (version >= DB_VERSION) {
@@ -178,6 +310,13 @@ function migrate(db) {
         provider.quotaUpdatedAt = withQuota.quotaUpdatedAt ?? null
       }
     }
+  }
+  // v4：分组名归一化 + 收敛重复供给（v3 及以下才需要，幂等）
+  const collapse = collapseDuplicateOffers(db)
+  if (collapse.removed > 0) {
+    console.log(
+      `[migrate] v4 合并重复供给 ${collapse.removed} 条，重置指向 ${collapse.remapped} 条探针`,
+    )
   }
   db.version = DB_VERSION
   ensureMonitor(db)

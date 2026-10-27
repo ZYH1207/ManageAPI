@@ -528,6 +528,7 @@ web/               前端（原生 JS，无构建，无框架）
   check-instance-backup.mjs 单实例锁（失效锁清理）+ 自动备份/保留策略
   check-fx.mjs       汇率：自动拉取、手动优先、拉取失败沿用旧值、三角换算
   check-routable-offers.mjs 在役供给过滤自检：暂停/忽略/下线的供给不进路由也不被探针
+  check-group-dedupe.mjs 分组名归一化自检：带空白的同名分组不会反复长出重复供给
   dump-strings.mjs   把界面上所有中文文案抓成清单，加新文案时对照用
 
 docs/              README 用图 + 设计文档

@@ -802,12 +802,14 @@ async function loadProviderPricing(providerId, { fresh = false } = {}) {
   const byGroupModel = new Map()
   for (const model of pricing.byGroup || []) {
     if (!model.group) continue
-    byGroupModel.set(`${model.group}::${inv.normalizeModelKey(model.name)}`, model)
+    // 分组名归一化：站点公告与 Key 上的分组名经常差一个尾随空格，
+    // 不归一化就会「exact 查不到 → 退回全站原价」，价格直接放大 10 倍
+    byGroupModel.set(`${inv.normalizeGroup(model.group)}::${inv.normalizeModelKey(model.name)}`, model)
   }
 
   const offers = db.offers.filter((o) => o.providerId === provider.id)
   const match = (offer, group) =>
-    (group && byGroupModel.get(`${group}::${offer.modelKey}`)) ||
+    (group && byGroupModel.get(`${inv.normalizeGroup(group)}::${offer.modelKey}`)) ||
     byModel.get(offer.modelKey) ||
     byModel.get(inv.normalizeModelKey(offer.upstreamName)) ||
     null
@@ -853,15 +855,15 @@ route('GET', /^\/api\/providers\/([\w-]+)\/groups$/, async (ctx) => {
   const strict = byGroupModel.size > 0
   const coveredIn = (groupName) =>
     strict
-      ? offers.filter((offer) => byGroupModel.has(`${groupName}::${offer.modelKey}`)).length
+      ? offers.filter((offer) => byGroupModel.has(`${inv.normalizeGroup(groupName)}::${offer.modelKey}`)).length
       : offers.filter((offer) => match(offer, groupName)).length
 
   const groups = pricing.groups
     .map((g) => ({
-      name: g.name,
+      name: inv.normalizeGroup(g.name),
       rate: g.rate,
       modelCount: coveredIn(g.name),
-      isCurrent: g.name === current,
+      isCurrent: inv.normalizeGroup(g.name) === inv.normalizeGroup(current),
     }))
     // 能覆盖模型的排前面，其次是倍率低的
     .sort((a, b) => {
@@ -892,7 +894,7 @@ route('GET', /^\/api\/providers\/([\w-]+)\/groups$/, async (ctx) => {
  */
 route('POST', /^\/api\/providers\/([\w-]+)\/apply-group$/, async (ctx) => {
   const providerId = ctx.params[0]
-  const group = String(ctx.body.group ?? '').trim()
+  const group = inv.normalizeGroup(ctx.body.group)
   const credentialId = String(ctx.body.credentialId || '')
   const { provider, credential, credentials, pricing, offers, match, benchTable, byGroupModel } =
     await loadProviderPricing(providerId)
@@ -904,7 +906,7 @@ route('POST', /^\/api\/providers\/([\w-]+)\/apply-group$/, async (ctx) => {
   // 分组名两侧可能有空白差异（实测 Key 存的「国模-0045 p哥」与站点公布的
   // 「国模-0045 p哥 」差一个尾随空格），归一化后再匹配，否则倍率解析成 null，
   // 落价会退回「原价手填」，价格直接放大约 10 倍
-  const normGroup = (value) => String(value ?? '').trim()
+  const normGroup = (value) => inv.normalizeGroup(value)
   const rateOfGroup = new Map(pricing.groups.map((g) => [normGroup(g.name), g.rate]))
   const rates = pricing.groups.map((g) => g.rate).filter((r) => typeof r === 'number')
   const uniformRate = rates.length > 0 && rates.every((r) => r === rates[0]) ? rates[0] : null
@@ -912,7 +914,7 @@ route('POST', /^\/api\/providers\/([\w-]+)\/apply-group$/, async (ctx) => {
   const rate = group && rateOfGroup.has(normGroup(group)) ? rateOfGroup.get(normGroup(group)) : uniformRate
 
   // 记下这把 Key 属于哪个分组，下次打开就不用再选
-  const prevGroup = target.group || ''
+  const prevGroup = inv.normalizeGroup(target.group)
   if (group !== prevGroup) {
     // 用户在「导入倍率」里手选的分组：标记 manual，之后自动识别不覆盖
     await inv.updateCredential(target.id, { group, groupSource: 'manual' })
@@ -932,7 +934,7 @@ route('POST', /^\/api\/providers\/([\w-]+)\/apply-group$/, async (ctx) => {
       // 没有 credentialId 的老数据才回落到 group 比较。
       if (offer.credentialId) {
         if (offer.credentialId !== target.id) continue
-      } else if ((offer.group || '') !== prevGroup) {
+      } else if (inv.normalizeGroup(offer.group) !== inv.normalizeGroup(prevGroup)) {
         continue
       }
 
@@ -1036,14 +1038,17 @@ route('POST', /^\/api\/providers\/([\w-]+)\/detect-groups$/, async (ctx) => {
     pricingError = error.message || String(error)
     benchTable = await bench.readBenchmarks()
   }
-  const normGroupName = (value) => String(value ?? '').trim()
+  const normGroupName = (value) => inv.normalizeGroup(value)
   const rateOfGroup = new Map(pricing.groups.map((g) => [normGroupName(g.name), g.rate]))
 
   const results = []
   for (const credential of credentials) {
     const secret = await inv.revealSecret(credential.id)
     const hit = providers.matchTokenBySecret(items, secret)
-    const group = hit?.group ? String(hit.group) : ''
+    // 分组名必须归一化再写入：offers 与 credentials 两边口径不一致时，
+    // 下一轮 syncOffers 的去重键就永远匹配不上，于是每同步一次就多插一整套
+    // 重复行（实测一个模型积到 7 份，比价页同一分组刷出 7 行一模一样的）
+    const group = inv.normalizeGroup(hit?.group)
     if (!group) {
       results.push({
         credentialId: credential.id,
@@ -1088,10 +1093,10 @@ route('POST', /^\/api\/providers\/([\w-]+)\/detect-groups$/, async (ctx) => {
         const key = offer.benchmarkKey || offer.modelKey || offer.upstreamName
         const hit = match(offer, row.group)
         // 分组名先写上——这一步不依赖价格表，读不到广场也该记住「你属于哪个分组」
-        offer.group = row.group
+        offer.group = inv.normalizeGroup(row.group)
 
         const via = inv.applySitePricing(offer, {
-          exact: byGroupModel.get(`${row.group}::${offer.modelKey}`) || null,
+          exact: byGroupModel.get(`${inv.normalizeGroup(row.group)}::${offer.modelKey}`) || null,
           rate: row.rate,
           sitePrice: hit,
           hasBench: Boolean(benchTable[key]),
@@ -1398,12 +1403,12 @@ route('PATCH', /^\/api\/offers\/([\w-]+)$/, async (ctx) => {
       offer.priceUnit = 'per_mtok'
     }
     if (b.group !== undefined) {
-      const name = String(b.group || '').trim()
+      const name = inv.normalizeGroup(b.group)
       const clash = db.offers.some(
         (o) =>
           o.id !== offer.id &&
           o.providerId === offer.providerId &&
-          (o.group || '') === name &&
+          inv.normalizeGroup(o.group) === name &&
           o.upstreamName === offer.upstreamName,
       )
       if (clash) throw new HttpError(400, `该站「${name || '默认'}」分组下已经有同名模型了`)
