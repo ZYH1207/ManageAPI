@@ -165,3 +165,25 @@ else {
   console.error(`${failed} 项失败`)
   process.exitCode = 1
 }
+
+console.log('[6] 站点原价优先：倍率模式不能拿我们的基准价代替站点原价')
+{
+  // 站点原价 3.00（元/M），倍率 0.1；我们内部基准价是 2
+  // 正确：3 × 0.1 = 0.30（站点就是这么扣的）
+  // 错误：2 × 0.1 = 0.20（用基准价，少算 33%）
+  const sp = { name: 'm', inPrice: 3, outPrice: 9, cacheReadPrice: 0.1, billingMode: 'token', currency: 'CNY' }
+  const offer = { modelKey: 'm', pricingMode: 'ratio', ratio: 0.1, currency: 'CNY' }
+  const via = applySitePricing(offer, { exact: sp, rate: 0.1, sitePrice: sp, hasBench: true })
+  ok(via === 'site-base', `有站点原价时落绝对价（${via}）`)
+  ok(Math.abs(offer.inPrice - 0.3) < 1e-9, `inPrice = 站点原价 3 × 0.1 = ${offer.inPrice}`)
+  ok(Math.abs(offer.outPrice - 0.9) < 1e-9, `outPrice = 9 × 0.1 = ${offer.outPrice}`)
+  ok(offer.siteBaseIn === 3, '记下站点原价，供改倍率时重算')
+  ok(offer.currency === 'CNY', '币种跟随站点声明')
+
+  // 站点没给原价时仍走倍率模式（改倍率能一键重算全组）
+  const ratioOnly = { modelKey: 'm', pricingMode: 'ratio', ratio: null, currency: 'CNY' }
+  const via2 = applySitePricing(ratioOnly, { exact: null, rate: 0.1, sitePrice: null, hasBench: true })
+  ok(via2 === 'ratio' && ratioOnly.pricingMode === 'ratio', '无站点原价 → 倍率模式')
+}
+
+console.log('')

@@ -704,7 +704,37 @@ export function applySitePricing(offer, { exact, rate, sitePrice, hasBench }) {
     return 'skip'
   }
 
+  // 有基准价 + 站点倍率：默认走倍率模式（改倍率能一键重算全组）。
+  // **但站点给了自己的原价时，必须用它而不是我们的基准价**——两者常常不等
+  // （实测 codexpert 站点原价 3.00/M，我们基准价 2/M），用基准价 × 倍率
+  // 会少算 33%，而站点实际是按自己的原价扣的。
+  // 所以这里把站点原价落成绝对价，同时保留倍率（改倍率时按原价重算：
+  // siteBase 记下原价，倍率模式仍是权威开关）。
   if (siteRatio !== null && hasBench) {
+    const hasSiteBase =
+      sitePrice &&
+      sitePrice.inPrice !== null && sitePrice.inPrice !== undefined &&
+      sitePrice.outPrice !== null && sitePrice.outPrice !== undefined
+    if (hasSiteBase) {
+      const mult = siteRatio
+      offer.ratio = siteRatio
+      offer.siteRatio = siteRatio
+      offer.ratioSource = 'site'
+      offer.pricingMode = 'manual'
+      offer.inPrice = Math.round(Number(sitePrice.inPrice) * mult * 1000) / 1000
+      offer.outPrice = Math.round(Number(sitePrice.outPrice) * mult * 1000) / 1000
+      // 记下站点原价，供倍率变化时重算（见 setGroupRatio）
+      offer.siteBaseIn = Number(sitePrice.inPrice)
+      offer.siteBaseOut = Number(sitePrice.outPrice)
+      offer.currency = sitePrice.currency === 'USD' ? 'USD' : 'CNY'
+      if (sitePrice.cacheReadPrice != null) {
+        offer.cacheReadPrice = Math.round(Number(sitePrice.cacheReadPrice) * mult * 1000) / 1000
+      }
+      if (sitePrice.cacheWritePrice != null) {
+        offer.cacheWritePrice = Math.round(Number(sitePrice.cacheWritePrice) * mult * 1000) / 1000
+      }
+      return 'site-base'
+    }
     offer.ratio = siteRatio
     offer.siteRatio = siteRatio
     offer.ratioSource = 'site'
@@ -722,7 +752,8 @@ export function applySitePricing(offer, { exact, rate, sitePrice, hasBench }) {
     if (sitePrice.outPrice !== null && sitePrice.outPrice !== undefined) {
       offer.outPrice = Math.round(sitePrice.outPrice * mult * 1000) / 1000
     }
-    offer.currency = 'CNY'
+    // 用站点声明的币种，不再写死 CNY：广场/channels 的报价币种可能不同
+    offer.currency = sitePrice.currency === 'USD' ? 'USD' : 'CNY'
     offer.pricingMode = 'manual'
     offer.ratio = null
     offer.siteRatio = siteRatio
@@ -747,9 +778,19 @@ export async function setGroupRatio(providerId, group, ratio) {
       if ((offer.group || '') !== name) continue
       offer.ratio = value
       offer.ratioSource = value === null ? null : value === offer.siteRatio ? 'site' : 'custom'
-      // 清空倍率要同步回手填模式：pricingMode 是定价的权威开关（pricing.js 的约定），
-      // 留着 'ratio' + ratio=null + 无手填价会变成自相矛盾的「未定价」行
-      offer.pricingMode = value === null ? 'manual' : 'ratio'
+      // 落过「站点原价 × 倍率」绝对价的行走绝对价模式：改倍率就按站点原价重算。
+      // 否则倍率开关对这类行失效（它们已经不吃倍率了）
+      const hasSiteBase =
+        Number.isFinite(Number(offer.siteBaseIn)) && Number.isFinite(Number(offer.siteBaseOut))
+      if (hasSiteBase && value !== null) {
+        offer.pricingMode = 'manual'
+        offer.inPrice = Math.round(Number(offer.siteBaseIn) * value * 1000) / 1000
+        offer.outPrice = Math.round(Number(offer.siteBaseOut) * value * 1000) / 1000
+      } else {
+        // 清空倍率要同步回手填模式：pricingMode 是定价的权威开关（pricing.js 的约定），
+        // 留着 'ratio' + ratio=null + 无手填价会变成自相矛盾的「未定价」行
+        offer.pricingMode = value === null ? 'manual' : 'ratio'
+      }
       offer.updatedAt = nowIso()
       siteValues.add(offer.siteRatio ?? null)
       updated += 1

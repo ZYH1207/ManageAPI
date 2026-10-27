@@ -1385,7 +1385,8 @@ function showDiagnoseBox(text) {
 }
 
 function openProvPanel(button, pane) {
-  const card = button.closest('.prov-card')
+  // 允许直接传卡片：删完 Key 后要重开面板，手上只有卡片没有按钮
+  const card = button.classList?.contains('prov-card') ? button : button.closest('.prov-card')
   const source = card?.querySelector('.prov-detail')
   const modal = $('#prov-modal')
   const body = $('#prov-modal-body')
@@ -1418,6 +1419,20 @@ function closeProvPanel() {
   const body = $('#prov-modal-body')
   if (modal) modal.hidden = true
   if (body) body.innerHTML = ''
+}
+
+/**
+ * 重开一次当前的站点面板。
+ *
+ * 面板内容是 cloneNode 复制进弹窗的，render() 只重绘页面上的站点卡，
+ * 弹窗里那份克隆不会跟着变——所以弹窗内增删（Key、分组倍率）之后必须
+ * 重新克隆一次，否则列表还停在旧数据上（删掉的 Key 还在、新加的看不到）。
+ */
+function reopenProvPanel(node, pane = 'keys') {
+  const providerId = node?.closest?.('[data-provider]')?.dataset?.provider
+  if (!providerId) return
+  const card = document.querySelector(`.prov-card[data-provider="${CSS.escape(providerId)}"]`)
+  if (card) openProvPanel(card, pane)
 }
 
 // --------------------------------------------------------------- 免费池视图
@@ -4375,9 +4390,11 @@ document.addEventListener('click', async (event) => {
   if (action === 'del-key') {
     const credentialId = actionButton.closest('[data-credential]').dataset.credential
     if (!confirm('删除这个 Key？')) return
+    const inModal = Boolean(actionButton.closest('#prov-modal-body'))
     await withBusy(actionButton, async () => {
       state = await api('DELETE', `/api/credentials/${credentialId}`)
       render()
+      if (inModal) reopenProvPanel(actionButton, 'keys')
       toast('Key 已删除')
     })
     return
@@ -4538,11 +4555,13 @@ document.addEventListener('click', async (event) => {
   if (action === 'restore-ratio' || action === 'restore-ratio-all') {
     const providerId = actionButton.closest('[data-provider]').dataset.provider
     const body = action === 'restore-ratio' ? { group: actionButton.dataset.group ?? '' } : {}
+    const inModal = Boolean(actionButton.closest('#prov-modal-body'))
     await withBusy(actionButton, async () => {
       try {
         const result = await api('POST', `/api/providers/${providerId}/restore-ratio`, body)
         state = result
         render()
+        if (inModal) reopenProvPanel(actionButton, 'rates')
         const r = result.restoreResult
         const parts = [`${r.restored} 个模型已恢复为站点倍率`]
         if (r.noSiteValue?.length) parts.push(`${r.noSiteValue.length} 个没有站点值，需要重新导入`)
@@ -4808,8 +4827,10 @@ document.addEventListener('submit', async (event) => {
   const providerId = form.closest('[data-provider]').dataset.provider
   const data = Object.fromEntries(new FormData(form))
   try {
+    const inModal = Boolean(form.closest('#prov-modal-body'))
     state = await api('POST', '/api/credentials', { ...data, providerId })
     render()
+    if (inModal) reopenProvPanel(form, 'keys')
     toast('Key 已加密保存')
   } catch (error) {
     toast(error.message, true)
@@ -5108,9 +5129,12 @@ document.addEventListener('change', async (event) => {
     const group = groupRow.dataset.groupRatio
     const ratio = input.value === '' ? null : Number(input.value)
     try {
+      const inModal = Boolean(input.closest('#prov-modal-body'))
       state = await api('POST', `/api/providers/${providerId}/group-ratio`, { group, ratio })
       const updated = state.groupRatioResult?.updated ?? 0
       render()
+      // 弹窗里的是克隆副本，重绘页面不会更新它
+      if (inModal) reopenProvPanel(groupRow, 'rates')
       const siteRatio = state.groupRatioResult?.siteRatio
       const isSite = siteRatio !== null && siteRatio !== undefined && siteRatio === ratio
       toast(

@@ -633,6 +633,10 @@ export async function fetchProviderPricing({ baseUrl, adminToken, kind }) {
       billingMode: m.billingMode || 'token',
       // 按次单价（元/次，已按站点算法乘过倍率）；token 计费时为 null
       callPrice: m.callPrice ?? null,
+      // 价格币种：广场的 input_price 单位是「元/token」，换算后仍是元。
+      // 必须显式传下去——以前靠 applySitePricing 里写死 'CNY' 碰巧对上，
+      // 一旦接入按美元标价的站就会把价格当人民币直接落库，差一个汇率
+      currency: m.currency || 'CNY',
       group: m.groupName || null,
     })
     return {

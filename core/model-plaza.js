@@ -139,6 +139,9 @@ export function flattenPlaza(groups) {
         // 官方价（站方声明，可能不准，仅供参考）
         officialIn: perMtok(off.input_price),
         officialOut: perMtok(off.output_price),
+        // Sub2API 广场的 input_price 单位是「每 token 的元」，换算后仍是元。
+        // 显式带出来，别让下游靠「碰巧一致」的隐式假设——一旦引入按美元
+        // 标价的站点，缺币种就会把价格当成美元，差 6.7 倍
         currency: 'CNY',
       }
       if (!buckets.has(key)) buckets.set(key, [])
