@@ -2008,6 +2008,51 @@ export async function flushGatewayBuffers() {
   }
 }
 
+/**
+ * 各家的缓存命中字段名不统一，按顺序取第一个有值的。
+ *
+ * 为什么必须认多个名字：探针（core/probe.js 的 probeCache）早就同时认
+ * prompt_tokens_details.cached_tokens 和 prompt_cache_hit_tokens，而网关记账
+ * 只认前者。同一个概念两处口径不一致，就会出现「探针显示缓存命中 96%，
+ * 账单却按零缓存算」——缓存读的廉价档全按输入原价结算，花费直接虚高。
+ *
+ * DeepSeek 官方接口用 prompt_cache_hit_tokens，one-api / new-api 系还有
+ * 放顶层 cached_tokens 的，Anthropic 兼容层用 cache_read_input_tokens。
+ * 顺序是先 OpenAI 标准字段，再各兼容层别名；返回 null 表示上游根本没报。
+ */
+export function readCachedTokens(usage) {
+  if (!usage) return null
+  const candidates = [
+    usage.prompt_tokens_details?.cached_tokens,
+    usage.input_tokens_details?.cached_tokens,
+    usage.cached_tokens,
+    usage.prompt_cache_hit_tokens,
+    usage.cache_read_input_tokens,
+  ]
+  for (const value of candidates) {
+    const n = Number(value)
+    if (Number.isFinite(n) && n > 0) return n
+  }
+  // 全是 0 或缺失：如果字段存在但为 0，就报 0（真没命中）；否则 null
+  const zeros = candidates.filter((v) => v !== undefined && v !== null)
+  return zeros.length > 0 ? 0 : null
+}
+
+/** 缓存写入同理：Anthropic 系与 OpenAI 兼容层各用一套字段 */
+export function readCacheCreationTokens(usage) {
+  if (!usage) return 0
+  const candidates = [
+    usage.cache_creation_input_tokens,
+    usage.prompt_tokens_details?.cache_creation_tokens,
+    usage.prompt_cache_write_tokens,
+  ]
+  for (const value of candidates) {
+    const n = Number(value)
+    if (Number.isFinite(n) && n > 0) return n
+  }
+  return 0
+}
+
 function openaiError(res, status, message, type = 'invalid_request_error') {
   if (res.writableEnded) return
   const body = JSON.stringify({ error: { message, type, code: status } })
@@ -2441,14 +2486,11 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
           model: candidate.offer.modelKey || candidate.offer.upstreamName,
           inputTokens: result.usage?.prompt_tokens,
           outputTokens: result.usage?.completion_tokens,
-          cachedTokens: result.usage?.prompt_tokens_details?.cached_tokens,
+          cachedTokens: readCachedTokens(result.usage),
           // 缓存写入是独立计费项（站点按 cache_creation 收，通常是输入价的 1.25 倍）。
           // 上游字段名各家不一，Anthropic 系在 cache_creation_input_tokens，
           // OpenAI 兼容层常放在 prompt_tokens_details.cache_creation_tokens
-          cacheCreationTokens:
-            result.usage?.cache_creation_input_tokens ??
-            result.usage?.prompt_tokens_details?.cache_creation_tokens ??
-            0,
+          cacheCreationTokens: readCacheCreationTokens(result.usage),
           latencyMs,
           ttftMs: result.ttftMs,
           ok: !result.streamError,
@@ -2472,7 +2514,7 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
               modelKey: candidate.offer.modelKey || null,
               localTokens: requestTokens,
               reportedPrompt: Number(result.usage.prompt_tokens) || null,
-              reportedCached: Number(result.usage?.prompt_tokens_details?.cached_tokens) || 0,
+              reportedCached: readCachedTokens(result.usage) || 0,
             })
             .catch(() => {})
         }
