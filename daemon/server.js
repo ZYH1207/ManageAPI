@@ -449,6 +449,16 @@ route('PATCH', /^\/api\/settings$/, async (ctx) => {
       if (!Number.isFinite(v) || v < 0) throw new HttpError(400, '首字延迟上限不能为负')
       db.settings.maxTtftMs = v
     }
+    // 全局默认站点单价：所有站口径一致时只填一次（如「全部 1:1 充值」填 1）
+    if (ctx.body.defaultUnitPrice !== undefined) {
+      if (ctx.body.defaultUnitPrice === null || ctx.body.defaultUnitPrice === '') {
+        db.settings.defaultUnitPrice = null
+      } else {
+        const v = Number(ctx.body.defaultUnitPrice)
+        if (!Number.isFinite(v) || v <= 0) throw new HttpError(400, '默认站点单价必须是正数')
+        db.settings.defaultUnitPrice = v
+      }
+    }
     if (ctx.body.allowUntrusted !== undefined) {
       db.settings.allowUntrusted = Boolean(ctx.body.allowUntrusted)
     }

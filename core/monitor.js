@@ -382,12 +382,18 @@ function buildBalanceSeries(m, days, settings = {}) {
  * 用来画趋势、判断量级足够。
  */
 /**
- * 站点填的单价：1 个**站点额度单位**值多少人民币（= 充值时实际付的 ÷ 到账额度）。
- * 没填返回 null。这是「实际消费」唯一需要的额外输入。
+ * 站点单价：1 个**站点额度单位**值多少人民币（= 充值时实际付的 ÷ 到账额度）。
+ *
+ * 三级回落：站点自己填的 → 全局默认值（`settings.defaultUnitPrice`，
+ * 适合「所有站都是 1:1 充值」这种一刀切的情况）→ null（= 按市场汇率，
+ * 即模型消费与实际消费相同，行为与改前完全一致）。
  */
-export function siteUnitPrice(provider) {
-  const explicit = Number(provider?.unitPrice)
-  return Number.isFinite(explicit) && explicit > 0 ? explicit : null
+export function siteUnitPrice(provider, settings) {
+  const own = Number(provider?.unitPrice)
+  if (Number.isFinite(own) && own > 0) return own
+  const fallback = Number(settings?.defaultUnitPrice)
+  if (Number.isFinite(fallback) && fallback > 0) return fallback
+  return null
 }
 
 /**
@@ -404,7 +410,7 @@ export function siteUnitPrice(provider) {
  *   单价 1、市场 6.68 → 系数 0.15（充 1 元得 1 美元，真实花费只有估算的 15%）
  */
 export function spendFactorOf(provider, settings) {
-  const site = siteUnitPrice(provider)
+  const site = siteUnitPrice(provider, settings)
   if (site === null) return 1
   const fx = Number(ensureFx(settings).rates.CNY)
   const market = Number.isFinite(fx) && fx > 0 ? fx : 7.2

@@ -160,6 +160,11 @@ console.log('\n断言：花费双口径')
   check('单价填市场汇率 → 无折扣', Math.abs(spendFactorOf({ unitPrice: 6.68 }, settings) - 1) < 1e-9)
   check('非法单价按未填处理', spendFactorOf({ unitPrice: 0 }, settings) === 1)
   check('1:1 充值的站实际消费低于模型消费', spendFactorOf({ unitPrice: 1 }, settings) < 0.2)
+  // 全局默认单价：所有站口径一致时只填一次
+  const withDefault = { fx: { rates: { CNY: 6.68 } }, defaultUnitPrice: 1 }
+  check('全局默认单价生效（未填的站）', Math.abs(spendFactorOf({}, withDefault) - 1 / 6.68) < 1e-9)
+  check('站点自己的单价优先于全局默认',
+    Math.abs(spendFactorOf({ unitPrice: 6.68 }, withDefault) - 1) < 1e-9)
 
   // 缓存命中按缓存价计费（不再全按输入价）
   {

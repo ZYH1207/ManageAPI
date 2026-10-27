@@ -771,6 +771,7 @@ Object.assign(EN, {
   '证据不足': 'Not enough evidence',
   '花费': 'Spend',
   '站点单价': 'Site unit price',
+  '默认站单价': 'Default site unit price',
   '令牌尾号': 'Token tail',
   '「令牌」是站点后台的登录凭证，一次填好整站通用，用来读余额、公告和分组': 'The token is the site login credential — fill it once per site for balance, announcements and groups',
   '未填站点令牌': 'No site token',

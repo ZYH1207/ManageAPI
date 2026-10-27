@@ -1112,6 +1112,7 @@ function syncPanelHtml(data = monitorData || {}) {
     <div class="sync-panel">
       <input type="number" min="0" step="5" id="monitor-interval" placeholder="同步间隔（分钟）" title="同步间隔（分钟），0 = 关闭" value="${data.settings?.monitorIntervalMinutes ?? 30}" />
       <input type="number" min="0" step="0.5" id="monitor-warn" placeholder="告警阈值（$）" title="余额告警阈值（美元），0 = 不告警" value="${data.settings?.balanceWarnUsd ?? 1.5}" />
+      <input type="number" min="0" step="0.01" id="monitor-unit-price" placeholder="默认站点单价" title="默认站点单价（¥/1 站点美元）：所有站口径一致时只填一次，如「全部 1:1 充值」填 1。留空 = 按市场汇率" value="${state?.settings?.defaultUnitPrice ?? ''}" />
       <button class="primary" data-act="monitor-save-settings">保存</button>
     </div>`
 }
@@ -3787,6 +3788,9 @@ document.addEventListener('click', async (event) => {
     // 阈值输入框可能不在页面上（设置面板收起来了），此时不要用默认值覆盖用户设置
     const patch = { monitorIntervalMinutes: interval }
     if (warnInput) patch.balanceWarnUsd = Number(warnInput.value || 0)
+    // 默认站点单价：空串表示「按市场汇率」，要显式传 null 才能清掉
+    const unitInput = $('#monitor-unit-price')
+    if (unitInput) patch.defaultUnitPrice = unitInput.value === '' ? null : Number(unitInput.value)
     await withBusy(actionButton, async () => {
       state = await api('PATCH', '/api/settings', patch)
       await loadMonitor(monitorDays)
