@@ -707,12 +707,19 @@ function paintGroupModal(body) {
   }
 
   const provider = state.providers.find((p) => p.id === groupPicker.providerId)
+  // 存着的分组名在站点分组表里找不到 = 站方改过分组名。不提示的话用户会以为
+  // 「当前」就是这个分组，倍率却始终不生效（价格停在上一次的值上，不报错）
+  const staleName = d.current && d.currentKnown === false
   const rows = d.groups
     .map((g) => {
       const on = g.name === groupPicker.selected
       const covered = g.modelCount
+      // 分组里具体哪些模型 → 悬停就能看。以前只给一个数字，每个分组都是同一个数，
+      // 根本看不出「GM1 里到底有没有 Deepseek」
+      const names = Array.isArray(g.models) ? g.models : []
+      const namesTitle = names.length ? ` title="${esc(names.join('、'))}"` : ''
       return `
-        <label class="${on ? 'on' : ''}" data-act="pick-group" data-pick-group="${esc(g.name)}">
+        <label class="${on ? 'on' : ''}" data-act="pick-group" data-pick-group="${esc(g.name)}"${namesTitle}>
           <input type="radio" name="pick-group" value="${esc(g.name)}" ${on ? 'checked' : ''} />
           <span class="gname">${esc(g.name)}${g.isCurrent ? ' <span class="badge">当前</span>' : ''}</span>
           <span class="grate">${g.rate === null ? '—' : `×${g.rate}`}</span>
@@ -734,6 +741,17 @@ function paintGroupModal(body) {
       选你实际买的那个，倍率会立刻填到这把 Key 对应的模型上，比价和决策页同步更新。
     </p>
     ${noRate ? '<p class="hint" style="color:var(--warn);margin:6px 0 0">这个站没公布倍率，只能填绝对价。选完会按原价填入。</p>' : ''}
+    ${
+      staleName
+        ? `<div class="alert" style="margin:8px 0 0">
+            <div>
+              <div class="name">当前保存的分组名，站点上已经没有了</div>
+              <div class="desc">存的是「${esc(d.current)}」。站方改过分组名之后，倍率就查不到了，价格会停在上一次的值上。
+              在下面重新选一次正确的分组（鼠标悬停能看到每个分组里有哪些模型）。</div>
+            </div>
+          </div>`
+        : ''
+    }
     <div class="group-pick">${rows}</div>
     <div class="group-pick-foot">
       <span class="hint" style="margin:0">选中的分组会记在这把 Key 上，下次不用再选</span>
@@ -791,6 +809,16 @@ async function applyPickedGroup(button) {
     if (r.viaPercall) parts.push(`其中 ${r.viaPercall} 个按次计费`)
     if (r.unmatched?.length) parts.push(`${r.unmatched.length} 个未匹配`)
     toast(parts.join('，'))
+    if (r.groupUnknown) {
+      setTimeout(
+        () =>
+          toast(
+            `「${r.group}」不在站点现在的分组列表里，倍率对不上，价格没有改动。站方多半改过分组名，去「选分组」重新选一次。`,
+            true,
+          ),
+        1700,
+      )
+    }
     if (r.resyncError) {
       setTimeout(
         () =>

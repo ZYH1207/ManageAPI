@@ -299,7 +299,17 @@ export async function tryBalanceWithKeys({ baseUrl, apiKeys = [], adminToken, ti
  *
  * 这个接口比模型广场更通用——不需要站开启广场，有登录令牌就能读。
  *
- * @returns {Promise<{groups:Array, models:Array, raw:any}>}
+ * 返回三份数据，粒度依次变细（和模型广场的 groups / models / byGroup 同构）：
+ *   groups   每个分组一条（名字 + 倍率）
+ *   models   每个模型一条（全站原价，不知道分组）
+ *   byGroup  每个「分组 × 模型」一条（原价 + 该分组倍率下的按次价）
+ *
+ * byGroup 是必须的：同一个渠道下的模型由该渠道的每个分组都能调，「这个分组到底
+ * 有哪些模型」只有渠道结构知道。以前只返回前两份，于是分组页只能把全站模型数
+ * 当成每个分组的模型数（22 个分组全显示 37 个模型），用户看不出 GM1 里究竟是
+ * 哪几个模型，也就没法判断该选哪个分组。
+ *
+ * @returns {Promise<{groups:Array, models:Array, byGroup:Array, raw:any}>}
  */
 export async function fetchAvailableChannels({ baseUrl, adminToken, timeoutMs = 10000 }) {
   const origin = originOf(baseUrl, { stripApiPrefix: true })
@@ -315,13 +325,30 @@ export async function fetchAvailableChannels({ baseUrl, adminToken, timeoutMs = 
       ? payload.data
       : []
 
+  // 站方给的是「每 token 单价」，界面用「每百万 token」，乘 1e6。
+  // 0.8e-6 * 1e6 在浮点下是 0.7999999999999999，所以统一收敛到 6 位。
+  const perM = (v) => (v === null || v === undefined ? null : Math.round(Number(v) * 1e6 * 1e6) / 1e6)
+  const round3 = (v) => (v === null || v === undefined ? null : Math.round(Number(v) * 1000) / 1000)
+  const billingModeOf = (p) =>
+    p.billing_mode === 'per_request' || p.billing_mode === 'image' ? p.billing_mode : 'token'
+  // 按次价：优先顶层；分档价（intervals）里带 per_request_price 的取第一档（与广场同规则）
+  const callBaseOf = (p) => {
+    const tier = (Array.isArray(p.intervals) ? p.intervals : []).find(
+      (row) => row && row.per_request_price !== null && row.per_request_price !== undefined,
+    )?.per_request_price
+    return p.per_request_price ?? tier ?? null
+  }
+
   const groups = []
   const models = []
+  const byGroup = []
   for (const channel of channels) {
     if (!channel || typeof channel !== 'object') continue
     for (const platform of channel.platforms || []) {
-      for (const group of platform.groups || []) {
-        if (!group?.name) continue
+      // 这个渠道的分组：渠道给出的模型由它们每一个都能调，所以「分组 × 模型」
+      // 是笛卡尔积，不能按「模型属于哪个分组」去猜——同一个模型确实同时在多个分组里
+      const platformGroups = (platform.groups || []).filter((group) => group?.name)
+      for (const group of platformGroups) {
         groups.push({
           name: String(group.name),
           rate: group.rate_multiplier === null || group.rate_multiplier === undefined
@@ -336,21 +363,47 @@ export async function fetchAvailableChannels({ baseUrl, adminToken, timeoutMs = 
       for (const model of platform.supported_models || []) {
         if (!model?.name) continue
         const p = model.pricing || {}
-        // 站方给的是「每 token 单价」，界面用「每百万 token」，乘 1e6。
-        // 0.8e-6 * 1e6 在浮点下是 0.7999999999999999，所以统一收敛到 6 位。
-        const perM = (v) => (v === null || v === undefined ? null : Math.round(Number(v) * 1e6 * 1e6) / 1e6)
+        const name = String(model.name)
+        const billingMode = billingModeOf(p)
         models.push({
-          name: String(model.name),
+          name,
           platform: platform.platform || null,
           inPrice: perM(p.input_price),
           outPrice: perM(p.output_price),
           cacheReadPrice: perM(p.cache_read_price),
+          // 按次/按张计费的模型不能当成按 token 的来比价；站点级这条没有分组倍率，
+          // 所以 callPrice 留空（落价时会被 skip，而不是编一个数字出来）
+          billingMode,
+          callPrice: null,
         })
+        for (const group of platformGroups) {
+          const rate = Number(group.rate_multiplier)
+          const multiplier = Number.isFinite(rate) && rate > 0 ? rate : 1
+          const callBase = callBaseOf(p)
+          byGroup.push({
+            name,
+            platform: platform.platform || null,
+            channel: channel.name || null,
+            group: String(group.name),
+            rate: Number.isFinite(rate) ? rate : null,
+            billingMode,
+            // 原价（未乘分组倍率）：和广场同口径，倍率由 applySitePricing 统一乘
+            inPrice: perM(p.input_price),
+            outPrice: perM(p.output_price),
+            cacheReadPrice: perM(p.cache_read_price),
+            cacheWritePrice: perM(p.cache_write_price),
+            // 按次/按张价是「每次多少元」，站点前端就是原价 × 分组倍率，必须同算法
+            callPrice:
+              callBase === null || !Number.isFinite(Number(callBase))
+                ? null
+                : round3(Number(callBase) * multiplier),
+          })
+        }
       }
     }
   }
 
-  return { groups, models, raw: payload }
+  return { groups, models, byGroup, raw: payload }
 }
 
 /**
@@ -601,16 +654,23 @@ export function matchTokenBySecret(items, secret) {
  *
  * @returns {Promise<{groups:Array<{name,rate}>, models:Array, byGroup:Array, source:string}>}
  */
-export async function fetchProviderPricing({ baseUrl, adminToken, kind }) {
+export async function fetchProviderPricing({ baseUrl, adminToken, kind, timeoutMs = 15000 }) {
   let channelError = null
 
   // channels 对所有系别都试（混合站可能同时有 status 公告与 channels 倍率）；
   // 系别分支只保留在 tryBalance / 公告上——那里省的是 10 秒级的超时等待
   if (adminToken) {
     try {
-      const result = await fetchAvailableChannels({ baseUrl, adminToken })
+      const result = await fetchAvailableChannels({ baseUrl, adminToken, timeoutMs })
       if (result.groups.length > 0 || result.models.length > 0) {
-        return { groups: result.groups, models: result.models, byGroup: [], source: 'channels' }
+        return {
+          groups: result.groups,
+          models: result.models,
+          // 渠道结构里其实带着「分组 → 模型」，以前在这里被丢掉，导致分组页
+          // 只能按全站数糊弄；现在原样传下去，按分组数模型、按分组落价才对得上
+          byGroup: result.byGroup,
+          source: 'channels',
+        }
       }
     } catch (error) {
       channelError = error
@@ -618,7 +678,7 @@ export async function fetchProviderPricing({ baseUrl, adminToken, kind }) {
   }
 
   try {
-    const plazaGroups = await fetchModelPlaza({ baseUrl })
+    const plazaGroups = await fetchModelPlaza({ baseUrl, timeoutMs })
     const { byModel, groupList, allEntries } = flattenPlaza(plazaGroups)
     const toModel = (m) => ({
       name: m.name,

@@ -786,6 +786,9 @@ async function loadProviderPricing(providerId, { fresh = false } = {}) {
   }
 
   let pricing
+  // 超时跟站点设置走：站点的「可用渠道」是整站规模的响应，实测会拖到 10 秒以上；
+  // 用默认超时会把整份分组/倍率读成失败，界面就只剩一句「读不到分组」
+  const pricingTimeoutMs = Math.min(Number(db.settings?.probeTimeoutMs) || 15000, 20000)
   if (!fresh && cached && !cached.error && Date.now() - cached.at < PRICING_TTL_MS) {
     pricing = cached.data
   } else {
@@ -795,6 +798,7 @@ async function loadProviderPricing(providerId, { fresh = false } = {}) {
         baseUrl: provider.baseUrl,
         adminToken,
         kind: provider.kind,
+        timeoutMs: pricingTimeoutMs,
       })
       pricingCache.set(providerId, { at: Date.now(), data: pricing })
     } catch (error) {
@@ -810,6 +814,7 @@ async function loadProviderPricing(providerId, { fresh = false } = {}) {
             baseUrl: provider.baseUrl,
             adminToken: relogin.token,
             kind: provider.kind,
+            timeoutMs: pricingTimeoutMs,
           })
           pricingCache.set(providerId, { at: Date.now(), data: retried })
           pricing = retried
@@ -888,12 +893,25 @@ route('GET', /^\/api\/providers\/([\w-]+)\/groups$/, async (ctx) => {
       ? offers.filter((offer) => byGroupModel.has(`${inv.normalizeGroup(groupName)}::${offer.modelKey}`)).length
       : offers.filter((offer) => match(offer, groupName)).length
 
+  // 每个分组的模型名单（弹出框只显示数量，名单放 tooltip）。渠道与广场两条路的
+  // byGroup 都有这个映射了，所以这里一律按分组数，不再退回全站数
+  const modelNamesIn = new Map()
+  for (const model of pricing.byGroup || []) {
+    if (!model.group) continue
+    const key = inv.normalizeGroup(model.group)
+    if (!modelNamesIn.has(key)) modelNamesIn.set(key, [])
+    const list = modelNamesIn.get(key)
+    if (!list.includes(model.name)) list.push(model.name)
+  }
+
   const groups = pricing.groups
     .map((g) => ({
       name: inv.normalizeGroup(g.name),
       rate: g.rate,
       modelCount: coveredIn(g.name),
       isCurrent: inv.normalizeGroup(g.name) === inv.normalizeGroup(current),
+      // 这个分组里有哪些模型：没读到分组级数据时为空数组（前端就不显示 tooltip）
+      models: modelNamesIn.get(inv.normalizeGroup(g.name)) || [],
     }))
     // 能覆盖模型的排前面，其次是倍率低的
     .sort((a, b) => {
@@ -903,12 +921,18 @@ route('GET', /^\/api\/providers\/([\w-]+)\/groups$/, async (ctx) => {
 
   const unmatched = offers.filter((offer) => !match(offer, current)).map((o) => o.upstreamName)
 
+  // 存着的分组名在站点分组表里还能不能找到。站方改过分组名（「[GM1]国模分组
+  // （DS\qwen3.8\Glm5.3\K3）010」→「[GM1]Deepseek-v4.1(1017)/Minimax-m3.1」）之后
+  // 就对不上了：倍率查不到、价格落不下去，而界面看上去一切正常。必须明确告知
+  const currentKnown = !current || groups.some((g) => g.isCurrent)
+
   return {
     providerId: ctx.params[0],
     credentialId: active?.id || null,
     credentialLabel: active?.label || null,
     keyCount: credentials.length,
     current,
+    currentKnown,
     source: pricing.source,
     groups,
     unmatched,
@@ -935,27 +959,11 @@ route('POST', /^\/api\/providers\/([\w-]+)\/apply-group$/, async (ctx) => {
 
   // 分组删掉之后重新导入：那把 Key 名下的供给行跟着分组一起删了，光应用倍率只会
   // 更新 0 条，分组看起来再也加不回来。所以「这个 Key 一条供给都没有」时，先按它
-  // 重新拉一次模型把行建出来；已有行就不拉——正常换分组只是给现成的行改倍率，
-  // 不该每次点「应用」都多一次网络请求。
-  let resynced = 0
-  let resyncError = null
-  const ownsOffers = db.offers.some(
-    (o) => o.providerId === provider.id && o.credentialId === target.id,
-  )
-  if (!ownsOffers && group) {
-    try {
-      const apiKey = await inv.revealSecret(target.id)
-      if (!apiKey) throw new Error('Key 解密失败，可能是 master.key 被替换过')
-      const timeoutMs = Math.min(Number(db.settings?.probeTimeoutMs) || 15000, 20000)
-      const listed = await providers.listModels({ baseUrl: provider.baseUrl, apiKey, timeoutMs })
-      const saved = await inv.syncOffers(provider.id, target.id, listed.models, group)
-      resynced = saved.added
-    } catch (error) {
-      // 拉模型失败不该让「分组记在这把 Key 上」也跟着失败：分组先存下来，
-      // 用户之后点「一键同步」照样能把模型拉回来
-      resyncError = error.message || String(error)
-    }
-  }
+  // 重新拉一次模型把行建出来——和「识别分组」共用同一份实现（inv.importCredentialModels）。
+  const timeoutMs = Math.min(Number(db.settings?.probeTimeoutMs) || 15000, 20000)
+  const imported = await inv.importCredentialModels(provider, target, group, { timeoutMs })
+  const resynced = imported.imported
+  const resyncError = imported.error
 
   // 分组名两侧可能有空白差异（实测 Key 存的「国模-0045 p哥」与站点公布的
   // 「国模-0045 p哥 」差一个尾随空格），归一化后再匹配，否则倍率解析成 null，
@@ -964,8 +972,14 @@ route('POST', /^\/api\/providers\/([\w-]+)\/apply-group$/, async (ctx) => {
   const rateOfGroup = new Map(pricing.groups.map((g) => [normGroup(g.name), g.rate]))
   const rates = pricing.groups.map((g) => g.rate).filter((r) => typeof r === 'number')
   const uniformRate = rates.length > 0 && rates.every((r) => r === rates[0]) ? rates[0] : null
-  // 分组没给（或这个站只有一个分组）时，能确定倍率就用，确定不了就按原价算
+  // 站点分组表里还有没有这个名字。站方改过分组名之后就没有了，而「查不到倍率」
+  // 在那种情况下不是「站点没公布倍率」——不能按原价 × 1 落价（会贵一个倍率）
   const rate = group && rateOfGroup.has(normGroup(group)) ? rateOfGroup.get(normGroup(group)) : uniformRate
+  // 分组过期 = 分组表里没这个名字，而且令牌列表也没给倍率。两者同时落空才是真的没法算。
+  // 反过来，站点没在「可用渠道」里公开某些专属分组（实测 [CC2] 只在令牌列表里有，
+  // 倍率 0.55 也是那边给的），那种情况价格能算对，不能当成过期去跳过
+  const groupKnown =
+    !group || pricing.groups.length === 0 || rate !== null || rateOfGroup.has(normGroup(group))
 
   // 记下这把 Key 属于哪个分组，下次打开就不用再选
   const prevGroup = inv.normalizeGroup(target.group)
@@ -1008,6 +1022,7 @@ route('POST', /^\/api\/providers\/([\w-]+)\/apply-group$/, async (ctx) => {
         rate,
         sitePrice: hit,
         hasBench: Boolean(benchTable[key]),
+        groupKnown,
       })
       if (via === 'ratio') viaRatio += 1
       if (via === 'percall') viaPercall += 1
@@ -1032,6 +1047,9 @@ route('POST', /^\/api\/providers\/([\w-]+)\/apply-group$/, async (ctx) => {
       missingBench,
       source: pricing.source,
       modelTotal,
+      // 站点分组表里没有这个分组名（站方多半改过名）：此时倍率对不上、价格不落，
+      // 前端要明确提示去「选分组」重新选一次，而不是让用户以为已经生效
+      groupUnknown: !groupKnown,
       // 分组被删掉之后重新导入时，按这把 Key 补回来的模型数（0 = 没有重建）
       resynced,
       resyncError,
@@ -1099,6 +1117,7 @@ route('POST', /^\/api\/providers\/([\w-]+)\/detect-groups$/, async (ctx) => {
   }
   const normGroupName = (value) => inv.normalizeGroup(value)
   const rateOfGroup = new Map(pricing.groups.map((g) => [normGroupName(g.name), g.rate]))
+  const importTimeoutMs = Math.min(Number(db.settings?.probeTimeoutMs) || 15000, 20000)
 
   const results = []
   for (const credential of credentials) {
@@ -1123,6 +1142,12 @@ route('POST', /^\/api\/providers\/([\w-]+)\/detect-groups$/, async (ctx) => {
     if (!manualPinned) await inv.updateCredential(credential.id, { group, groupSource: 'auto' })
     // 令牌里直接带了倍率就用它（Sub2API），否则查价格表
     const rate = typeof hit.rate === 'number' ? hit.rate : (rateOfGroup.get(normGroupName(group)) ?? null)
+    // 这把 Key 名下一条供给都没有（新加的 Key、或分组被删后重加）：光把分组名
+    // 记下来，界面上它永远是「0 个模型」，用户看到的就是「GM1 里的 Deepseek
+    // 读不出来」。这里按它自己的 Key 把模型导进来（与「选分组」同一份实现）。
+    const importedModels = await inv.importCredentialModels(provider, credential, group, {
+      timeoutMs: importTimeoutMs,
+    })
     results.push({
       credentialId: credential.id,
       label: credential.label,
@@ -1133,6 +1158,12 @@ route('POST', /^\/api\/providers\/([\w-]+)\/detect-groups$/, async (ctx) => {
       // 手选过的 Key 后台识别不覆盖，但倍率仍按后台分组落价（分组归属不动）
       pinned: manualPinned,
       updated: 0,
+      // 本次顺手导入了几个模型（0 = 已有供给行，或拉模型失败）
+      imported: importedModels.imported,
+      importError: importedModels.error,
+      // 站点分组表里没这个名字，而且令牌列表也没给倍率：站方多半改过名，价格不能动
+      groupUnknown:
+        rate === null && pricing.groups.length > 0 && !rateOfGroup.has(normGroupName(group)),
     })
   }
 
@@ -1159,6 +1190,7 @@ route('POST', /^\/api\/providers\/([\w-]+)\/detect-groups$/, async (ctx) => {
           rate: row.rate,
           sitePrice: hit,
           hasBench: Boolean(benchTable[key]),
+          groupKnown: !row.groupUnknown,
         })
         if (via === 'skip') {
           // 既没有基准价、也没有广场价：只记分组，价格留给用户自己填

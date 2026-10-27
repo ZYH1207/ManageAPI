@@ -388,6 +388,41 @@ export async function syncOffers(providerId, credentialId, models, group = '') {
 }
 
 /**
+ * 某把 Key 名下一条供给都没有时，用这把 Key 自己拉一次 /v1/models 把行建出来。
+ *
+ * 为什么需要：分组是「识别」出来的，模型是「同步」出来的，两件事各管一半。
+ * 新加一把 Key、或者站方新开一个分组（旧分组被删了）时，分组名已经记在 Key 上，
+ * 但它名下 0 行供给——界面上就是一个「3 个模型也读不到、写着你还没同步」的空分组。
+ * 用户看到的是「网关里存了 GM1，但 GM1 里的 Deepseek 读不出来」，而其实一把 Key
+ * 就能列出来。所以「选分组」和「识别分组」都要在发现 0 行时补这一次。
+ *
+ * 有行就不拉：正常换分组只是给现成的行改倍率，不该每次点一下都多走一次网络。
+ * 拉模型失败也不算致命——分组先存下来，之后点「一键同步」还能补。
+ *
+ * @returns {Promise<{imported:number, skipped:boolean, error:string|null}>}
+ */
+export async function importCredentialModels(provider, credential, group, { timeoutMs = 15000 } = {}) {
+  const name = normalizeGroup(group)
+  if (!provider?.id || !credential?.id || !name) return { imported: 0, skipped: true, error: null }
+
+  const db = await readDb()
+  const ownsOffers = db.offers.some(
+    (o) => o.providerId === provider.id && o.credentialId === credential.id,
+  )
+  if (ownsOffers) return { imported: 0, skipped: true, error: null }
+
+  try {
+    const apiKey = await revealSecret(credential.id)
+    if (!apiKey) throw new Error('Key 解密失败，可能是 master.key 被替换过')
+    const listed = await providers.listModels({ baseUrl: provider.baseUrl, apiKey, timeoutMs })
+    const saved = await syncOffers(provider.id, credential.id, listed.models, name)
+    return { imported: saved.added, skipped: false, error: null }
+  } catch (error) {
+    return { imported: 0, skipped: false, error: error.message || String(error) }
+  }
+}
+
+/**
  * 同一个模型在不同分组下的价格和降智程度可能完全不同
  * （特价池 / Pro 号池 / 企业通道），所以支持复制一条出来单独填。
  */
@@ -663,8 +698,12 @@ export async function listProbes(limit = 100) {
  * 只改价格字段，不碰 offer.group——分组归属是调用方的语义（一边按用户选择、
  * 一边按后台识别）。返回落价方式：'free' | 'percall' | 'ratio' | 'manual' | 'skip'
  * （skip = 信息不足，调用方只记分组、价格留给用户填）。
+ *
+ * groupKnown：调用方保存的分组名在站点分组表里能不能对上。站方改过分组名之后
+ * 必然对不上——这时倍率不是「站点没公布」，而是「我们手里的名字过期了」，
+ * 必须按 skip 处理（见下面第 4 步）。
  */
-export function applySitePricing(offer, { exact, rate, sitePrice, hasBench }) {
+export function applySitePricing(offer, { exact, rate, sitePrice, hasBench, groupKnown = true }) {
   const siteRatio = typeof rate === 'number' ? rate : null
 
   // 缓存读价跟着同一次落价一起写：命中缓存的部分按它计费（通常只有输入价的 1/10），
@@ -716,8 +755,12 @@ export function applySitePricing(offer, { exact, rate, sitePrice, hasBench }) {
 
   // 站点确实有分组价，但调用方没解析出倍率（分组名对不上、或站点没公布倍率）：
   // 这时不能把「未乘倍率」的原价当成手填价写下去——那会把价格放大约 10 倍。
-  // 返回 skip，让调用方保留原值和分组名，等下次分组识别成功再落价
-  if (sitePrice && siteRatio === null && exact !== null) {
+  // 返回 skip，让调用方保留原值和分组名，等下次分组识别成功再落价。
+  //
+  // exact 查不到也要拦：站方改过分组名之后，行上存的旧名字在 byGroup 里也不存在，
+  // 光靠 exact !== null 挡不住——这种时候原价 × 1 和「按原价买」没区别，
+  // 用户看到的数字不会报错，只会安静地贵十倍。所以再加一条 groupKnown。
+  if (sitePrice && siteRatio === null && (exact !== null || !groupKnown)) {
     return 'skip'
   }
 
