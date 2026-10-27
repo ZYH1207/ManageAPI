@@ -22,3 +22,7 @@ db.json
 benchmark.json
 usage.json
 master.key
+
+# 本机双击启动脚本（写死了本机路径，不属于项目内容）
+start.cmd
+start-hidden.vbs
