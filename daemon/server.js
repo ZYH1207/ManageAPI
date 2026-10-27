@@ -543,19 +543,26 @@ route('POST', /^\/api\/providers$/, async (ctx) => {
   // provider.kind，之后余额/公告/采集都能按系别走确定性路径
   try {
     const detected = await providers.detectProviderKind({ baseUrl: created.baseUrl })
-    await inv.updateProvider(created.id, { kind: detected.kind, kindSource: 'auto' })
-    const inState = state.providers.find((p) => p.id === created.id)
-    if (inState) {
-      inState.kind = detected.kind
-      inState.kindSource = 'auto'
+    if (detected.kind && detected.kind !== 'unknown') {
+      await inv.updateProvider(created.id, { kind: detected.kind, kindSource: 'auto' })
+      const inState = state.providers.find((p) => p.id === created.id)
+      if (inState) {
+        inState.kind = detected.kind
+        inState.kindSource = 'auto'
+      }
+    } else if (created.kind && created.kind !== 'unknown') {
+      // 表单里手选了系别而匿名探测没结果：尊重手选，标 manual（手填的不被自动覆盖）
+      await inv.updateProvider(created.id, { kindSource: 'manual' })
+      const inState = state.providers.find((p) => p.id === created.id)
+      if (inState) inState.kindSource = 'manual'
     }
   } catch {
-    /* 探测失败不阻断：kind 保持 unknown */
+    /* 探测失败不阻断：kind 保持表单选择或 unknown */
   }
   return state
 })
 
-/** 重新识别站点系别（用户显式触发，允许覆盖任何旧值）。 */
+/** 带令牌识别站点系别：填令牌后前端自动触发（匿名探测不出的站带令牌再探）。 */
 route('POST', /^\/api\/providers\/([\w-]+)\/detect-kind$/, async (ctx) => {
   const db = await store.readDb()
   const provider = db.providers.find((p) => p.id === ctx.params[0])
