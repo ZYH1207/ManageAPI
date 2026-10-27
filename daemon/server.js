@@ -891,11 +891,15 @@ route('POST', /^\/api\/providers\/([\w-]+)\/apply-group$/, async (ctx) => {
   const target = credentials.find((c) => c.id === credentialId) || credential
   if (!target) throw new HttpError(400, '该站点还没有 Key')
 
-  const rateOfGroup = new Map(pricing.groups.map((g) => [g.name, g.rate]))
+  // 分组名两侧可能有空白差异（实测 Key 存的「国模-0045 p哥」与站点公布的
+  // 「国模-0045 p哥 」差一个尾随空格），归一化后再匹配，否则倍率解析成 null，
+  // 落价会退回「原价手填」，价格直接放大约 10 倍
+  const normGroup = (value) => String(value ?? '').trim()
+  const rateOfGroup = new Map(pricing.groups.map((g) => [normGroup(g.name), g.rate]))
   const rates = pricing.groups.map((g) => g.rate).filter((r) => typeof r === 'number')
   const uniformRate = rates.length > 0 && rates.every((r) => r === rates[0]) ? rates[0] : null
   // 分组没给（或这个站只有一个分组）时，能确定倍率就用，确定不了就按原价算
-  const rate = group && rateOfGroup.has(group) ? rateOfGroup.get(group) : uniformRate
+  const rate = group && rateOfGroup.has(normGroup(group)) ? rateOfGroup.get(normGroup(group)) : uniformRate
 
   // 记下这把 Key 属于哪个分组，下次打开就不用再选
   const prevGroup = target.group || ''
@@ -1022,7 +1026,8 @@ route('POST', /^\/api\/providers\/([\w-]+)\/detect-groups$/, async (ctx) => {
     pricingError = error.message || String(error)
     benchTable = await bench.readBenchmarks()
   }
-  const rateOfGroup = new Map(pricing.groups.map((g) => [g.name, g.rate]))
+  const normGroupName = (value) => String(value ?? '').trim()
+  const rateOfGroup = new Map(pricing.groups.map((g) => [normGroupName(g.name), g.rate]))
 
   const results = []
   for (const credential of credentials) {
@@ -1043,7 +1048,7 @@ route('POST', /^\/api\/providers\/([\w-]+)\/detect-groups$/, async (ctx) => {
     const manualPinned = credential.groupSource === 'manual'
     if (!manualPinned) await inv.updateCredential(credential.id, { group, groupSource: 'auto' })
     // 令牌里直接带了倍率就用它（Sub2API），否则查价格表
-    const rate = typeof hit.rate === 'number' ? hit.rate : (rateOfGroup.get(group) ?? null)
+    const rate = typeof hit.rate === 'number' ? hit.rate : (rateOfGroup.get(normGroupName(group)) ?? null)
     results.push({
       credentialId: credential.id,
       label: credential.label,

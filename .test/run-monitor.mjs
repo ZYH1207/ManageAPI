@@ -161,6 +161,17 @@ console.log('\n断言：花费双口径')
   check('非法单价按未填处理', spendFactorOf({ unitPrice: 0 }, settings) === 1)
   check('1:1 充值的站实际消费低于模型消费', spendFactorOf({ unitPrice: 1 }, settings) < 0.2)
 
+  // 缓存命中按缓存价计费（不再全按输入价）
+  {
+    const { offerCost } = await import('../core/pricing.js')
+    const bench = { m: { in: 2, out: 8, currency: 'CNY' } }
+    const offer = { modelKey: 'm', pricingMode: 'manual', inPrice: 2, outPrice: 8, priceUnit: 'per_mtok', currency: 'CNY', cacheReadPrice: 0.2 }
+    const cost = offerCost(offer, { fx: { rates: { CNY: 7 } } }, bench)
+    check('缓存价能读出来', cost.cacheReadCnyPerMtok === 0.2)
+    const noCache = offerCost({ ...offer, cacheReadPrice: null }, { fx: { rates: { CNY: 7 } } }, bench)
+    check('站点没给缓存价时为 null（调用方退回输入价）', noCache.cacheReadCnyPerMtok === null)
+  }
+
   const d = (offset) => {
     const t = new Date()
     t.setDate(t.getDate() - offset)

@@ -429,7 +429,16 @@ function spendByDay(usageData, offers, settings, benchmarks, providerById) {
       if (cost.perCall) {
         if (typeof cost.callPriceCny === 'number') sum += (row.requests || 0) * cost.callPriceCny
       } else {
-        if (typeof cost.inCnyPerMtok === 'number') sum += ((row.input || 0) / 1e6) * cost.inCnyPerMtok
+        // 缓存命中的 token 单独按缓存价算：usage 里的 input 已经包含 cached，
+        // 全按输入价算会把「97% 命中缓存」的用量高估近 10 倍。
+        // 站点没公布缓存价时退回输入价（保守，不假装有折扣）
+        const cached = Math.max(0, Math.min(Number(row.cached) || 0, Number(row.input) || 0))
+        const freshIn = Math.max(0, (Number(row.input) || 0) - cached)
+        if (typeof cost.inCnyPerMtok === 'number') {
+          sum += (freshIn / 1e6) * cost.inCnyPerMtok
+          const cachePrice = cost.cacheReadCnyPerMtok ?? cost.inCnyPerMtok
+          sum += (cached / 1e6) * cachePrice
+        }
         if (typeof cost.outCnyPerMtok === 'number') sum += ((row.output || 0) / 1e6) * cost.outCnyPerMtok
       }
       if (!sum) continue

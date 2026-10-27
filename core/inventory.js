@@ -651,6 +651,16 @@ export async function listProbes(limit = 100) {
 export function applySitePricing(offer, { exact, rate, sitePrice, hasBench }) {
   const siteRatio = typeof rate === 'number' ? rate : null
 
+  // 缓存读价跟着同一次落价一起写：命中缓存的部分按它计费（通常只有输入价的 1/10），
+  // 不写的话花费只能按输入全价算，缓存占比高的用户会被高估好几倍
+  const cacheBase = sitePrice?.cacheReadPrice
+  if (cacheBase !== null && cacheBase !== undefined && Number.isFinite(Number(cacheBase))) {
+    offer.cacheReadPrice = Math.round(Number(cacheBase) * (siteRatio ?? 1) * 1000) / 1000
+  } else if (sitePrice) {
+    // 站点明确没有缓存价时清掉旧值，避免沿用一个已经不成立的价
+    offer.cacheReadPrice = null
+  }
+
   // ---- 按次计费：站点在模型广场里声明了 billing_mode=per_request / image。
   // 这类供给的单价是「每次多少钱」，和 token 口径量纲不同——塞进 per_mtok 会让
   // 比价页把 ¥1/次 当成 ¥1/百万 token 来比，结论完全错。倍率已在 model-plaza
@@ -683,6 +693,13 @@ export function applySitePricing(offer, { exact, rate, sitePrice, hasBench }) {
     offer.siteRatio = siteRatio
     offer.ratioSource = 'site'
     return 'free'
+  }
+
+  // 站点确实有分组价，但调用方没解析出倍率（分组名对不上、或站点没公布倍率）：
+  // 这时不能把「未乘倍率」的原价当成手填价写下去——那会把价格放大约 10 倍。
+  // 返回 skip，让调用方保留原值和分组名，等下次分组识别成功再落价
+  if (sitePrice && siteRatio === null && exact !== null) {
+    return 'skip'
   }
 
   if (siteRatio !== null && hasBench) {

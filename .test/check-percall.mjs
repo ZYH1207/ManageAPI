@@ -118,6 +118,33 @@ console.log('[4] 比价口径：按次价不参与 token 排序')
   ok(cost.callPriceCny === 0.01, `按次单价 ${cost.callPriceCny} 元/次`)
 }
 
+console.log('[4b] 分组倍率解析不到时不把原价写成手填价')
+{
+  // 站点有分组价（exact 命中），但调用方没解析出倍率（分组名空白差异等）：
+  // 必须 skip，不能按原价 × 1 写成 manual——那会把价格放大约 10 倍
+  const offer = { priceUnit: 'per_mtok', pricingMode: 'ratio', ratio: 0.045, inPrice: null, outPrice: null }
+  const via = applySitePricing(offer, {
+    exact: { inPrice: 2, outPrice: 8 },
+    rate: null,
+    sitePrice: { billingMode: 'token', inPrice: 2, outPrice: 8 },
+    hasBench: true,
+  })
+  ok(via === 'skip', `倍率缺失 → ${via}（不落价）`)
+  ok(offer.inPrice === null, '原手填价为空的保持为空')
+  ok(offer.ratio === 0.045, '原有倍率不被破坏')
+
+  // 没有 exact（全站回落价）时仍按原价 × 倍率落价
+  const fallback = { priceUnit: 'per_mtok', pricingMode: 'ratio', ratio: null, inPrice: null, outPrice: null }
+  const via2 = applySitePricing(fallback, {
+    exact: null,
+    rate: null,
+    sitePrice: { billingMode: 'token', inPrice: 2, outPrice: 8 },
+    hasBench: false,
+  })
+  ok(via2 === 'manual', `无分组的全站价 → ${via2}`)
+  ok(fallback.inPrice === 2, `按原价落（${fallback.inPrice}）`)
+}
+
 console.log('[5] 从按次切回按量时单位复位')
 {
   const offer = { priceUnit: 'per_call', inPrice: 0.01, outPrice: null, pricingMode: 'manual' }

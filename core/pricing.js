@@ -150,10 +150,21 @@ export function offerCost(offer, settings = {}, benchmarks = {}) {
 
   const toCny = (usd) => (usd === null ? null : usd * fx)
 
+  // 缓存读价：命中缓存的部分按它计费，通常远低于输入价。站点没给就退回输入价
+  // （保守，不假装有折扣），但要把「是不是真的给了」标出来，界面上能区分
+  const cacheReadRaw = offer.cacheReadPrice
+  const cacheReadCny =
+    cacheReadRaw === null || cacheReadRaw === undefined || !Number.isFinite(Number(cacheReadRaw))
+      ? null
+      : Number(cacheReadRaw) * mult
+
   return {
     inUsdPerMtok,
     outUsdPerMtok,
     blendedUsdPerMtok,
+    // 缓存读价（人民币/百万 token）；站点没公布时为 null，调用方退回输入价
+    cacheReadCnyPerMtok: cacheReadCny,
+    cacheReadUsdPerMtok: cacheReadCny === null ? null : cacheReadCny / fx,
     offPeakInUsdPerMtok: offPeakInUsd,
     offPeakOutUsdPerMtok: offPeakOutUsd,
     offPeakBlendedUsdPerMtok,

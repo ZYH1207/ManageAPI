@@ -581,6 +581,9 @@ export async function fetchProviderPricing({ baseUrl, adminToken, kind }) {
       // 按次/按张计费的模型没有 token 单价，别硬塞一个数字进去
       inPrice: m.billingMode === 'token' ? m.baseIn : null,
       outPrice: m.billingMode === 'token' ? m.baseOut : null,
+      // 缓存读价（元/百万 token 原价，未乘倍率）：命中缓存的部分按它计费，
+      // 通常是输入价的 1/10。不传下去的话花费会按输入全价算，虚高很多
+      cacheReadPrice: m.billingMode === 'token' ? (m.baseCacheRead ?? null) : null,
       billingMode: m.billingMode || 'token',
       // 按次单价（元/次，已按站点算法乘过倍率）；token 计费时为 null
       callPrice: m.callPrice ?? null,
