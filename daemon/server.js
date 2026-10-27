@@ -892,7 +892,7 @@ route('GET', /^\/api\/providers\/([\w-]+)\/groups$/, async (ctx) => {
  */
 route('POST', /^\/api\/providers\/([\w-]+)\/apply-group$/, async (ctx) => {
   const providerId = ctx.params[0]
-  const group = String(ctx.body.group ?? '').trim()
+  const group = inv.normalizeGroup(ctx.body.group)
   const credentialId = String(ctx.body.credentialId || '')
   const { provider, credential, credentials, pricing, offers, match, benchTable, byGroupModel } =
     await loadProviderPricing(providerId)
@@ -912,7 +912,7 @@ route('POST', /^\/api\/providers\/([\w-]+)\/apply-group$/, async (ctx) => {
   const rate = group && rateOfGroup.has(normGroup(group)) ? rateOfGroup.get(normGroup(group)) : uniformRate
 
   // 记下这把 Key 属于哪个分组，下次打开就不用再选
-  const prevGroup = target.group || ''
+  const prevGroup = inv.normalizeGroup(target.group)
   if (group !== prevGroup) {
     // 用户在「导入倍率」里手选的分组：标记 manual，之后自动识别不覆盖
     await inv.updateCredential(target.id, { group, groupSource: 'manual' })
@@ -932,7 +932,7 @@ route('POST', /^\/api\/providers\/([\w-]+)\/apply-group$/, async (ctx) => {
       // 没有 credentialId 的老数据才回落到 group 比较。
       if (offer.credentialId) {
         if (offer.credentialId !== target.id) continue
-      } else if ((offer.group || '') !== prevGroup) {
+      } else if (inv.normalizeGroup(offer.group) !== prevGroup) {
         continue
       }
 
@@ -956,7 +956,7 @@ route('POST', /^\/api\/providers\/([\w-]+)\/apply-group$/, async (ctx) => {
       if (via === 'manual' && !benchTable[key]) missingBench.push(offer.upstreamName)
 
       // 行上标出它属于哪个分组，页面就不用再显示「默认分组」了
-      if (group) offer.group = group
+      if (group) offer.group = inv.normalizeGroup(group)
       offer.updatedAt = new Date().toISOString()
       updated += 1
     }
@@ -1087,8 +1087,10 @@ route('POST', /^\/api\/providers\/([\w-]+)\/detect-groups$/, async (ctx) => {
 
         const key = offer.benchmarkKey || offer.modelKey || offer.upstreamName
         const hit = match(offer, row.group)
-        // 分组名先写上——这一步不依赖价格表，读不到广场也该记住「你属于哪个分组」
-        offer.group = row.group
+        // 分组名先写上——这一步不依赖价格表，读不到广场也该记住「你属于哪个分组」。
+        // 必须归一化：站点令牌列表里的分组名常带尾随空格，直接写进去会和
+        // syncOffers 里归一化过的去重键永远对不上，每同步一轮多插一整套行
+        offer.group = inv.normalizeGroup(row.group)
 
         const via = inv.applySitePricing(offer, {
           exact: byGroupModel.get(`${row.group}::${offer.modelKey}`) || null,
@@ -1398,12 +1400,12 @@ route('PATCH', /^\/api\/offers\/([\w-]+)$/, async (ctx) => {
       offer.priceUnit = 'per_mtok'
     }
     if (b.group !== undefined) {
-      const name = String(b.group || '').trim()
+      const name = inv.normalizeGroup(b.group)
       const clash = db.offers.some(
         (o) =>
           o.id !== offer.id &&
           o.providerId === offer.providerId &&
-          (o.group || '') === name &&
+          inv.normalizeGroup(o.group) === name &&
           o.upstreamName === offer.upstreamName,
       )
       if (clash) throw new HttpError(400, `该站「${name || '默认'}」分组下已经有同名模型了`)

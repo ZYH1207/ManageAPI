@@ -21,6 +21,18 @@ export function nowIso() {
  * 归一化模型名，用于跨站比对同一个模型。
  * 处理：大小写、空白、`provider/` 前缀、`:free` / `-free` 后缀。
  */
+/**
+ * 规范化分组名：去首尾空白 + 内部连续空白收敛成一个空格。
+ *
+ * **所有写入/比较 offer.group 的地方都必须走这个函数。** 站点在令牌列表里
+ * 返回的分组名常带尾随空格（实测「国模-0045 p哥 」比 Key 里存的多个空格），
+ * 各处各写一套 trim 就会出现「同步时按 trim 后的键去重、识别分组时又写回
+ * 带空格的值」——下一轮同步就匹配不上，每同步一次多插一整套行。
+ */
+export function normalizeGroup(name) {
+  return String(name ?? '').trim().replace(/\s+/g, ' ')
+}
+
 export function normalizeModelKey(name) {
   return String(name ?? '')
     .trim()
@@ -226,7 +238,7 @@ export async function createCredential({ providerId, label, secret, group = '', 
       // 只留尾部四位做识别，避免任何界面回显完整 key
       tail: String(secret).trim().slice(-4),
       // 这把 Key 属于站点的哪个分组——同步模型、探针、路由都按它走
-      group: String(group || '').trim(),
+      group: normalizeGroup(group),
       expiresAt,
       createdAt: nowIso(),
     }
@@ -241,7 +253,7 @@ export async function updateCredential(id, patch) {
     if (!credential) throw new Error(`凭据不存在：${id}`)
     if (patch.label !== undefined) credential.label = patch.label
     if (patch.group !== undefined) {
-      const next = String(patch.group || '').trim()
+      const next = normalizeGroup(patch.group)
       // 归属来源：手选（用户明确指定）优先于自动识别——后台令牌列表识别的
       // 分组只是线索，用户买了哪一档才是商务事实。auto 写入不覆盖 manual。
       const source = patch.groupSource === 'auto' ? 'auto' : 'manual'
@@ -323,12 +335,14 @@ export function routeableOffers(db) {
 export async function syncOffers(providerId, credentialId, models, group = '') {
   return mutate((db) => {
     if (!db.providers.some((p) => p.id === providerId)) throw new Error(`站点不存在：${providerId}`)
-    const g = String(group || '').trim()
-    // 按「分组 + 模型名」去重：同一个站的不同分组可以有同名模型
+    const g = normalizeGroup(group)
+    // 按「分组 + 模型名」去重：同一个站的不同分组可以有同名模型。
+    // 两侧都走 normalizeGroup——老数据的分组名可能带尾随空格，
+    // 只归一化新键会造成「永远匹配不上、每轮多插一批」
     const existing = new Map(
       db.offers
         .filter((o) => o.providerId === providerId)
-        .map((o) => [`${o.group || ''}::${o.upstreamName}`, o]),
+        .map((o) => [`${normalizeGroup(o.group)}::${o.upstreamName}`, o]),
     )
     let added = 0
     let revived = 0
@@ -383,12 +397,12 @@ export async function duplicateOffer(id, { group }) {
   return mutate((db) => {
     const source = db.offers.find((o) => o.id === id)
     if (!source) throw new Error(`模型记录不存在：${id}`)
-    const name = String(group || '').trim()
+    const name = normalizeGroup(group)
     if (!name) throw new Error('分组名不能为空')
     const exists = db.offers.some(
       (o) =>
         o.providerId === source.providerId &&
-        (o.group || '') === name &&
+        normalizeGroup(o.group) === name &&
         o.upstreamName === source.upstreamName,
     )
     if (exists) throw new Error(`该站「${name}」分组下已经有同名模型了`)
@@ -396,7 +410,7 @@ export async function duplicateOffer(id, { group }) {
     // 路由会按「同分组 Key」回落到该站的任意 Key）——不能让新行继续
     // 挂着别的分组的 Key，否则分组归属和实际鉴权就脱节了
     const groupCred = db.credentials.find(
-      (c) => c.providerId === source.providerId && (c.group || '') === name,
+      (c) => c.providerId === source.providerId && normalizeGroup(c.group) === name,
     )
     const copy = {
       ...source,
@@ -427,12 +441,12 @@ export async function updateOfferPrice(
     if (currency) offer.currency = currency
     if (priceUnit) offer.priceUnit = priceUnit
     if (group !== undefined) {
-      const name = String(group || '').trim()
+      const name = normalizeGroup(group)
       const clash = db.offers.some(
         (o) =>
           o.id !== id &&
           o.providerId === offer.providerId &&
-          (o.group || '') === name &&
+          normalizeGroup(o.group) === name &&
           o.upstreamName === offer.upstreamName,
       )
       if (clash) throw new Error(`该站「${name || '默认'}」分组下已经有同名模型了`)
@@ -767,7 +781,7 @@ export function applySitePricing(offer, { exact, rate, sitePrice, hasBench }) {
 export async function setGroupRatio(providerId, group, ratio) {
   return mutate((db) => {
     if (!db.providers.some((p) => p.id === providerId)) throw new Error(`站点不存在：${providerId}`)
-    const name = String(group || '').trim()
+    const name = normalizeGroup(group)
     const value = ratio === null || ratio === undefined || ratio === '' ? null : Number(ratio)
     if (value !== null && (!Number.isFinite(value) || value < 0)) throw new Error('倍率需要是 0 或正数')
 
@@ -775,7 +789,7 @@ export async function setGroupRatio(providerId, group, ratio) {
     const siteValues = new Set()
     for (const offer of db.offers) {
       if (offer.providerId !== providerId) continue
-      if ((offer.group || '') !== name) continue
+      if (normalizeGroup(offer.group) !== name) continue
       offer.ratio = value
       offer.ratioSource = value === null ? null : value === offer.siteRatio ? 'site' : 'custom'
       // 落过「站点原价 × 倍率」绝对价的行走绝对价模式：改倍率就按站点原价重算。
@@ -815,7 +829,7 @@ export async function restoreSiteRatio(providerId, group) {
     const noSiteValue = []
     for (const offer of db.offers) {
       if (offer.providerId !== providerId) continue
-      if (name !== null && (offer.group || '') !== name) continue
+      if (name !== null && normalizeGroup(offer.group) !== name) continue
       if (offer.ratioSource !== 'custom') continue
       if (offer.siteRatio === null || offer.siteRatio === undefined) {
         noSiteValue.push(offer.upstreamName)
