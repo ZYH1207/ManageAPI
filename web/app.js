@@ -983,7 +983,7 @@ function providersHtml({ withForm = true, panel = '', actions = '' } = {}) {
             ${loginLightDot(p)}
             <b>${esc(p.name)}</b>
             ${p.baseUrl ? `<a class="icon-btn prov-open" href="${esc(p.baseUrl)}" target="_blank" rel="noreferrer" title="${t('打开站点后台')}">${icon('external')}</a>` : ''}
-            ${kindText ? `<span class="badge ${kindMeta.cls}" title="${esc(p.kindSource === 'manual' ? t('系别由用户手动设置') : t('系别由自动探测得出，可在「识别系别」重新判断'))}">${esc(kindText)}</span>` : ''}
+            ${kindText ? `<span class="badge ${kindMeta.cls}" title="${esc(p.kindSource === 'manual' ? t('系别由用户手动设置') : t('系别由添加站点/登录时自动探测得出'))}">${esc(kindText)}</span>` : ''}
             ${
               freeNames.length
                 ? `<span class="badge prov-free" title="${esc(t('免费模型：{list}', { list: freeNames.join('、') }))}">${icon('gift')}${t('免费 {n}', { n: freeNames.length })}</span>`
@@ -1061,7 +1061,6 @@ function providersHtml({ withForm = true, panel = '', actions = '' } = {}) {
           <button data-act="prov-panel" data-panel="rates">${icon('columns')}分组倍率</button>
           <button data-act="open-group-picker" title="从站点读分组，选你买的那个，倍率自动填到下面所有模型">${icon('columns')}导入倍率</button>
           <button data-act="usage-check" title="用管理令牌拉站方用量，和我们的估算对比">${icon('receipt')}用量核对</button>
-          <button data-act="detect-kind" title="只读探测：判断这个站是 one-api / new-api / Sub2API 哪一系，决定余额与公告走哪条接口">${icon('search')}识别系别</button>
           <button data-act="open-login" title="用站点后台的账号密码登录，自动获取并续期令牌——令牌过期不再需要手动换">${icon('key')}账号登录</button>
           <button data-act="export">${icon('download')}导出配置</button>
         </div>
@@ -4273,21 +4272,6 @@ document.addEventListener('click', async (event) => {
     return
   }
 
-  if (action === 'detect-kind') {
-    const providerId = actionButton.closest('[data-provider]').dataset.provider
-    await withBusy(actionButton, async () => {
-      state = await api('POST', `/api/providers/${providerId}/detect-kind`, {})
-      render()
-      const r = state.kindResult
-      if (r?.kind === 'unknown') {
-        toast(`没能识别系别：${r.evidence}`, true)
-      } else {
-        toast(`识别为 ${r.kind} 系（${r.evidence}）`)
-      }
-    })
-    return
-  }
-
   if (action === 'usage-check') {
     const providerId = actionButton.closest('[data-provider]').dataset.provider
     await withBusy(actionButton, async () => {
@@ -4567,8 +4551,12 @@ document.addEventListener('submit', async (event) => {
       state = result
       closeLoginModal()
       render()
+      // 系别在登录内部就探测过了（detectProviderKind），这里直接报结果——
+      // 卡片上的系别徽章同时会更新，不需要单独的「识别系别」按钮
+      const kind = state.loginResult?.kind
+      const kindLabel = ID_PROVIDER_KIND[kind]?.label || (kind === 'unknown' ? '未知系别' : String(kind || '未知系别'))
       const via = state.loginResult?.via === 'sub2api' ? 'Sub2API' : 'OneAPI/NewAPI'
-      toast(`登录成功（${via}），令牌已自动获取并开始续期`)
+      toast(`登录成功 · 识别为 ${kindLabel}（${via} 协议），令牌已自动获取并开始续期`)
     } catch (error) {
       toast(error.message, true)
       if (submitBtn) submitBtn.disabled = false

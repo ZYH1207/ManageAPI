@@ -1259,7 +1259,7 @@ Object.assign(EN, {
 // 系别自动判定
 Object.assign(EN, {
   '系别由用户手动设置': 'Vendor type set manually',
-  '系别由自动探测得出，可在「识别系别」重新判断': 'Vendor type auto-detected — re-run "Detect type" to judge again',
+  '系别由添加站点/登录时自动探测得出': 'Vendor type auto-detected when adding the site or logging in',
 })
 
 // 基准价分层折叠
