@@ -52,7 +52,7 @@ const res = await fetch(`${BASE}/v1/chat/completions`, {
 })
 console.log('请求状态:', res.status)
 
-await new Promise((r) => setTimeout(r, 400))
+await new Promise((r) => setTimeout(r, 2500)) // 路由日志攒批 2000ms 落盘
 const log = await api('GET', '/api/gateway/routing?limit=1')
 const latest = log.routing[0]
 console.log('选中:', latest.chosenProviderName, '| 分组:', JSON.stringify(latest.chosenGroup))

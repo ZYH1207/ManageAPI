@@ -40,7 +40,7 @@ console.log('\n=== 设首字上限 200ms ===')
 state = await api('PATCH', '/api/settings', { maxTtftMs: 200 })
 console.log('选中:', await chat(key))
 
-await new Promise((r) => setTimeout(r, 400))
+await new Promise((r) => setTimeout(r, 2500)) // 路由日志攒批 2000ms 落盘
 const log = await api('GET', '/api/gateway/routing?limit=1')
 console.log('\n候选（含延迟判定）：')
 for (const c of log.routing[0].candidates || []) {
