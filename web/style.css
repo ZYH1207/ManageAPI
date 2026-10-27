@@ -1626,7 +1626,29 @@ html[data-lang='en'] .doc[data-lang-block='en'] { display: block; }
 }
 
 .monitor-chart-card .card-head { align-items: center; }
-.chart-wrap { margin-top: 10px; }
+.chart-wrap { margin-top: 10px; position: relative; }
+/* 概览图悬停提示：跟随光标所在列，靠右时翻到左侧 */
+.chart-tip {
+  position: absolute; top: 12px; left: 0;
+  display: none; pointer-events: none; z-index: 5;
+  min-width: 160px; max-width: 260px;
+  padding: 8px 10px; border-radius: 8px;
+  background: var(--surface); border: 1px solid var(--border-strong);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, .12);
+  font-size: 12px; line-height: 1.65;
+}
+.chart-tip.is-on { display: block; }
+.chart-tip-head { color: var(--muted); margin-bottom: 3px; }
+.chart-tip-row { display: flex; justify-content: space-between; gap: 14px; }
+.chart-tip-row b { font-weight: 600; font-variant-numeric: tabular-nums; }
+.chart-tip-row span { font-variant-numeric: tabular-nums; }
+.chart-tip-sep { height: 1px; background: var(--divider); margin: 5px 0; }
+.chart-tip-dot {
+  display: inline-block; width: 7px; height: 7px; border-radius: 50%;
+  margin-right: 5px; vertical-align: 1px;
+}
+[data-theme='dark'] .chart-tip { box-shadow: 0 6px 18px rgba(0, 0, 0, .5); }
+
 /* height:auto + viewBox 等比：横轴拉满时文字不会被横向拉扁（不用 preserveAspectRatio="none"） */
 .chart { width: 100%; height: auto; max-height: 320px; display: block; }
 .chart .grid-line { stroke: var(--divider); stroke-width: 1; }

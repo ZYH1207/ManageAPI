@@ -876,6 +876,71 @@ function renderUsageCheck(providerId) {
     </div>`
 }
 
+/**
+ * 概览图的悬停提示。
+ *
+ * 数据从卡片上的 data-chart-ctx 读——那是渲染时算好的同一份序列，
+ * 保证 tooltip 和图上画的东西一致（尤其「全部」模式下的合计口径）。
+ */
+function showChartTip(hitEl) {
+  const card = hitEl.closest('[data-chart-ctx]')
+  const tip = document.getElementById('chart-tip')
+  if (!card || !tip) return
+  let ctx
+  try {
+    ctx = JSON.parse(card.dataset.chartCtx)
+  } catch {
+    return
+  }
+  const i = Number(hitEl.dataset.chartDay)
+  if (!Number.isInteger(i) || i < 0) return
+
+  // 注意不能叫 money：那会和模块级 money() 撞名，函数体里再调用就是
+  // 自我引用的 TDZ 错误（整个 hover 处理器会静默失败）
+  const fmtMoney = (v) => `${priceSym()}${money(dispPrice(v))}`
+  const rows = []
+
+  if (ctx.site === 'ALL') {
+    const bal = ctx.balance[i]
+    rows.push(`<div class="chart-tip-head">${esc(ctx.days[i])}</div>`)
+    rows.push(`<div class="chart-tip-row"><span>${t('余额合计')}</span><b>${bal === null ? '—' : fmtMoney(bal)}</b></div>`)
+    const parts = ctx.providers
+      .map((pid) => ({ pid, name: ctx.names[pid] || pid, value: ctx.spend[i]?.[pid] || 0 }))
+      .filter((r) => r.value > 0)
+      .sort((a, b) => b.value - a.value)
+    if (parts.length) {
+      rows.push('<div class="chart-tip-sep"></div>')
+      for (const part of parts) {
+        rows.push(
+          `<div class="chart-tip-row"><span><i class="chart-tip-dot" style="background:${esc(ctx.colors[part.pid] || 'var(--faint)')}"></i>${esc(part.name)}</span><span>${fmtMoney(part.value)}</span></div>`,
+        )
+      }
+      rows.push(
+        `<div class="chart-tip-sep"></div><div class="chart-tip-row"><span>${t('花费合计')}</span><b>${fmtMoney(ctx.total[i] || 0)}</b></div>`,
+      )
+    }
+  } else {
+    const bal = ctx.balance[i]
+    rows.push(`<div class="chart-tip-head">${esc(ctx.days[i])} · ${esc(ctx.names[ctx.site] || ctx.site)}</div>`)
+    rows.push(`<div class="chart-tip-row"><span>${t('余额')}</span><b>${bal === null ? '—' : fmtMoney(bal)}</b></div>`)
+    rows.push(`<div class="chart-tip-row"><span>${t('花费')}</span><b>${fmtMoney(ctx.spend[i]?.[ctx.site] || 0)}</b></div>`)
+  }
+
+  tip.innerHTML = rows.join('')
+  tip.classList.add('is-on')
+
+  // 定位：跟随光标所在列，靠右时翻到左侧
+  const wrap = tip.parentElement
+  const wrapRect = wrap.getBoundingClientRect()
+  const hitRect = hitEl.getBoundingClientRect()
+  const centerX = hitRect.left + hitRect.width / 2 - wrapRect.left
+  const tipW = tip.offsetWidth
+  let left = centerX + 14
+  if (left + tipW > wrapRect.width) left = centerX - tipW - 14
+  tip.style.left = `${Math.max(0, left)}px`
+  tip.style.top = '12px'
+}
+
 /** 站点卡列表的 HTML（监控页专用；「站点」视图已并入监控页） */
 function providersHtml({ withForm = true, panel = '', actions = '' } = {}) {
   const addForm = withForm ? $('#tpl-add-provider').innerHTML : ''
@@ -2889,6 +2954,16 @@ function monitorChartSvg(balanceSeries = [], spendSeries = [], options = {}) {
     .map(([px, py]) => `<circle cx="${px.toFixed(1)}" cy="${py.toFixed(1)}" r="2.6" />`)
     .join('')
 
+  // 逐日命中区：悬停看当天明细（余额 + 各站花费）
+  const hits = balanceSeries
+    .map((d, i) => {
+      const w = innerW / Math.max(n, 1)
+      // pointer-events="all" 必须显式写：fill="transparent" 的 rect 在 SVG 里
+      // 默认不接收指针事件（透明填充被当成不可见），悬停会直接穿透到 svg
+      return `<rect x="${(x(i) - w / 2).toFixed(1)}" y="${padT}" width="${w.toFixed(1)}" height="${innerH}" fill="transparent" pointer-events="all" data-chart-day="${i}" />`
+    })
+    .join('')
+
   const step = Math.max(1, Math.ceil(n / 7))
   const dayLabels = balanceSeries
     .map((d, i) => {
@@ -2905,6 +2980,7 @@ function monitorChartSvg(balanceSeries = [], spendSeries = [], options = {}) {
     ${linePaths ? `<path class="line" d="${linePaths}" />` : ''}
     <g class="dots">${dots}</g>
     ${dayLabels}
+    ${hits}
   </svg>`
 }
 
@@ -3112,13 +3188,30 @@ function renderMonitor() {
     .join('')
   const chips = allChip + siteChips
 
+  // 悬停所需的上下文（序列 + 站点名 + 配色）挂在卡片上，避免事件处理器再算一遍
+  const chartCtx = {
+    days: (data.balanceSeries || []).map((d) => d.day),
+    balance: (data.balanceSeries || []).map((d) => {
+      if (chartSite === 'ALL') return typeof d.total === 'number' ? d.total : null
+      const raw = d.perProvider?.[chartSite]
+      return typeof raw === 'number' ? raw * rateCny() : null
+    }),
+    spend: (data.spendSeries || []).map((d) => d.byProvider || {}),
+    total: (data.spendSeries || []).map((d) => d.cny || 0),
+    site: chartSite,
+    names: Object.fromEntries((data.balanceByProvider || []).map((r) => [r.providerId, r.name])),
+    providers: chartProviders,
+    colors: Object.fromEntries(chartProviders.map((pid) => [pid, seriesColorOf(pid)])),
+  }
   const chartCard = `
-    <div class="card monitor-chart-card">
+    <div class="card monitor-chart-card" data-chart-ctx="${esc(JSON.stringify(chartCtx))}">
       <div class="card-head">
         <h3>余额概览</h3>
         ${seg}
       </div>
-      ${chart ? `<div class="chart-wrap">${chart}</div>` : '<div class="empty small"><p>还没有同步到余额。点右上角「立即同步」跑一轮。</p></div>'}
+      ${chart
+        ? `<div class="chart-wrap">${chart}<div class="chart-tip" id="chart-tip" role="tooltip"></div></div>`
+        : '<div class="empty small"><p>还没有同步到余额。点右上角「立即同步」跑一轮。</p></div>'}
       <div class="chart-legend">
         <span><i class="legend-line"></i>${chartSite === 'ALL'
           ? t('余额合计（{sym}，其他币种按汇率折算）', { sym: priceSym() })
@@ -3553,6 +3646,21 @@ window.addEventListener('hashchange', () => {
   if (next !== activeTab && next !== `free/${freePane}`) setTab(next)
 })
 
+// 概览图悬停：移入命中区显示当天明细，移出隐藏。
+// 用 mousemove 而不是 click —— 图表信息是「扫过去看」的，不该要求点击
+document.addEventListener('mousemove', (event) => {
+  const hit = event.target.closest?.('[data-chart-day]')
+  const tip = document.getElementById('chart-tip')
+  if (hit) {
+    showChartTip(hit)
+    return
+  }
+  if (tip?.classList.contains('is-on')) {
+    // 移出图表范围才隐藏；在卡片内移动（比如滑到图例上）保持显示
+    if (!event.target.closest?.('.chart-wrap')) tip.classList.remove('is-on')
+  }
+})
+
 // 点语言菜单以外的地方收起它
 document.addEventListener('click', (event) => {
   const menu = $('#lang-menu')
@@ -3772,6 +3880,13 @@ document.addEventListener('click', async (event) => {
       renderMonitor()
       translateDom($('#view-monitor') || document.body)
     }
+    return
+  }
+
+  // 概览图悬停：显示当天余额 + 各站花费明细
+  const chartHit = event.target.closest?.('[data-chart-day]')
+  if (chartHit) {
+    showChartTip(chartHit)
     return
   }
 
