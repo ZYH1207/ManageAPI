@@ -707,16 +707,24 @@ Object.assign(EN, {
 // 放行可疑供给（开关）
 Object.assign(EN, {
   '太慢': 'Too slow',
+  // 慢速 = 首字超过门槛被筛掉的那一类，和不可用同等待遇
+  '慢速': 'Slow',
+  '兜底': 'Fallback',
+  '不会登场': 'Not routed',
+  '没有可信样本': 'No usable samples',
+  '慢速档位限制': 'Slow tier limit',
+  '1000–20000ms 共 20 档 · 慢速即为不可用':
+    '20 tiers, 1000–20000ms · slow means unavailable',
   '已放行': 'allowed',
   '放行可疑供给': 'Allow suspicious supplies',
-  '探针判定可疑（指纹不符 / 输出截断 / 用量虚报 / 评分过期）的站，也按有效成本正常参与路由':
-    'Sites the probes flagged (fingerprint mismatch, truncated output, inflated usage, expired score) also compete on effective cost',
+  '探针判定可疑（指纹不符 / 输出截断 / 用量虚报）的站，也按有效成本正常参与路由；首字门槛不受这个开关影响':
+    'Sites the probes flagged (fingerprint mismatch, truncated output, inflated usage) also compete on effective cost; the TTFT gate is unaffected',
   '已放行：可疑的站会正常参与选站':
     'Enabled: suspicious sites now take part in routing',
-  '它们仍然按「价格 ÷ 质量」排序——质量差一半，成本就翻倍，只有便宜到足够多才会被选中。首字上限仍然独立生效。如果你更在意输出是否可信，把这个开关关掉。':
-    'They still sort by price ÷ quality, so half the quality doubles the cost — only a large enough discount wins. The TTFT limit still applies separately. Turn this off if you care more about trustworthy output.',
+  '它们仍然按「价格 ÷ 质量」排序——质量差一半，成本就翻倍，只有便宜到足够多才会被选中。首字门槛仍然独立生效。如果你更在意输出是否可信，把这个开关关掉。':
+    'They still sort by price ÷ quality, so half the quality doubles the cost — only a large enough discount wins. The TTFT gate still applies separately. Turn this off if you care more about trustworthy output.',
   '已放行可疑供给，它们会正常参与选站': 'Suspicious supplies are now allowed to compete',
-  '已恢复：可疑供给只作为最后兜底': 'Restored: suspicious supplies are only a last resort',
+  '已恢复：可疑供给不再登场': 'Restored: suspicious supplies are no longer routed',
 })
 
 // 免费页

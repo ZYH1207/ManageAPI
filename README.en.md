@@ -228,10 +228,9 @@ Below 0.8 on either dimension means unusable; by default it sinks to the back an
 Displayed pass rates are **smoothed** as `(pass+1)/(samples+1)`: with little evidence they stay near 100% and only converge once samples accumulate. A single odd probe therefore costs a few percent of quality instead of halving it and doubling the effective cost — **the penalty must match the strength of the evidence**.
 
 > **Want suspicious sites to be usable?** The Probes page has an **Allow suspicious supplies** switch. When on,
-> supplies flagged for fingerprint mismatch / truncation / inflated usage / expired scores are no longer pushed back —
-> they compete on effective cost like everything else. Half the quality doubles the cost, so only a large enough
-> discount wins, but they can genuinely return swapped or truncated answers; the trade-off is yours. The TTFT limit
-> is separate and unaffected.
+> supplies flagged for fingerprint mismatch / truncation / inflated usage regain admission and compete on effective
+> cost like everything else. Half the quality doubles the cost, so only a large enough discount wins, but they can
+> genuinely return swapped or truncated answers; the trade-off is yours. The TTFT gate is separate and unaffected.
 
 States: `healthy`, `degraded`, `unstable` (real outages > 20%, at least 3 samples), `inconclusive` (failures but fewer than 3 samples: not routable, not flagged), `stale`, `unknown`.
 
@@ -293,15 +292,21 @@ That is exactly how the Routing page sorts: the ¥0.65 site loses to the ¥4.23 
 
 Fully automatic has one gap: **you cannot say "I want this one"**. So each row has ↑↓.
 
-Manual order only affects rows that are equally usable:
+Manual order only affects rows that get routed at all:
 
-- Untrusted / too slow / expired supplies sink to the bottom by default and cannot be dragged up — **availability is a hard rule, not an opinion** (turn on "Allow suspicious supplies" on the Probes page if you want them to compete)
+- Slow / suspicious / unstable supplies never enter routing and cannot be dragged up — **admission is a hard rule, not an opinion** (turn on "Allow suspicious supplies" on the Probes page to readmit suspicious ones; the TTFT gate is unaffected)
+- Expired / unprobed supplies are fallbacks behind healthy ones and do not take part in manual ordering
 - New supplies not in the manual order are appended by automatic sort
 - **Back to auto** clears the manual order
 
-### First-token latency
+### First-token latency (slow tier limit)
 
-Latency does **not** participate in ranking — different units, and folding it into a score distorts things. Instead there is an optional ceiling: supplies slower than the limit are excluded, marked "Too slow", and lose their "Cheapest" badge.
+Latency does **not** participate in ranking — different units, and folding it into a score distorts things. Instead there is an admission line: **Slow tier limit** at the top of the Routing page. Supplies above it are marked "Slow" and treated like unavailable ones: never routed, marked in the pricing table, and they lose the "Cheapest" badge.
+
+- 20 fixed tiers (1000–20000ms), snapped at the 500ms boundary: 8600 → 9000, 8499 → 8000, 8500 rounds up
+- Each tier carries a speed level (very fast / fast / normal / a bit slow / slow) — a label for humans; every decision compares raw milliseconds
+- **Empty = no limit**, i.e. the original price-only mode
+- If every candidate exceeds the gate, the gateway does not fall back: it returns `400 upstream_too_slow`
 
 ### Cache hit rate is shown, not priced in
 
@@ -363,9 +368,11 @@ Then request as usual; `model` takes the normalised name (`GET /v1/models` lists
 ### How a site is picked
 
 ```
-1. Drop untrusted (unstable / degraded), too-slow, and expired supplies
-2. Sort the rest by effective cost (price ÷ quality), ascending
+1. Admission: slow (over the TTFT gate) / degraded / unstable / no usable samples — never routed
+   expired / unprobed — admitted, but as fallbacks behind healthy supplies (a real call is itself evidence)
+2. Sort the admitted ones by effective cost (price ÷ quality), ascending
 3. If the first fails, fall through to the next before responding to the client
+4. Nothing admitted → 400 with the per-site reason, never a slow or suspicious substitute
 ```
 
 The streaming boundary is the tricky part: **the first chunk must be read and confirmed not to be an error before response headers are committed**. Before that, switching is silent; after it, we can only end with an error.

@@ -2,15 +2,17 @@
  * 路由层：给定一个客户端请求的模型名，决定这一单交给谁。
  *
  * 决策规则（刻意做成可解释的两步，而不是加权打分）：
- *   1. 硬约束：只留评分健康（healthy）的供给；首字超限的排除
- *   2. 排序：按「有效成本 = 名义价格 ÷ 质量」升序
+ *   1. 准入：见 admissionOf——慢速 / 可疑 / 不稳定 / 没有可信样本一律不登场
+ *   2. 排序：剩下的人按「有效成本 = 名义价格 ÷ 质量」升序
  *
- * 但用户可以在探针页打开「放行可疑供给」：打开后探针判定不可信/过期的照样参与排序，
+ * 「不登场」是真的不登场：selectCandidates 把不可用的候选也留在表里（决策页要
+ * 能看出「为什么没选它」），但网关只会在 admission.ok 的候选里派活；一条都没有
+ * 就直接报错，而不是像以前那样「反正都不可用了，拿最便宜的碰碰运气」。
+ * 用户自己设了首字门槛，就等于明说「超过这个速度我宁可报错」。
+ *
+ * 但用户可以在探针页打开「放行可疑供给」：打开后可疑/不稳定的站重新获得准入，
  * 由「价格 ÷ 质量」自己去权衡——质量差一半，成本就翻倍，贵不到哪里去才轮得到它。
- * 首字上限是独立的显式设置，不受这个开关影响。
- *
- * 全都不可用时不做硬拒绝——按价格排下去试，但在响应头标记 degraded。
- * 个人工具里「能用」通常比「严格」更重要。
+ * 首字门槛是独立的显式设置，不受这个开关影响。
  */
 import { offerCost } from './pricing.js'
 import { isRoutable, effectiveCost, THRESHOLDS } from './score.js'
@@ -22,6 +24,95 @@ const INFINITY_COST = Number.POSITIVE_INFINITY
 function getScore(scores, offerId) {
   if (!scores) return undefined
   return scores instanceof Map ? scores.get(offerId) : scores[offerId]
+}
+
+/**
+ * 准入门禁：这条候选现在能不能真的派流量。
+ *
+ * 和 isRoutable 的差别只有一个字——**过期不是罪**。
+ * 评分过期只说明 6 小时内没有新证据，而一次真实调用本身就是证据
+ * （scoreOffers 会把流量并进可用率）。所以过期 / 未探测的供给照样准入，
+ * 只是排在健康供给之后兜底：先让真实流量跑起来，下一轮评分就自愈了。
+ *
+ * 硬拒的只有三类，用户看得出来、也修得动：
+ *   慢速 —— 首字超过门槛，这是你自己设的线
+ *   可疑 / 不稳定 —— 探针抓到掉包/截断/虚报，或真实可用率不到 80%
+ *   没有可信样本 —— 探针全被额度/限流挡住，可用率根本没有分母
+ *
+ * 判定只用这一份：网关派活、决策页的「当前选」、报错文案都调它，
+ * 别在调用方再写一遍「什么算可用」，否则两处口径迟早漂移。
+ */
+export function admissionOf(row) {
+  if (!row) return { ok: false, kind: 'none', text: '没有候选' }
+  // 慢速：这是用户自己设的线，不因「放行可疑供给」而失效
+  if (row.tooSlow) {
+    return { ok: false, kind: 'slow', text: `慢速：首字 ${row.ttftMs}ms 超过门槛` }
+  }
+  // 「放行可疑供给」是用户的显式覆盖：打开后可疑/不稳定的重新获得准入
+  if (!row.allowUntrusted) {
+    const faults = Array.isArray(row.integrityFaults) ? row.integrityFaults : []
+    if (row.status === 'degraded' || faults.length > 0) {
+      return {
+        ok: false,
+        kind: 'degraded',
+        text: `可疑：${faults.length > 0 ? faults.join(' · ') : '结果不可信'}`,
+      }
+    }
+    if (row.status === 'unstable') {
+      return { ok: false, kind: 'unstable', text: '不稳定：可用率低于 80%' }
+    }
+  }
+  // 可用率是 null 有三种来源，别一锅端：
+  //   样本 0        —— 一次都没探过。`没证据` != `坏证据`，放行（新站不放行就永远用不了）
+  //   状态 stale    —— 有证据但都过期了。放行，派一次真实调用就刷新了（用户明确要的）
+  //   其余（samples>0、不是 stale、又不是冷却中）—— 探针全被额度/限流挡住，
+  //                  可用率根本没有分母，这种才是真的「没有可信样本」
+  const samples = Number(row.samples) || 0
+  const availability = row.availability
+  if (availability === null || availability === undefined) {
+    if (samples === 0 || row.status === 'stale' || row.blocked) {
+      // 放行
+    } else {
+      return { ok: false, kind: 'no-evidence', text: '没有可信样本：探针被额度/限流挡住' }
+    }
+  }
+  return { ok: true, kind: null, text: null }
+}
+
+/**
+ * 一条能登场的候选都没有时，该跟客户端说什么。
+ *
+ * 慢速和「不可用」必须分开报：前者是门槛设得太紧（或这家确实变慢了），
+ * 后者是站坏了——用户和客户端要做的动作完全不同。两者都用 400：
+ * 这不是「服务端临时故障」（5xx 会让客户端无限重试），而是「按你的规则，
+ * 这单没人能接」，重试也没意义。
+ *
+ * 文案放这里而不是写在 server.js：决策页以后要显示同一句话，两处各写一遍必然漂移。
+ *
+ * @returns {{status:number, type:string, message:string, detail:string}}
+ */
+export function admissionFailure(candidates, { model = '', maxTtftMs = 0 } = {}) {
+  const detail = candidates
+    .map(
+      (c) =>
+        `${c.provider?.name ?? '未知站点'}${c.offer?.group ? `（${c.offer.group}）` : ''}：${c.admission?.text || c.statusReason || c.status || '不可用'}`,
+    )
+    .join('；')
+  const onlySlow = candidates.length > 0 && candidates.every((c) => c.admission?.kind === 'slow')
+  if (onlySlow) {
+    return {
+      status: 400,
+      type: 'upstream_too_slow',
+      detail,
+      message: `上游速度慢于首字门槛（${maxTtftMs}ms）：${detail}。可在「智能决策」页放宽门槛，或换个模型`,
+    }
+  }
+  return {
+    status: 400,
+    type: 'no_available_supply',
+    detail,
+    message: `没有可用的 ${model}：${detail}`,
+  }
 }
 
 /**
@@ -67,10 +158,10 @@ export function selectCandidates({ offers, providers, credentials, scores, bench
     // 注意口径：fingerprint/truncation/billingRate 都是「正常比例」（未截断/未虚报），
     // 给用户看的要换算成异常比例——此前直接把 80% 未截断显示成「截断 80%」，意思完全反了
     const reasons = []
-    if (tooSlow) reasons.push('首字超限')
-    // 冷却中（额度不足/限流/模型不在分组）由状态标签单独表达，不塞进 reasons——
-    // 决策页那一格已经显示「额度不足 · 冷却中」，再拼一遍等于同一句话说两次
-    if (score?.stale) reasons.push('评分过期')
+    // 徽章已经写着「慢速」，理由只补数字：差多少、门槛多少
+    if (tooSlow) reasons.push(`首字 ${ttftMs}ms > 门槛 ${maxTtftMs}ms`)
+    // 评分过期不挡路（真实调用本身就是证据），但要说清楚它现在是靠不住的
+    if (score?.stale) reasons.push('评分过期：没有新鲜证据，先拿真实调用打探')
     // 探针全被额度/限流挡住时，可用率没有分母（null）——这不是「能用」，
     // 而是「没有任何可靠性证据」，必须说清楚，否则用户看不懂为什么没选它
     if (score && score.availability === null && !score.blocked) reasons.push('没有可信样本')
@@ -83,13 +174,13 @@ export function selectCandidates({ offers, providers, credentials, scores, bench
       reasons.push(score.integrityFaults.join(' · '))
     }
 
-    return {
+    const row = {
       offer,
       provider,
       credential,
       price,
       quality,
-      // probeOk 是探针的原始判定；routable 是「这一单会不会考虑它」
+      // probeOk 是探针的原始判定；routable 是「这一单会不会优先考虑它」
       probeOk: isRoutable(score),
       routable: (allowUntrusted || isRoutable(score)) && !tooSlow,
       tooSlow,
@@ -103,9 +194,14 @@ export function selectCandidates({ offers, providers, credentials, scores, bench
       confidence: score?.confidence ?? null,
       // 冷却中（额度不足/限流/模型不在分组）：不是坏站，但此刻不派过去
       blocked: score?.blocked || null,
+      availability: score?.availability ?? null,
+      integrityFaults: score?.integrityFaults || [],
+      allowUntrusted,
       statusReason: reasons.join(' · ') || null,
       ttftMs,
     }
+    row.admission = admissionOf(row)
+    return row
   })
 
   const manualIndex =
@@ -163,6 +259,9 @@ export function explain(candidates) {
     quality: c.quality,
     effective: c.effective,
     routable: c.routable,
+    // 能不能真的登场（网关只用 admission.ok 的候选）；
+    // routable 是「优先考虑」，过期/未探测的 routable 为 false 但仍然能登场兜底
+    admission: c.admission || null,
     probeOk: c.probeOk,
     tooSlow: Boolean(c.tooSlow),
     ttftMs: c.ttftMs,

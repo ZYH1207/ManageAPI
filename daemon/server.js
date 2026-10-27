@@ -23,7 +23,8 @@ import {
   createStreamInspector,
   extractNonStream,
 } from '../core/wire.js'
-import { selectCandidates, listPublicModels, explain } from '../core/router.js'
+import { selectCandidates, listPublicModels, explain, admissionFailure } from '../core/router.js'
+import { snapTtftMs, ttftTierTable, describeTtftLimit } from '../core/latency.js'
 import { splitOffers, resolvePool, FREE_PREFIX, FREE_BASE_PATH } from '../core/free.js'
 import { rankFreePool } from '../core/rank-free.js'
 import * as platforms from '../core/platforms/index.js'
@@ -275,7 +276,9 @@ async function buildState({ light = false } = {}) {
       order,
     })
     const rankedCandidates = explain(candidates)
-    const winner = rankedCandidates.find((c) => c.routable) || null
+    // 「当前选」= 第一张真能登场的牌。这里必须用准入而不是 routable：
+    // 评分过期的 routable 为 false，但它确实会被派活（见 admissionOf）
+    const winner = rankedCandidates.find((c) => c.admission?.ok) || null
     return {
       modelKey: group.modelKey,
       candidates: rankedCandidates,
@@ -287,6 +290,9 @@ async function buildState({ light = false } = {}) {
 
   const result = {
     settings: db.settings,
+    // 首字门槛的 20 档 + 速度等级：前端直接照着渲染，不在浏览器里另算一份
+    ttftTiers: ttftTierTable(),
+    ttftLimitText: describeTtftLimit(db.settings.maxTtftMs),
     dataDir: store.dataDir(),
     // 令牌与余额挂在站点上：它们是「一个后台账号一套」，跟下面挂几个 Key 无关
     // 顺序按 sortOrder（站点卡上的上移/下移），没设过的按创建时间兜底
@@ -451,9 +457,15 @@ route('PATCH', /^\/api\/settings$/, async (ctx) => {
       }
     }
     if (ctx.body.maxTtftMs !== undefined) {
-      const v = Number(ctx.body.maxTtftMs)
-      if (!Number.isFinite(v) || v < 0) throw new HttpError(400, '首字延迟上限不能为负')
-      db.settings.maxTtftMs = v
+      // 空串 / null = 不限（0），别把空输入当成「0 毫秒」——那是谁都过不了
+      const raw = ctx.body.maxTtftMs
+      const v = raw === null || raw === '' ? 0 : Number(raw)
+      if (!Number.isFinite(v) || v < 0) {
+        throw new HttpError(400, '首字延迟门槛必须是 0（不限）或正数毫秒')
+      }
+      // 取档收口在这里：不论前端发什么数字，落库的都是 1000~20000 的整档，
+      // 否则「20 档」只是界面上的说法，路由读到的还是原始值
+      db.settings.maxTtftMs = snapTtftMs(v)
     }
     // 全局默认站点单价：所有站口径一致时只填一次（如「全部 1:1 充值」填 1）
     if (ctx.body.defaultUnitPrice !== undefined) {
@@ -2435,6 +2447,26 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
     )
   }
 
+  // 准入门禁：慢速 / 可疑 / 不稳定 / 没有可信样本一律不登場。
+  // 评分过期和未探测的仍然放行（真实调用本身就是证据），只是排在健康供给之后兜底。
+  // 这里必须用 admissionOf 而不是 routable：两套口径分别长会直接导致
+  // 「决策页说没有可用供给，网关却偷偷拿最差的去试」
+  const allCandidates = candidates
+  const admitted = candidates.filter((c) => c.admission?.ok)
+  if (admitted.length === 0) {
+    // 报错文案在 core/router.js：决策页要能显示同一句话，两处各写一遍必然漂移
+    const failure = admissionFailure(candidates, {
+      model,
+      maxTtftMs: Number(db.settings.maxTtftMs) || 0,
+    })
+    // 免费池沿用 402：对客户端来说「这个池子空了」和网关权限问题不是一回事
+    if (isFree) {
+      return openaiError(res, 402, `免费池里的 ${model} 现在都不能用：${failure.detail}`, 'free_pool_exhausted')
+    }
+    return openaiError(res, failure.status, failure.message, failure.type)
+  }
+  candidates = admitted
+
   const started = Date.now()
   const failures = []
   // 请求规模估算（只用于「计费是否明显虚报」的量级判断，不追求精确）
@@ -2473,7 +2505,7 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
           latencyMs,
           ttftMs: result.ttftMs ?? null,
           usage: result.usage || null,
-          candidates: explain(candidates),
+          candidates: explain(allCandidates),
           failures,
         })
         await recordUsage({
@@ -2556,7 +2588,7 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
     attempts: candidates.length,
     outcome: 'failed',
     latencyMs: Date.now() - started,
-    candidates: explain(candidates),
+    candidates: explain(allCandidates),
     failures,
   })
   await recordUsage({

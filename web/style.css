@@ -837,6 +837,31 @@ main { flex: 1; min-width: 0; display: flex; flex-direction: column; overflow: h
 .field-inline { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); white-space: nowrap; }
 .field-inline select, .field-inline input { width: auto; padding: 4px 8px; font-size: 12px; }
 
+/* -------------------------------------------------- 慢速档位限制（智能决策页）
+   20 个刻度 = 20 档（1000~20000ms），颜色就是速度等级，点一下直接落到那一档。
+   刻度只是「给人挑」，判定永远拿毫秒数比，别从颜色反推逻辑。 */
+.ttft-scale { display: flex; flex-direction: column; gap: 8px; align-items: flex-start; }
+.ttft-scale-label { font-size: 12px; font-weight: 500; color: var(--text); white-space: nowrap; }
+.ttft-scale-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.ttft-scale-now { font-size: 12px; color: var(--muted); min-width: 108px; }
+.ttft-field input { text-align: right; }
+.ttft-ticks { display: inline-flex; align-items: center; gap: 2px; }
+.ttft-tick {
+  width: 9px; height: 14px; padding: 0; border: none; border-radius: 2px;
+  background: var(--border); cursor: pointer; opacity: 0.45; transition: opacity 0.1s;
+}
+.ttft-tick.lv-ok { background: var(--success); }
+.ttft-tick.lv-info { background: var(--info); }
+.ttft-tick.lv-warn { background: var(--warn-strong); }
+.ttft-tick.lv-danger { background: var(--danger-strong); }
+.ttft-tick.off {
+  width: auto; padding: 0 7px; font-size: 11px; line-height: 14px;
+  background: var(--hover); color: var(--muted);
+}
+.ttft-tick:hover { opacity: 0.85; }
+.ttft-tick.active { opacity: 1; outline: 2px solid var(--accent); outline-offset: 1px; }
+.ttft-tick.off.active { color: var(--text); font-weight: 500; }
+
 /* -------------------------------------------------------------- 分组输入 */
 .group-input { width: 96px; padding: 3px 7px; font-size: 12px; }
 button.tiny { padding: 2px 6px; font-size: 12px; line-height: 1.2; vertical-align: middle; }

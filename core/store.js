@@ -62,7 +62,8 @@ export function emptyDb() {
       probeIntervalMinutes: 60,
       // 超过这个小时数的探测结果视为过期，不再参与路由
       scoreMaxAgeHours: 6,
-      // 首字延迟上限（毫秒），0 = 不限
+      // 首字门槛（毫秒），0 = 不限。只会是 1000~20000 的整档：
+      // 取档口径在 core/latency.js#snapTtftMs，写入侧（PATCH）负责归一
       maxTtftMs: 0,
       // 放行可疑供给：默认 false，探针判定不可信/过期的会被排到后面。
       // 打开后它们按有效成本正常参与竞争——风险由用户自己承担。

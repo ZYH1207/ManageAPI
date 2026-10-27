@@ -1764,7 +1764,7 @@ function renderPricing() {
       const tooSlow =
         maxTtft > 0 && typeof score?.ttftMs === 'number' && score.ttftMs > maxTtft
       const badge = tooSlow
-        ? ' <span class="badge warn">超时</span>'
+        ? ' <span class="badge danger">慢速</span>'
         : score?.probeTrusted === false
           ? ' <span class="badge warn">可疑</span>'
           : ''
@@ -2093,22 +2093,28 @@ function blockedLabel(blocked) {
 }
 
 function decisionState(candidate) {
-  if (candidate.tooSlow) return { label: t('太慢'), cls: 'warn' }
-  // 探针说可疑，但因为「放行可疑供给」开着，它照样参与选站——标出来别让人误以为是健康的
-  const passed = candidate.routable && candidate.probeOk === false
+  const admission = candidate.admission || { ok: true }
+  // 「放行可疑供给」开着时，探针说可疑的也会准入：标出来，别让人误以为是健康的
+  const passed = admission.ok && candidate.probeOk === false
   const tag = (label, cls) => ({
     label: passed ? `${label} · ${t('已放行')}` : label,
     cls: passed ? 'warn' : cls,
   })
+
+  // 准入不过：真的不登场，网关会直接报错。红标 + 理由，别写得像「只是慢了点」
+  if (!admission.ok) {
+    if (admission.kind === 'slow') return { label: t('慢速'), cls: 'danger' }
+    if (admission.kind === 'unstable') return { label: t('不稳定'), cls: 'danger' }
+    if (admission.kind === 'degraded') return { label: t('结果可疑'), cls: 'warn' }
+    return { label: t('不会登场'), cls: 'warn' }
+  }
+
   if (candidate.blocked) return tag(blockedLabel(candidate.blocked), 'warn')
-  if (candidate.status === 'stale') return tag(t('评分过期'), 'warn')
-  if (candidate.status === 'degraded') return tag(t('结果可疑'), 'warn')
-  if (candidate.status === 'unstable') return tag(t('不稳定'), 'danger')
-  // 样本不足的失败：不参与路由，但也不是「可用」——以前这里漏了，直接掉到
-  // 下面的默认分支显示成「可用」，和旁边的「可用率 0%」自相矛盾
+  // 过期 / 未探测：能登场，但只在没有更好的供给时才派活——真实调用本身就是证据，
+  // 不拦它，下一轮评分就自愈了
+  if (candidate.status === 'stale' || candidate.status === 'unknown') return tag(t('兜底'), '')
   if (candidate.status === 'inconclusive') return tag(t('证据不足'), '')
-  if (candidate.status === 'unknown') return tag(t('未探测'), '')
-  return { label: t('可用'), cls: 'ok' }
+  return tag(t('可用'), 'ok')
 }
 
 function renderDecision() {
@@ -2188,13 +2194,50 @@ function renderDecision() {
   }).join('')
 
   view.innerHTML = `
+    ${gateCard()}
     <div class="toolbar">
       <input id="decision-search" class="search" type="search" placeholder="搜索模型名…" value="${esc(filters.decision)}" />
       <span class="hint" style="margin:0">${visibleDecisions.length} / ${decisions.length} 个模型</span>
     </div>
-    <p class="hint">默认按「有效成本 = 价格 ÷ 质量」排序，用 ↑↓ 手动调整「可用」那几条的先后——不可信的站不会因为你拖它而排到前面。</p>
+    <p class="hint">默认按「有效成本 = 价格 ÷ 质量」排序，用 ↑↓ 手动调整「可用」那几条的先后——不会登场的站不会因为你拖它而排到前面。</p>
     <p class="hint">${t('注意：<b>同一个模型在不同站的状态是各自独立的</b>（A 站健康、B 站掉包很正常），所以这里按「站 × 模型」逐条评估，状态下方会写明具体原因。')}</p>
     ${blocks}`
+}
+
+/**
+ * 慢速档位限制：这一页唯一的准入开关。
+ *
+ * 放这里的理由：智能决策就是「最后哪些模型能登场」的界面，门槛、候选、状态、
+ * 排序应该在同一屏里，用户才能立刻看到「调高门槛之后还剩谁」。
+ * 探针页只管取证（探什么、多久探一次），不碰准入。
+ */
+function gateCard() {
+  const maxTtft = Number(state.settings.maxTtftMs) || 0
+  const tiers = state.ttftTiers || []
+  return `
+    <div class="card">
+      <div class="ttft-scale">
+        <div class="ttft-scale-label">${t('慢速档位限制')}</div>
+        <div class="ttft-scale-row">
+        <span class="ttft-ticks">
+          <button class="ttft-tick off${maxTtft === 0 ? ' active' : ''}" data-act="set-ttft" data-ms="0" title="不限：不按首字筛掉任何供给">不限</button>
+          ${tiers
+            .map(
+              (tier) =>
+                `<button class="ttft-tick lv-${tier.levelCls}${tier.ms === maxTtft ? ' active' : ''}" data-act="set-ttft" data-ms="${tier.ms}" title="第 ${tier.tier} 档 · ${tier.seconds}s · ${tier.level}"></button>`,
+            )
+            .join('')}
+        </span>
+        <label class="field-inline ttft-field">
+          <input id="max-ttft" type="number" min="0" max="20000" step="100" inputmode="numeric"
+            value="${maxTtft || ''}" placeholder="不限" style="width:74px"
+            title="填 0 或留空 = 不限；按 500 为界就近取档，最大 20000ms" /> ms
+        </label>
+        <span class="ttft-scale-now">当前 ${esc(state.ttftLimitText || '不限')}</span>
+        <span class="hint" style="margin:0">1000–20000ms 共 20 档 · 慢速即为不可用</span>
+        </div>
+      </div>
+    </div>`
 }
 
 // --------------------------------------------------------------- 探针视图
@@ -2293,7 +2336,6 @@ function renderProbes() {
 
   const interval = Number(state.settings.probeIntervalMinutes) || 0
   const maxAge = Number(state.settings.scoreMaxAgeHours) || 6
-  const maxTtft = Number(state.settings.maxTtftMs) || 0
   const allowUntrusted = Boolean(state.settings.allowUntrusted)
   const intervalOptions = [
     [0, '关闭'],
@@ -2323,10 +2365,6 @@ function renderProbes() {
         <label class="field-inline">评分有效期
           <input id="score-age" type="number" min="1" max="72" value="${maxAge}" style="width:68px" /> 小时
         </label>
-        <label class="field-inline">首字上限
-          <input id="max-ttft" type="number" min="0" max="60000" step="500" value="${maxTtft}" style="width:82px" /> ms
-        </label>
-        <span class="hint" style="margin:0">0 = 不限；超过上限的供给不参与路由</span>
       </div>
       <div class="hint" style="margin-top:8px">
         有效期决定「允许错过几轮探测」：最近一次有效证据（探针或真实调用）超过它就判过期。
@@ -2338,7 +2376,7 @@ function renderProbes() {
           <span class="switch-track"><span class="switch-knob"></span></span>
           <span class="switch-text">
             <b>放行可疑供给</b>
-            <span>探针判定可疑（指纹不符 / 输出截断 / 用量虚报 / 评分过期）的站，也按有效成本正常参与路由</span>
+            <span>探针判定可疑（指纹不符 / 输出截断 / 用量虚报）的站，也按有效成本正常参与路由；首字门槛不受这个开关影响</span>
           </span>
         </label>
         ${
@@ -2346,7 +2384,7 @@ function renderProbes() {
             ? `<div class="alert" style="margin-top:10px;background:var(--warn-soft);border-color:var(--warn-border)">
                  <div>
                    <div class="name">已放行：可疑的站会正常参与选站</div>
-                   <div class="desc">它们仍然按「价格 ÷ 质量」排序——质量差一半，成本就翻倍，只有便宜到足够多才会被选中。首字上限仍然独立生效。如果你更在意输出是否可信，把这个开关关掉。</div>
+                   <div class="desc">它们仍然按「价格 ÷ 质量」排序——质量差一半，成本就翻倍，只有便宜到足够多才会被选中。首字门槛仍然独立生效。如果你更在意输出是否可信，把这个开关关掉。</div>
                  </div>
                </div>`
             : ''
@@ -4064,6 +4102,19 @@ document.addEventListener('click', async (event) => {
     return
   }
 
+  // 首字门槛刻度条：点任意一档直接生效（0 = 不限）
+  if (action === 'set-ttft') {
+    const ms = Number(actionButton.dataset.ms) || 0
+    try {
+      state = await api('PATCH', '/api/settings', { maxTtftMs: ms })
+      render()
+      toast(ms > 0 ? `首字超过 ${state.ttftLimitText} 按「慢速」排除` : '已取消首字门槛：不限')
+    } catch (error) {
+      toast(error.message, true)
+    }
+    return
+  }
+
   if (action === 'fx-refresh') {
     try {
       const result = await api('POST', '/api/fx/refresh', {})
@@ -5151,13 +5202,22 @@ document.addEventListener('change', async (event) => {
   }
 
   if (input.id === 'max-ttft') {
-    const ms = Number(input.value) || 0
+    // 原样发给服务端取档：20 档表只有 core/latency.js 一份，浏览器里不重算
+    const raw = String(input.value || '').trim()
+    const ms = raw === '' ? 0 : Number(raw)
     try {
       state = await api('PATCH', '/api/settings', { maxTtftMs: ms })
       render()
-      toast(ms > 0 ? `首字超过 ${ms}ms 的供给将被跳过` : '已取消首字延迟限制')
+      const limit = Number(state.settings.maxTtftMs) || 0
+      if (!limit) {
+        toast('已取消首字门槛：不限')
+      } else {
+        const snapped = Number.isFinite(ms) && ms !== limit ? `（${ms}ms 按就近档位取整）` : ''
+        toast(`首字超过 ${state.ttftLimitText} 按「慢速」排除${snapped}`)
+      }
     } catch (error) {
       toast(error.message, true)
+      render()
     }
     return
   }
@@ -5166,7 +5226,7 @@ document.addEventListener('change', async (event) => {
     try {
       state = await api('PATCH', '/api/settings', { allowUntrusted: input.checked })
       render()
-      toast(input.checked ? '已放行可疑供给，它们会正常参与选站' : '已恢复：可疑供给只作为最后兜底')
+      toast(input.checked ? '已放行可疑供给，它们会正常参与选站' : '已恢复：可疑供给不再登场')
     } catch (error) {
       toast(error.message, true)
     }
