@@ -251,8 +251,8 @@
             </p>
             <p>
               <b>看某个分组里到底有哪些模型</b>：点站点卡上的分组胶囊（或「分组倍率」那一行的「N 个模型」），
-              右侧会拉出一块悬浮面板，列出这个分组同步到的全部模型和<b>实际价</b>（已乘倍率）。
-              被忽略的模型也在清单里，标着「已忽略」；已经下线的模型不显示。Esc 或点面板外的背景关闭。
+              中间会弹出一张卡片，列出这个分组同步到的全部模型和<b>实际价</b>（已乘倍率）。
+              被忽略的模型也在清单里，标着「已忽略」；已经下线的模型不显示。Esc 或点卡片外的背景关闭。
             </p>
 
             <h4 class="doc-h4">免费</h4>
@@ -614,7 +614,7 @@
             </p>
             <p>
               <b>Seeing what is inside a group</b>: click a group chip on a site card (or the “N models” count in a
-              group-ratio row) and a panel slides in from the right, listing every model synced under that group with
+              group-ratio row) and a card pops up in the middle listing every model synced under that group with
               its <b>effective price</b> (ratio applied). Ignored models are listed and tagged “Ignored”; delisted ones
               are not shown. Press Esc or click the backdrop to close.
             </p>
@@ -957,19 +957,19 @@
     </div>
   </div>
 
-  <!-- 分组模型：点站点卡上的分组胶囊，右侧拉开一块悬浮面板。只读展示，不改数据 -->
-  <div id="group-models" class="sheet" hidden>
-    <div class="sheet-backdrop" data-act="close-group-models"></div>
-    <aside class="sheet-panel" role="dialog" aria-modal="true" aria-labelledby="group-models-title">
-      <div class="sheet-head">
-        <div class="sheet-title">
+  <!-- 分组模型：点站点卡上的分组胶囊，中间弹出圆角卡片。只读展示，不改数据 -->
+  <div id="group-models" class="modal" hidden>
+    <div class="modal-backdrop" data-act="close-group-models"></div>
+    <div class="modal-panel gs-panel" role="dialog" aria-modal="true" aria-labelledby="group-models-title">
+      <div class="modal-head">
+        <div class="gs-head">
           <span class="hint" id="group-models-site"></span>
           <h3 id="group-models-title">分组</h3>
         </div>
         <button class="ghost" data-act="close-group-models">关闭</button>
       </div>
-      <div class="sheet-body" id="group-models-body"></div>
-    </aside>
+      <div class="modal-body gs-body" id="group-models-body"></div>
+    </div>
   </div>
 
   <div id="login-modal" class="modal" hidden>

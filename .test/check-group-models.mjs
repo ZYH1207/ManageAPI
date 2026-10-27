@@ -350,7 +350,7 @@ try {
 
   await ev(clickChip('主力分组'))
   await sleep(150)
-  await ev(`document.querySelector('#group-models .sheet-backdrop').click()`)
+  await ev(`document.querySelector('#group-models .modal-backdrop').click()`)
   await sleep(150)
   ok(!(await ev(drawer)).open, '点背景能关掉抽屉')
 

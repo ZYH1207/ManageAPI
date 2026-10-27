@@ -1064,9 +1064,9 @@ function providersHtml({ withForm = true, panel = '', actions = '' } = {}) {
         : st.uniform !== '' && st.uniform !== undefined
           ? `<span class="ratio-tone ${ratioToneClass(st.uniform)}">×${esc(st.uniform)}</span>`
           : ''
-      // 胶囊本身就是入口：点开右侧的悬浮抽屉，看这个分组里到底有哪些模型。
+      // 胶囊本身就是入口：点开弹出这个分组的模型清单。
       // 用 span + role 而不是 button，是因为里面还要嵌一个「删分组」按钮（button 不能套 button），
-      // 点删除键时 closest('[data-act]') 命中的是里面的按钮，不会误开抽屉。
+      // 点删除键时 closest('[data-act]') 命中的是里面的按钮，不会误开弹窗。
       return `<span class="group-chip ${st.chipClass || ''}" role="button" tabindex="0" data-act="open-group-models" data-provider="${esc(p.id)}" data-group="${esc(g)}" title="${esc(
         t('点开看这个分组里的模型'),
       )}">${g ? esc(g) : t('未指定')}${tag}${
@@ -1507,16 +1507,18 @@ function closeProvPanel() {
   if (body) body.innerHTML = ''
 }
 
-// --------------------------------------------------------- 分组模型悬浮抽屉
+// --------------------------------------------------------- 分组模型弹窗
 //
-// 站点卡上的分组胶囊（以及「分组倍率」里的「N 个模型」）点一下，右侧拉出一块悬浮面板，
+// 站点卡上的分组胶囊（以及「分组倍率」里的「N 个模型」）点一下，中间弹出一张卡片，
 // 回答一个只有本地台账能回答的问题：这个分组里到底有哪些模型。
+//
+// 样式直接复用 .modal / .modal-panel（圆角居中），和站点卡、其它弹窗同一套语言。
 //
 // 站点接口只给「分组名录」+「平台级模型表」，两者并列，谁属于哪个分组它没说——
 // 交叉相乘会编出不存在的组合。真正把模型绑到分组上的是「这个分组下的 Key 同步回来了哪些
 // 模型」，所以数据只认后端算好的 state.modelsByGroup，前端不再自己拼一份。
 
-/** 当前打开的抽屉：{ providerId, group }；null = 关闭 */
+/** 当前打开的弹窗：{ providerId, group }；null = 关闭 */
 let groupSheet = null
 
 function openGroupModels(providerId, group = '') {
