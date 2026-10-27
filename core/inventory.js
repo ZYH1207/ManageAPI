@@ -109,6 +109,16 @@ export async function updateProvider(id, patch) {
       provider.tokenStatus = null
       provider.tokenStatusAt = null
     }
+    // 站点单价：1 个站点货币单位值多少人民币。只用于「实际消费」展示，
+    // 不参与比价/路由/有效成本——内部金钱逻辑保持站点口径不动
+    if (patch.unitPrice !== undefined) {
+      if (patch.unitPrice === null || patch.unitPrice === '') provider.unitPrice = null
+      else {
+        const value = Number(patch.unitPrice)
+        if (!Number.isFinite(value) || value <= 0) throw new Error('实际花费折算必须是正数')
+        provider.unitPrice = value
+      }
+    }
     if (patch.quotaRemaining !== undefined) {
       provider.quotaRemaining = patch.quotaRemaining === null ? null : Number(patch.quotaRemaining)
       provider.quotaUpdatedAt = nowIso()

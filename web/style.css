@@ -853,6 +853,26 @@ button.sm { padding: 4px 9px; font-size: 12px; }
 .prov-head .hint { white-space: nowrap; }
 .prov-head { display: flex; align-items: center; gap: 10px; }
 .prov-id { display: flex; align-items: center; gap: 8px; min-width: 0; }
+/* 站点卡第二排瓦片变三列（多了「站点单价」）：列宽按内容分配，
+   阈值那一列最宽，单价和令牌窄一些，避免文字被压成三行 */
+.prov-tiles--3 { grid-template-columns: 1.25fr 0.85fr 0.9fr !important; }
+.prov-tiles--3 > div { gap: 2px; }
+.prov-tiles--3 b { font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.prov-tiles input.unit-price { width: 100%; padding: 2px 6px; font-size: 13px; font-weight: 600; }
+
+/* 花费卡：模型消费 / 实际消费并列 + 今天·本周·本月切换 */
+.spend-pair { display: inline-flex; align-items: baseline; gap: 5px; }
+.spend-pair b { font-weight: 600; }
+.spend-pair .spend-sep { color: var(--faint); font-weight: 400; }
+.spend-pair .spend-actual { color: var(--accent); }
+.spend-range { display: inline-flex; gap: 2px; margin-left: 8px; vertical-align: 2px; }
+.spend-range button {
+  border: none; background: none; cursor: pointer; padding: 1px 5px;
+  font-size: 10px; color: var(--faint); border-radius: 4px; line-height: 1.4;
+}
+.spend-range button:hover { color: var(--text); background: var(--hover); }
+.spend-range button.is-on { color: var(--accent); background: var(--accent-soft); font-weight: 600; }
+
 /* 登录态状态灯：绿=已登录，黄=有令牌但非登录态，红=什么都没有（见 loginLightDot） */
 .prov-id .login-dot { width: 7px; height: 7px; margin-right: 0; flex: none; }
 /* 呼吸：缓慢的缩放+明暗起伏，一眼能看出这是「活的指示灯」而不是装饰点 */

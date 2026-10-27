@@ -15,7 +15,7 @@ import { ensureFx } from './fx.js'
 // localDayKey 与 usage.js 同一份（usage 不回头 import 本文件，无循环）：
 // 花费曲线要拿这里的日键去 join usage 的天桶，两边必须同一口径——
 // 此前这里用 UTC 键，东八区每天凌晨 8 小时的用量对不上号
-import { localDayKey } from './usage.js'
+import { localDayKey, localMonthStart } from './usage.js'
 
 /** 各类时序数据的保留上限。按「每站每小时一个点」算，4000 点≈5 个站 1 个月。 */
 const KEEP = {
@@ -381,31 +381,91 @@ function buildBalanceSeries(m, days, settings = {}) {
  * 这不是站点口径的账单（那需要登录态），是「用今天的量按今天的价算」，
  * 用来画趋势、判断量级足够。
  */
-function buildSpendSeries(usageData, offers, settings, benchmarks, days) {
+/**
+ * 站点单价：1 个站点货币单位值多少人民币。**只用于「实际消费」这件展示**——
+ * 内部比价、路由、有效成本全部仍走站点口径，不受它影响。
+ *
+ * 默认按币种推导：美元站取当前市场汇率（没填就是「按美元真价算」），
+ * 人民币站取 1。填了就以用户为准：充 ¥5 到账 $5 → 1.0；充 ¥100 到账 $120 → 0.83。
+ */
+export function unitPriceOf(provider, settings) {
+  const explicit = Number(provider?.unitPrice)
+  if (Number.isFinite(explicit) && explicit > 0) return explicit
+  if (provider?.currency === 'CNY') return 1
+  const fx = Number(ensureFx(settings).rates.CNY)
+  return Number.isFinite(fx) && fx > 0 ? fx : 7.2
+}
+
+/** 按天聚合花费：estimated = 站点口径估算（原逻辑不变），actual = 乘以站点单价 */
+function spendByDay(usageData, offers, settings, benchmarks, providerById) {
   const byKey = new Map()
   for (const offer of offers) byKey.set(`${offer.providerId}|${offer.modelKey || offer.upstreamName}`, offer)
 
-  const dayMap = new Map(days.map((day) => [day, 0]))
+  const dayMap = new Map()
   for (const [day, bucket] of Object.entries(usageData?.days || {})) {
-    if (!dayMap.has(day)) continue
-    let sum = 0
+    const acc = dayMap.get(day) || { estimated: 0, actual: 0 }
     for (const [composite, row] of Object.entries(bucket || {})) {
       const [, providerId, model] = composite.split('|')
       const offer = byKey.get(`${providerId}|${model}`)
       if (!offer) continue
       const cost = offerCost(offer, settings, benchmarks)
+      let sum = 0
       // 按次计费：花费 = 请求数 × 每次单价（token 数不参与）
       if (cost.perCall) {
         if (typeof cost.callPriceCny === 'number') sum += (row.requests || 0) * cost.callPriceCny
-        continue
+      } else {
+        if (typeof cost.inCnyPerMtok === 'number') sum += ((row.input || 0) / 1e6) * cost.inCnyPerMtok
+        if (typeof cost.outCnyPerMtok === 'number') sum += ((row.output || 0) / 1e6) * cost.outCnyPerMtok
       }
-      if (typeof cost.inCnyPerMtok === 'number') sum += ((row.input || 0) / 1e6) * cost.inCnyPerMtok
-      if (typeof cost.outCnyPerMtok === 'number') sum += ((row.output || 0) / 1e6) * cost.outCnyPerMtok
+      if (!sum) continue
+      acc.estimated += sum
+      acc.actual += sum * unitPriceOf(providerById.get(providerId), settings)
     }
-    dayMap.set(day, Math.round(sum * 10000) / 10000)
+    dayMap.set(day, acc)
   }
+  return dayMap
+}
 
-  return days.map((day) => ({ day, cny: dayMap.get(day) ?? 0 }))
+function round4(value) {
+  return Math.round(value * 10000) / 10000
+}
+
+function buildSpendSeries(dayMap, days) {
+  return days.map((day) => ({ day, cny: round4(dayMap.get(day)?.estimated ?? 0) }))
+}
+
+/** 本地周一的日期键（周一为一周开始） */
+function localWeekStart(date = new Date()) {
+  const d = new Date(date)
+  const offset = (d.getDay() + 6) % 7 // 周一=0、周日=6
+  d.setDate(d.getDate() - offset)
+  return localDayKey(d)
+}
+
+/**
+ * 今日 / 本周 / 本月花费合计，两种口径并列：
+ *   estimated —— 模型消费（站点口径估算，和图表同一份数）
+ *   actual    —— 实际消费（乘站点单价，即钱包里少掉的钱）
+ */
+export function buildSpendSummary(dayMap, now = new Date()) {
+  const todayKey = localDayKey(now)
+  const weekStart = localWeekStart(now)
+  const monthStart = localMonthStart(now)
+  const sum = (predicate) => {
+    let estimated = 0
+    let actual = 0
+    for (const [day, value] of dayMap) {
+      if (!predicate(day)) continue
+      estimated += value.estimated
+      actual += value.actual
+    }
+    return { estimated: round4(estimated), actual: round4(actual) }
+  }
+  return {
+    today: sum((day) => day === todayKey),
+    week: sum((day) => day >= weekStart),
+    month: sum((day) => day >= monthStart),
+  }
 }
 
 /**
@@ -480,6 +540,12 @@ export function buildMonitorView(db, { usageData = null, benchmarks = {}, days =
     .reverse()
     .map((row) => ({ ...row, providerName: nameOf(row.providerId) }))
 
+  // 花费按天聚合只算一次：图表要 estimated，KPI 卡要 estimated + actual
+  const providerById = new Map((db.providers || []).map((p) => [p.id, p]))
+  const spendDays = usageData
+    ? spendByDay(usageData, db.offers || [], settings, benchmarks, providerById)
+    : null
+
   const unread = m.alerts.filter((a) => !a.readAt).length
   const unreadAnnouncements = m.announcements.filter((a) => !a.readAt).length
   const dayAgo = Date.now() - 86400000
@@ -500,7 +566,9 @@ export function buildMonitorView(db, { usageData = null, benchmarks = {}, days =
       lastRunAt: m.lastRunAt,
     },
     balanceSeries: buildBalanceSeries(m, range, settings),
-    spendSeries: usageData ? buildSpendSeries(usageData, db.offers || [], settings, benchmarks, range) : [],
+    // 花费：图表用 estimated（站点口径，行为不变）；KPI 卡另外给今日/本周/本月两口径
+    spendSeries: spendDays ? buildSpendSeries(spendDays, range) : [],
+    spendSummary: buildSpendSummary(spendDays || new Map()),
     balanceByProvider,
     changes,
     announcements,

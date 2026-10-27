@@ -968,19 +968,24 @@ function providersHtml({ withForm = true, panel = '', actions = '' } = {}) {
           </div>
         </div>
 
-        <div class="prov-tiles prov-tiles--2">
+        <div class="prov-tiles prov-tiles--3">
           <div>
             <span class="k">阈值 · 状态</span>
             <b>${warnUsd > 0 ? `${priceSym()}${money(dispPrice(warnCny))} · ` : ''}${statusBadge}</b>
           </div>
-          <div>
+          <div title="${esc(t('「实际消费」按这个单价折算：1 个站点货币单位 = ¥X。留空则美元站按市场汇率、人民币站按 1'))}">
+            <span class="k">${t('站点单价')}</span>
+            <b><input class="unit-price" type="number" step="0.0001" min="0" placeholder="${p.currency === 'CNY' ? '1' : money(rateCny())}"
+              value="${p.unitPrice ?? ''}" data-act="unit-price" /></b>
+          </div>
+          <div title="${esc(t('「令牌」是站点后台的登录凭证，一次填好整站通用，用来读余额、公告和分组'))}">
             <span class="k">令牌</span>
             <b>${p.hasAdminToken
               ? (p.tokenStatus === 'invalid'
                 ? '<span class="badge danger">已失效</span>'
-                : `已填 <span class="tok-tail">…${esc(p.adminTokenTail || '')}</span>`)
-              : '未填'}</b>
-            <button class="ghost tiny" data-act="set-admin-token" data-provider="${esc(p.id)}" title="站点后台的登录令牌，一次填好整站通用，用来读余额和用量">${p.hasAdminToken ? '更换' : '填写'}</button>
+                : '<span class="badge ok">已填</span>')
+              : '<span class="badge">未填</span>'}</b>
+            <button class="ghost tiny" data-act="set-admin-token" data-provider="${esc(p.id)}" title="${esc(p.adminTokenTail ? `${t('令牌尾号')} …${p.adminTokenTail}` : t('未填站点令牌'))}">${p.hasAdminToken ? '更换' : '填写'}</button>
           </div>
         </div>
 
@@ -2688,6 +2693,8 @@ function renderBenchmark() {
 
 let monitorData = null
 let monitorDays = 7
+/** 花费 KPI 的时间段：today / week / month。只影响那张卡，不影响图表 */
+let spendRange = 'today'
 let monitorLoading = false
 /** 公告面板当前选中的站点；'all' = 不分站。切站点只重渲染，不重新拉数据 */
 let noticeSite = 'all'
@@ -2866,6 +2873,37 @@ function feedAnnouncementRow(row) {
   </div>`
 }
 
+const SPEND_RANGES = [
+  { key: 'today', label: '今天' },
+  { key: 'week', label: '本周' },
+  { key: 'month', label: '本月' },
+]
+
+/**
+ * 花费 KPI 卡：模型消费 / 实际消费双值 + 时间段切换。
+ *
+ * 「模型消费」是站点口径的估算（和余额概览的每日花费柱同一份数）；
+ * 「实际消费」乘站点单价，回答「我的钱包到底少了多少钱」——两者在
+ * 1:1 充值的站会差好几倍，所以必须并列显示，不能只留一个。
+ */
+function spendStat(range) {
+  const summary = monitorData?.spendSummary?.[range] || { estimated: 0, actual: 0 }
+  const label = SPEND_RANGES.find((r) => r.key === range)?.label || '今天'
+  const seg = `<span class="spend-range">${SPEND_RANGES.map(
+    (r) => `<button class="${r.key === range ? 'is-on' : ''}" data-spend-range="${r.key}">${t(r.label)}</button>`,
+  ).join('')}</span>`
+  return {
+    k: `${t('花费')} · ${t(label)}`,
+    // v 里放 HTML：两个金额 + 时间段切换，所以下面渲染时要用 innerHTML 分支
+    vHtml: `<span class="spend-pair"><b>${priceSym()}${money(dispPrice(summary.estimated))}</b>
+      <span class="spend-sep">/</span>
+      <b class="spend-actual">${priceSym()}${money(dispPrice(summary.actual))}</b></span>${seg}`,
+    sub: `${t('模型消费 / 实际消费')}${summary.actual === summary.estimated ? '' : ` · ${t('实际按站点单价折算')}`}`,
+    ic: 'receipt',
+    tint: 'tint-warn',
+  }
+}
+
 function renderMonitor() {
   const view = $('#view-monitor')
   if (!view) return
@@ -2892,7 +2930,6 @@ function renderMonitor() {
 
   // ---------------------------------------------------------------- KPI
   const latestBalance = [...(data.balanceSeries || [])].reverse().find((d) => typeof d.total === 'number')
-  const todaySpend = [...(data.spendSeries || [])].reverse().find((d) => typeof d.cny === 'number')
   const kpiItems = [
     {
       k: '站点',
@@ -2922,11 +2959,9 @@ function renderMonitor() {
       tint: 'tint-accent',
     },
     {
-      k: '今日花费',
-      v: `${priceSym()}${money(dispPrice(todaySpend?.cny ?? 0))}`,
-      sub: '按当前价估算',
-      ic: 'receipt',
-      tint: 'tint-warn',
+      // 花费卡：模型消费（站点口径估算）与实际消费（钱包里真正少掉的钱）并列。
+      // 实际消费 = 估算 × 站点单价，单价不填时美元站按市场汇率、人民币站按 1
+      ...spendStat(spendRange),
     },
     {
       k: '24 小时变动',
@@ -2949,7 +2984,7 @@ function renderMonitor() {
       (item) => `<div class="stat">
         <div class="stat-main">
           <div class="k">${esc(item.k)}</div>
-          <div class="v">${esc(item.v)}</div>
+          <div class="v">${item.vHtml ?? esc(item.v)}</div>
           <div class="sub">${esc(item.sub)}</div>
         </div>
         <div class="stat-icon ${item.tint}">${icon(item.ic)}</div>
@@ -3570,6 +3605,18 @@ document.addEventListener('click', async (event) => {
   const goto = event.target.closest('[data-goto]')
   if (goto) {
     setTab(goto.dataset.goto)
+    return
+  }
+
+  // 花费卡的时间段切换：三个区间后端一次算好，这里只重渲染，不重新拉数据
+  const spendRangeBtn = event.target.closest('[data-spend-range]')
+  if (spendRangeBtn) {
+    const next = spendRangeBtn.dataset.spendRange
+    if (next && next !== spendRange) {
+      spendRange = next
+      renderMonitor()
+      translateDom($('#view-monitor') || document.body)
+    }
     return
   }
 
@@ -4859,6 +4906,22 @@ document.addEventListener('change', async (event) => {
       state = await api('PATCH', `/api/providers/${providerId}`, { [field]: input.value })
       render()
       toast('权重已更新')
+    } catch (error) {
+      toast(error.message, true)
+    }
+    return
+  }
+
+  // 站点单价：只影响「实际消费」的折算，留空回落默认（美元站=市场汇率、人民币站=1）
+  if (input.dataset.act === 'unit-price') {
+    const row = input.closest('[data-provider]')
+    if (!row) return
+    try {
+      state = await api('PATCH', `/api/providers/${row.dataset.provider}`, {
+        unitPrice: input.value === '' ? null : Number(input.value),
+      })
+      render()
+      toast(input.value === '' ? '站点单价已清空（按默认汇率折算）' : '站点单价已保存')
     } catch (error) {
       toast(error.message, true)
     }

@@ -148,3 +148,31 @@ try {
   await new Promise((r) => setTimeout(r, 200))
   await rm(HOME, { recursive: true, force: true }).catch(() => {})
 }
+
+// ---- 花费双口径（模型消费 / 实际消费）
+console.log('\n断言：花费双口径')
+{
+  const { unitPriceOf, buildSpendSummary } = await import('../core/monitor.js')
+  const settings = { fx: { rates: { CNY: 6.68 } } }
+  check('美元站未填单价 → 市场汇率', unitPriceOf({ currency: 'USD' }, settings) === 6.68)
+  check('人民币站未填单价 → 1', unitPriceOf({ currency: 'CNY' }, settings) === 1)
+  check('填了以填写为准（1:1 站）', unitPriceOf({ currency: 'USD', unitPrice: 1 }, settings) === 1)
+  check('非法值回落市场汇率', unitPriceOf({ currency: 'USD', unitPrice: 0 }, settings) === 6.68)
+
+  const d = (offset) => {
+    const t = new Date()
+    t.setDate(t.getDate() - offset)
+    const pad = (n) => String(n).padStart(2, '0')
+    return `${t.getFullYear()}-${pad(t.getMonth() + 1)}-${pad(t.getDate())}`
+  }
+  const map = new Map([
+    [d(0), { estimated: 2, actual: 0.3 }],
+    [d(2), { estimated: 8, actual: 1.2 }],
+    [d(40), { estimated: 100, actual: 15 }],
+  ])
+  const s = buildSpendSummary(map)
+  check('今天只含今天', s.today.estimated === 2 && s.today.actual === 0.3)
+  check('本周包含今天', s.week.estimated >= 2)
+  check('本月 ≥ 本周', s.month.estimated >= s.week.estimated)
+  check('本月不含 40 天前的数据', s.month.estimated < 100)
+}
