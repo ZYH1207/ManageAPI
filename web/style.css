@@ -1638,8 +1638,28 @@ html[data-lang='en'] .doc[data-lang-block='en'] { display: block; }
   grid-auto-rows: 420px;
   align-items: stretch;
 }
+/* 左图右流同高：行高只由概览图决定——变动流用 contain:size 把内容从
+   行高计算里摘出去（否则 12 条会把卡片撑得比图高），再 stretch 对齐，
+   超出部分在卡片内部滚动（复用告警/公告那排的滚动结构） */
+.monitor-cols--overview { align-items: stretch; }
+.monitor-flow-card {
+  align-self: stretch;
+  display: flex; flex-direction: column;
+  contain: size;
+  overflow: hidden;
+}
+.monitor-flow-card .card-head { flex: none; }
+.monitor-flow-list {
+  flex: 1; min-height: 0; overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-right: 4px;
+  margin-right: -4px;
+}
 @media (max-width: 1080px) {
   .monitor-cols { grid-template-columns: minmax(0, 1fr); }
+  /* 窄屏上下堆叠后不再锁高：变动流恢复自然高度，列表取消内滚 */
+  .monitor-flow-card { contain: none; overflow: visible; }
+  .monitor-flow-list { overflow-y: visible; }
 }
 
 .monitor-chart-card .card-head { align-items: center; }

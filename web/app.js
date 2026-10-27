@@ -3301,7 +3301,9 @@ function renderMonitor() {
         <h3>最近倍率变动</h3>
         <span class="hint">${t('{n} 条', { n: (data.changes || []).length })}</span>
       </div>
-      ${changeRows || '<div class="empty small"><p>还没有变动。第一次同步只记基线，之后才开始比较。</p></div>'}
+      <div class="monitor-flow-list">
+        ${changeRows || '<div class="empty small"><p>还没有变动。第一次同步只记基线，之后才开始比较。</p></div>'}
+      </div>
     </div>`
 
   // ------------------------------------------------------------ 站点卡
@@ -3468,7 +3470,7 @@ function renderMonitor() {
   )
   view.innerHTML = `
     ${kpiHtml}
-    <div class="monitor-cols">${chartCard}${changesCard}</div>
+    <div class="monitor-cols monitor-cols--overview">${chartCard}${changesCard}</div>
     ${sitesCard}
     <div class="monitor-cols monitor-cols--feed">${alertsCard}${announcementsCard}</div>
     ${runsCard}`
