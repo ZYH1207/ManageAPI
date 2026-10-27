@@ -21,6 +21,8 @@ export const UNAVAILABLE_COOLDOWN_MS = {
   budget: 5 * 60 * 1000,
   'rate-limit': 5 * 60 * 1000,
   'model-missing': 60 * 60 * 1000,
+  // 协议不支持刻意不给冷却：同一条供给换一条路（chat / responses）可能完全正常，
+  // 整体冷却会让另一个协议的请求也失去这家站
 }
 
 /** 冷却原因的中文说明，决策页直接展示 */
@@ -29,9 +31,18 @@ export const UNAVAILABLE_LABEL = {
   budget: '单次预算超限',
   'rate-limit': '限流中',
   'model-missing': '模型不可用',
+  'protocol-unsupported': '不支持该协议',
 }
 
 const RULES = [
+  {
+    // 站点不支持这个协议路径（最典型的是 Responses）：这不是站点坏了，也不是
+    // 额度问题，而是「这一条路它不提供」。必须排在 model-missing 前面，
+    // 并且刻意不给冷却——同一条供给走 chat 可能完全正常，把它整体冷却掉
+    // 会让 chat 请求也失去这家站。
+    kind: 'protocol-unsupported',
+    test: /does not allow \/v1\/|never support \/v1\/|unsupported (endpoint|path)|不支持的?\s*(接口|路径|端点|endpoint)|暂不支持\s*\/v1\//i,
+  },
   {
     // 单次请求的预算/上限被拒（REQUEST_BUDGET_EXCEEDED）：这一次请求太大，
     // 不代表这条供给不能用——换个小的就过了。给个短冷却，别把它晾半小时

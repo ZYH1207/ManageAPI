@@ -463,7 +463,9 @@ daemon 只绑 `127.0.0.1`，不对外网开放，也不做鉴权。**不要改�
 ## 已知限制
 
 - **余额多半读不到。** one-api 的 `/api/user/self` 要「用户访问令牌」而不是 `sk-` key；不少站直接关了这类接口；Sub2API 的账户接口在 `/api/v1/*` 下、只认登录态。解决办法：在站点卡片上点「令牌」，把浏览器里抓到的登录令牌填进去（一个后台账号填一次，整站通用）。读不到就手动填，工具不会猜一个数字。
-- **只代理 `/v1/chat/completions` 和 `/v1/models`**。embeddings、images 等没做。
+- **代理 `/v1/chat/completions`、`/v1/responses` 和 `/v1/models`**。embeddings、images、`/v1/messages`（Claude 协议）没做。
+  **`/v1/responses` 是原样透传**：路径和请求体都发给上游，响应也原样回给客户端，只有三件事在网关侧处理——usage 字段改名（`input_tokens`/`output_tokens` → `prompt_tokens`/`completion_tokens`，供计费统计）、失败识别（`error` 事件与 `response.failed` 都算失败）、以及协议能力归因。
+  两个协议共用同一套路由和评分，**按协议降级是自动的**：不支持 `/responses` 的站会返回 403/404，被归为 `protocol-unsupported`（不计入站点故障、不触发冷却，因为同一家站走 chat 可能完全正常），网关自动换到支持该协议的候选站。
 - **用量依赖上游返回 `usage`。** 少数站即使要求了也不返回，这类请求记 0 token，但请求数仍计入。
 - **按次计费的供给不参与「最便宜」比价**。单位可选 `/M`（每百万 token）、`/1k`、`/次`（输入价即每次请求的价格）；按次与按 token 量纲不同，无法折算比较——按次行在比价表里显示「¥X/次」、排组尾、价差不计，监控「今日花费」按 请求数 × 单价 估算。
   **计费形式由模型广场自动识别**：广场的 `billing_mode` 是 `per_request` / `image` 时，导入价格会直接落成「按次」，单价 = `per_request_price` × 分组倍率（生图分组用 `image_rate_multiplier`）——和站点自己页面的算法一致。以前完全没读这个字段，「按次计费」分组里的模型会被当成 ¥X/百万 token 参与比价，量纲错了结论必错。站点没开广场（或走「可用渠道」读价）时拿不到计费形式，仍按 token 处理，可以手动把单位改成 `/次`。
@@ -570,6 +572,17 @@ node .test/run-e2e.mjs
 `MODE` 可选 `good` / `degraded`（掉包 + 虚报）/ `truncated`（砍额度）/ `fail`（chat 一律 503，`run-gateway.mjs` 的「会挂的站」用它）。
 
 网关端到端（路由、故障切换、流式、鉴权）用同一套环境，只是 5103 换成 `MODE=fail`，然后跑 `node .test/run-gateway.mjs`。
+
+Responses 协议端到端（协议降级、`response.failed` 换站、usage 映射）需要两个额外形态的 mock：
+
+```bash
+MODE=noresponses  PORT=5104 node .test/mock-upstream.mjs  # 只给 chat，/responses 返 403
+MODE=failedstream PORT=5105 node .test/mock-upstream.mjs  # 200 开流后发 response.failed
+
+# 用全新数据目录，然后（5101 用 MODE=good）
+MANAGE_API_HOME=/tmp/maresp node daemon/index.js --port 4399
+node .test/run-responses-gateway.mjs
+```
 
 免费池平台侧的两条自检不需要网络，直接跑：
 

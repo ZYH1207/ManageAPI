@@ -38,19 +38,55 @@ export function estimateTokens(text) {
   return cjk + Math.ceil(rest / 4)
 }
 
-/** 估算一次请求的输入规模（messages 正文 + 工具定义） */
+/**
+ * 累加一个 content 分段的文本量。
+ *
+ * 两种协议的 content 形状不同但都可枚举：Chat 是 {type:'text',text}，
+ * Responses 是 {type:'input_text'|'output_text',text}。这里不区分类型，
+ * 只认 text 字段——免得每加一种分段类型就要改一遍估算。
+ */
+function addContentTokens(total, content) {
+  if (typeof content === 'string') return total + estimateTokens(content)
+  if (!Array.isArray(content)) return total
+  let next = total
+  for (const part of content) {
+    if (typeof part?.text === 'string') next += estimateTokens(part.text)
+  }
+  return next
+}
+
+/**
+ * 估算一次请求的输入规模（正文 + 工具定义）。
+ *
+ * 必须同时认 body.messages（Chat）和 body.input（Responses）：只认 messages
+ * 的话，所有 Responses 请求的估算值都是 0，而估算值为 0 会让「计费虚报」
+ * 检查直接短路（见 checkRealResponse 里 requestTokens > 0 的前置条件）——
+ * 等于这条路请求完全不核价。
+ */
 export function estimateRequestTokens(body) {
   if (!body) return 0
   let total = 0
+
+  // Chat Completions：messages[]
   const messages = Array.isArray(body.messages) ? body.messages : []
   for (const message of messages) {
-    if (typeof message?.content === 'string') total += estimateTokens(message.content)
-    else if (Array.isArray(message?.content)) {
-      for (const part of message.content) {
-        if (typeof part?.text === 'string') total += estimateTokens(part.text)
-      }
+    total = addContentTokens(total, message?.content)
+  }
+
+  // Responses：instructions + input（字符串，或 item 数组）
+  if (typeof body.instructions === 'string') total += estimateTokens(body.instructions)
+  if (typeof body.input === 'string') {
+    total += estimateTokens(body.input)
+  } else if (Array.isArray(body.input)) {
+    for (const item of body.input) {
+      if (!item) continue
+      total = addContentTokens(total, item.content)
+      // function_call_output 的工具结果藏在 output 里，同样是真实输入规模
+      if (typeof item.output === 'string') total += estimateTokens(item.output)
+      if (typeof item.arguments === 'string') total += estimateTokens(item.arguments)
     }
   }
+
   if (body.tools) total += estimateTokens(JSON.stringify(body.tools))
   return total
 }

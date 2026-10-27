@@ -17,6 +17,12 @@ import * as providers from '../core/providers.js'
 import { scoreOffers, isRoutable, longTermScores } from '../core/score.js'
 import { classifyFailure } from '../core/failure.js'
 import { checkRealResponse, estimateRequestTokens } from '../core/quality-signals.js'
+import {
+  protocolForPath,
+  upstreamPath,
+  createStreamInspector,
+  extractNonStream,
+} from '../core/wire.js'
 import { selectCandidates, listPublicModels, explain } from '../core/router.js'
 import { splitOffers, resolvePool, FREE_PREFIX, FREE_BASE_PATH } from '../core/free.js'
 import { rankFreePool } from '../core/rank-free.js'
@@ -1988,15 +1994,26 @@ function authorizeGateway(req, db) {
  * 关键在流式的提交边界：必须读到第一个 chunk 并确认它不是错误，才向客户端
  * writeHead。在这之前失败都可以静默换站；一旦提交，就只能收尾，不能重试。
  */
-async function forwardToUpstream({ candidate, body, res, attemptIndex, pool = 'paid', clientSignal = null }) {
+async function forwardToUpstream({
+  candidate,
+  body,
+  res,
+  attemptIndex,
+  pool = 'paid',
+  clientSignal = null,
+  protocol = 'chat',
+}) {
   const apiKey = await inv.revealSecret(candidate.credential.id)
   if (!apiKey) return { committed: false, error: 'Key 解密失败' }
 
+  const isResponses = protocol === 'responses'
   const isStream = body.stream === true
+  // usage 的「客户端是否要」只对 Chat 有意义：Responses 的 usage 内含在
+  // response.completed 事件里，没法单独关掉，也不需要 include 参数
   const clientWantsUsage = Boolean(body.stream_options?.include_usage)
   const upstreamBody = { ...body, model: candidate.offer.upstreamName }
   // 客户端没要求 usage 时也让它返回——网关自己统计用，转发时再把那个 chunk 滤掉
-  if (isStream && !clientWantsUsage) {
+  if (isStream && !isResponses && !clientWantsUsage) {
     upstreamBody.stream_options = { ...(body.stream_options || {}), include_usage: true }
   }
 
@@ -2034,16 +2051,19 @@ async function forwardToUpstream({ candidate, body, res, attemptIndex, pool = 'p
 
   let upstreamRes
   try {
-    upstreamRes = await fetch(`${candidate.provider.baseUrl.replace(/\/+$/, '')}/chat/completions`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Accept: isStream ? 'text/event-stream' : 'application/json',
-        Authorization: `Bearer ${apiKey}`,
+    upstreamRes = await fetch(
+      `${candidate.provider.baseUrl.replace(/\/+$/, '')}${upstreamPath(protocol)}`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: isStream ? 'text/event-stream' : 'application/json',
+          Authorization: `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify(upstreamBody),
+        signal: controller.signal,
       },
-      body: JSON.stringify(upstreamBody),
-      signal: controller.signal,
-    })
+    )
   } catch (error) {
     cleanup()
     // 空闲超时和客户端断开都是 AbortError，但成因完全不同：前者是站卡死（要记账），
@@ -2079,22 +2099,17 @@ async function forwardToUpstream({ candidate, body, res, attemptIndex, pool = 'p
       return { committed: false, error: '上游返回的不是 JSON' }
     }
     cleanup()
-    if (payload?.error) return { committed: false, error: payload.error.message || '上游返回 error 字段' }
+    // 协议差异收在 wire.js 里：Responses 的 error / status:"failed" /
+    // usage 字段改名都在那边处理，这里只消费归一化结果
+    const extracted = extractNonStream(protocol, payload)
+    if (extracted.error) return { committed: false, error: extracted.error }
     res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', ...headers })
     res.end(JSON.stringify(payload))
-    // 真实响应的质量信号（空回答 / 计费虚报），只记录不在这里判定
-    const choice = payload?.choices?.[0]
-    const message = choice?.message || {}
     return {
       committed: true,
-      usage: payload.usage || null,
+      usage: extracted.usage || null,
       ttftMs: null,
-      realCheck: {
-        contentChars: (message.content || '').length + (message.reasoning_content || '').length,
-        hasToolCalls: Boolean(message.tool_calls?.length),
-        finishReason: choice?.finish_reason ?? null,
-        promptTokens: payload?.usage?.prompt_tokens ?? null,
-      },
+      realCheck: extracted.realCheck,
     }
   }
 
@@ -2102,12 +2117,10 @@ async function forwardToUpstream({ candidate, body, res, attemptIndex, pool = 'p
   const decoder = new TextDecoder()
   let buffer = ''
   let committed = false
-  let usage = null
   let ttftMs = null
-  // 流式响应的质量信号：累计正文长度、是否出现工具调用、结束原因
-  let contentChars = 0
-  let hasToolCalls = false
-  let finishReason = null
+  // 质量信号与 usage 都交给检查器累积：两种协议的增量事件形状差得太远，
+  // 在这里分叉写两套变量只会让后面每个字段都要判断一次协议
+  const inspector = createStreamInspector(protocol, { clientWantsUsage })
 
   const commit = () => {
     if (committed) return
@@ -2120,6 +2133,10 @@ async function forwardToUpstream({ candidate, body, res, attemptIndex, pool = 'p
     committed = true
     ttftMs = Date.now() - startedAt
   }
+
+  // 提交前攒下的生命周期事件（Responses 的 response.created 等）。
+  // 它们在 commit 时按原顺序补发，但在此之前不影响「能否换站」的判断
+  const heldChunks = []
 
   const push = async (chunk) => {
     // 客户端已经断开时 res.write 会静默失败，drain 也不会再来——直接抛，让上层收尾
@@ -2150,31 +2167,35 @@ async function forwardToUpstream({ candidate, body, res, attemptIndex, pool = 'p
           }
         }
 
-        if (parsed?.usage) usage = parsed.usage
+        const inspected = inspector.inspect(parsed)
 
-        // 累计真实响应的质量信号（空回答 / 工具调用 / 结束原因）
-        const choice = Array.isArray(parsed?.choices) ? parsed.choices[0] : null
-        if (choice) {
-          const delta = choice.delta || {}
-          if (typeof delta.content === 'string') contentChars += delta.content.length
-          if (typeof delta.reasoning_content === 'string') contentChars += delta.reasoning_content.length
-          if (Array.isArray(delta.tool_calls) && delta.tool_calls.length > 0) hasToolCalls = true
-          if (choice.finish_reason) finishReason = choice.finish_reason
-        }
-
-        // 第一个事件就是错误：还没提交，可以换站
-        if (!committed && parsed?.error) {
+        // 失败要在 commit 之前拦下：Responses 的 response.failed 是 200 流里的
+        // 事件，Chat 的错误可能只是一个顶层 error 字段。两种都归到这里，
+        // 才能保住「未提交就能静默换站」这个核心能力
+        if (!committed && inspected.error) {
           await reader.cancel().catch(() => {})
           cleanup()
-          return { committed: false, error: parsed.error.message || '上游返回 error' }
+          return { committed: false, error: inspected.error }
+        }
+        if (inspected.drop) continue
+
+        // 生命周期事件（response.created / in_progress）先攒着不发给客户端。
+        //
+        // 为什么要攒：Responses 的第一个事件永远是纯生命周期事件，没有任何
+        // 正文。如果见到它就 commit，而真正的失败（response.failed）恰恰是
+        // 第二个事件，那错误就会变成「已提交的流」直接透传——换站能力静默失效。
+        // 攒起来既不丢事件（commit 时按原顺序补发），又拖到「真有内容」才关窗。
+        if (!committed && inspected.hold) {
+          heldChunks.push(raw)
+          continue
         }
 
-        // 只带 usage 的收尾 chunk，客户端没要求就别塞给它
-        const usageOnly =
-          parsed && Array.isArray(parsed.choices) && parsed.choices.length === 0 && parsed.usage
-        if (usageOnly && !clientWantsUsage) continue
-
         commit()
+        if (heldChunks.length > 0) {
+          const held = heldChunks.join('')
+          heldChunks.length = 0
+          await push(held)
+        }
         await push(raw)
       }
 
@@ -2188,6 +2209,11 @@ async function forwardToUpstream({ candidate, body, res, attemptIndex, pool = 'p
 
     if (buffer) {
       commit()
+      if (heldChunks.length > 0) {
+        const held = heldChunks.join('')
+        heldChunks.length = 0
+        await push(held)
+      }
       await push(buffer)
     }
 
@@ -2203,10 +2229,11 @@ async function forwardToUpstream({ candidate, body, res, attemptIndex, pool = 'p
     const reason = idleTimedOut ? `上游流中断（${STREAM_IDLE_MS / 1000} 秒无数据）` : error.message
     if (!committed) return { committed: false, error: `流中断：${reason}` }
     if (!res.writableEnded) res.end()
-    return { committed: true, usage, ttftMs, streamError: reason }
+    return { committed: true, usage: inspector.state.usage, ttftMs, streamError: reason }
   }
 
   cleanup()
+  const { usage, contentChars, hasToolCalls, finishReason } = inspector.state
   return {
     committed: true,
     usage,
@@ -2215,7 +2242,7 @@ async function forwardToUpstream({ candidate, body, res, attemptIndex, pool = 'p
   }
 }
 
-async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = false) {
+async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = false, protocol = 'chat') {
   const body = await readBody(req, { maxBytes: MAX_GATEWAY_BODY })
   // 客户端关闭连接时立刻取消上游请求：否则上游会继续生成，白烧额度还占着连接。
   // res 随请求销毁，监听器跟着回收，不需要手动摘。
@@ -2346,6 +2373,7 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
         attemptIndex: index,
         pool,
         clientSignal: clientAbort.signal,
+        protocol,
       })
       if (result.committed) {
         const latencyMs = Date.now() - started
@@ -2512,11 +2540,18 @@ async function handleProxy(req, res, url) {
     })
   }
 
-  if (pathname === '/v1/chat/completions') {
-    return handleChatCompletions(req, res, db, auth.keyRecord, isFreeEntry)
+  // 两种协议的路径都在这里落地。协议只影响「往上游打哪个路径」和
+  // 「怎么解析回来的东西」，路由、评分、计费、免费池这一整套完全不看协议
+  const protocol = protocolForPath(pathname)
+  if (protocol) {
+    return handleChatCompletions(req, res, db, auth.keyRecord, isFreeEntry, protocol)
   }
 
-  return openaiError(res, 404, `暂不支持 ${pathname}，目前只代理 /v1/chat/completions 与 /v1/models`)
+  return openaiError(
+    res,
+    404,
+    `暂不支持 ${pathname}，目前只代理 /v1/chat/completions、/v1/responses 与 /v1/models`,
+  )
 }
 
 // ------------------------------------------------------------------ 静态
