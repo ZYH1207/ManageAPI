@@ -1094,8 +1094,8 @@ function providersHtml({ withForm = true, panel = '', actions = '' } = {}) {
             <span class="k">阈值 · 状态</span>
             <b>${warnUsd > 0 ? `${priceSym()}${money(dispPrice(warnCny))} · ` : ''}${statusBadge}</b>
           </div>
-          <div title="${esc(t('「实际消费」按这个单价折算：1 个站点货币单位 = ¥X。留空则美元站按市场汇率、人民币站按 1'))}">
-            <span class="k">${t('站点单价')}</span>
+          <div title="${esc(t('站点充值汇率：充 1 元到账多少站点额度。1:1 充值的站填 1；充 ¥100 到账 $120 填 0.83。留空 = 按市场汇率折算。「实际消费」用它把站点账单换算成人民币。'))}">
+            <span class="k">${t('充值汇率')}</span>
             <b><input class="unit-price" type="number" step="0.0001" min="0" placeholder="${p.currency === 'CNY' ? '1' : money(rateCny())}"
               value="${p.unitPrice ?? ''}" data-act="unit-price" /></b>
           </div>
@@ -1236,7 +1236,7 @@ function syncPanelHtml(data = monitorData || {}) {
     <div class="sync-panel">
       <input type="number" min="0" step="5" id="monitor-interval" placeholder="同步间隔（分钟）" title="同步间隔（分钟），0 = 关闭" value="${data.settings?.monitorIntervalMinutes ?? 30}" />
       <input type="number" min="0" step="0.5" id="monitor-warn" placeholder="告警阈值（$）" title="余额告警阈值（美元），0 = 不告警" value="${data.settings?.balanceWarnUsd ?? 1.5}" />
-      <input type="number" min="0" step="0.01" id="monitor-unit-price" placeholder="默认站点单价" title="默认站点单价（¥/1 站点美元）：所有站口径一致时只填一次，如「全部 1:1 充值」填 1。留空 = 按市场汇率" value="${state?.settings?.defaultUnitPrice ?? ''}" />
+      <input type="number" min="0" step="0.01" id="monitor-unit-price" placeholder="默认充值汇率" title="默认充值汇率（所有站口径一致时只填一次）：充 1 元到账 1 美元填 1；充 ¥100 到账 $120 填 0.83。留空 = 按市场汇率" value="${state?.settings?.defaultUnitPrice ?? ''}" />
       <button class="primary" data-act="monitor-save-settings">保存</button>
     </div>`
 }
