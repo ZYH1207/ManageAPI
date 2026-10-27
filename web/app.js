@@ -2898,7 +2898,7 @@ function spendStat(range) {
     vHtml: `<span class="spend-pair"><b>${priceSym()}${money(dispPrice(summary.estimated))}</b>
       <span class="spend-sep">/</span>
       <b class="spend-actual">${priceSym()}${money(dispPrice(summary.actual))}</b></span>${seg}`,
-    sub: `${t('模型消费 / 实际消费')}${summary.actual === summary.estimated ? '' : ` · ${t('实际按站点单价折算')}`}`,
+    sub: `${t('模型消费 / 实际消费')}${Math.abs(summary.actual - summary.estimated) < 0.005 ? '' : ` · ${t('实际按站点单价折算')}`}`,
     ic: 'receipt',
     tint: 'tint-warn',
   }
@@ -4869,6 +4869,22 @@ document.addEventListener('change', async (event) => {
     return
   }
 
+  // 站点单价：只影响「实际消费」的折算，留空回落默认（美元站=市场汇率、人民币站=1）
+  if (input.dataset.act === 'unit-price') {
+    const row = input.closest('[data-provider]')
+    if (!row) return
+    try {
+      state = await api('PATCH', `/api/providers/${row.dataset.provider}`, {
+        unitPrice: input.value === '' ? null : Number(input.value),
+      })
+      render()
+      toast(input.value === '' ? '站点单价已清空（按默认汇率折算）' : '站点单价已保存')
+    } catch (error) {
+      toast(error.message, true)
+    }
+    return
+  }
+
   const field = input.dataset.field
   if (!field) return
 
@@ -4906,22 +4922,6 @@ document.addEventListener('change', async (event) => {
       state = await api('PATCH', `/api/providers/${providerId}`, { [field]: input.value })
       render()
       toast('权重已更新')
-    } catch (error) {
-      toast(error.message, true)
-    }
-    return
-  }
-
-  // 站点单价：只影响「实际消费」的折算，留空回落默认（美元站=市场汇率、人民币站=1）
-  if (input.dataset.act === 'unit-price') {
-    const row = input.closest('[data-provider]')
-    if (!row) return
-    try {
-      state = await api('PATCH', `/api/providers/${row.dataset.provider}`, {
-        unitPrice: input.value === '' ? null : Number(input.value),
-      })
-      render()
-      toast(input.value === '' ? '站点单价已清空（按默认汇率折算）' : '站点单价已保存')
     } catch (error) {
       toast(error.message, true)
     }

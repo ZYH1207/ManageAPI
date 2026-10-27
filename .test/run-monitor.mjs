@@ -152,12 +152,17 @@ try {
 // ---- 花费双口径（模型消费 / 实际消费）
 console.log('\n断言：花费双口径')
 {
-  const { unitPriceOf, buildSpendSummary } = await import('../core/monitor.js')
+  const { unitPriceOf, spendFactorOf, buildSpendSummary } = await import('../core/monitor.js')
   const settings = { fx: { rates: { CNY: 6.68 } } }
   check('美元站未填单价 → 市场汇率', unitPriceOf({ currency: 'USD' }, settings) === 6.68)
   check('人民币站未填单价 → 1', unitPriceOf({ currency: 'CNY' }, settings) === 1)
   check('填了以填写为准（1:1 站）', unitPriceOf({ currency: 'USD', unitPrice: 1 }, settings) === 1)
   check('非法值回落市场汇率', unitPriceOf({ currency: 'USD', unitPrice: 0 }, settings) === 6.68)
+
+  check('不填单价时系数=1（两数相同）', spendFactorOf({ currency: 'USD' }, settings) === 1)
+  check('1:1 站系数=1/6.68', Math.abs(spendFactorOf({ currency: 'USD', unitPrice: 1 }, settings) - 1 / 6.68) < 1e-9)
+  check('人民币站填 1 系数=1', spendFactorOf({ currency: 'CNY', unitPrice: 1 }, settings) === 1)
+  check('实际消费不会超过模型消费（1:1 站）', spendFactorOf({ currency: 'USD', unitPrice: 1 }, settings) < 1)
 
   const d = (offset) => {
     const t = new Date()

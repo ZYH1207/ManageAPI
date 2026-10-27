@@ -382,6 +382,16 @@ function buildBalanceSeries(m, days, settings = {}) {
  * 用来画趋势、判断量级足够。
  */
 /**
+ * 默认单价：不做任何假定时，1 个站点货币单位折多少人民币。
+ * 美元站按市场汇率、人民币站按 1——也就是「模型消费」一直在用的那套折算。
+ */
+function defaultUnitPrice(provider, settings) {
+  if (provider?.currency === 'CNY') return 1
+  const fx = Number(ensureFx(settings).rates.CNY)
+  return Number.isFinite(fx) && fx > 0 ? fx : 7.2
+}
+
+/**
  * 站点单价：1 个站点货币单位值多少人民币。**只用于「实际消费」这件展示**——
  * 内部比价、路由、有效成本全部仍走站点口径，不受它影响。
  *
@@ -391,9 +401,21 @@ function buildBalanceSeries(m, days, settings = {}) {
 export function unitPriceOf(provider, settings) {
   const explicit = Number(provider?.unitPrice)
   if (Number.isFinite(explicit) && explicit > 0) return explicit
-  if (provider?.currency === 'CNY') return 1
-  const fx = Number(ensureFx(settings).rates.CNY)
-  return Number.isFinite(fx) && fx > 0 ? fx : 7.2
+  return defaultUnitPrice(provider, settings)
+}
+
+/**
+ * 实际消费相对「模型消费」的调整系数。
+ *
+ * **模型消费已经是人民币**（站点美元 × 市场汇率），所以不能再乘一次单价——
+ * 那等于乘两遍汇率（实测会把 ¥9.5 放大成 ¥62）。真正要比的是「站点单价
+ * 相对默认单价的比」：不填单价 → 1.0（两数相同）；1:1 充值站（单价 1、
+ * 市场 6.68）→ 0.1497，即真实花费只有按市场汇率估算的 15%。
+ */
+export function spendFactorOf(provider, settings) {
+  const base = defaultUnitPrice(provider, settings)
+  if (!(base > 0)) return 1
+  return unitPriceOf(provider, settings) / base
 }
 
 /** 按天聚合花费：estimated = 站点口径估算（原逻辑不变），actual = 乘以站点单价 */
@@ -419,7 +441,7 @@ function spendByDay(usageData, offers, settings, benchmarks, providerById) {
       }
       if (!sum) continue
       acc.estimated += sum
-      acc.actual += sum * unitPriceOf(providerById.get(providerId), settings)
+      acc.actual += sum * spendFactorOf(providerById.get(providerId), settings)
     }
     dayMap.set(day, acc)
   }
