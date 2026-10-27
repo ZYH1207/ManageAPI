@@ -1094,6 +1094,8 @@ Object.assign(EN, {
   '{n} 天': '{n}d',
   '{n} 条': '{n} entries',
   '还有 {n} 个': '{n} more',
+  '点开看全部 {n} 个分组': 'Show all {n} groups',
+  '收起，只显示前 {n} 个': 'Collapse — show the first {n}',
   '{n} 个模型': '{n} models',
   '正常': 'OK',
   '这个站采完了': 'Site collected',

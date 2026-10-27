@@ -956,6 +956,15 @@ a.icon-btn:hover { text-decoration: none; }
 }
 .prov-group-chips .group-chip .chip-x svg { width: 9px; height: 9px; }
 .prov-group-chips .group-chip .chip-x:hover { opacity: 1; color: var(--danger); }
+/* 「还有 N 个」/「收起」：这是入口不是装饰——虚线边 + hover 才亮，否则看着像一行说明文字，
+   谁也不知道能点（之前它是 span，多出来的分组就真的没任何入口能看） */
+.prov-group-chips .group-chip-more {
+  cursor: pointer; background: none; border-style: dashed; border-color: var(--border);
+  color: var(--muted); font-weight: 400;
+}
+.prov-group-chips .group-chip-more:hover {
+  color: var(--accent); border-color: var(--accent); background: var(--accent-soft);
+}
 
 /* ------------------------------------------- 厂商品牌配色（分组胶囊 / 分组徽章）
    胶囊底色按厂商品牌色：国产统一 DeepSeek 蓝、OpenAI 用 ChatGPT 绿、

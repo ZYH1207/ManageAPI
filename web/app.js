@@ -1018,6 +1018,35 @@ function providersHtml({ withForm = true, panel = '', actions = '' } = {}) {
         chipClass: groupChipClass(groupOffers),
       }]
     }))
+    // 分组胶囊一屏只放前 GROUP_CHIP_LIMIT 个：分组动辄十几个，全铺开会把站点卡撑到两屏高。
+    // 剩下的折成「还有 N 个」按钮，点开看全部——之前它是死文字，多出来的分组在界面上等于不存在。
+    const chipsOpen = openGroupChips.has(p.id)
+    const chipsShown = chipsOpen ? groupNames : groupNames.slice(0, GROUP_CHIP_LIMIT)
+    const chipOf = (g) => {
+      const st = groupStats.get(g) || {}
+      // 倍率统一才敢标（混合分组标「混合」，未填只显示名字）——数字色是折扣语义
+      const tag = st.mixed
+        ? `<span class="chip-note">${t('混合')}</span>`
+        : st.uniform !== '' && st.uniform !== undefined
+          ? `<span class="ratio-tone ${ratioToneClass(st.uniform)}">×${esc(st.uniform)}</span>`
+          : ''
+      return `<span class="group-chip ${st.chipClass || ''}">${g ? esc(g) : '未指定'}${tag}${
+        g
+          ? `<button class="chip-x" data-act="del-group" data-provider="${esc(p.id)}" data-group="${esc(g)}" title="删掉这个分组（Key 保留，可重新导入）">${icon('trash')}</button>`
+          : ''
+      }</span>`
+    }
+    const hiddenGroupCount = groupNames.length - chipsShown.length
+    // 展开后给一个「收起」，否则点开就回不去了（折叠状态不落库，刷新页面自然复位）
+    const moreChipHtml = hiddenGroupCount > 0
+      ? `<button class="group-chip group-chip-more" data-act="toggle-group-chips" data-provider="${esc(p.id)}" title="${esc(
+          t('点开看全部 {n} 个分组', { n: groupNames.length }),
+        )}">${t('还有 {n} 个', { n: hiddenGroupCount })}</button>`
+      : chipsOpen && groupNames.length > GROUP_CHIP_LIMIT
+        ? `<button class="group-chip group-chip-more" data-act="toggle-group-chips" data-provider="${esc(p.id)}" title="${esc(
+            t('收起，只显示前 {n} 个', { n: GROUP_CHIP_LIMIT }),
+          )}">${t('收起')}</button>`
+        : ''
     const groupRows = [...groupStats.entries()].map(([groupName, st]) => {
       const { uniform, mixed, siteRatio, custom } = st
       return `
@@ -1136,21 +1165,8 @@ function providersHtml({ withForm = true, panel = '', actions = '' } = {}) {
         <div class="prov-groups">
           <span class="k">${groupNames.length ? `${groupNames.length} 个分组` : '还没有分组'}</span>
           <span class="prov-group-chips">
-            ${groupNames.slice(0, 6).map((g) => {
-              const st = groupStats.get(g) || {}
-              // 倍率统一才敢标（混合分组标「混合」，未填只显示名字）——数字色是折扣语义
-              const tag = st.mixed
-                ? `<span class="chip-note">${t('混合')}</span>`
-                : st.uniform !== '' && st.uniform !== undefined
-                  ? `<span class="ratio-tone ${ratioToneClass(st.uniform)}">×${esc(st.uniform)}</span>`
-                  : ''
-              return `<span class="group-chip ${st.chipClass || ''}">${g ? esc(g) : '未指定'}${tag}${
-                g
-                  ? `<button class="chip-x" data-act="del-group" data-provider="${esc(p.id)}" data-group="${esc(g)}" title="删掉这个分组（Key 保留，可重新导入）">${icon('trash')}</button>`
-                  : ''
-              }</span>`
-            }).join('')}
-            ${groupNames.length > 6 ? `<span class="group-chip">还有 ${groupNames.length - 6} 个</span>` : ''}
+            ${chipsShown.map(chipOf).join('')}
+            ${moreChipHtml}
           </span>
         </div>
 
@@ -3610,6 +3626,12 @@ let siteQuery = ''
 let sitePage = 1
 const SITE_PAGE_SIZE = 9
 
+/** 站点卡一次露出几个分组胶囊（其余折成「还有 N 个」） */
+const GROUP_CHIP_LIMIT = 6
+
+/** 哪几个站点卡已经被点开了全部分组（存 providerId）；不落库，刷新页面即复位 */
+const openGroupChips = new Set()
+
 /** 免费页当前栏：'relay'（中转站免费模型）| 'platform'（平台积分） */
 let freePane = 'relay'
 
@@ -3998,6 +4020,16 @@ document.addEventListener('click', async (event) => {
     renderOverview()
     // renderOverview 内部不走 t()，英文界面下靠这层 DOM 翻译兜底
     translateDom($('#view-overview') || document.body)
+    return
+  }
+
+  if (action === 'toggle-group-chips') {
+    // 只重画站点卡，不重新拉数据：这是纯展示的展开/收起，不该触发一次网络请求
+    const target = actionButton.dataset.provider || providerId
+    if (!target) return
+    if (openGroupChips.has(target)) openGroupChips.delete(target)
+    else openGroupChips.add(target)
+    refreshSiteCards()
     return
   }
 

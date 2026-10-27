@@ -36,6 +36,8 @@
   "scripts": {
     "start": "node daemon/index.js",
     "dev": "node daemon/index.js --open",
+    "dev:iso": "node scripts/dev-iso.mjs",
+    "dev:setup": "node scripts/dev-iso.mjs --setup",
     "mock": "node .test/mock-upstream.mjs",
     "test": "node .test/run-e2e.mjs",
     "seed:showcase": "node .test/seed-showcase.mjs",
