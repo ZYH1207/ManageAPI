@@ -669,7 +669,7 @@ route('POST', /^\/api\/providers\/([\w-]+)\/sync$/, async (ctx) => {
     // 拉到了模型才敢标：空响应多半是站点抽风，不是「模型全下线了」
     const pruned =
       row.models.length > 0
-        ? await inv.markDelisted(provider.id, row.credential.id, row.models)
+        ? await inv.markDelisted(provider.id, row.credential.id, row.models, row.credential.group || '')
         : { delisted: 0, revived: 0 }
     added += saved.added
     removedTotal += pruned.delisted

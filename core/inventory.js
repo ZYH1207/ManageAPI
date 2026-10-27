@@ -306,6 +306,66 @@ export async function revealSecret(credentialId) {
 // ------------------------------------------------------------------- offers
 
 /**
+ * 一次性数据迁移：把历史遗留的分组名归一化，并合并因此产生的重复行。
+ *
+ * 为什么需要：修复前「同步时 trim 去重、写回时用原始值」会让带尾随空格的
+ * 分组名每轮同步多插一整套行。代码修好后不会再增长，但已经落库的脏数据
+ * 还在——归一化后会出现「同一分组同一模型两行」，其中一行是死的。
+ *
+ * 合并规则：同一 (站点, 归一化分组, 模型) 只保留**最早那行**（价格/Key 通常
+ * 在它上面），后面的如果字段完全一致就直接删；有差异则保留但标记下线，
+ * 不静默丢用户填过的价格。
+ *
+ * @returns {{normalized:number, merged:number, kept:number}}
+ */
+export async function migrateGroupNames() {
+  return mutate((db) => {
+    let normalized = 0
+    for (const offer of db.offers) {
+      const fixed = normalizeGroup(offer.group)
+      if ((offer.group || '') !== fixed) {
+        offer.group = fixed
+        normalized += 1
+      }
+    }
+    for (const credential of db.credentials || []) {
+      const fixed = normalizeGroup(credential.group)
+      if ((credential.group || '') !== fixed) credential.group = fixed
+    }
+
+    // 合并重复：按 (providerId, group, upstreamName) 分组，保留最早一条
+    const buckets = new Map()
+    for (const offer of db.offers) {
+      const key = `${offer.providerId}|${normalizeGroup(offer.group)}|${offer.upstreamName}`
+      if (!buckets.has(key)) buckets.set(key, [])
+      buckets.get(key).push(offer)
+    }
+    const drop = new Set()
+    let merged = 0
+    for (const list of buckets.values()) {
+      if (list.length < 2) continue
+      // 最早的一行做「主行」
+      const sorted = [...list].sort((a, b) => String(a.listedAt || '').localeCompare(String(b.listedAt || '')))
+      const keeper = sorted[0]
+      for (const other of sorted.slice(1)) {
+        const samePrice =
+          other.inPrice === keeper.inPrice &&
+          other.outPrice === keeper.outPrice &&
+          (other.ratio ?? null) === (keeper.ratio ?? null) &&
+          (other.currency || '') === (keeper.currency || '') &&
+          (other.priceUnit || '') === (keeper.priceUnit || '')
+        // 字段完全一致 → 纯重复，删掉；有差异 → 保留但下线，交回用户判断
+        if (samePrice) drop.add(other.id)
+        else if (!other.delistedAt) other.delistedAt = nowIso()
+        merged += 1
+      }
+    }
+    if (drop.size > 0) db.offers = db.offers.filter((o) => !drop.has(o.id))
+    return { normalized, merged, kept: drop.size }
+  })
+}
+
+/**
  * 真正「在役」的供给：没下线（delistedAt）、站点没暂停（paused）、模型没被忽略（ignoredModels）。
  * 这是三条过滤规则的唯一实现——比价 / 概览 / 智能决策 / 网关 / 免费池 / 探针目标都从这里取，
  * 任何一侧自己再写一遍迟早漂移（曾出过「暂停站点仍被派流量」「下线模型仍被探测白烧额度」）。
@@ -476,14 +536,19 @@ export async function deleteOffer(id) {
  *
  * 只按 credentialId 处理，不碰别的 Key 的行。
  */
-export async function markDelisted(providerId, credentialId, keepNames) {
+export async function markDelisted(providerId, credentialId, keepNames, group = '') {
   const keep = new Set(keepNames)
+  // 分组也要参与判断：同一把 Key 在多个分组下可以有同名模型，只按 upstreamName
+  // 会「A 分组还在用、B 分组已下线」时把两边一起标记/复活。
+  // 不传 group 时保持旧行为（按 credentialId 全覆盖），兼容其它调用点。
+  const wantGroup = group ? normalizeGroup(group) : null
   return mutate((db) => {
     let delisted = 0
     let revived = 0
     for (const offer of db.offers) {
       if (offer.providerId !== providerId) continue
       if (credentialId && offer.credentialId !== credentialId) continue
+      if (wantGroup !== null && normalizeGroup(offer.group) !== wantGroup) continue
       const alive = keep.has(offer.upstreamName)
       if (!alive && !offer.delistedAt) {
         offer.delistedAt = nowIso()
