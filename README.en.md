@@ -38,7 +38,7 @@ Nine pages on the left, one job each:
 | **Probes** | Fingerprint / truncation / billing / cache checks |
 | **Gateway** | One endpoint for all traffic, with a routing log |
 | **Usage** | Tokens by day / key / model / site |
-| **Benchmarks** | The baseline that ratios convert against |
+| **Benchmarks** | Defaults for the base price (auto-filled on import) |
 
 > The site-card layout (channel cards, group chips, toolbar) is inspired by [bejix/upstream-ops](https://github.com/bejix/upstream-ops): only the layout is borrowed; data and interactions are implemented here. Thanks to the author.
 
@@ -134,16 +134,20 @@ Custom ratios have a real use: if a site claims 0.15 but a usage check shows you
 
 Every supply row has a **Mode** column, one of two:
 
-- **Ratio** — actual price = benchmark × ratio; the input/output price boxes are disabled so the two rules cannot fight
-- **Price** — enter input/output unit prices directly; the ratio box is disabled
+- **Ratio** — the input/output boxes hold the **base price**; actual price = base × ratio (both the ratio and the price boxes stay editable)
+- **Price** — the input/output boxes are the final price; the ratio box is disabled
 
-Switching from Ratio to Price seeds the current effective price into the price boxes, so the row does not turn "unpriced" and disappear.
+The benchmark table is not a higher-priority source: it only auto-fills the base price when a site is imported, on exactly the same footing as a hand-typed number — your edit wins.
+
+Switching modes converts between base and final price automatically, so the effective price does not jump.
 
 Cache hit rate is its own column, taken from the latest probe; rows never probed show "—". The small text under blended cost is the off-peak price.
 
 ### Benchmarks
 
-Ratios need something to convert against. Three sources:
+The benchmark table is the **default for the base price**: it auto-fills each row's input box on import and plays no part in the arithmetic afterwards — the actual price is still base box × ratio. Edit the box directly if you want a different number; the benchmark will not overwrite it.
+
+Three sources:
 
 | Source | What it does |
 |---|---|

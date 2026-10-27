@@ -652,9 +652,13 @@ export async function listProbes(limit = 100) {
  *  1. 站点把模型标成 0 价 → 免费（manual + 双零价）。「免费模型」分组往往倍率
  *     写 1，真正免费体现在原价上，必须先判这条，否则会被「基准价 × 倍率」算回原价。
  *     只认本分组精确命中（exact）——全站同名回落拿到的是别的分组的价格，判免费会误伤。
- *  2. 有基准价且倍率已知 → 倍率模式（ratio = rate）。不依赖广场的绝对价，
- *     站点没开模型广场时这条路仍然能走通。
- *  3. 只有渠道/广场的模型原价 → 原价 × 倍率直接填绝对价（manual）。
+ *  2. 倍率已知 → 倍率模式：站点原价写进输入框，倍率另存，算钱时再乘。
+ *     不依赖广场的绝对价，也不依赖用户先配好基准价。
+ *  3. 只有渠道/广场的模型原价、且倍率未知 → 原价 × 1 直接填绝对价（manual）。
+ *
+ * 重要的口径：**倍率模式下输入框存的是「原价」**，不是最终价。
+ * 最终价由 pricing.js 的 resolveOfferPrice 统一算（原价 × 倍率），只有一处。
+ * 基准价表的作用是「第一次把输入框填上」，和手输平级，不能反过来盖掉手输值。
  *
  * 只改价格字段，不碰 offer.group——分组归属是调用方的语义（一边按用户选择、
  * 一边按后台识别）。返回落价方式：'free' | 'percall' | 'ratio' | 'manual' | 'skip'
@@ -696,7 +700,8 @@ export function applySitePricing(offer, { exact, rate, sitePrice, hasBench }) {
   }
 
   // 从按次切回按量：不清掉单位的话，per_call 会带着 token 价格一起留着
-  if (offer.priceUnit === 'per_call') offer.priceUnit = 'per_mtok'
+  const wasPerCall = offer.priceUnit === 'per_call'
+  if (wasPerCall) offer.priceUnit = 'per_mtok'
 
   if (exact && exact.inPrice === 0 && exact.outPrice === 0) {
     offer.pricingMode = 'manual'
@@ -716,13 +721,29 @@ export function applySitePricing(offer, { exact, rate, sitePrice, hasBench }) {
     return 'skip'
   }
 
-  if (siteRatio !== null && hasBench) {
+  // 倍率已知 → 倍率模式。原价写进输入框（只补空，不覆盖手输），倍率另存，
+  // 算钱时由 resolveOfferPrice 统一乘——这里不要预先乘好，否则改倍率得重算\n  // 每一行，而且会和「基准价 × 倍率」两套口径打架。
+  if (siteRatio !== null) {
     offer.ratio = siteRatio
     offer.siteRatio = siteRatio
     offer.ratioSource = 'site'
     offer.pricingMode = 'ratio'
-    offer.inPrice = null
-    offer.outPrice = null
+    // 原价：站点给了就补空位；用户手输过的不动（基准价只是默认值，没有高优先级）
+    const fill = (value) =>
+      value === null || value === undefined || !Number.isFinite(Number(value))
+        ? null
+        : Math.round(Number(value) * 1000) / 1000
+    if (sitePrice) {
+      // 从按次切过来时，旧的 inPrice 是「每次多少钱」，量纲不同，不能当原价——直接覆盖
+      if (wasPerCall || offer.inPrice === null || offer.inPrice === undefined) {
+        offer.inPrice = fill(sitePrice.inPrice)
+      }
+      if (wasPerCall || offer.outPrice === null || offer.outPrice === undefined) {
+        offer.outPrice = fill(sitePrice.outPrice)
+      }
+      // 站点价格单位是元（渠道/广场都是），原价跟着标 CNY
+      if (offer.inPrice !== null || offer.outPrice !== null) offer.currency = 'CNY'
+    }
     return 'ratio'
   }
 
@@ -745,6 +766,27 @@ export function applySitePricing(offer, { exact, rate, sitePrice, hasBench }) {
   return 'skip'
 }
 
+/**
+ * 把一条供给从「价格模式」切到「倍率模式」时，把输入框里的数字还原成原价。
+ *
+ * 两个口径：价格模式的输入框是**最终价**，倍率模式的输入框是**原价**。
+ * 直接切模式会把最终价当成原价再乘一遍，价格静默缩水一个倍率——必须换算。
+ *
+ * 还原优先用站点公布倍率（siteRatio）：历史落价写成手填价时，就是
+ * 「原价 × siteRatio」得到的。站点倍率未知（老数据 / 站点没公布）时，
+ * 只能把现有数字当原价（用户本来就是按原价填的）。
+ */
+export function priceToRatioMode(offer, nextRatio) {
+  if (!(Number.isFinite(nextRatio) && nextRatio > 0)) return false
+  const siteRatio = Number(offer.siteRatio)
+  const divisor = Number.isFinite(siteRatio) && siteRatio > 0 ? siteRatio : 1
+  if (divisor === 1) return false
+  const round3 = (v) => (v === null || v === undefined ? null : Math.round(v * 1000) / 1000)
+  if (offer.inPrice != null) offer.inPrice = round3(Number(offer.inPrice) / divisor)
+  if (offer.outPrice != null) offer.outPrice = round3(Number(offer.outPrice) / divisor)
+  return true
+}
+
 export async function setGroupRatio(providerId, group, ratio) {
   return mutate((db) => {
     if (!db.providers.some((p) => p.id === providerId)) throw new Error(`站点不存在：${providerId}`)
@@ -757,6 +799,10 @@ export async function setGroupRatio(providerId, group, ratio) {
     for (const offer of db.offers) {
       if (offer.providerId !== providerId) continue
       if (normalizeGroup(offer.group) !== name) continue
+      // 手填模式 → 倍率模式：输入框里的最终价先还原成原价，否则会被再乘一遍
+      if (value !== null && offer.pricingMode !== 'ratio' && offer.priceUnit !== 'per_call') {
+        priceToRatioMode(offer, value)
+      }
       offer.ratio = value
       offer.ratioSource = value === null ? null : value === offer.siteRatio ? 'site' : 'custom'
       // 清空倍率要同步回手填模式：pricingMode 是定价的权威开关（pricing.js 的约定），

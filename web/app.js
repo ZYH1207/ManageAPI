@@ -1755,8 +1755,8 @@ function renderPricing() {
         <td class="num sub-cell">${cacheCell}</td>
         <td><span class="group-chip-cell">${row.group ? `<span class="badge ${groupChipOf(row.providerId, row.group)}" title="${esc(row.group)}">${esc(row.group)}</span>` : `<span style="color:var(--faint)" title="${t('该行的 Key 没有分组')}">${t('默认')}</span>`}<button class="ghost tiny" data-act="dup-offer" title="同一个模型在另一档套餐里也有时，复制一条单独跟踪（分组归属跟随 Key，行内不可直接改）">＋</button></span></td>
         <td>${modeCell}</td>
-        <td class="num"><input type="number" step="0.001" placeholder="—" value="${row.inPrice ?? ''}" data-field="inPrice" ${mode === 'ratio' ? 'disabled title="当前按倍率算，切到「价格」才能填"' : perCall ? 'title="按次计费：这里填每次请求的价格"' : ''} /></td>
-        <td class="num"><input type="number" step="0.001" placeholder="—" value="${perCall ? '' : row.outPrice ?? ''}" data-field="outPrice" ${mode === 'ratio' || perCall ? 'disabled title="按次计费不区分输入/输出"' : ''} /></td>
+        <td class="num"><input type="number" step="0.001" placeholder="—" value="${row.inPrice ?? ''}" data-field="inPrice" ${perCall ? 'title="按次计费：这里填每次请求的价格"' : mode === 'ratio' ? 'title="原价。实际价 = 这个值 × 倍率"' : ''} /></td>
+        <td class="num"><input type="number" step="0.001" placeholder="—" value="${perCall ? '' : row.outPrice ?? ''}" data-field="outPrice" ${perCall ? 'disabled title="按次计费不区分输入/输出"' : mode === 'ratio' ? 'title="原价。实际价 = 这个值 × 倍率"' : ''} /></td>
         <td>
           <div class="unit-cell">
             <select data-field="currency" style="width:70px">
@@ -1805,6 +1805,7 @@ function renderPricing() {
       </button>
     </div>
     <p class="hint">${t('价格直接改，失焦即保存。「{sym}/百万 token」是综合成本：输入按 25%、输出按 75% 加权。人民币标价的站按「基准价」页里的汇率折算成美元比较。', { sym: priceSym() })}</p>
+    <p class="hint">${t('倍率模式下，输入 / 输出价填的是「原价」：实际价 = 原价 × 倍率。基准价只是导入时自动填进这两个框的默认值，手改过就以手改的为准。')}</p>
     ${ignoredCount ? `<p class="hint">已忽略 ${ignoredCount} 个模型：它们不出现在比价、智能决策、探针和网关里。<button class="ghost tiny" data-act="ignored-models">管理</button></p>` : ''}
     ${groups}${unpricedBlock}`
 }

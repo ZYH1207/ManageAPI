@@ -21,32 +21,67 @@ export const PRICE_UNITS = ['per_mtok', 'per_1k', 'per_call']
 /** 人民币展示用的默认汇率；只在「把美元显示成人民币」时用到，不参与排序 */
 export const DISPLAY_FX_DEFAULT = 7.2
 
+function finiteOrNull(value) {
+  if (value === null || value === undefined || value === '') return null
+  const n = Number(value)
+  return Number.isFinite(n) ? n : null
+}
+
 /**
  * 把一条供给解析成「原始计价」，供后续换算。
+ *
+ * 口径只有一条，别再在别处各算一遍：
+ *   **输入框（offer.inPrice / offer.outPrice）存的是原价，是价格的唯一来源。**
+ *   基准价表不是另一个优先级更高的来源，它只负责「第一次把输入框填上」——
+ *   和用户手输的价完全平级。所以这里绝不能用基准价去覆盖输入框。
+ *
+ *   - 倍率模式：实际价 = 输入框原价 × 倍率
+ *   - 价格模式：输入框里填的就是最终价，不乘
+ *   - 输入框空着（历史数据 / 只填了倍率没填价）才回落到基准价当原价
+ *
  * @returns {{inPrice:number|null, outPrice:number|null, currency:string, source:string}|null}
+ *   null 表示「标了倍率模式但连原价都没有」——未定价，不能拿别的字段凑数
  */
 export function resolveOfferPrice(offer, benchmarks = {}) {
   // 定价模式是谁，就用谁：pricingMode 是权威，
   // 不能拿「倍率有没有填」猜——否则切成手动后残留的倍率会继续把价格乘一遍。
   const key = offer.benchmarkKey || offer.modelKey || offer.upstreamName
-  const base = benchmarks[key]
-  const ratio = Number(offer.ratio)
+  const bench = benchmarks[key]
   const wantsRatio = offer.pricingMode === 'ratio'
-  if (wantsRatio && Number.isFinite(ratio) && ratio > 0 && base) {
-    const scale = (v) => (v === null || v === undefined ? null : Number(v) * ratio)
-    return {
-      inPrice: scale(base.in),
-      outPrice: scale(base.out),
-      // 峰谷：基准价里有空闲价就一起换算，仅供展示，不参与排序
-      offPeakInPrice: scale(base.offPeakIn),
-      offPeakOutPrice: scale(base.offPeakOut),
-      currency: base.currency === 'CNY' ? 'CNY' : 'USD',
-      source: 'ratio',
+  // 注意不能直接 Number(offer.ratio)：null 会被转成 0，把「没填倍率」当成「倍率 0（免费）」
+  const hasRatio = offer.ratio !== null && offer.ratio !== undefined && offer.ratio !== ''
+  const ratio = hasRatio ? Number(offer.ratio) : NaN
+
+  if (wantsRatio && Number.isFinite(ratio) && ratio >= 0) {
+    // 被乘数 = 输入框里的原价；空着才用基准价补位
+    const boxIn = finiteOrNull(offer.inPrice)
+    const boxOut = finiteOrNull(offer.outPrice)
+    const fromBox = boxIn !== null || boxOut !== null
+    const baseIn = fromBox ? boxIn : finiteOrNull(bench?.in)
+    const baseOut = fromBox ? boxOut : finiteOrNull(bench?.out)
+
+    if (baseIn !== null || baseOut !== null) {
+      // 收到 9 位小数：0.75 × 0.2 在浮点下是 0.15000000000000002，
+      // 这个尾巴会一路渗到界面和价差计算里（显示、比较、排序都会被噪声扰一下）
+      const scale = (v) => (v === null ? null : Math.round(v * ratio * 1e9) / 1e9)
+      return {
+        inPrice: scale(baseIn),
+        outPrice: scale(baseOut),
+        // 峰谷只存在于基准价表，输入框没有这一档；仅供展示，不参与排序
+        offPeakInPrice: fromBox ? null : scale(finiteOrNull(bench?.offPeakIn)),
+        offPeakOutPrice: fromBox ? null : scale(finiteOrNull(bench?.offPeakOut)),
+        // 币种跟着「原价是从哪来的」走，别把人民币原价按美元算
+        currency: fromBox
+          ? (offer.currency === 'CNY' ? 'CNY' : 'USD')
+          : (bench.currency === 'CNY' ? 'CNY' : 'USD'),
+        source: 'ratio',
+      }
     }
   }
+
   return {
-    inPrice: offer.inPrice === null || offer.inPrice === undefined || offer.inPrice === '' ? null : Number(offer.inPrice),
-    outPrice: offer.outPrice === null || offer.outPrice === undefined || offer.outPrice === '' ? null : Number(offer.outPrice),
+    inPrice: finiteOrNull(offer.inPrice),
+    outPrice: finiteOrNull(offer.outPrice),
     offPeakInPrice: null,
     offPeakOutPrice: null,
     currency: offer.currency === 'CNY' ? 'CNY' : 'USD',

@@ -1389,10 +1389,28 @@ route('PATCH', /^\/api\/offers\/([\w-]+)$/, async (ctx) => {
     const offer = db.offers.find((o) => o.id === ctx.params[0])
     if (!offer) throw new HttpError(404, '模型记录不存在')
     const b = ctx.body
-    const switchingToManual = b.pricingMode === 'manual' && offer.pricingMode !== 'manual'
-    if (b.pricingMode !== undefined) {
-      offer.pricingMode = b.pricingMode === 'ratio' ? 'ratio' : 'manual'
+    const prevMode = offer.pricingMode === 'ratio' ? 'ratio' : 'manual'
+    // 只填倍率时就当「要用倍率」：未定价那张表里三个框都能填，
+    // 只填倍率必须真的生效。否则 ratio 写进去了、模式还停在 manual，
+    // 实际价永远是空——看着就像「倍率根本没参与计算」。
+    const impliesRatio =
+      b.pricingMode === undefined && b.ratio !== undefined && b.ratio !== null && b.ratio !== ''
+    const nextMode =
+      b.pricingMode !== undefined
+        ? b.pricingMode === 'ratio'
+          ? 'ratio'
+          : 'manual'
+        : impliesRatio
+          ? 'ratio'
+          : prevMode
+    const switchingToManual = nextMode === 'manual' && prevMode !== 'manual'
+    const switchingToRatio = nextMode === 'ratio' && prevMode !== 'ratio'
+    if (b.pricingMode !== undefined || impliesRatio) {
+      offer.pricingMode = nextMode
     }
+    // 换算只在「用户点了模式切换按钮」时做：那一下的意思是「价格不变，换个表示法」。
+    // 改倍率不换算——输入框存的就是原价，倍率一动价格就该跟着动，这才是用户要的
+    const explicitModeSwitch = b.pricingMode !== undefined && switchingToRatio && !impliesRatio
     if (b.ratio !== undefined) {
       offer.ratio = nonNegative(b.ratio, '分组倍率')
     }
@@ -1420,16 +1438,38 @@ route('PATCH', /^\/api\/offers\/([\w-]+)$/, async (ctx) => {
       if (clash) throw new HttpError(400, `该站「${name || '默认'}」分组下已经有同名模型了`)
       offer.group = name
     }
-    // 从「倍率」切到「价格」时，把当前算出来的价格种进手填字段：
-    // 否则这条供给瞬间变成「未定价」并从比价表消失，看着像切换没生效。
+    // 两种模式的输入框含义不同：
+    //   倍率模式 —— 输入框是「原价」，实际价 = 原价 × 倍率
+    //   价格模式 —— 输入框是「最终价」
+    // 所以切模式必须做一次换算，把价格守住，否则切一下价格就跳一个数量级。
     // per_call 除外：按次的单价与 token 折算价是两回事，用户传什么就用什么
-    if (switchingToManual && offer.priceUnit !== 'per_call' && (offer.inPrice == null || offer.outPrice == null)) {
-      const asRatio = pricing.resolveOfferPrice({ ...offer, pricingMode: 'ratio' }, benchmarks)
-      if (asRatio && asRatio.source === 'ratio') {
-        offer.inPrice = asRatio.inPrice
-        offer.outPrice = asRatio.outPrice
-        offer.currency = asRatio.currency
-        offer.priceUnit = 'per_mtok'
+    const ratioOf = Number(offer.ratio)
+    const hasRatio = Number.isFinite(ratioOf) && ratioOf > 0
+    const round3 = (v) => (v === null || v === undefined ? null : Math.round(v * 1000) / 1000)
+    // 用户在同一次请求里显式传了价：那就是新口径下的价，别再换算（否则会被多除一次）
+    const touchedPrices = b.inPrice !== undefined || b.outPrice !== undefined
+    if (switchingToManual && offer.priceUnit !== 'per_call' && hasRatio && !touchedPrices) {
+      if (offer.inPrice != null || offer.outPrice != null) {
+        offer.inPrice = round3(offer.inPrice == null ? null : Number(offer.inPrice) * ratioOf)
+        offer.outPrice = round3(offer.outPrice == null ? null : Number(offer.outPrice) * ratioOf)
+      } else {
+        // 输入框本来就空着（历史数据靠基准价算的）：把折算价直接种进去
+        const asRatio = pricing.resolveOfferPrice({ ...offer, pricingMode: 'ratio' }, benchmarks)
+        if (asRatio && asRatio.source === 'ratio') {
+          offer.inPrice = asRatio.inPrice
+          offer.outPrice = asRatio.outPrice
+          offer.currency = asRatio.currency
+          offer.priceUnit = 'per_mtok'
+        }
+      }
+      // 倍率保留：价格模式下 resolveOfferPrice 不看它（pricingMode 是权威），
+      // 但切回倍率模式时靠它换算，丢了就得让用户重填
+    }
+    if (explicitModeSwitch && offer.priceUnit !== 'per_call' && hasRatio && !touchedPrices) {
+      // 价格 → 倍率：把最终价还原成原价，实际价保持不变
+      if (offer.inPrice != null || offer.outPrice != null) {
+        offer.inPrice = round3(offer.inPrice == null ? null : Number(offer.inPrice) / ratioOf)
+        offer.outPrice = round3(offer.outPrice == null ? null : Number(offer.outPrice) / ratioOf)
       }
     }
     offer.updatedAt = new Date().toISOString()

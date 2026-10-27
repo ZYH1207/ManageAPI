@@ -9,7 +9,7 @@
  */
 import { flattenPlaza } from '../core/model-plaza.js'
 import { applySitePricing } from '../core/inventory.js'
-import { offerCost } from '../core/pricing.js'
+import { offerCost, resolveOfferPrice } from '../core/pricing.js'
 
 let failed = 0
 const ok = (cond, msg) => {
@@ -154,9 +154,13 @@ console.log('[5] 从按次切回按量时单位复位')
     sitePrice: { billingMode: 'token', inPrice: 2, outPrice: 8 },
     hasBench: false,
   })
-  ok(via === 'manual', `落价方式 ${via}`)
+  ok(via === 'ratio', `落价方式 ${via}（倍率已知就走倍率模式）`)
   ok(offer.priceUnit === 'per_mtok', '单位复位成按量')
-  ok(offer.outPrice === 0.8, `输出价按倍率落价（${offer.outPrice}）`)
+  ok(offer.ratio === 0.1, `倍率写进去了（${offer.ratio}）`)
+  // 盒里存的是原价，最终价由 resolveOfferPrice 乘出来——这里不能是 0.8
+  ok(offer.inPrice === 2 && offer.outPrice === 8, `输入框存原价（${offer.inPrice}/${offer.outPrice}）`)
+  const resolved = resolveOfferPrice(offer, {})
+  ok(resolved.inPrice === 0.2 && resolved.outPrice === 0.8, `实际价 = 原价 × 倍率（${resolved.inPrice}/${resolved.outPrice}）`)
 }
 
 console.log('')
