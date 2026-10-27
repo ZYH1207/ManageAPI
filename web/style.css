@@ -1015,6 +1015,18 @@ a.icon-btn:hover { text-decoration: none; }
   white-space: nowrap; max-width: 160px; overflow: hidden; text-overflow: ellipsis;
 }
 .gtag[class*='vchip-'] { background: var(--g-bg); color: var(--g-fg); border-color: var(--g-ring); }
+/* 「还有 N 个 / 收起」：可点击的展开开关，虚线边框与普通胶囊区分 */
+button.group-more {
+  cursor: pointer; background: transparent; color: var(--muted);
+  border: 1px dashed var(--border-strong);
+}
+button.group-more:hover { color: var(--text); border-color: var(--border-strong); background: var(--hover); }
+/* 「还有 N 个 / 收起」：可点击的展开开关，样式同胶囊但加虚线边框以示不同 */
+button.group-more {
+  cursor: pointer; background: transparent; color: var(--muted);
+  border: 1px dashed var(--border-strong);
+}
+button.group-more:hover { color: var(--text); border-color: var(--border-strong); background: var(--hover); }
 /* 倍率数字：常态与所在文本同色、仅加粗；只有加价档位才示警
    （>1.2 橙、>2 红）——「颜色只用来表达状态，不用来分区」，折扣是常态不上色 */
 .ratio-tone { font-weight: 600; }

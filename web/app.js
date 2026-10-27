@@ -985,6 +985,9 @@ function providersHtml({ withForm = true, panel = '', actions = '' } = {}) {
 
     // 中转站的倍率按「分组」定，不是按模型——所以按分组给一个批量入口。
     // 倍率归并结果（统一/混合/站点值）算一次，分组胶囊与「分组倍率」弹窗共用，两边口径一致
+    // 分组胶囊默认只露 6 个：分组多的站（实测 9 个以上）会把卡片撑到翻屏，
+    // 「还有 N 个」点开/收起。按站记住展开状态，刷新后保持
+    const expanded = expandedGroups.has(p.id)
     const groupNames = [...new Set(offers.map((o) => o.group || ''))]
     const groupStats = new Map(groupNames.map((groupName) => {
       const groupOffers = offers.filter((o) => (o.group || '') === groupName)
@@ -1110,7 +1113,7 @@ function providersHtml({ withForm = true, panel = '', actions = '' } = {}) {
         <div class="prov-groups">
           <span class="k">${groupNames.length ? `${groupNames.length} 个分组` : '还没有分组'}</span>
           <span class="prov-group-chips">
-            ${groupNames.slice(0, 6).map((g) => {
+            ${(expanded ? groupNames : groupNames.slice(0, 6)).map((g) => {
               const st = groupStats.get(g) || {}
               // 倍率统一才敢标（混合分组标「混合」，未填只显示名字）——数字色是折扣语义
               const tag = st.mixed
@@ -1120,7 +1123,9 @@ function providersHtml({ withForm = true, panel = '', actions = '' } = {}) {
                   : ''
               return `<span class="group-chip ${st.chipClass || ''}">${g ? esc(g) : '未指定'}${tag}</span>`
             }).join('')}
-            ${groupNames.length > 6 ? `<span class="group-chip">还有 ${groupNames.length - 6} 个</span>` : ''}
+            ${groupNames.length > 6
+              ? `<button class="group-chip group-more" data-act="group-toggle" data-provider="${esc(p.id)}">${expanded ? t('收起') : t('还有 {n} 个', { n: groupNames.length - 6 })}</button>`
+              : ''}
           </span>
         </div>
 
@@ -2826,8 +2831,11 @@ function renderBenchmark() {
 
 let monitorData = null
 let monitorDays = 7
-/** 花费 KPI 的时间段：today / week / month。只影响那张卡，不影响图表 */
+/** 分组胶囊被展开的站点 id；默认只露 6 个胶囊，点「还有 N 个」展开 */
+const expandedGroups = new Set()
+/** 花费卡时间段：today / week / month */
 let spendRange = 'today'
+// 花费时间段见文件前部 spendRange（这里只在事件处理里赋值）
 /** 概览图选中项：'ALL' 看总体，或某个 providerId 只看该站 */
 let chartSite = 'ALL'
 let monitorLoading = false
@@ -3897,6 +3905,16 @@ document.addEventListener('click', async (event) => {
     return
   }
 
+  // 分组胶囊「还有 N 个 / 收起」：展开该站全部分组
+  const groupToggle = event.target.closest('[data-act="group-toggle"]')
+  if (groupToggle) {
+    const pid = groupToggle.dataset.provider
+    if (expandedGroups.has(pid)) expandedGroups.delete(pid)
+    else expandedGroups.add(pid)
+    renderMonitor()
+    return
+  }
+
   // 「新增站点」：弹窗里填（原来滚到底部表单，13 张卡之后要翻很久才找得到）
   if (event.target.closest('[data-act="add-provider"]')) {
     openAddProvider()
@@ -4841,6 +4859,7 @@ document.addEventListener('submit', async (event) => {
 // 搜索框：只重渲染当前页，然后恢复焦点与光标
 // ---------------------------------------------------------------- 拖拽排序
 // 只认卡片右上那颗「名次」作为把手：整卡可拖会让选文字、点按钮都变别扭。
+/** 分组胶囊被点开的站点 id；默认全部收起，只露 6 个 */
 let dragProviderId = null
 
 function clearDropMarks() {
