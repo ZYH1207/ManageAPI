@@ -157,6 +157,12 @@ export function offerCost(offer, settings = {}, benchmarks = {}) {
     cacheReadRaw === null || cacheReadRaw === undefined || !Number.isFinite(Number(cacheReadRaw))
       ? null
       : Number(cacheReadRaw) * mult
+  // 缓存写价同理：站点按它收「写入缓存」的钱（通常 1.25× 输入价）
+  const cacheWriteRaw = offer.cacheWritePrice
+  const cacheWriteCny =
+    cacheWriteRaw === null || cacheWriteRaw === undefined || !Number.isFinite(Number(cacheWriteRaw))
+      ? null
+      : Number(cacheWriteRaw) * mult
 
   return {
     inUsdPerMtok,
@@ -165,6 +171,8 @@ export function offerCost(offer, settings = {}, benchmarks = {}) {
     // 缓存读价（人民币/百万 token）；站点没公布时为 null，调用方退回输入价
     cacheReadCnyPerMtok: cacheReadCny,
     cacheReadUsdPerMtok: cacheReadCny === null ? null : cacheReadCny / fx,
+    cacheWriteCnyPerMtok: cacheWriteCny,
+    cacheWriteUsdPerMtok: cacheWriteCny === null ? null : cacheWriteCny / fx,
     offPeakInUsdPerMtok: offPeakInUsd,
     offPeakOutUsdPerMtok: offPeakOutUsd,
     offPeakBlendedUsdPerMtok,

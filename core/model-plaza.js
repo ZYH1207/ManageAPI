@@ -133,6 +133,9 @@ export function flattenPlaza(groups) {
         // 缓存读价：原价（未乘倍率）与实际价（乘倍率）都给，和 inPrice 同口径
         baseCacheRead: p.cache_read_price == null ? null : perMtok(p.cache_read_price),
         cacheReadPrice: p.cache_read_price == null ? null : perMtok(Number(p.cache_read_price) * multiplier),
+        // 缓存写价：站点按它收「写入缓存」的钱，通常是输入价的 1.25 倍
+        baseCacheWrite: p.cache_write_price == null ? null : perMtok(p.cache_write_price),
+        cacheWritePrice: p.cache_write_price == null ? null : perMtok(Number(p.cache_write_price) * multiplier),
         // 官方价（站方声明，可能不准，仅供参考）
         officialIn: perMtok(off.input_price),
         officialOut: perMtok(off.output_price),

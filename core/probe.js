@@ -9,6 +9,8 @@
  * 全部用流式请求，顺带拿到 TTFT（首 token 延迟）——这是体验里最敏感的一项。
  */
 
+import { estimateTokens } from './quality-signals.js'
+
 const FINGERPRINT_PROMPT =
   'Reply with exactly this JSON and nothing else, no markdown code fence, no explanation:\n' +
   '{"fp":"7Q2K","calc":391}'
@@ -197,6 +199,7 @@ export async function probeModel({ baseUrl, apiKey, model, timeoutMs = 45000 }) 
     cacheDetail: null,
     identityClaim: null,
     promptTokens: null,
+    requestTokens: null,
     completionTokens: null,
     finishReason: null,
     error: null,
@@ -214,6 +217,9 @@ export async function probeModel({ baseUrl, apiKey, model, timeoutMs = 45000 }) 
   result.latencyMs = first.totalMs
   result.ttftMs = first.ttftMs
   result.finishReason = first.finishReason
+  // 本地估算的 prompt token：和下面上游报的 promptTokens 一起构成「计费核验」的
+  // 对照组——站点虚报时两者会明显背离（这是唯一不依赖站点自报数字的证据）
+  result.requestTokens = estimateTokens(FINGERPRINT_PROMPT)
 
   // ---- 指纹：输出是否精确匹配
   const cleaned = stripFence(first.text)

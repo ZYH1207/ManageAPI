@@ -653,12 +653,14 @@ export function applySitePricing(offer, { exact, rate, sitePrice, hasBench }) {
 
   // 缓存读价跟着同一次落价一起写：命中缓存的部分按它计费（通常只有输入价的 1/10），
   // 不写的话花费只能按输入全价算，缓存占比高的用户会被高估好几倍
-  const cacheBase = sitePrice?.cacheReadPrice
-  if (cacheBase !== null && cacheBase !== undefined && Number.isFinite(Number(cacheBase))) {
-    offer.cacheReadPrice = Math.round(Number(cacheBase) * (siteRatio ?? 1) * 1000) / 1000
-  } else if (sitePrice) {
-    // 站点明确没有缓存价时清掉旧值，避免沿用一个已经不成立的价
-    offer.cacheReadPrice = null
+  const scaleTo = (value) =>
+    value === null || value === undefined || !Number.isFinite(Number(value))
+      ? null
+      : Math.round(Number(value) * (siteRatio ?? 1) * 1000) / 1000
+  if (sitePrice) {
+    // 站点明确没给某一项时清掉旧值，避免沿用一个已经不成立的价
+    offer.cacheReadPrice = scaleTo(sitePrice.cacheReadPrice)
+    offer.cacheWritePrice = scaleTo(sitePrice.cacheWritePrice)
   }
 
   // ---- 按次计费：站点在模型广场里声明了 billing_mode=per_request / image。
@@ -868,6 +870,52 @@ export async function getManualOrder(modelKey) {
 // ----------------------------------------------------------- 真实流量计数
 
 const TRAFFIC_WINDOW_MS = 3600 * 1000
+
+/**
+ * 计费核对样本：每 N 次成功请求抽一条，记「本地估算 token vs 上游上报 prompt_tokens」。
+ *
+ * 这是唯一**不依赖站点自报数字**的独立证据：站点虚报 prompt_tokens 时，
+ * 我们的 usage 记录会跟着虚报，拿它和站点账单比永远一致——只有本地按请求体
+ * 重新数一遍 token，才能看出上报值是否离谱。
+ */
+const BILLING_SAMPLE_EVERY = 20
+const BILLING_SAMPLE_KEEP = 200
+let billingSampleCounter = 0
+
+export async function recordBillingSample(offerId, entry) {
+  billingSampleCounter += 1
+  if (billingSampleCounter % BILLING_SAMPLE_EVERY !== 0) return null
+  if (!offerId) return null
+  return mutate((db) => {
+    if (!Array.isArray(db.billingSamples)) db.billingSamples = []
+    const row = {
+      id: `bs_${Date.now().toString(36)}`,
+      ts: nowIso(),
+      offerId,
+      providerId: entry.providerId || null,
+      modelKey: entry.modelKey || null,
+      localTokens: Number(entry.localTokens) || 0,
+      reportedPrompt: Number(entry.reportedPrompt) || 0,
+      reportedCached: Number(entry.reportedCached) || 0,
+    }
+    // 离谱的样本单独标出来：上报值超过本地估算 2 倍（且绝对量不小）就值得报警
+    row.suspicious = row.localTokens >= 200 && row.reportedPrompt > row.localTokens * 2
+    db.billingSamples.push(row)
+    if (db.billingSamples.length > BILLING_SAMPLE_KEEP) {
+      db.billingSamples = db.billingSamples.slice(-BILLING_SAMPLE_KEEP)
+    }
+    return row
+  })
+}
+
+/** 某站最近的计费样本（用量核对用） */
+export async function listBillingSamples(providerId, limit = 30) {
+  const db = await readDb()
+  return (db.billingSamples || [])
+    .filter((r) => r.providerId === providerId)
+    .slice(-limit)
+    .reverse()
+}
 
 /**
  * 累加真实请求的成败。窗口超过 1 小时就重置——

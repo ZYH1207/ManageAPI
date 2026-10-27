@@ -438,12 +438,25 @@ function spendByDay(usageData, offers, settings, benchmarks, providerById) {
         // 缓存命中的 token 单独按缓存价算：usage 里的 input 已经包含 cached，
         // 全按输入价算会把「97% 命中缓存」的用量高估近 10 倍。
         // 站点没公布缓存价时退回输入价（保守，不假装有折扣）
-        const cached = Math.max(0, Math.min(Number(row.cached) || 0, Number(row.input) || 0))
-        const freshIn = Math.max(0, (Number(row.input) || 0) - cached)
+        // 口径兼容：新记录 input 是**净值**（缓存读/写单独存），老记录 input 含缓存。
+        // 判据看该行有没有被新代码写过——新代码总会写 inputIncludesCached: 0，
+        // 老行没这个字段（undefined）。此前用 ===1 判断，老行会被当净值，重复计费
+        const rawInput = Number(row.input) || 0
+        const cachedRaw = Number(row.cached) || 0
+        const cacheWriteRaw = Number(row.cacheCreation) || 0
+        const legacyInput = row.inputIncludesCached === undefined
+        const freshIn = legacyInput ? Math.max(0, rawInput - cachedRaw) : rawInput
+        const cacheHits = legacyInput ? Math.min(cachedRaw, rawInput) : cachedRaw
         if (typeof cost.inCnyPerMtok === 'number') {
           sum += (freshIn / 1e6) * cost.inCnyPerMtok
           const cachePrice = cost.cacheReadCnyPerMtok ?? cost.inCnyPerMtok
-          sum += (cached / 1e6) * cachePrice
+          sum += (cacheHits / 1e6) * cachePrice
+        }
+        // 缓存写入独立计费（站点按 cache_write 收，通常 1.25× 输入价）
+        const cacheWrite = cacheWriteRaw
+        if (cacheWrite > 0) {
+          const writePrice = cost.cacheWriteCnyPerMtok ?? cost.inCnyPerMtok ?? 0
+          sum += (cacheWrite / 1e6) * writePrice
         }
         if (typeof cost.outCnyPerMtok === 'number') sum += ((row.output || 0) / 1e6) * cost.outCnyPerMtok
       }

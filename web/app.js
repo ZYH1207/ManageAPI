@@ -806,24 +806,73 @@ async function applyPickedGroup(button) {
   }
 }
 
-/** 扣费核对的展示块：我们的估算 + 站方原始返回 */
+/**
+ * 扣费核验：把「我们本地算的 token」和「站点上报的 token」摆在一起。
+ *
+ * 这才是能抓虚报的地方——站点虚报 prompt_tokens 时，我们的 usage 会跟着虚报，
+ * 拿它和站点账单比永远一致；只有本地按请求体重新数一遍才有对照价值。
+ */
 function renderUsageCheck(providerId) {
   const check = usageCheckResults[providerId]
   if (!check) return ''
   const est = check.estimate || {}
+  const verify = check.verify || {}
+  const site = verify.site || null
+  const samples = verify.samples || []
+  const suspicious = samples.filter((x) => x.suspicious)
+
+  const pct = (reported, local) => {
+    if (!local || !reported) return ''
+    const diff = (reported / local - 1) * 100
+    return `${diff > 0 ? '+' : ''}${diff.toFixed(0)}%`
+  }
+  const toneOf = (reported, local) => {
+    if (!local || !reported) return ''
+    const ratio = reported / local
+    return ratio > 2 ? 'danger' : ratio > 1.5 ? 'warn' : ''
+  }
+
+  const comparable = samples.filter((x) => typeof x.local === 'number' && x.local > 0)
+  const sampleRows = comparable.slice(0, 8).map((x) => `
+    <tr>
+      <td class="mono" style="font-size:11px">${fmtDateTime(x.at)}</td>
+      <td class="mono" style="font-size:11px">${esc(x.modelKey || '—')}</td>
+      <td class="num">${x.local === null ? '—' : formatTokens(x.local)}</td>
+      <td class="num">${x.reported === null ? '—' : formatTokens(x.reported)}</td>
+      <td class="num ${toneOf(x.reported, x.local)}">${pct(x.reported, x.local) || '—'}</td>
+    </tr>`).join('')
+
   return `
     <div class="keylist" style="border-top:1px solid var(--border);padding-top:10px">
       <div class="keyrow" style="border:none;padding-bottom:4px">
-        <span style="color:var(--muted);font-size:12px">扣费核对</span>
+        <span style="color:var(--muted);font-size:12px">扣费核验</span>
         <span class="grow"></span>
+        ${suspicious.length
+          ? `<span class="badge danger">${suspicious.length} 条上报异常</span>`
+          : comparable.length
+            ? '<span class="badge ok">样本正常</span>'
+            : '<span class="badge">还没有样本</span>'}
       </div>
       ${check.error ? `<div class="hint" style="padding:2px 0 6px">没拉到站方数据：${esc(check.error)}</div>` : ''}
-      <div style="font-size:12px;line-height:1.9;padding:2px 0 6px">
-        <div>我们的估算：<b>${priceText(est.cost)}</b>
-          <span style="color:var(--faint)">（${est.requests || 0} 次请求 · 输入 ${formatTokens(est.input)} / 输出 ${formatTokens(est.output)} token）</span></div>
-        <div style="color:var(--faint);margin-top:2px">下面是站方返回的原始数据，差异大说明倍率有水分或计费口径不同。</div>
-        <pre class="raw-box">${esc(JSON.stringify(check.raw ?? null, null, 2))}</pre>
+      <div style="font-size:12px;line-height:1.9;padding:2px 0 4px">
+        <div>我们记录的网关用量：<b>${priceText(est.cost)}</b>
+          <span style="color:var(--faint)">（${est.requests || 0} 次 · 输入 ${formatTokens(est.input)} / 输出 ${formatTokens(est.output)}）</span></div>
+        ${site ? `<div style="color:var(--muted)">站点全站账单：<b>${site.actualCost === null ? '—' : priceText(site.actualCost * rateCny())}</b>
+          <span style="color:var(--faint)">（${site.requests ?? '—'} 次请求，含不经网关的直连流量）</span></div>` : ''}
       </div>
+      ${comparable.length ? `
+      <table class="mini-table" style="margin-top:6px">
+        <thead><tr><th>时间</th><th>模型</th><th class="num">本地估算</th><th class="num">站点上报</th><th class="num">偏差</th></tr></thead>
+        <tbody>${sampleRows}</tbody>
+      </table>
+      <div class="hint" style="margin:6px 0 0">
+        本地估算 = 按请求体重新数的 token；站点上报 = 上游返回的 prompt_tokens。
+        偏差超过 +100% 会标红——那说明站点在多算你的输入。缓存命中多时本地估算偏高是正常的（本地数不出缓存）。
+      </div>` : '<div class="hint" style="padding:2px 0 6px">还没有样本：网关转发 20 次成功请求后会开始抽样。</div>'}
+      <details style="margin-top:6px">
+        <summary style="cursor:pointer;font-size:11px;color:var(--faint)">站点原始返回</summary>
+        <pre class="raw-box">${esc(JSON.stringify(check.raw ?? null, null, 2))}</pre>
+      </details>
     </div>`
 }
 

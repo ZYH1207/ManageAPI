@@ -1171,6 +1171,52 @@ route('POST', /^\/api\/providers\/([\w-]+)\/usage-check$/, async (ctx) => {
     }
   }
 
+  // ---- 真正的核验：拿「我们本地算出来的 token 数」和「站点上报的 token 数」比。
+  // 这是唯一不依赖站点自报数字的独立证据——站点虚报 prompt_tokens 时，
+  // 我们记录的 usage 会跟着虚报，光和它自己比永远一致。
+  // 数据来自网关侧抽样（recordBillingSample）和探针（探针也走同一套上游调用）
+  const sampleRows = await inv.listBillingSamples(provider.id, 30)
+  const probeRows = (db.probes || []).filter((r) => r.providerId === provider.id && r.ok && r.promptTokens)
+  const siteStats = (raw?.['/api/v1/usage/stats']?.data) || raw?.['/api/v1/usage/stats'] || null
+
+  const verify = {
+    // 逐条样本：本地估算 vs 上游上报
+    samples: [
+      // 老探针记录没有 requestTokens，没有对照价值，只保留能比对的
+      ...probeRows
+        .filter((r) => typeof r.requestTokens === 'number' && r.requestTokens > 0)
+        .slice(-15)
+        .map((r) => ({
+          at: r.ts,
+          source: 'probe',
+          modelKey: r.modelKey || null,
+          local: r.requestTokens,
+          reported: r.promptTokens ?? null,
+        })),
+      ...sampleRows.map((r) => ({
+        at: r.ts,
+        source: 'gateway',
+        modelKey: r.modelKey,
+        local: r.localTokens,
+        reported: r.reportedPrompt,
+        suspicious: Boolean(r.suspicious),
+      })),
+    ]
+      .sort((a, b) => String(b.at).localeCompare(String(a.at)))
+      .slice(0, 30),
+    // 站点声明的全站合计（若有）
+    site: siteStats
+      ? {
+          requests: siteStats.total_requests ?? null,
+          input: siteStats.total_input_tokens ?? null,
+          cacheRead: siteStats.total_cache_read_tokens ?? null,
+          output: siteStats.total_output_tokens ?? null,
+          cost: siteStats.total_cost ?? null,
+          actualCost: siteStats.total_actual_cost ?? null,
+        }
+      : null,
+  }
+
   return {
     raw,
     estimate: {
@@ -1179,6 +1225,7 @@ route('POST', /^\/api\/providers\/([\w-]+)\/usage-check$/, async (ctx) => {
       output: estOutput,
       cost: Math.round(estCost * 10000) / 10000,
     },
+    verify,
   }
 })
 
@@ -2322,6 +2369,13 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
           inputTokens: result.usage?.prompt_tokens,
           outputTokens: result.usage?.completion_tokens,
           cachedTokens: result.usage?.prompt_tokens_details?.cached_tokens,
+          // 缓存写入是独立计费项（站点按 cache_creation 收，通常是输入价的 1.25 倍）。
+          // 上游字段名各家不一，Anthropic 系在 cache_creation_input_tokens，
+          // OpenAI 兼容层常放在 prompt_tokens_details.cache_creation_tokens
+          cacheCreationTokens:
+            result.usage?.cache_creation_input_tokens ??
+            result.usage?.prompt_tokens_details?.cache_creation_tokens ??
+            0,
           latencyMs,
           ttftMs: result.ttftMs,
           ok: !result.streamError,
@@ -2335,6 +2389,20 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
             ? null
             : checkRealResponse({ ...result.realCheck, requestTokens }),
         )
+        // 计费核对样本：本地估算的请求 token vs 上游上报的 prompt_tokens。
+        // 这是唯一不依赖站点自报数字的独立证据，虚报时两者会明显背离。
+        // 只抽样记录（每 N 次一条），避免把 usage 文件撑大
+        if (!result.streamError && result.usage?.prompt_tokens) {
+          await inv
+            .recordBillingSample(candidate.offer.id, {
+              providerId: candidate.offer.providerId,
+              modelKey: candidate.offer.modelKey || null,
+              localTokens: requestTokens,
+              reportedPrompt: Number(result.usage.prompt_tokens) || null,
+              reportedCached: Number(result.usage?.prompt_tokens_details?.cached_tokens) || 0,
+            })
+            .catch(() => {})
+        }
         // 免费池的额度必须跟着真实调用扣：以前只有手动填的接口能改 freeQuota，
         // 于是「额度用尽」永远判不出来，网关会一直往一个已经空了的池子里发请求。
         if (pool === 'free') {

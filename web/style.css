@@ -1096,6 +1096,17 @@ a.icon-btn:hover { text-decoration: none; }
 .help-card .form-card { border: none; box-shadow: none; margin: 0; padding: 4px 16px 16px; }
 
 /* ------------------------------------------------------------ 原始数据框 */
+/* 扣费核验里的小表格：比主表紧凑，嵌在站点卡详情里 */
+.mini-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.mini-table th {
+  text-align: left; font-weight: 500; color: var(--faint); font-size: 10px;
+  padding: 4px 6px; border-bottom: 1px solid var(--divider); white-space: nowrap;
+}
+.mini-table td { padding: 4px 6px; border-bottom: 1px solid var(--divider); }
+.mini-table tr:last-child td { border-bottom: none; }
+.mini-table td.warn { color: var(--warn-strong); }
+.mini-table td.danger { color: var(--danger-strong); font-weight: 600; }
+
 .raw-box {
   max-height: 240px;
   overflow: auto;

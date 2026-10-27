@@ -86,3 +86,27 @@ else {
   console.error(`${failed} 项失败`)
   process.exitCode = 1
 }
+
+// ---- 缓存读/写分项计费
+console.log('[5] 缓存读/写分项计费')
+{
+  const { offerCost } = await import('../core/pricing.js')
+  const bench = { m: { in: 2, out: 8, currency: 'CNY' } }
+  const base = { modelKey: 'm', pricingMode: 'manual', inPrice: 2, outPrice: 8, priceUnit: 'per_mtok', currency: 'CNY' }
+  const withCache = offerCost({ ...base, cacheReadPrice: 0.04, cacheWritePrice: 2.5 }, { fx: { rates: { CNY: 7 } } }, bench)
+  ok(withCache.cacheReadCnyPerMtok === 0.04, `缓存读价（实际 ${withCache.cacheReadCnyPerMtok}）`)
+  ok(withCache.cacheWriteCnyPerMtok === 2.5, `缓存写价（实际 ${withCache.cacheWriteCnyPerMtok}）`)
+  const noCache = offerCost(base, { fx: { rates: { CNY: 7 } } }, bench)
+  ok(noCache.cacheReadCnyPerMtok === null && noCache.cacheWriteCnyPerMtok === null, '站点没给时都为 null')
+}
+
+console.log('[6] usage 记录：input 存净值，缓存分项单列')
+{
+  const { readFile } = await import('node:fs/promises')
+  const src = await readFile(new URL('../core/usage.js', import.meta.url), 'utf8')
+  ok(/row\.input \+= Math\.max\(0, rawInput - cached - cacheCreation\)/.test(src), 'input 减去缓存读/写后再入库')
+  ok(/row\.cacheCreation \+= cacheCreation/.test(src), '缓存写入单独累加')
+  ok(/inputIncludesCached/.test(src.replace(/\/\/.*$/gm, '')), '有老数据兼容标记')
+}
+
+console.log('')

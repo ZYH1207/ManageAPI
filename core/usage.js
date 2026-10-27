@@ -25,6 +25,11 @@ function emptyRow() {
     input: 0,
     output: 0,
     cached: 0,
+    // 缓存写入（站点按 cache_creation 单独计费，通常是输入价的 1.25 倍）。
+    // 之前完全没记，这部分花费一直按 0 算——累计能到几万 token
+    cacheCreation: 0,
+    // 1 = 这一行的 input 里包含缓存（老数据）；新记录 input 是净值，不写这个字段
+    inputIncludesCached: 0,
     latencySum: 0,
     latencyCount: 0,
     ttftSum: 0,
@@ -73,8 +78,8 @@ function todayKey(iso) {
 /**
  * 记一次请求。写入串行化，避免并发请求互相覆盖。
  * @param {{keyId:string, providerId:string, model:string, inputTokens?:number,
- *          outputTokens?:number, cachedTokens?:number, latencyMs?:number,
- *          ttftMs?:number, ok?:boolean, ts?:string}} entry
+ *          outputTokens?:number, cachedTokens?:number, cacheCreationTokens?:number,
+ *          latencyMs?:number, ttftMs?:number, ok?:boolean, ts?:string}} entry
  */
 export async function recordUsage(entry) {
   const data = await readUsage()
@@ -86,9 +91,16 @@ export async function recordUsage(entry) {
 
   row.requests += 1
   if (entry.ok === false) row.errors += 1
-  row.input += Number(entry.inputTokens) || 0
+  // input 存**净值**（不含缓存读/写）：站点计费把「新读」「命中缓存」「写入缓存」
+  // 当成三个独立项，混在一个字段里再做减法还原，边界一定会漂。
+  // 老数据没有 inputIncludesCached 标记，花费算法仍按「input 含缓存」还原
+  const rawInput = Number(entry.inputTokens) || 0
+  const cached = Number(entry.cachedTokens) || 0
+  const cacheCreation = Number(entry.cacheCreationTokens) || 0
+  row.input += Math.max(0, rawInput - cached - cacheCreation)
   row.output += Number(entry.outputTokens) || 0
-  row.cached += Number(entry.cachedTokens) || 0
+  row.cached += cached
+  row.cacheCreation += cacheCreation
   if (Number.isFinite(entry.latencyMs)) {
     row.latencySum += entry.latencyMs
     row.latencyCount += 1
