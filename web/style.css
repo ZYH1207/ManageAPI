@@ -969,6 +969,31 @@ a.icon-btn:hover { text-decoration: none; }
 [data-theme='dark'] .vchip-openai { --g-bg: hsl(166 30% 14%); --g-fg: hsl(166 55% 62%); --g-ring: hsl(166 30% 25%); }
 [data-theme='dark'] .vchip-anthropic { --g-bg: hsl(18 32% 16%); --g-fg: hsl(18 55% 72%); --g-ring: hsl(18 30% 27%); }
 [data-theme='dark'] .vchip-google { --g-bg: hsl(43 40% 14%); --g-fg: hsl(43 75% 70%); --g-ring: hsl(43 35% 25%); }
+/* 概览图的站点配色（8 色循环）：刻意压低饱和度，和 .vchip-* 分组胶囊同一档
+   ——图里同时出现 5~8 种颜色，高饱和会花成一片，反而看不出哪段是谁 */
+.series-1 { --series: hsl(226 55% 52%); }
+.series-2 { --series: hsl(18 60% 52%); }
+.series-3 { --series: hsl(166 45% 38%); }
+.series-4 { --series: hsl(268 42% 56%); }
+.series-5 { --series: hsl(340 48% 55%); }
+.series-6 { --series: hsl(43 65% 45%); }
+.series-7 { --series: hsl(200 50% 45%); }
+.series-8 { --series: hsl(100 30% 42%); }
+/* 与上面对应的原始值（dark 主题由 [data-theme] 分支覆盖）：
+   SVG 内联 fill 拿不到类作用域，daemon 端用同一组值直接下发 */
+[data-theme='dark'] .series-1 { --series: hsl(226 70% 68%); }
+[data-theme='dark'] .series-2 { --series: hsl(18 70% 66%); }
+[data-theme='dark'] .series-3 { --series: hsl(166 55% 58%); }
+[data-theme='dark'] .series-4 { --series: hsl(268 60% 72%); }
+[data-theme='dark'] .series-5 { --series: hsl(340 60% 68%); }
+[data-theme='dark'] .series-6 { --series: hsl(43 75% 62%); }
+[data-theme='dark'] .series-7 { --series: hsl(200 60% 62%); }
+[data-theme='dark'] .series-8 { --series: hsl(100 40% 58%); }
+
+/* 概览图的站点选择胶囊：只放站名，选中的加深描边 */
+.monitor-chip.is-on { border-color: var(--text); background: var(--hover); font-weight: 600; }
+.monitor-chip .dot { background: var(--series, var(--faint)); }
+
 /* 消费规则：带厂商色的分组胶囊 / 徽章覆盖默认配色；
    没带（未指定、混合厂商、未识别、「还有 N 个」）保持原中性样式 */
 .group-chip[class*='vchip-'] { background: var(--g-bg); color: var(--g-fg); border-color: var(--g-ring); }
@@ -1607,10 +1632,15 @@ html[data-lang='en'] .doc[data-lang-block='en'] { display: block; }
 .chart .grid-line { stroke: var(--divider); stroke-width: 1; }
 .chart .axis-label { fill: var(--faint); font-size: 11px; }
 .chart .line {
-  fill: none; stroke: var(--accent); stroke-width: 2;
+  /* 颜色由内联 style 的 --chart-accent 决定（单站时跟着该站的配色） */
+  fill: none; stroke: var(--chart-accent, var(--accent)); stroke-width: 2;
   stroke-linejoin: round; stroke-linecap: round;
 }
-.chart .dots circle { fill: var(--surface); stroke: var(--accent); stroke-width: 1.6; }
+.chart .dots circle {
+  fill: var(--surface);
+  stroke: var(--chart-accent, var(--accent));
+  stroke-width: 1.6;
+}
 /* 别用 .bar：那是用量页柱图的类名，CSS 的 width:100% 会盖掉 rect 的 width 属性 */
 .chart .spend-bar { fill: var(--warn-strong); opacity: 0.35; }
 .chart-legend {

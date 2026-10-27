@@ -424,7 +424,7 @@ function spendByDay(usageData, offers, settings, benchmarks, providerById) {
 
   const dayMap = new Map()
   for (const [day, bucket] of Object.entries(usageData?.days || {})) {
-    const acc = dayMap.get(day) || { estimated: 0, actual: 0 }
+    const acc = dayMap.get(day) || { estimated: 0, actual: 0, byProvider: {} }
     for (const [composite, row] of Object.entries(bucket || {})) {
       const [, providerId, model] = composite.split('|')
       const offer = byKey.get(`${providerId}|${model}`)
@@ -464,6 +464,8 @@ function spendByDay(usageData, offers, settings, benchmarks, providerById) {
       acc.estimated += sum
       // 系数按「这条供给的标价币种」算，不是按站点余额币种
       acc.actual += sum * spendFactorOf(providerById.get(providerId), settings)
+      // 按站点拆分：概览图要画「各站花费堆叠柱」和单站视图
+      acc.byProvider[providerId] = (acc.byProvider[providerId] || 0) + sum
     }
     dayMap.set(day, acc)
   }
@@ -475,7 +477,14 @@ function round4(value) {
 }
 
 function buildSpendSeries(dayMap, days) {
-  return days.map((day) => ({ day, cny: round4(dayMap.get(day)?.estimated ?? 0) }))
+  return days.map((day) => {
+    const row = dayMap.get(day)
+    const byProvider = {}
+    for (const [pid, value] of Object.entries(row?.byProvider || {})) {
+      byProvider[pid] = round4(value)
+    }
+    return { day, cny: round4(row?.estimated ?? 0), byProvider }
+  })
 }
 
 /** 本地周一的日期键（周一为一周开始） */

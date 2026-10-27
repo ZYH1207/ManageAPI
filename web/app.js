@@ -2744,6 +2744,8 @@ let monitorData = null
 let monitorDays = 7
 /** 花费 KPI 的时间段：today / week / month。只影响那张卡，不影响图表 */
 let spendRange = 'today'
+/** 概览图选中项：'ALL' 看总体，或某个 providerId 只看该站 */
+let chartSite = 'ALL'
 let monitorLoading = false
 /** 公告面板当前选中的站点；'all' = 不分站。切站点只重渲染，不重新拉数据 */
 let noticeSite = 'all'
@@ -2765,22 +2767,45 @@ function agoText(iso) {
  * 余额概览：左轴余额折线（带面积），右轴每日花费柱。
  * 两个量级差得远（余额几十块、花费几毛），共用一根轴的话柱子会贴地看不见。
  */
-function monitorChartSvg(balanceSeries = [], spendSeries = []) {
+/**
+ * 概览图：单站模式 / 全部模式。
+ *
+ * 折线永远只有一条（余额），柱子按选择切换：
+ *   selected === 'ALL'  → 折线=各站余额合计，柱子=各站花费堆叠（每站一色）
+ *   否则                → 折线=该站余额，柱子=该站每日花费（单色淡填充）
+ *
+ * 只有一条折线是刻意的：多站余额叠在一起时，小站的线会被压到贴地、
+ * 互相穿插，看不出任何东西（实测 5 个站就糊成一片）。想看单站切过去，
+ * 轴刻度会跟着缩放到该站的量级。
+ */
+function monitorChartSvg(balanceSeries = [], spendSeries = [], options = {}) {
   const W = 760
   const H = 240
-  const padL = 46
-  const padR = 46
-  const padT = 16
-  const padB = 28
+  const padL = 54
+  const padR = 54
+  const padT = 14
+  const padB = 26
   const innerW = W - padL - padR
   const innerH = H - padT - padB
   const n = Math.max(balanceSeries.length, spendSeries.length)
   if (n === 0) return ''
 
-  // 后端给的是人民币口径的总额，按显示币种换算后再画，避免图例写 $ 而刻度是 ¥
-  const values = balanceSeries.map((d) => (typeof d.total === 'number' ? dispPrice(d.total) : null))
-  const known = values.filter((v) => v !== null)
-  const hasSpend = spendSeries.some((d) => (d.cny || 0) > 0)
+  const { selected = 'ALL', providerIds = [], colorOf = () => 'var(--accent)', fx = 7.2 } = options
+  const isAll = selected === 'ALL'
+  const accent = isAll ? 'var(--accent)' : colorOf(selected)
+
+  // 余额序列：全部用后端 total（人民币），单站用该站余额折人民币
+  const balVals = balanceSeries.map((d) => {
+    if (isAll) return typeof d.total === 'number' ? d.total : null
+    const raw = d.perProvider?.[selected]
+    return typeof raw === 'number' ? raw * fx : null
+  })
+
+  const known = balVals.filter((v) => v !== null).map((v) => dispPrice(v))
+  const hasSpend = spendSeries.some((d) => {
+    if (isAll) return providerIds.some((pid) => (d.byProvider?.[pid] || 0) > 0)
+    return (d.byProvider?.[selected] || 0) > 0
+  })
   if (known.length === 0 && !hasSpend) return ''
 
   let min = known.length ? Math.min(...known) : 0
@@ -2789,73 +2814,84 @@ function monitorChartSvg(balanceSeries = [], spendSeries = []) {
     min = Math.max(0, min - 1)
     max += 1
   }
-  const headroom = (max - min) * 0.2
-  max += headroom
-  // 花费柱与右轴也按显示币种换算（余额轴早已换算）：
-  // 否则切到 USD 时右轴数字（CNY 原值）与柱子悬停提示（$）对不上
-  const spendView = (cny) => {
-    const v = dispPrice(cny || 0)
-    return v === null ? 0 : v
-  }
-  const spendMax = Math.max(1, ...spendSeries.map((d) => spendView(d.cny)))
+  max += (max - min) * 0.15
+
+  // 花费：全部按当日所有站合计定轴，单站按该站
+  const spendVals = spendSeries.map((d) => {
+    const cny = isAll
+      ? providerIds.reduce((sum, pid) => sum + (d.byProvider?.[pid] || 0), 0)
+      : (d.byProvider?.[selected] || 0)
+    return dispPrice(cny) ?? 0
+  })
+  const spendMax = Math.max(0.01, ...spendVals) * 1.15
 
   const x = (i) => padL + (n === 1 ? innerW / 2 : (i / (n - 1)) * innerW)
-  const yBalance = (v) => padT + innerH - ((v - min) / (max - min)) * innerH
+  const yBal = (v) => padT + innerH - ((v - min) / (max - min)) * innerH
   const ySpend = (v) => padT + innerH - (v / spendMax) * innerH
+  const barW = Math.max(3, Math.min(24, (innerW / Math.max(n, 1)) * 0.5))
 
-  // 折线只连连续有效的点；中间断点就断开，别画一条假的斜线穿过去
+  // 网格 + 双轴刻度
+  const grid = [0, 1, 2, 3]
+    .map((i) => {
+      const ratio = i / 3
+      const py = padT + innerH * (1 - ratio)
+      const balLabel = min + (max - min) * ratio
+      const spendLabel = spendMax * ratio
+      return `<line class="grid-line" x1="${padL}" x2="${W - padR}" y1="${py.toFixed(1)}" y2="${py.toFixed(1)}" />
+      <text class="axis-label" x="${padL - 8}" y="${(py + 3.5).toFixed(1)}" text-anchor="end">${priceSym()}${money(balLabel)}</text>
+      <text class="axis-label" x="${W - padR + 8}" y="${(py + 3.5).toFixed(1)}">${priceSym()}${money(spendLabel)}</text>`
+    })
+    .join('')
+
+  // 柱子
+  let bars = ''
+  spendSeries.forEach((d, i) => {
+    const cx = x(i)
+    if (isAll) {
+      let acc = 0
+      for (const pid of providerIds) {
+        const cny = d.byProvider?.[pid] || 0
+        if (cny <= 0) continue
+        const v = dispPrice(cny) ?? 0
+        if (v <= 0) continue
+        const y0 = ySpend(acc)
+        const y1 = ySpend(acc + v)
+        bars += `<rect x="${(cx - barW / 2).toFixed(1)}" y="${y1.toFixed(1)}" width="${barW.toFixed(1)}" height="${Math.max(0.8, y0 - y1).toFixed(1)}" rx="1" fill="${colorOf(pid)}" opacity="0.85" />`
+        acc += v
+      }
+    } else {
+      const v = spendVals[i]
+      if (v <= 0) return
+      const y1 = ySpend(v)
+      bars += `<rect x="${(cx - barW / 2).toFixed(1)}" y="${y1.toFixed(1)}" width="${barW.toFixed(1)}" height="${Math.max(1, padT + innerH - y1).toFixed(1)}" rx="1" fill="${accent}" opacity="0.3" />`
+    }
+  })
+
+  // 余额折线（连续有效点才连）
   const segments = []
   let current = []
-  values.forEach((v, i) => {
+  balVals.forEach((raw, i) => {
+    const v = raw === null ? null : dispPrice(raw)
     if (v === null) {
       if (current.length) segments.push(current)
       current = []
       return
     }
-    current.push([x(i), yBalance(v)])
+    current.push([x(i), yBal(v)])
   })
   if (current.length) segments.push(current)
-
   const linePaths = segments
     .filter((seg) => seg.length > 1)
     .map((seg) => `M${seg.map(([px, py]) => `${px.toFixed(1)} ${py.toFixed(1)}`).join('L')}`)
     .join(' ')
   const dots = segments
     .flat()
-    .map(([px, py]) => `<circle cx="${px.toFixed(1)}" cy="${py.toFixed(1)}" r="2.4" />`)
+    .map(([px, py]) => `<circle cx="${px.toFixed(1)}" cy="${py.toFixed(1)}" r="2.6" />`)
     .join('')
-
-  const longest = segments.reduce((best, seg) => (seg.length > best.length ? seg : best), [])
-  const areaPath =
-    longest.length > 1
-      ? `M${longest[0][0].toFixed(1)} ${(padT + innerH).toFixed(1)}L${longest
-          .map(([px, py]) => `${px.toFixed(1)} ${py.toFixed(1)}`)
-          .join('L')}L${longest[longest.length - 1][0].toFixed(1)} ${(padT + innerH).toFixed(1)}Z`
-      : ''
-
-  const barWidth = Math.min(22, (innerW / n) * 0.42)
-  const bars = spendSeries
-    .map((d, i) => {
-      const cny = d.cny || 0
-      if (cny <= 0) return ''
-      const height = Math.max((spendView(cny) / spendMax) * innerH, 1)
-      return `<rect class="spend-bar" x="${(x(i) - barWidth / 2).toFixed(1)}" y="${(padT + innerH - height).toFixed(1)}" width="${barWidth.toFixed(1)}" height="${height.toFixed(1)}" rx="2"><title>${esc(d.day)} · ${priceSym()}${money(dispPrice(cny))}</title></rect>`
-    })
-    .join('')
-
-  const grid = Array.from({ length: 5 }, (_, i) => {
-    const py = padT + (innerH / 4) * i
-    const balanceLabel = max - ((max - min) / 4) * i
-    const spendLabel = spendMax - (spendMax / 4) * i
-    return `<line class="grid-line" x1="${padL}" y1="${py.toFixed(1)}" x2="${W - padR}" y2="${py.toFixed(1)}" />
-      <text class="axis-label" x="${padL - 8}" y="${(py + 3.5).toFixed(1)}" text-anchor="end">${money(balanceLabel)}</text>
-      <text class="axis-label" x="${W - padR + 8}" y="${(py + 3.5).toFixed(1)}">${money(spendLabel)}</text>`
-  }).join('')
 
   const step = Math.max(1, Math.ceil(n / 7))
   const dayLabels = balanceSeries
     .map((d, i) => {
-      // 第一个点跳过：它的标签会压到左侧轴的数字上
       const keep = (i > 0 && i % step === 0) || (i === n - 1 && n > 1)
       if (!keep) return ''
       const anchor = i === n - 1 ? 'end' : 'middle'
@@ -2863,16 +2899,9 @@ function monitorChartSvg(balanceSeries = [], spendSeries = []) {
     })
     .join('')
 
-  return `<svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(t('余额与花费趋势'))}">
-    <defs>
-      <linearGradient id="balance-fill" x1="0" y1="0" x2="0" y2="1">
-        <stop offset="0%" stop-color="var(--accent)" stop-opacity="0.22" />
-        <stop offset="100%" stop-color="var(--accent)" stop-opacity="0.02" />
-      </linearGradient>
-    </defs>
+  return `<svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(t('余额与花费趋势'))}" style="--chart-accent:${accent}">
     ${grid}
     ${bars}
-    ${areaPath ? `<path class="area" d="${areaPath}" fill="url(#balance-fill)" />` : ''}
     ${linePaths ? `<path class="line" d="${linePaths}" />` : ''}
     <g class="dots">${dots}</g>
     ${dayLabels}
@@ -3044,21 +3073,44 @@ function renderMonitor() {
     .join('')}</div>`
 
   // -------------------------------------------------------------- 图表
-  const chart = monitorChartSvg(data.balanceSeries, data.spendSeries)
+  // 只把「有余额或有花费」的站放进选择器——没数据的站点了也是空图
+  const chartProviders = (data.balanceByProvider || [])
+    .filter((row) => row.balance !== null || (data.spendSeries || []).some((d) => (d.byProvider?.[row.providerId] || 0) > 0))
+    .map((row) => row.providerId)
+  // 直接解析 CSS 变量给 SVG 用：series-N 类挂在选择器胶囊上，
+  // SVG 里的 rect 拿不到那个作用域，必须给具体颜色值
+  const SERIES_COLORS = [
+    'hsl(226 55% 52%)', 'hsl(18 60% 52%)', 'hsl(166 45% 38%)', 'hsl(268 42% 56%)',
+    'hsl(340 48% 55%)', 'hsl(43 65% 45%)', 'hsl(200 50% 45%)', 'hsl(100 30% 42%)',
+  ]
+  const seriesColorOf = (pid) => SERIES_COLORS[(Math.max(0, chartProviders.indexOf(pid)) % 8)]
+  const seriesClassOf = (pid) => `series-${(Math.max(0, chartProviders.indexOf(pid)) % 8) + 1}`
+  const colorOf = seriesColorOf
+  // 选中的站在数据里消失了（被删/暂停）→ 回落到全部
+  if (chartSite !== 'ALL' && !chartProviders.includes(chartSite)) chartSite = 'ALL'
+  const chart = monitorChartSvg(data.balanceSeries, data.spendSeries, {
+    selected: chartSite,
+    providerIds: chartProviders,
+    colorOf,
+    seriesClassOf,
+    fx: rateCny(),
+  })
   const seg = `<div class="seg">${[7, 14, 30]
     .map((d) => `<button data-monitor-days="${d}" class="${d === monitorDays ? 'active' : ''}">${t('{n} 天', { n: d })}</button>`)
     .join('')}</div>`
 
-  const chips = (data.balanceByProvider || [])
+  // 站点选择胶囊：「全部」+ 有数据的站。只放站名，余额在卡片/KPI 里已经有了
+  const allChip = `<button class="monitor-chip${chartSite === 'ALL' ? ' is-on' : ''}" data-chart-site="ALL">${t('全部站点')}</button>`
+  const siteChips = (data.balanceByProvider || [])
+    .filter((row) => chartProviders.includes(row.providerId))
     .map((row) => {
-      const low = row.threshold !== null && row.balance !== null && row.balance <= row.threshold
-      const dot = row.balance === null ? 'yellow' : low ? 'red' : 'green'
-      return `<button class="monitor-chip" data-monitor-provider="${esc(row.providerId)}" title="只同步这个站">
-        <span class="dot ${dot}"></span>${esc(row.name)}
-        <span class="monitor-chip-value">${row.balance === null ? '无数据' : `${priceSym()}${money(dispAmount(row.balance, row.currency))}`}</span>
+      const on = chartSite === row.providerId ? ' is-on' : ''
+      return `<button class="monitor-chip ${seriesClassOf(row.providerId)}${on}" data-chart-site="${esc(row.providerId)}" title="${t('只看这个站')}">
+        <span class="dot"></span>${esc(row.name)}
       </button>`
     })
     .join('')
+  const chips = allChip + siteChips
 
   const chartCard = `
     <div class="card monitor-chart-card">
@@ -3068,8 +3120,10 @@ function renderMonitor() {
       </div>
       ${chart ? `<div class="chart-wrap">${chart}</div>` : '<div class="empty small"><p>还没有同步到余额。点右上角「立即同步」跑一轮。</p></div>'}
       <div class="chart-legend">
-        <span><i class="legend-line"></i>${t('总余额（{sym}，其他币种按汇率折算）', { sym: priceSym() })}</span>
-        <span><i class="legend-bar"></i>${t('每日花费（估）')}</span>
+        <span><i class="legend-line"></i>${chartSite === 'ALL'
+          ? t('余额合计（{sym}，其他币种按汇率折算）', { sym: priceSym() })
+          : t('该站余额（{sym}）', { sym: priceSym() })}</span>
+        <span><i class="legend-bar"></i>${chartSite === 'ALL' ? t('各站花费（堆叠）') : t('该站每日花费')}</span>
       </div>
       <div class="monitor-chips">${chips}</div>
     </div>`
@@ -3706,6 +3760,18 @@ document.addEventListener('click', async (event) => {
 
   if (event.target.closest('[data-act="close-prov-panel"]')) {
     closeProvPanel()
+    return
+  }
+
+  // 概览图的站点选择：单选，'ALL' 看总体，选站只看该站
+  const chartSiteBtn = event.target.closest('[data-chart-site]')
+  if (chartSiteBtn) {
+    const next = chartSiteBtn.dataset.chartSite
+    if (next && next !== chartSite) {
+      chartSite = next
+      renderMonitor()
+      translateDom($('#view-monitor') || document.body)
+    }
     return
   }
 
