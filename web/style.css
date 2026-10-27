@@ -948,6 +948,14 @@ a.icon-btn:hover { text-decoration: none; }
   color: var(--accent); font-weight: 500;
 }
 .prov-group-chips .group-chip:hover { border-color: var(--accent); }
+/* 分组胶囊上的删除键：平时的透明度压到几乎看不见，hover 才亮出来——胶囊是信息展示，
+   不该让「删」这个动作抢走注意力，但也不能像以前那样根本没有入口 */
+.prov-group-chips .group-chip .chip-x {
+  border: none; background: none; padding: 0 0 0 3px; margin: 0;
+  color: inherit; opacity: .35; cursor: pointer; display: inline-flex; align-items: center;
+}
+.prov-group-chips .group-chip .chip-x svg { width: 9px; height: 9px; }
+.prov-group-chips .group-chip .chip-x:hover { opacity: 1; color: var(--danger); }
 
 /* ------------------------------------------- 厂商品牌配色（分组胶囊 / 分组徽章）
    胶囊底色按厂商品牌色：国产统一 DeepSeek 蓝、OpenAI 用 ChatGPT 绿、
@@ -1424,6 +1432,9 @@ button.group-chip:hover { color: var(--accent); }
   max-width: 190px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .pricing-table td .group-chip-cell { max-width: 200px; display: inline-flex; align-items: center; gap: 4px; }
+/* 分组列里两个小按钮：＋ 复制到新分组 / 垃圾桶 删分组。图标压到 11px，
+   不然默认的 14px 会把这一列撑得很高 */
+.pricing-table td .group-chip-cell button svg { width: 11px; height: 11px; }
 
 /* 综合成本 / 价差两列右侧吸附：横向滚动时始终可见——这两列才是比价要看的东西 */
 .pricing-table th:nth-last-child(-n+2), .pricing-table td:nth-last-child(-n+2) {

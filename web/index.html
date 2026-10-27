@@ -242,6 +242,13 @@
               自己调倍率有实际用处：比如站方标的 0.15 你觉得有水分，按「用量核对」算出来实际是 0.18，
               就手动改成 0.18，比价结果才准。
             </p>
+            <p>
+              <b>怎么删掉一个分组</b>：卡片「分组」那一行的胶囊后面有个小垃圾桶图标，「分组倍率」该行末尾有「删除」，
+              比价表分组列也有删除按钮。两种来源后果不同：<br />
+              · <b>比价页「＋」复制出来的分组</b> —— 没有对应 Key，删除时连它下面的模型记录一起删，删完就没了<br />
+              · <b>Key 自带的分组</b> —— Key 保留，只清掉分组归属；之后在 Key 那一行点「选分组」重新导入，
+              模型和倍率会一起回来（不需要先手动同步）
+            </p>
 
             <h4 class="doc-h4">免费</h4>
             <p>
@@ -275,7 +282,8 @@
               · <b>模式</b> —— 「倍率 / 价格」二选一，决定这一行按哪种方式计价<br />
               · <b>输入价 / 输出价</b> —— 「价格」模式下直接填单价，失焦即保存<br />
               · <b>倍率</b> —— 「倍率」模式下填：实际价 = 基准价 × 倍率，不用再填单价<br />
-              · <b>「＋」</b> —— 按当前行复制一条，用来给同一个模型建新分组<br />
+              · <b>「＋」</b> —— 按当前行复制一条，给同一个模型在另一档套餐里单独记价（建出来的分组没有对应 Key）<br />
+              · <b>垃圾桶按钮</b> —— 删掉这一行所属的分组（Key 保留，可重新导入）<br />
               · <b>¥/百万 token</b> —— 综合成本，输入按 25%、输出按 75% 加权（权重可在左下角调）<br />
               · <b>价差</b> —— 比最便宜的贵多少百分比
             </p>
@@ -290,7 +298,7 @@
             </p>
             <p>
               一个站挂了多个分组时，同一个模型会出现在同一列的多行里，行内标着是哪个分组。
-              想给某个模型单独加一个分组，点行尾的 <b>「＋」</b> 复制一条再改。
+              想给某个模型单独加一个分组，点行尾的 <b>「＋」</b> 复制一条再改；不想要了在「站点」页把它删掉。
             </p>
 
             <h4 class="doc-h4">智能决策</h4>
@@ -577,6 +585,13 @@
               Custom ratios have a real use: if the site claims 0.15 but a usage check shows you are actually paying
               what 0.18 would cost, set 0.18 so the comparison stays honest.
             </p>
+            <p>
+              <b>Deleting a group</b>: the trash icon on a group chip, the Delete button at the end of a group-ratio row,
+              or the delete button in the Pricing table's group column. What happens depends on where the group came from:<br />
+              · <b>A group created by “+” on the Pricing page</b> — no key backs it, so its model rows are deleted with it<br />
+              · <b>A group on a key</b> — the key stays; only the group assignment is cleared. Click “Pick group” on
+              that key to import the group again; its models and ratios come back (no manual sync needed)
+            </p>
 
             <h4 class="doc-h4">Free</h4>
             <p>
@@ -617,7 +632,8 @@
               · <b>Mode</b> — "Ratio / Price": decides how this row is priced<br />
               · <b>Input / Output</b> — in Price mode, type unit prices directly; saves on blur<br />
               · <b>Ratio</b> — in Ratio mode: price = benchmark × ratio, no unit price needed<br />
-              · <b>+</b> — duplicates the row, for giving one model a second group<br />
+              · <b>+</b> — duplicates the row to price the same model in another plan (the group it creates has no key)<br />
+              · <b>Trash icon</b> — deletes the group this row belongs to (the key stays and can re-import it)<br />
               · <b>¥/Mtok</b> — blended cost: 25% input, 75% output (the weight is adjustable next to the FX box)<br />
               · <b>Spread</b> — how much more expensive than the cheapest
             </p>
@@ -633,7 +649,8 @@
             </p>
             <p>
               When a site has several groups, the same model appears on several rows, each tagged with its group.
-              Use <b>+</b> at the end of a row to add another group for that model.
+              Use <b>+</b> at the end of a row to add another group for that model; delete it on the Sites page
+              when you no longer need it.
             </p>
 
             <h4 class="doc-h4">Routing</h4>

@@ -130,6 +130,15 @@ On the group ratio rows:
 
 Custom ratios have a real use: if a site claims 0.15 but a usage check shows you are effectively paying what 0.18 would cost, set 0.18 so comparisons stay honest.
 
+### Deleting a group
+
+A group is not an entity of its own — it is just a name on supply rows and keys — so what deleting it does depends on where it came from:
+
+- **A group created by “+” on the Pricing page** — no key backs it, so its model rows are deleted along with the group
+- **A group on a key** — the key stays; only the group assignment is cleared. Click **Pick group** on that key to import the group again; its models and ratios come back (the backend re-pulls the key's models, no manual sync needed)
+
+Three entry points: the small **trash icon** on a group chip on the site card, the **Delete** button at the end of each group-ratio row, and the **delete button** in the Pricing table's group column.
+
 ### Pricing table: ratio or price
 
 Every supply row has a **Mode** column, one of two:
@@ -486,6 +495,7 @@ web/               Frontend (vanilla JS, no build, no framework)
   check-free-platform.mjs Platform CRUD / idempotent check-in / ledger self-check
   check-workbuddy-quota.mjs Quota semantics: package vs per-cycle balance, same-tenant detection
   check-routable-offers.mjs Live-offer filter self-check: paused/ignored/delisted stay out of routing and probes
+  check-group-delete.mjs Group deletion self-check: orphan groups go with their rows; key groups keep the key and can be re-imported
   dump-strings.mjs   Dumps every Chinese string in the UI, as a translation checklist
 
 docs/              README images + design docs
@@ -530,6 +540,7 @@ Additional self-contained checks:
 
 ```bash
 node .test/check-routable-offers.mjs # paused/ignored/delisted offers stay out of routing and probes
+node .test/check-group-delete.mjs    # orphan group deletes with its rows; key-backed group keeps the key
 ```
 
 ### Checking the language switch

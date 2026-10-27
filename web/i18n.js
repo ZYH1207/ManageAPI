@@ -394,6 +394,7 @@ const EN = {
   '分组倍率': 'Group ratios',
   '全部恢复为站点值': 'Restore all to site values',
   '改一次，该分组所有模型一起变': 'One edit updates every model in this group',
+  '还没同步过模型，先去「一键同步」': 'No models synced yet — run “Sync all” first',
   '还没有 Key，加一个才能拉模型。': 'No key yet — add one to sync models.',
   '余额未录入': 'Balance not set',
   '从站点读分组，选你买的那个，倍率自动填到下面所有模型': 'Read groups from the site, pick yours, ratios fill in below',
@@ -664,6 +665,7 @@ Object.assign(EN, {
 const PATTERNS_MORE = [
   [/^导入 (\d[\d,]*) 条基准价$/, 'Imported $1 benchmark prices'],
   [/^已创建分组「(.+)」，记得填它的价格$/, 'Created group "$1" — remember to set its price'],
+  [/^分组「(.+)」已删除：(\d[\d,]*) 个模型记录一并删掉$/, 'Group "$1" deleted, $2 model rows removed'],
   [/^已复制「(.+)」的 Key$/, 'Copied the key for "$1"'],
   [/^拉到 (\d[\d,]*) 个模型，新增 (\d[\d,]*)（(.+)）$/, '$1 models fetched, $2 new ($3)'],
   [/^探测 (\d[\d,]*) 个，成功 (\d[\d,]*)$/, 'Probed $1, $2 succeeded'],
@@ -1161,6 +1163,12 @@ Object.assign(EN, {
   '改这里就是自定义倍率，不影响站点原始值': 'Editing here makes it a custom ratio; the site value stays untouched',
   '恢复成站点公布的倍率': 'Restore the ratio published by the site',
   '按这个模型再建一个分组': 'Duplicate this row into a new group for the same model',
+  '删除这个分组': 'Delete this group',
+  '删掉这个分组（Key 保留，可重新导入）': 'Delete this group (the key is kept and can re-import it)',
+  '删掉这个分组（该分组下的模型记录删掉；挂在这个分组上的 Key 保留，之后在 Key 那行点「选分组」可以重新导入）':
+    'Delete this group: its model rows are removed; any key bound to it is kept, and you can re-import the group from that key\u2019s “Pick group” button',
+  '同一个模型在另一档套餐里也有时，复制一条单独跟踪（分组归属跟随 Key，行内不可直接改）。不想要了可以在「站点」页删掉这个分组':
+    'Same model also exists in another plan? Copy one row to track it separately (group follows the key; not editable inline). Delete the group on the Sites page when you no longer need it',
   '忽略后不再参与比价、智能决策、探针和网关': 'Once ignored: excluded from pricing, decisions, probes and the gateway',
   '当前按倍率算，切到「价格」才能填': 'Priced by ratio now — switch to "Price" to edit',
   '当前按手填单价算，切到「倍率」才能填': 'Priced by manual unit price — switch to "Ratio" to edit',

@@ -787,6 +787,49 @@ export function priceToRatioMode(offer, nextRatio) {
   return true
 }
 
+/**
+ * 删掉一个分组。
+ *
+ * 分组不是独立实体，只是 offer.group / credential.group 上的一串名字——所以
+ * 「删分组」只有两件事可做：删掉这个分组下的供给行，把 Key 从分组里摘出来。
+ *
+ * 两种来源分开处理：
+ *  - 比价页「＋」复制出来的分组：行是手写的副本，没有 Key 兜底，跟着一起删；
+ *  - Key 自带的分组：Key 保留，只清掉分组归属；供给行删掉——之后在那把 Key 上
+ *    重新「选分组」，apply-group 会按这把 Key 重新拉模型建行，所以删了能加回来。
+ *
+ * 「未指定分组」不是真分组（它只是「这把 Key 没选分组」），不接受删除。
+ *
+ * @returns {Promise<{group:string, removedOffers:number, keys:string[]}>}
+ */
+export async function deleteGroup(providerId, group) {
+  return mutate((db) => {
+    if (!db.providers.some((p) => p.id === providerId)) throw new Error(`站点不存在：${providerId}`)
+    const name = normalizeGroup(group)
+    if (!name) throw new Error('「未指定分组」不是真正的分组，不能删除')
+    const rows = db.offers.filter(
+      (o) => o.providerId === providerId && normalizeGroup(o.group) === name,
+    )
+    const keys = db.credentials.filter(
+      (c) => c.providerId === providerId && normalizeGroup(c.group) === name,
+    )
+    if (rows.length === 0 && keys.length === 0) throw new Error(`该站没有「${name}」分组`)
+
+    if (rows.length > 0) {
+      const dead = new Set(rows.map((o) => o.id))
+      db.offers = db.offers.filter((o) => !dead.has(o.id))
+      // 流量计数与手动排序都按 offerId 记，删行必须一起清，否则留下孤儿键
+      pruneOfferRefs(db, dead)
+    }
+    for (const credential of keys) {
+      credential.group = ''
+      // 分组都不在了，手选标记一起清掉：留着 manual 会让后台自动识别再也写不进来
+      delete credential.groupSource
+    }
+    return { group: name, removedOffers: rows.length, keys: keys.map((c) => c.label) }
+  })
+}
+
 export async function setGroupRatio(providerId, group, ratio) {
   return mutate((db) => {
     if (!db.providers.some((p) => p.id === providerId)) throw new Error(`站点不存在：${providerId}`)

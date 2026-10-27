@@ -728,6 +728,18 @@ route('POST', /^\/api\/providers\/([\w-]+)\/group-ratio$/, async (ctx) => {
 })
 
 /**
+ * 删掉一个分组。
+ *
+ * 两种来源语义不同：「＋」复制出来的孤儿分组跟着供给行一起删掉；Key 自带的分组
+ * 保留 Key，只把分组归属清掉（之后在 Key 那行重新「选分组」就能加回来）。
+ * 具体规则收在 inv.deleteGroup，路由只负责回传全量 state。
+ */
+route('POST', /^\/api\/providers\/([\w-]+)\/delete-group$/, async (ctx) => {
+  const result = await inv.deleteGroup(ctx.params[0], ctx.body.group)
+  return { ...(await buildState()), groupDeleteResult: result }
+})
+
+/**
  * 站点价格的加载与匹配，供「选分组」和「应用倍率」共用。
  *
  * 中转站的倍率是按「分组」定的，所以流程一定是：先知道你在哪个分组，
@@ -902,12 +914,36 @@ route('POST', /^\/api\/providers\/([\w-]+)\/apply-group$/, async (ctx) => {
   const providerId = ctx.params[0]
   const group = inv.normalizeGroup(ctx.body.group)
   const credentialId = String(ctx.body.credentialId || '')
-  const { provider, credential, credentials, pricing, offers, match, benchTable, byGroupModel } =
+  const { db, provider, credential, credentials, pricing, match, benchTable, byGroupModel } =
     await loadProviderPricing(providerId)
 
   // 分组是 Key 的属性，必须作用在「你点的那把 Key」上，不能默认第一把
   const target = credentials.find((c) => c.id === credentialId) || credential
   if (!target) throw new HttpError(400, '该站点还没有 Key')
+
+  // 分组删掉之后重新导入：那把 Key 名下的供给行跟着分组一起删了，光应用倍率只会
+  // 更新 0 条，分组看起来再也加不回来。所以「这个 Key 一条供给都没有」时，先按它
+  // 重新拉一次模型把行建出来；已有行就不拉——正常换分组只是给现成的行改倍率，
+  // 不该每次点「应用」都多一次网络请求。
+  let resynced = 0
+  let resyncError = null
+  const ownsOffers = db.offers.some(
+    (o) => o.providerId === provider.id && o.credentialId === target.id,
+  )
+  if (!ownsOffers && group) {
+    try {
+      const apiKey = await inv.revealSecret(target.id)
+      if (!apiKey) throw new Error('Key 解密失败，可能是 master.key 被替换过')
+      const timeoutMs = Math.min(Number(db.settings?.probeTimeoutMs) || 15000, 20000)
+      const listed = await providers.listModels({ baseUrl: provider.baseUrl, apiKey, timeoutMs })
+      const saved = await inv.syncOffers(provider.id, target.id, listed.models, group)
+      resynced = saved.added
+    } catch (error) {
+      // 拉模型失败不该让「分组记在这把 Key 上」也跟着失败：分组先存下来，
+      // 用户之后点「一键同步」照样能把模型拉回来
+      resyncError = error.message || String(error)
+    }
+  }
 
   // 分组名两侧可能有空白差异（实测 Key 存的「国模-0045 p哥」与站点公布的
   // 「国模-0045 p哥 」差一个尾随空格），归一化后再匹配，否则倍率解析成 null，
@@ -929,12 +965,14 @@ route('POST', /^\/api\/providers\/([\w-]+)\/apply-group$/, async (ctx) => {
   let updated = 0
   let viaRatio = 0
   let viaPercall = 0
+  let modelTotal = 0
   const unmatched = []
   const missingBench = []
 
   await store.mutate((d) => {
     for (const offer of d.offers) {
       if (offer.providerId !== provider.id) continue
+      modelTotal += 1
       // 只接管属于这把 Key 的行。优先按 credentialId 精确判断——
       // 两把 Key 都在默认分组时，光看 group 会互相踩。
       // 没有 credentialId 的老数据才回落到 group 比较。
@@ -981,7 +1019,10 @@ route('POST', /^\/api\/providers\/([\w-]+)\/apply-group$/, async (ctx) => {
       unmatched,
       missingBench,
       source: pricing.source,
-      modelTotal: offers.length,
+      modelTotal,
+      // 分组被删掉之后重新导入时，按这把 Key 补回来的模型数（0 = 没有重建）
+      resynced,
+      resyncError,
       // 明确回传「改的是哪把 Key」，前端据此提示，避免「我改的是第二把，第一把却变了」
       credentialId: target.id,
       credentialLabel: target.label,

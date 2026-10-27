@@ -785,10 +785,22 @@ async function applyPickedGroup(button) {
     const parts = [`${keyPrefix}「${r.group || '未指定分组'}」已应用`]
     if (r.rate !== null) parts.push(`倍率 ×${r.rate}`)
     parts.push(`${r.updated} 个模型`)
+    // 分组删掉后重新导入：这个 Key 名下已经没有供给行，后端会按它重新拉一次模型
+    if (r.resynced) parts.push(`重新拉回 ${r.resynced} 个模型`)
     // 按次计费的模型单价是「每次多少元」，和 token 口径分开报，免得用户以为漏了
     if (r.viaPercall) parts.push(`其中 ${r.viaPercall} 个按次计费`)
     if (r.unmatched?.length) parts.push(`${r.unmatched.length} 个未匹配`)
     toast(parts.join('，'))
+    if (r.resyncError) {
+      setTimeout(
+        () =>
+          toast(
+            `分组已记在这把 Key 上，但拉模型失败：${r.resyncError}。点「一键同步」可以再试一次。`,
+            true,
+          ),
+        1700,
+      )
+    }
     if (r.missingBench?.length) {
       setTimeout(
         () =>
@@ -984,8 +996,13 @@ function providersHtml({ withForm = true, panel = '', actions = '' } = {}) {
       : 0
 
     // 中转站的倍率按「分组」定，不是按模型——所以按分组给一个批量入口。
-    // 倍率归并结果（统一/混合/站点值）算一次，分组胶囊与「分组倍率」弹窗共用，两边口径一致
-    const groupNames = [...new Set(offers.map((o) => o.group || ''))]
+    // 倍率归并结果（统一/混合/站点值）算一次，分组胶囊与「分组倍率」弹窗共用，两边口径一致。
+    // Key 上的分组也收进来：Key 选了分组但还没同步过模型时，这一行仍是可删的分组
+    // （只是 0 个模型）——否则这种分组在界面上没有任何删它的入口
+    const groupNames = [...new Set([
+      ...offers.map((o) => o.group || ''),
+      ...keys.map((k) => k.group || '').filter(Boolean),
+    ])]
     const groupStats = new Map(groupNames.map((groupName) => {
       const groupOffers = offers.filter((o) => (o.group || '') === groupName)
       const ratioValues = new Set(groupOffers.map((o) => (o.ratio === null || o.ratio === undefined ? '' : String(o.ratio))))
@@ -1021,10 +1038,19 @@ function providersHtml({ withForm = true, panel = '', actions = '' } = {}) {
               ? `<span style="color:var(--faint);font-size:11px">站点 <span class="ratio-tone ${ratioToneClass(siteRatio)}">×${esc(siteRatio)}</span></span>`
               : ''
           }
-          <input type="number" step="0.01" min="0" placeholder="倍率" value="${uniform}" data-act="group-ratio" style="width:86px" title="改这里就是自定义倍率，不影响站点原始值" />
+          ${
+            st.count === 0
+              ? `<span style="color:var(--faint);font-size:11px">${t('还没同步过模型，先去「一键同步」')}</span>`
+              : `<input type="number" step="0.01" min="0" placeholder="倍率" value="${uniform}" data-act="group-ratio" style="width:86px" title="改这里就是自定义倍率，不影响站点原始值" />`
+          }
           ${
             custom
               ? `<button class="ghost tiny" data-act="restore-ratio" data-group="${esc(groupName)}" title="恢复成站点公布的倍率">恢复</button>`
+              : ''
+          }
+          ${
+            groupName
+              ? `<button class="ghost danger tiny" data-act="del-group" data-group="${esc(groupName)}" title="删掉这个分组（该分组下的模型记录删掉；挂在这个分组上的 Key 保留，之后在 Key 那行点「选分组」可以重新导入）">删除</button>`
               : ''
           }
         </div>`
@@ -1118,7 +1144,11 @@ function providersHtml({ withForm = true, panel = '', actions = '' } = {}) {
                 : st.uniform !== '' && st.uniform !== undefined
                   ? `<span class="ratio-tone ${ratioToneClass(st.uniform)}">×${esc(st.uniform)}</span>`
                   : ''
-              return `<span class="group-chip ${st.chipClass || ''}">${g ? esc(g) : '未指定'}${tag}</span>`
+              return `<span class="group-chip ${st.chipClass || ''}">${g ? esc(g) : '未指定'}${tag}${
+                g
+                  ? `<button class="chip-x" data-act="del-group" data-provider="${esc(p.id)}" data-group="${esc(g)}" title="删掉这个分组（Key 保留，可重新导入）">${icon('trash')}</button>`
+                  : ''
+              }</span>`
             }).join('')}
             ${groupNames.length > 6 ? `<span class="group-chip">还有 ${groupNames.length - 6} 个</span>` : ''}
           </span>
@@ -1753,7 +1783,7 @@ function renderPricing() {
         <td>${esc(providerName(row.providerId))}</td>
         <td class="mono">${esc(row.upstreamName)}${badge}${perCall ? ' <span class="badge">按次</span>' : ''}</td>
         <td class="num sub-cell">${cacheCell}</td>
-        <td><span class="group-chip-cell">${row.group ? `<span class="badge ${groupChipOf(row.providerId, row.group)}" title="${esc(row.group)}">${esc(row.group)}</span>` : `<span style="color:var(--faint)" title="${t('该行的 Key 没有分组')}">${t('默认')}</span>`}<button class="ghost tiny" data-act="dup-offer" title="同一个模型在另一档套餐里也有时，复制一条单独跟踪（分组归属跟随 Key，行内不可直接改）">＋</button></span></td>
+        <td><span class="group-chip-cell">${row.group ? `<span class="badge ${groupChipOf(row.providerId, row.group)}" title="${esc(row.group)}">${esc(row.group)}</span>` : `<span style="color:var(--faint)" title="${t('该行的 Key 没有分组')}">${t('默认')}</span>`}<button class="ghost tiny" data-act="dup-offer" title="同一个模型在另一档套餐里也有时，复制一条单独跟踪（分组归属跟随 Key，行内不可直接改）。不想要了可以在「站点」页删掉这个分组">＋</button>${row.group ? `<button class="ghost danger tiny" data-act="del-group" data-provider="${esc(row.providerId)}" data-group="${esc(row.group)}" title="删掉这个分组（Key 保留，之后在 Key 那行点「选分组」可以重新导入）">${icon('trash')}</button>` : ''}</span></td>
         <td>${modeCell}</td>
         <td class="num"><input type="number" step="0.001" placeholder="—" value="${row.inPrice ?? ''}" data-field="inPrice" ${perCall ? 'title="按次计费：这里填每次请求的价格"' : mode === 'ratio' ? 'title="原价。实际价 = 这个值 × 倍率"' : ''} /></td>
         <td class="num"><input type="number" step="0.001" placeholder="—" value="${perCall ? '' : row.outPrice ?? ''}" data-field="outPrice" ${perCall ? 'disabled title="按次计费不区分输入/输出"' : mode === 'ratio' ? 'title="原价。实际价 = 这个值 × 倍率"' : ''} /></td>
@@ -4409,12 +4439,46 @@ document.addEventListener('click', async (event) => {
 
   if (action === 'dup-offer') {
     const offerId = actionButton.closest('[data-offer]').dataset.offer
-    const name = prompt('新分组名（例如：Pro 号池 / 特价池 / 企业通道）')
+    const name = prompt(
+      '新分组名（例如：Pro 号池 / 特价池）。\n\n' +
+        '用途：同一个模型在另一档套餐里也有时，给它复制一条单独记价，比价时和原分组并列看。\n' +
+        '注意：这样建出来的分组没有对应 Key；不想要了在「站点 → 分组倍率」里删掉它。',
+    )
     if (!name || !name.trim()) return
     await withBusy(actionButton, async () => {
       state = await api('POST', `/api/offers/${offerId}/duplicate`, { group: name.trim() })
       render()
       toast(`已创建分组「${name.trim()}」，记得填它的价格`)
+    })
+    return
+  }
+
+  if (action === 'del-group') {
+    // 比价表的按钮带 data-provider（那一行不在站点卡片里），卡片里的从祖先上取
+    const providerId =
+      actionButton.dataset.provider || actionButton.closest('[data-provider]')?.dataset.provider
+    const group = actionButton.dataset.group || ''
+    if (!providerId || !group) return
+    const rows = state.offers.filter(
+      (o) => o.providerId === providerId && (o.group || '') === group,
+    )
+    const keys = state.credentials.filter(
+      (c) => c.providerId === providerId && (c.group || '') === group,
+    )
+    // 两种来源后果不同，确认框里必须分开说清楚，不然用户不知道 Key 会不会被带走
+    const question = keys.length
+      ? `删除分组「${group}」？\n\n· 这个分组下的 ${rows.length} 个模型记录会被删掉\n· 挂在它上面的 Key（${keys
+          .map((k) => k.label)
+          .join('、')}）保留，只清掉分组归属\n· 之后在那把 Key 那行点「选分组」重新导入，模型和倍率会一起回来`
+      : `删除分组「${group}」？\n\n· 这个分组下的 ${rows.length} 个模型记录会被删掉\n· 这个分组没有挂着 Key（多半是比价页「＋」复制出来的），删掉就没了`
+    if (!confirm(question)) return
+    await withBusy(actionButton, async () => {
+      const result = await api('POST', `/api/providers/${providerId}/delete-group`, { group })
+      state = result
+      render()
+      const r = result.groupDeleteResult
+      const kept = r.keys.length ? `；Key ${r.keys.join('、')} 保留` : ''
+      toast(`分组「${r.group}」已删除：${r.removedOffers} 个模型记录一并删掉${kept}`)
     })
     return
   }
