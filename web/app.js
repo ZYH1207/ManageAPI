@@ -946,10 +946,14 @@ function providersHtml({ withForm = true, panel = '', actions = '' } = {}) {
   const addForm = withForm ? $('#tpl-add-provider').innerHTML : ''
 
   if (state.providers.length === 0) {
+    // 空状态也必须给出 actions（里面有「新增站点」按钮）：此前直接 return，
+    // 按钮被丢掉，刚 clone 完的用户看到「还没有站点」却点不了任何东西
     return `
+      ${actions ? `<div class="toolbar">${actions}</div>` : ''}
       <div class="empty">
         <h3>还没有站点</h3>
         <p>先添加一个中转站，填上它的地址和一个 Key，就能拉取模型列表开始比价。</p>
+        <button class="primary" data-act="add-provider">${icon('plus')}新增站点</button>
       </div>
       ${addForm}`
   }
