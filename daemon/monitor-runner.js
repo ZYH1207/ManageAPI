@@ -56,6 +56,49 @@ export async function collectProviderSnapshots({ providerId = null, logger = con
       }
     }
 
+    // ------------------------------------------------------------ 站点账单
+    // 「实际消费」只认站点自己的账：网关侧估算缺 26% 的 token、上游 cached
+    // 字段也不可靠，拿它算钱必然对不上。sub2api 系的 /api/v1/usage 有逐条明细，
+    // 按天取一次即可（当天累计值会随使用增长，每次采集覆盖写入）。
+    if (adminToken && (provider.kind === 'sub2api' || provider.kind === 'unknown')) {
+      // 今天每次采集都覆盖（当天累计值在增长）；最近 6 天只在缺记录时回填，
+      // 否则「本周/本月」永远只有今天一个数
+      const known = db.monitor?.siteSpend?.[provider.id] || {}
+      const pad = (n) => String(n).padStart(2, '0')
+      const dayKey = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+      const today = new Date()
+      const wanted = [0]
+      for (let i = 1; i <= 6; i += 1) {
+        const d = new Date(today)
+        d.setDate(d.getDate() - i)
+        if (!known[dayKey(d)]) wanted.push(i)
+      }
+      // 并发拉：逐天串行时 7 天要 7 个往返，慢站会把整轮采集拖超时
+      const dayList = wanted.map((offset) => {
+        const d = new Date(today)
+        d.setDate(d.getDate() - offset)
+        return { offset, day: dayKey(d) }
+      })
+      const settled = await Promise.all(
+        dayList.map(async ({ day }) => {
+          try {
+            const spend = await providers.fetchSiteDailySpend({
+              baseUrl: provider.baseUrl,
+              adminToken,
+              date: day,
+              timeoutMs: 12000,
+            })
+            return [day, spend]
+          } catch {
+            // 读不到账单不是采集失败：站点可能没开 usage 接口，或令牌只读余额
+            return null
+          }
+        }),
+      )
+      const days = Object.fromEntries(settled.filter(Boolean))
+      if (Object.keys(days).length > 0) snap.siteSpendDays = days
+    }
+
     // ---------------------------------------------------------------- 公告
     try {
       snap.announcements = await providers.fetchAnnouncements({

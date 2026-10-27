@@ -423,6 +423,51 @@ export async function fetchAnnouncements({ baseUrl, apiKey, adminToken, kind, ti
 
   return out
 }
+/**
+ * 拉取站点自己的账单（按天）。
+ *
+ * 为什么必须读站点账单、而不是拿网关记录的 token 乘单价：
+ *   - 上游有相当比例请求不返回 usage，网关只能记 0（实测约 26% 的 token 缺失）
+ *   - 上游的 prompt_tokens_details.cached_tokens 不稳定（同一站同一天，
+ *     有时报 553216、有时报 128），拿它做减法还原净值不可信
+ * 站点账单是它自己算的账，不会错——「实际消费」就该用它。
+ *
+ * @returns {Promise<{actualCost:number, totalCost:number, requests:number,
+ *                    inputTokens:number, cacheReadTokens:number, outputTokens:number}>}
+ */
+export async function fetchSiteDailySpend({ baseUrl, adminToken, date, timeoutMs = 20000 }) {
+  const origin = originOf(baseUrl, { stripApiPrefix: true })
+  if (!origin) throw new Error(`站点地址无法解析：${baseUrl}`)
+  const day = String(date || '').slice(0, 10)
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) throw new Error(`日期格式不对：${date}`)
+
+  const url = `${origin}/api/v1/usage?start_date=${day}&end_date=${day}&page=1&page_size=1000`
+  const payload = await requestJson(url, { apiKey: adminToken, timeoutMs })
+  const items = payload?.data?.items
+  if (!Array.isArray(items)) throw new Error('站点返回里没有 usage 明细')
+
+  let actualCost = 0
+  let totalCost = 0
+  let inputTokens = 0
+  let cacheReadTokens = 0
+  let outputTokens = 0
+  for (const item of items) {
+    actualCost += Number(item.actual_cost) || 0
+    totalCost += Number(item.total_cost) || 0
+    inputTokens += Number(item.input_tokens) || 0
+    cacheReadTokens += Number(item.cache_read_tokens) || 0
+    outputTokens += Number(item.output_tokens) || 0
+  }
+  return {
+    actualCost: Math.round(actualCost * 1e6) / 1e6,
+    totalCost: Math.round(totalCost * 1e4) / 1e4,
+    requests: Number(payload?.data?.total) || items.length,
+    inputTokens,
+    cacheReadTokens,
+    outputTokens,
+  }
+}
+
 export async function fetchSiteUsage({ baseUrl, adminToken, timeoutMs = 15000 }) {
   const origin = originOf(baseUrl, { stripApiPrefix: true })
   if (!origin) throw new Error(`站点地址无法解析：${baseUrl}`)

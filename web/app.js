@@ -3041,23 +3041,47 @@ const SPEND_RANGES = [
  * 1:1 充值的站会差好几倍，所以必须并列显示，不能只留一个。
  */
 function spendStat(range) {
-  const summary = monitorData?.spendSummary?.[range] || { estimated: 0, actual: 0 }
+  const estimate = monitorData?.spendSummary?.[range] || { estimated: 0, actual: 0 }
+  const site = monitorData?.siteSpend?.[range] || null
   const label = SPEND_RANGES.find((r) => r.key === range)?.label || '今天'
   const seg = `<span class="spend-range">${SPEND_RANGES.map(
     (r) => `<button class="${r.key === range ? 'is-on' : ''}" data-spend-range="${r.key}">${t(r.label)}</button>`,
   ).join('')}</span>`
-  // 两个金额各自带一行小标签（模型消费 / 实际消费），标签在数字上方，
-  // 这样不用在卡片底部再挤一行被省略号截断的说明
+
+  // 「实际消费」只有站点账单一个来源：站点自己按天算的账。
+  // 网关侧的 token 估算缺 26% 的 token、上游 cached 字段也不可靠，
+  // 拿它乘单价得到的数永远和钱包对不上——所以不做展示，只留作内部参考。
+  // 站点账单金额是站点货币单位；按 1:1 充值口径它同时就是人民币近似值，
+  // 这里直接按「站点货币 → 人民币」用站点单价折一次（默认 1）。
+  const hasSite = site && site.providers > 0
+  const siteCny = hasSite ? site.actual * siteUnitPriceForTotal() : 0
+  const actualHtml = hasSite
+    ? `<b class="spend-actual">${priceSym()}${money(dispPrice(siteCny))}</b>`
+    : `<b class="spend-actual spend-muted">${t('读不到账单')}</b>`
+  const hint = hasSite ? t('{n} 个站点账单', { n: site.providers }) : t('站点未提供账单接口或令牌无效')
+
   return {
     k: `${t('花费')} · ${t(label)}`,
+    // 时间段切换单独一行：和金额挤在一行时，窄卡片会把「今天/本周/本月」
+    // 压成竖排（每个字一行）
     vHtml: `<span class="spend-pair">
-        <span class="spend-item"><span class="spend-tag">${t('模型消费')}</span><b>${priceSym()}${money(dispPrice(summary.estimated))}</b></span>
-        <span class="spend-item"><span class="spend-tag spend-tag--actual">${t('实际消费')}</span><b class="spend-actual">${priceSym()}${money(dispPrice(summary.actual))}</b></span>
-      </span>${seg}`,
-    sub: '',
+        <span class="spend-item"><span class="spend-tag spend-tag--actual">${t('实际消费')}</span>${actualHtml}</span>
+      </span><span class="spend-range-row">${seg}</span>`,
+    sub: hint,
     ic: 'receipt',
     tint: 'tint-warn',
   }
+}
+
+/**
+ * 汇总站点账单时用的单价：站点自己填的 → 全局默认 → 1。
+ * 与 spendFactorOf 不同：这里账单已经是「站点货币」，直接乘单价就是人民币，
+ * 不再和市场汇率比（账单不是按美元定价的估算值）。
+ */
+function siteUnitPriceForTotal() {
+  const explicit = Number(state?.settings?.defaultUnitPrice)
+  if (Number.isFinite(explicit) && explicit > 0) return explicit
+  return 1
 }
 
 function renderMonitor() {

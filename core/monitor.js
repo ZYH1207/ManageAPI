@@ -48,6 +48,9 @@ export function defaultMonitor() {
     // 最近几次采集的结果，用于「上次采集 N 分钟前 / 失败原因」
     runs: [],
     lastRunAt: null,
+    // 站点自己的按天账单：providerId → { 'YYYY-MM-DD': { actualCost, totalCost, requests, at } }
+    // 「实际消费」的唯一数据源；读不到账单的站没有这个条目
+    siteSpend: {},
   }
 }
 
@@ -171,6 +174,32 @@ export function applySnapshot(db, snap) {
       cooldownMs: 24 * 3600 * 1000,
     })
     if (alert) addedAlerts.push(alert)
+  }
+
+  // ------------------------------------------------------------ 站点账单
+  // 站点自己按天算的账。「实际消费」只认这个——网关侧的 token 估算缺 26%、
+  // 上游 cached_tokens 也不可靠，拿它算钱必然对不上。
+  // 一次采集可能带回多天（今天覆盖 + 历史回填）
+  const spendDays = snap.siteSpendDays
+    || (snap.siteSpend && snap.siteSpend.date ? { [String(snap.siteSpend.date).slice(0, 10)]: snap.siteSpend } : null)
+  if (spendDays && Object.keys(spendDays).length > 0) {
+    if (!m.siteSpend || typeof m.siteSpend !== 'object') m.siteSpend = {}
+    if (!m.siteSpend[providerId] || typeof m.siteSpend[providerId] !== 'object') {
+      m.siteSpend[providerId] = {}
+    }
+    for (const [day, spend] of Object.entries(spendDays)) {
+      m.siteSpend[providerId][String(day).slice(0, 10)] = {
+        actualCost: Number(spend.actualCost) || 0,
+        totalCost: Number(spend.totalCost) || 0,
+        requests: Number(spend.requests) || 0,
+        at,
+      }
+    }
+    // 只留最近 45 天，避免无限增长
+    const keys = Object.keys(m.siteSpend[providerId]).sort()
+    if (keys.length > 45) {
+      for (const old of keys.slice(0, keys.length - 45)) delete m.siteSpend[providerId][old]
+    }
   }
 
   // ------------------------------------------------------------ 倍率 / 价格
@@ -500,6 +529,71 @@ function localWeekStart(date = new Date()) {
  *   estimated —— 模型消费（站点口径估算，和图表同一份数）
  *   actual    —— 实际消费（乘站点单价，即钱包里少掉的钱）
  */
+/**
+ * 站点账单口径的花费汇总。
+ *
+ * **这是「实际消费」的唯一数据源**：站点自己按天算的账，单位是站点货币
+ * （多数站是美元，1:1 充值时 1 单位 = ¥1）。网关侧的 token 估算只保留为
+ * 「模型消费」参考值，不再用来回答「钱包少了多少钱」。
+ *
+ * 站点账单累计值是阶梯的（当天已花的钱不会回调），所以「今天」直接取当日，
+ * 「本周/本月」按天累加——跨天的记录各自归属自己的那一天。
+ */
+function buildSiteSpendSummary(m, settings) {
+  const fx = Number(ensureFx(settings).rates.CNY) || 7.2
+  const now = new Date()
+  const pad = (n) => String(n).padStart(2, '0')
+  const todayKey = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`
+  const monthStart = `${todayKey.slice(0, 7)}-01`
+  const weekStartDate = new Date(now)
+  weekStartDate.setDate(weekStartDate.getDate() - ((weekStartDate.getDay() + 6) % 7))
+  const weekStart = `${weekStartDate.getFullYear()}-${pad(weekStartDate.getMonth() + 1)}-${pad(weekStartDate.getDate())}`
+
+  const byProvider = {}
+  const totals = {
+    today: { actual: 0, requests: 0, providers: 0 },
+    week: { actual: 0, requests: 0, providers: 0 },
+    month: { actual: 0, requests: 0, providers: 0 },
+  }
+
+  for (const [providerId, days] of Object.entries(m.siteSpend || {})) {
+    let today = 0
+    let week = 0
+    let month = 0
+    let todayRequests = 0
+    for (const [day, row] of Object.entries(days || {})) {
+      const cost = Number(row.actualCost) || 0
+      if (day === todayKey) {
+        today += cost
+        todayRequests += Number(row.requests) || 0
+      }
+      if (day >= weekStart) week += cost
+      if (day >= monthStart) month += cost
+    }
+    byProvider[providerId] = { today, week, month, todayRequests, days: Object.keys(days || {}).length }
+    totals.today.actual += today
+    totals.today.requests += todayRequests
+    totals.week.actual += week
+    totals.month.actual += month
+    if (Object.keys(days || {}).length > 0) {
+      totals.today.providers += 1
+      totals.week.providers += 1
+      totals.month.providers += 1
+    }
+  }
+
+  const round = (v) => Math.round(v * 1e4) / 1e4
+  return {
+    // 站点账单是站点货币单位；按 1:1 的充值口径，它同时就是人民币近似值。
+    // 真正的换算留给前端（站点单价），这里只给原始数值。
+    fx,
+    byProvider,
+    today: { actual: round(totals.today.actual), requests: totals.today.requests, providers: totals.today.providers },
+    week: { actual: round(totals.week.actual), providers: totals.week.providers },
+    month: { actual: round(totals.month.actual), providers: totals.month.providers },
+  }
+}
+
 export function buildSpendSummary(dayMap, now = new Date()) {
   const todayKey = localDayKey(now)
   const weekStart = localWeekStart(now)
@@ -622,6 +716,8 @@ export function buildMonitorView(db, { usageData = null, benchmarks = {}, days =
     // 花费：图表用 estimated（站点口径，行为不变）；KPI 卡另外给今日/本周/本月两口径
     spendSeries: spendDays ? buildSpendSeries(spendDays, range) : [],
     spendSummary: buildSpendSummary(spendDays || new Map()),
+    // 站点账单口径的花费（今日/本周/本月），以及「哪些站读得到账单」
+    siteSpend: buildSiteSpendSummary(m, settings),
     balanceByProvider,
     changes,
     announcements,
