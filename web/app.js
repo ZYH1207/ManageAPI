@@ -488,7 +488,7 @@ function renderOverview() {
       <div class="empty">
         <h3>从添加一个中转站开始</h3>
         <p>填上地址和一个 Key，同步模型列表，就能看到跨站比价。</p>
-        <button class="primary" data-goto="providers">去添加站点</button>
+        <button class="primary" data-act="add-provider">${icon('plus')}新增站点</button>
       </div>`
     return
   }
@@ -949,7 +949,7 @@ function providersHtml({ withForm = true, panel = '', actions = '' } = {}) {
     // 空状态也必须给出 actions（里面有「新增站点」按钮）：此前直接 return，
     // 按钮被丢掉，刚 clone 完的用户看到「还没有站点」却点不了任何东西
     return `
-      ${actions ? `<div class="toolbar">${actions}</div>` : ''}
+      ${actions ? `<div class="sync-actions" style="margin-bottom:12px">${actions}</div>` : ''}
       <div class="empty">
         <h3>还没有站点</h3>
         <p>先添加一个中转站，填上它的地址和一个 Key，就能拉取模型列表开始比价。</p>
@@ -2073,7 +2073,7 @@ function renderDecision() {
       <div class="empty">
         <h3>还没有站点</h3>
         <p>先添加站点并同步模型，这里会显示路由怎么选。</p>
-        <button class="primary" data-goto="providers">去添加站点</button>
+        <button class="primary" data-act="add-provider">${icon('plus')}新增站点</button>
       </div>`
     return
   }
@@ -3103,11 +3103,14 @@ function renderMonitor() {
   const providers = state?.providers || []
 
   if (providers.length === 0) {
+    // 这里必须是「新增站点」而不是 data-goto="providers"：站点页已经并入
+    // 监控页，跳 #providers 等于跳回本页，点了没有任何反应（刚 clone 后
+    // 唯一能进入的页面就是这里，按钮不通就等于整个工具无法使用）
     view.innerHTML = `
       <div class="empty">
         <h3>还没有中转站</h3>
-        <p>监控会定时读每个站的余额、倍率与公告。先去「站点」页添加一个。</p>
-        <button class="primary" data-goto="providers">去添加站点</button>
+        <p>监控会定时读每个站的余额、倍率与公告。先添加一个站点开始。</p>
+        <button class="primary" data-act="add-provider">${icon('plus')}新增站点</button>
       </div>`
     return
   }

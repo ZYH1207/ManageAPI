@@ -1727,7 +1727,9 @@ html[data-lang='en'] .doc[data-lang-block='en'] { display: block; }
 }
 .sync-panel input[type='number']::placeholder { color: var(--faint); }
 .sync-panel button.primary { height: 24px; padding: 0 12px; border-radius: 7px; }
-.sync-actions { display: flex; gap: 8px; align-items: flex-end; }
+/* 允许换行：窄视口下「立即同步 + 新增站点」并排会超出可见区，
+   按钮被挤到视口外，真实点击落不到（JS .click() 却能触发，很容易误判成「能点」） */
+.sync-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-end; }
 .sync-actions button { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
 .sync-actions button svg { width: 14px; height: 14px; opacity: .8; }
 .monitor-sync-controls .field { margin: 0; }
