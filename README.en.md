@@ -30,7 +30,7 @@ Nine pages on the left, one job each:
 
 | Page | Purpose |
 |---|---|
-| **Overview** | Headline conclusion, key stats, sites needing attention, site ranking |
+| **Overview** | Headline conclusion (follows the decision basis; click the model to switch), key stats, sites needing attention, site ranking |
 | **Sites** | Balance trend, ratio changes, upstream notices; relay and key management (layout inspired by [bejix/upstream-ops](https://github.com/bejix/upstream-ops)) |
 | **Free** | Free models and platform credits, kept out of paid comparison |
 | **Pricing** | The same model compared across sites, prices editable inline |
@@ -299,9 +299,50 @@ Manual order only affects rows that get routed at all:
 - New supplies not in the manual order are appended by automatic sort
 - **Back to auto** clears the manual order
 
+### Decision basis: value / price / TTFT speed
+
+A "smart" router that only knows one value system is not smart. Cheap and good are different things: a supply that undercuts everyone but makes you wait fifteen seconds for the first token always wins on effective cost, and you never want to use it.
+
+So the top of the **Routing** page carries a three-segment bar. Pick one and both the ranking below and the gateway's site selection follow it completely:
+
+| Basis | Sort key | Good for |
+|---|---|---|
+| **Value** (default) | effective cost = price ÷ quality | long batch runs where a few seconds of TTFT do not matter |
+| **Price** | list price (quality only gates supplies out) | you just want cheap, quality only has to be acceptable |
+| **TTFT speed** | first-token latency, fastest first | interactive chat, coding — waiting on the first token hurts most |
+
+The three segments **only change who comes first among admitted supplies; they never change admission**: degraded / unstable / slow / no-usable-samples supplies are excluded in every basis. Loosening those is the job of the two separate switches ("Allow suspicious supplies" and the slow tier limit) — folding ranking preference and admission rules into one slider leaves nobody able to say which rule they changed.
+
+Supplies without TTFT data (never probed) sort last in the speed basis — "unknown speed" is not "fastest".
+
+The headline at the top of the Overview has **its own basis** (`headlineMode`), stored separately from the routing basis (`decisionMode`):
+
+- the routing basis decides **traffic**: the Routing page's "current pick" and where the gateway actually sends requests
+- the headline basis decides **how that sentence reads**: it re-ranks the same admitted candidates by its own key and takes the first
+
+So you can run the gateway on value while switching the Overview to "TTFT speed" to see who is fastest, without touching routing.
+The three options live inside the sentence (`on 〔Value｜Price｜TTFT speed〕`), taking about as much room as one word:
+
+```
+Picked 绿萝 for deepseek-v4.1-flash — best value on 〔Value｜Price｜TTFT speed〕: effective cost $0.14/Mtok
+```
+
+One click on another option and the sentence becomes:
+
+```
+Picked 绿萝 for deepseek-v4.1-flash — fastest on 〔Value｜Price｜TTFT speed〕: 2270ms
+```
+
+They only agree on two things: both pick from **admitted** candidates (degraded / unstable / slow / no-evidence supplies never appear), and both use the same tie-breakers (effective cost, then price). Beyond that they are independent — manual order only affects routing, and the sentence always answers "by this basis, which usable site is best".
+
+The model name is clickable: it opens the models on this machine (ignored ones excluded) and the whole sentence is recomputed after you pick one (stored in `settings.focusModel`). The old "X% cheaper than the priciest site" is gone — you were never going to pick the priciest one, so that percentage was only for show.
+
 ### First-token latency (slow tier limit)
 
-Latency does **not** participate in ranking — different units, and folding it into a score distorts things. Instead there is an admission line: **Slow tier limit** at the top of the Routing page. Supplies above it are marked "Slow" and treated like unavailable ones: never routed, marked in the pricing table, and they lose the "Cheapest" badge.
+Latency does **not** feed the effective-cost formula — different units, and folding it into a score distorts things. It is used two independent ways:
+
+- **As a sort key**: with the "TTFT speed" decision basis, the fastest supply comes first
+- **As an admission line**: the **Slow tier limit** on the Routing page. Supplies above it are marked "Slow" and treated like unavailable ones: never routed, marked in the pricing table, and they lose the "Cheapest" badge
 
 - 20 fixed tiers (1000–20000ms), snapped at the 500ms boundary: 8600 → 9000, 8499 → 8000, 8500 rounds up
 - Each tier carries a speed level (very fast / fast / normal / a bit slow / slow) — a label for humans; every decision compares raw milliseconds
@@ -370,7 +411,7 @@ Then request as usual; `model` takes the normalised name (`GET /v1/models` lists
 ```
 1. Admission: slow (over the TTFT gate) / degraded / unstable / no usable samples — never routed
    expired / unprobed — admitted, but as fallbacks behind healthy supplies (a real call is itself evidence)
-2. Sort the admitted ones by effective cost (price ÷ quality), ascending
+2. Sort the admitted ones by the decision basis: value = price ÷ quality / price = list price / TTFT speed = first-token latency
 3. If the first fails, fall through to the next before responding to the client
 4. Nothing admitted → 400 with the per-site reason, never a slow or suspicious substitute
 ```

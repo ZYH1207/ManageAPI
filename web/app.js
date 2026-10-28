@@ -402,20 +402,81 @@ function render() {
 
 // --------------------------------------------------------------- 概览视图
 
+/** 看板结论句里的模型下拉是否展开。放模块级：15 秒轮询会重绘看板，状态得活过重绘 */
+let headlineModelsOpen = false
+
+/** 三档 → 句子里的用词。档位跟着「智能决策」页走，这里只是翻译表 */
+const HEADLINE_WORDS = {
+  value: { basis: '性价比', verdict: '最划算', metric: '有效成本' },
+  price: { basis: '价格', verdict: '最便宜', metric: '价格' },
+  speed: { basis: '首字速度', verdict: '最快', metric: '首字' },
+}
+
+/** 结论句里那个数字：档位不同看的东西不同，拿不到就写「未知」而不是编一个 0 */
+function headlineMetric(line, mode) {
+  if (mode === 'speed') return line.ttftMs === null ? t('未知') : `${line.ttftMs}ms`
+  const cny = mode === 'price' ? line.priceCny : line.effectiveCny
+  return cny === null ? t('未知') : `${priceText(cny)}${t('/百万 token')}`
+}
+
+/**
+ * 看板顶部结论句：用哪个站、按什么档算的、那个档的关键数字。
+ *
+ * 数据来自 state.headline —— 服务端在「能登场」的候选里按**看板自己的档位**
+ * （settings.headlineMode）重排一遍，所以这句话是一面独立的镜子：
+ * 句子中间那个三档小开关只改这句话怎么看，不改网关派活（那是智能决策页的事）。
+ * 点模型名可以换一个模型看结论，选择落库在 settings.focusModel。
+ */
 function headlineHtml() {
   const line = state.headline
   if (!line) return ''
-  // 整句走 t()：中英语序不同，拆成片段翻会串行
-  const sentence = t('同样用 {model}，现在选「{provider}」最划算：{price}/百万 token，比最贵的站省 {pct}%。', {
-    model: esc(line.modelKey),
-    provider: `<strong>${esc(line.providerName)}</strong>`,
-    price: `<strong>${priceText(line.price)}</strong>`,
-    pct: `<strong>${line.spreadPct}</strong>`,
+  const mode = HEADLINE_WORDS[line.mode] ? line.mode : 'value'
+  const words = HEADLINE_WORDS[mode]
+  const models = state.headlineModels || []
+
+  // 三档直接长在句子里（「按[性价比|价格|速度]算…」）：
+  // 省掉右边那条独立控件，一句话自己就是全部操作面；点它只改这句话的算法
+  const basis = `<span class="headline-basis" role="tablist" title="${esc(t('只改这句结论的算法，不改网关派活'))}">${(
+    state.decisionModes || []
+  )
+    .map(
+      (item) => `<button class="headline-basis-item${item.key === mode ? ' active' : ''}" role="tab"
+      aria-selected="${item.key === mode}" data-act="set-headline-mode" data-mode="${esc(item.key)}"
+      title="${esc(item.desc || item.hint || '')}">${esc(item.label)}</button>`,
+    )
+    .join('')}</span>`
+
+  const sentence = t('选用{provider}的 {model}，按{basis}算{verdict}：{metric}', {
+    provider: `<strong>${esc(line.providerName || '—')}</strong>`,
+    // 模型名可点：点开是本机未忽略的模型清单，选完整个句子重算
+    model: `<button class="headline-model" data-act="toggle-headline-models" aria-expanded="${headlineModelsOpen}" title="${esc(t('换一个模型看结论'))}"><span class="hm-name">${esc(line.modelKey)}</span><span class="caret">▾</span></button>`,
+    basis,
+    verdict: `<strong>${t(words.verdict)}</strong>`,
+    metric: `${t(words.metric)} <strong>${headlineMetric(line, mode)}</strong>`,
   })
-  // 不再挂「当前最优选择」小标题：一句话自己说清楚，标题交给页面头
+
+  const menu = !headlineModelsOpen
+    ? ''
+    : `
+    <div class="headline-menu">
+      <div class="headline-menu-head">${t('本机未被忽略的模型')}</div>
+      ${models
+        .map((row) => {
+          const dead = row.available === 0
+          return `<button class="headline-menu-item${row.modelKey === line.modelKey ? ' active' : ''}"
+            ${dead ? 'disabled' : ''} data-act="pick-headline-model" data-model="${esc(row.modelKey)}"
+            title="${esc(dead ? t('现在没有可用供给') : t('{n} / {total} 条供给可用', { n: row.available, total: row.total }))}">
+            <span class="mono">${esc(row.modelKey)}</span>
+            <span class="sub">${dead ? t('没有可用供给') : t('{n} 条可用', { n: row.available })}</span>
+          </button>`
+        })
+        .join('')}
+    </div>`
+
   return `
     <div class="headline">
       <div class="line">${sentence}</div>
+      ${menu}
     </div>`
 }
 
@@ -2427,6 +2488,9 @@ function renderDecision() {
   const visibleDecisions = decisions.filter(
     (decision) => !filterText || decision.modelKey.toLowerCase().includes(filterText),
   )
+  // 当前决策侧重：三档只改排序口径，准入规则不跟着变（见 core/decision-mode.js）
+  const mode = state.decisionMode || state.settings?.decisionMode || 'value'
+  const sortMark = (key) => (mode === key ? ' sort-by' : '')
 
   const blocks = visibleDecisions.map((decision) => {
     const panelKey = `decision:${decision.modelKey}`
@@ -2447,14 +2511,14 @@ function renderDecision() {
               : ''
           }</td>
           <td>${candidate.group ? `<span class="badge ${groupChipOf(candidate.providerId, candidate.group)}">${esc(candidate.group)}</span>` : '<span style="color:var(--faint)">默认</span>'}</td>
-          <td class="num">${candidate.price === null ? '—' : priceText(candidate.price)}</td>
+          <td class="num${sortMark('price')}">${candidate.price === null ? '—' : priceText(candidate.price)}</td>
           <td class="num">${candidate.quality === null ? '—' : candidate.quality.toFixed(2)}${
             candidate.confidence && candidate.confidence !== 'high'
               ? `<div class="sub">${candidate.samples} ${t('样本')}</div>`
               : ''
           }</td>
-          <td class="num">${candidate.effective === null ? '—' : priceText(candidate.effective)}</td>
-          <td class="num">${candidate.ttftMs === null ? '—' : `${candidate.ttftMs}ms`}</td>
+          <td class="num${sortMark('value')}">${candidate.effective === null ? '—' : priceText(candidate.effective)}</td>
+          <td class="num${sortMark('speed')}">${candidate.ttftMs === null ? '—' : `${candidate.ttftMs}ms`}</td>
           <td><span class="badge ${badge.cls}">${badge.label}</span>${candidate.statusReason ? `<div class="sub">${esc(candidate.statusReason)}</div>` : ''}</td>
         </tr>`
     }).join('')
@@ -2471,8 +2535,8 @@ function renderDecision() {
         <table>
           <thead><tr>
             <th style="width:66px"></th><th class="num">#</th><th>站点</th><th>分组</th>
-            <th class="num">价格</th><th class="num">质量</th>
-            <th class="num">有效成本</th><th class="num">首字</th><th>状态</th>
+            <th class="num${sortMark('price')}">价格</th><th class="num">质量</th>
+            <th class="num${sortMark('value')}">有效成本</th><th class="num${sortMark('speed')}">首字</th><th>状态</th>
           </tr></thead>
           <tbody>${rows}</tbody>
         </table>`}
@@ -2480,14 +2544,52 @@ function renderDecision() {
   }).join('')
 
   view.innerHTML = `
+    ${modeCard(mode)}
     ${gateCard()}
     <div class="toolbar">
       <input id="decision-search" class="search" type="search" placeholder="搜索模型名…" value="${esc(filters.decision)}" />
       <span class="hint" style="margin:0">${visibleDecisions.length} / ${decisions.length} 个模型</span>
     </div>
-    <p class="hint">默认按「有效成本 = 价格 ÷ 质量」排序，用 ↑↓ 手动调整「可用」那几条的先后——不会登场的站不会因为你拖它而排到前面。</p>
-    <p class="hint">${t('注意：<b>同一个模型在不同站的状态是各自独立的</b>（A 站健康、B 站掉包很正常），所以这里按「站 × 模型」逐条评估，状态下方会写明具体原因。')}</p>
     ${blocks}`
+}
+
+/**
+ * 决策侧重三档：性价比 / 价格 / 首字速度。
+ *
+ * 形态上刻意和「慢速档位限制」那条刻度条不一样：那边是 20 格的滑轨（同一个维度上的
+ * 程度），这边是三段长条（互斥的三种价值观）——档位不是程度，分段比滑轨诚实，
+ * 也不会让人以为三档之间还有「半档」这种不存在的东西。
+ *
+ * 标签和说明由服务端 /api/state 的 decisionModes 下发，浏览器不另抄一份。
+ */
+function modeCard(mode) {
+  const modes = state.decisionModes?.length
+    ? state.decisionModes
+    : [
+        { key: 'value', label: '性价比', hint: '价格 ÷ 质量', desc: '' },
+        { key: 'price', label: '价格', hint: '名义单价', desc: '' },
+        { key: 'speed', label: '首字速度', hint: '首字延迟', desc: '' },
+      ]
+  return `
+    <div class="card mode-card">
+      <div class="mode-head">
+        <span class="mode-label">${t('决策侧重')}</span>
+        <span class="mode-note">${t('只改「谁排前面」，不放开准入')}</span>
+      </div>
+      <div class="mode-bar" role="tablist">
+        ${modes
+          .map(
+            (item) => `
+          <button class="mode-seg${item.key === mode ? ' active' : ''}" role="tab"
+            aria-selected="${item.key === mode}" data-act="set-decision-mode" data-mode="${esc(item.key)}"
+            ${item.desc ? `title="${esc(item.desc)}"` : ''}>
+            <span class="mode-seg-label">${esc(item.label)}</span>
+            <span class="mode-seg-hint">${esc(item.hint)}</span>
+          </button>`,
+          )
+          .join('')}
+      </div>
+    </div>`
 }
 
 /**
@@ -4381,6 +4483,13 @@ document.addEventListener('click', async (event) => {
     return
   }
 
+  // 点在看板结论句以外的地方 → 收起模型下拉，别让它一直挂着挡住下面的卡
+  if (headlineModelsOpen && !event.target.closest('.headline')) {
+    headlineModelsOpen = false
+    renderOverview()
+    translateDom($('#view-overview') || document.body)
+  }
+
   const tab = event.target.closest('[data-tab]')
   if (tab) {
     setTab(tab.dataset.tab)
@@ -4398,6 +4507,47 @@ document.addEventListener('click', async (event) => {
     renderOverview()
     // renderOverview 内部不走 t()，英文界面下靠这层 DOM 翻译兜底
     translateDom($('#view-overview') || document.body)
+    return
+  }
+
+  // 看板结论句里的模型下拉：展开 / 收起
+  if (action === 'toggle-headline-models') {
+    headlineModelsOpen = !headlineModelsOpen
+    renderOverview()
+    translateDom($('#view-overview') || document.body)
+    return
+  }
+
+  // 看板结论句的档位：只改这句话按什么算，路由/网关一概不动
+  if (action === 'set-headline-mode') {
+    const mode = actionButton.dataset.mode || ''
+    if (!mode || mode === state.headlineMode) return
+    try {
+      state = await api('PATCH', '/api/settings', { headlineMode: mode })
+      render()
+      const label = (state.decisionModes || []).find((item) => item.key === mode)?.label || mode
+      toast(t('看板结论句改按「{mode}」算（网关派活没变）', { mode: t(label) }))
+    } catch (error) {
+      toast(error.message, true)
+    }
+    return
+  }
+
+  // 选一个模型当结论句的主角（落库 settings.focusModel，不是只改眼前这一次）
+  if (action === 'pick-headline-model') {
+    const modelKey = actionButton.dataset.model || ''
+    headlineModelsOpen = false
+    if (!modelKey || modelKey === state.settings?.focusModel) {
+      renderOverview()
+      translateDom($('#view-overview') || document.body)
+      return
+    }
+    try {
+      state = await api('PATCH', '/api/settings', { focusModel: modelKey })
+      render()
+    } catch (error) {
+      toast(error.message, true)
+    }
     return
   }
 
@@ -4468,6 +4618,23 @@ document.addEventListener('click', async (event) => {
     noticeSite = actionButton.dataset.site || 'all'
     renderMonitor()
     translateDom($('#view-monitor') || document.body)
+    return
+  }
+
+  // 决策侧重：性价比 / 价格 / 首字速度。只改排序口径，准入规则不变
+  if (action === 'set-decision-mode') {
+    const mode = actionButton.dataset.mode || ''
+    if (!mode || mode === (state.decisionMode || state.settings?.decisionMode)) return
+    try {
+      state = await api('PATCH', '/api/settings', { decisionMode: mode })
+      render()
+      const label = (state.decisionModes || []).find((item) => item.key === mode)?.label || mode
+      toast(
+        t('决策侧重已切到「{mode}」，下面的排序和网关选站都跟着变了', { mode: t(label) }),
+      )
+    } catch (error) {
+      toast(error.message, true)
+    }
     return
   }
 

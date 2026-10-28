@@ -170,7 +170,7 @@
             <h4 class="doc-h4">概览</h4>
             <p>
               打开就能看的总结页，不需要填任何东西。<br />
-              · <b>一句话结论</b> —— 你在用的那个模型，现在哪家最便宜、省多少<br />
+              · <b>一句话结论</b> —— 用哪个站、按哪档算的、那个数字是多少；点模型名换模型，句子中间那三档换算法（不影响网关）<br />
               · <b>四个指标</b> —— 站点数、模型供给数、可比较的模型数、最大价差<br />
               · <b>需要关注</b> —— 探针判定有问题的站，按站聚合，写明原因<br />
               · <b>站点排名</b> —— 按长期评分排序，绿点健康、黄点需关注、红点不稳定
@@ -310,9 +310,10 @@
             <p>
               看路由会选谁，也能手动干预。每个模型一张表：<br />
               · <b>绿底行</b> —— 当前会选中的那个站<br />
-              · <b>有效成本</b> —— 价格 ÷ 质量，越小越优先<br />
+              · <b>决策侧重</b> —— 顶部三档（性价比 / 价格 / 首字速度），选哪档就按哪档排，网关也跟着换<br />
+              · <b>有效成本</b> —— 价格 ÷ 质量，越小越优先（仅在「性价比」档）<br />
               · <b>↑↓</b> —— 调整「可用」候选的先后，改完立即生效<br />
-              · <b>恢复自动</b> —— 清掉手动顺序，回到按有效成本排
+              · <b>恢复自动</b> —— 清掉手动顺序，回到按当前决策侧重排
             </p>
             <p>
               手动顺序只影响「可用」的那几条。不可信、太慢、评分过期的站默认排在后面，
@@ -433,7 +434,10 @@
             <p>
               <b>能登场但只做兜底</b>：评分过期、还没探测过。它们排在健康供给之后，
               前面的都不行时才轮到——派过去的那次真实调用会顺手把它们的数据刷新。<br />
-              <b>有效成本排序</b> —— 能登场的按 <code>价格 ÷ 质量</code> 从小到大排。
+              <b>排序（三档可选）</b> —— 智能决策页顶部的「决策侧重」决定按什么排：
+              <b>性价比</b>按 <code>价格 ÷ 质量</code>、<b>价格</b>按名义单价、<b>首字速度</b>按首字延迟，都从小到大。
+              三档只改谁排前面，<b>不改准入</b>：可疑 / 不稳定 / 慢速 / 没有可信样本在任何一档下都不登场。
+              看板顶部那句结论有自己的档位（就长在句子里：「按 性价比|价格|首字速度 算」），只改这句话按什么算，不改网关派活。
             </p>
             <p>
               <b>全部候选都不登场时，网关直接报错</b>，不会拿慢的或可疑的凑合：
@@ -531,7 +535,7 @@
             <h4 class="doc-h4">Overview</h4>
             <p>
               A summary you can open without filling anything in.<br />
-              · <b>Headline</b> — which site is cheapest right now for the model you actually use, and by how much<br />
+              · <b>Headline</b> — which site to use, on which basis, and the number that matters; click the model name to switch models, use the inline bar in the sentence to switch the basis (routing is unaffected)<br />
               · <b>Four stats</b> — sites, model supplies, comparable models, max price spread<br />
               · <b>Needs attention</b> — sites the probes flagged, grouped by site with the reason<br />
               · <b>Sites at a glance</b> — ranked by long-term score: green healthy, yellow watch, red unstable
@@ -686,9 +690,10 @@
             <p>
               See who routing would pick, and override it. One table per model:<br />
               · <b>Highlighted row</b> — the site that would be picked now<br />
-              · <b>Effective cost</b> — price ÷ quality, lower wins<br />
+              · <b>Decision basis</b> — the three-segment bar at the top (value / price / TTFT speed); pick one and the gateway follows<br />
+              · <b>Effective cost</b> — price ÷ quality, lower wins (value basis only)<br />
               · <b>↑↓</b> — reorder the available candidates; takes effect immediately<br />
-              · <b>Back to auto</b> — clears the manual order
+              · <b>Back to auto</b> — clears the manual order and sorts by the current basis
             </p>
             <p>
               Manual order only affects rows that are usable. Untrusted, too-slow or expired supplies sink to the
@@ -807,7 +812,10 @@
             <h4 class="doc-h4">③ Decision: filter first, then compare price</h4>
             <p>
               <b>Hard constraints</b> — untrusted, too slow, expired: pushed to the back as a last resort.<br />
-              <b>Effective cost</b> — the rest are sorted by <code>price ÷ quality</code>, ascending.
+              <b>Ranking (three bases)</b> — the "Decision basis" bar at the top of the Routing page decides what to sort by:
+              <b>value</b> uses <code>price ÷ quality</code>, <b>price</b> uses list price, <b>TTFT speed</b> uses first-token latency — all ascending.
+              The basis only changes who comes first, <b>never admission</b>: degraded / unstable / slow / no-usable-samples supplies stay out in every basis.
+              The headline on the Overview has its own basis (the small bar living inside the sentence: "on Value|Price|TTFT speed"): it changes how that sentence is computed, never how the gateway routes.
             </p>
             <p>
               The "untrusted" part can be switched off with <b>Allow suspicious supplies</b> on the Probes page: they

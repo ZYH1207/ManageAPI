@@ -58,4 +58,8 @@ for (const [offerId, score] of Object.entries(state.scores)) {
   const provider = state.providers.find((p) => p.id === offer.providerId)
   console.log(`${provider.name} ${offer.upstreamName} → ${score.status} 可路由=${score.routable}`)
 }
-console.log('\n结论:', state.headline?.text)
+const line = state.headline
+console.log(
+  '结论:',
+  line ? `选用 ${line.providerName} 的 ${line.modelKey}（${line.mode}）` : '（无）',
+)

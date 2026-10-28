@@ -3,7 +3,9 @@
  *
  * 决策规则（刻意做成可解释的两步，而不是加权打分）：
  *   1. 准入：见 admissionOf——慢速 / 可疑 / 不稳定 / 没有可信样本一律不登场
- *   2. 排序：剩下的人按「有效成本 = 名义价格 ÷ 质量」升序
+ *   2. 排序：剩下的人按 settings.decisionMode 选定的口径升序
+ *      性价比（默认）→ 有效成本；价格 → 名义单价；首字速度 → 首字延迟
+ *      三档都只改「谁排前面」，准入规则完全不看这个开关
  *
  * 「不登场」是真的不登场：selectCandidates 把不可用的候选也留在表里（决策页要
  * 能看出「为什么没选它」），但网关只会在 admission.ok 的候选里派活；一条都没有
@@ -11,14 +13,13 @@
  * 用户自己设了首字门槛，就等于明说「超过这个速度我宁可报错」。
  *
  * 但用户可以在探针页打开「放行可疑供给」：打开后可疑/不稳定的站重新获得准入，
- * 由「价格 ÷ 质量」自己去权衡——质量差一半，成本就翻倍，贵不到哪里去才轮得到它。
+ * 再由当前决策侧重（性价比 / 价格 / 首字速度）自己决定谁排前面。
  * 首字门槛是独立的显式设置，不受这个开关影响。
  */
 import { offerCost } from './pricing.js'
 import { isRoutable, effectiveCost, THRESHOLDS } from './score.js'
 import { normalizeModelKey } from './inventory.js'
-
-const INFINITY_COST = Number.POSITIVE_INFINITY
+import { normalizeDecisionMode, compareByBasis } from './decision-mode.js'
 
 /** scoreOffers 返回 Map，但也允许传普通对象，两种都兼容。 */
 function getScore(scores, offerId) {
@@ -125,6 +126,8 @@ export function selectCandidates({ offers, providers, credentials, scores, bench
   const maxTtftMs = Number(settings?.maxTtftMs) || 0
   // 用户开关：探针说可疑的也让它正常参与排序（首字上限仍然独立生效）
   const allowUntrusted = Boolean(settings?.allowUntrusted)
+  // 排序侧重：只影响「能登场的里面谁排前面」，准入判定完全不受它影响
+  const decisionMode = normalizeDecisionMode(settings?.decisionMode)
   const matched = offers.filter(
     (offer) =>
       offer.modelKey === key ||
@@ -179,6 +182,8 @@ export function selectCandidates({ offers, providers, credentials, scores, bench
       provider,
       credential,
       price,
+      // 名义单价（美元/百万 token）：价格档排序用，展示仍走 price（人民币）
+      priceUsd,
       quality,
       // probeOk 是探针的原始判定；routable 是「这一单会不会优先考虑它」
       probeOk: isRoutable(score),
@@ -219,11 +224,9 @@ export function selectCandidates({ offers, providers, credentials, scores, bench
         const ib = manualIndex.has(b.offer.id) ? manualIndex.get(b.offer.id) : Number.MAX_SAFE_INTEGER
         if (ia !== ib) return ia - ib
       }
-      // 有效成本排序按美元口径；兜底的展示价（CNY）与美元只差同一汇率标量，等价
-      const ea = a.effectiveUsd ?? INFINITY_COST
-      const eb = b.effectiveUsd ?? INFINITY_COST
-      if (ea !== eb) return ea - eb
-      return (a.price ?? INFINITY_COST) - (b.price ?? INFINITY_COST)
+      // 排序口径由决策侧重决定（性价比 / 价格 / 首字速度）。
+      // 比较逻辑收在 core/decision-mode.js#compareByBasis——看板结论句也用同一份
+      return compareByBasis(a, b, decisionMode)
     })
 }
 

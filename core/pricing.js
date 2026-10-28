@@ -9,6 +9,7 @@
  */
 
 import { ensureFx } from './fx.js'
+import { normalizeDecisionMode, compareByBasis } from './decision-mode.js'
 
 const UNIT_MULTIPLIER = {
   per_mtok: 1,
@@ -363,59 +364,52 @@ export function summarize(offers, settings = {}, benchmarks = {}, isTrusted = ()
 }
 
 /**
- * 生成一句人话结论——看板与宣传截图的主角。
+ * 生成一句人话结论——看板页顶部那一句。
  *
- * 选择顺序：
- *   1. 用户「关心」的模型（按用量 > 手动排序 > 探过的顺序挑第一个能比价的）
- *   2. 都没有时，回落到价差最大的模型
+ * 数据来自 `decisions`（决策页「当前选」和网关派活用的那份），但**排序口径独立**：
+ * 看板有自己的档位（settings.headlineMode），和路由档位（settings.decisionMode）分开。
+ * 路由按你定的策略派活；看板只是换一个角度看同一批「能登场」的站——
+ * 比如路由按性价比跑，看板上切到「首字速度」看看最快的那个是谁，不用改派活规则。
  *
- * 光按价差排会出现「你只关心 gpt-4o，它却给你推 deepseek 省了 90%」的尴尬。
+ * 结论句只说三件事：用哪个站、按什么档算的、那个档的关键数字是多少。
+ * 不再写「比最贵的站省 X%」：最贵的那家你本来也不会选，这个百分比只能看着玩。
  *
- * isTrusted 用来剔除探针判定不可信的供给：结论句不能推荐一个会挂或掉包的站，
- * 否则它和路由的实际选择会自相矛盾。
+ * 站点的选法：在**能登场**的候选里按看板档位重新排一遍（不跟路由的手动顺序）。
+ * 手动顺序是「派活偏好」，而这句话说的是「按这个档算，谁最好」——两件事别混。
+ *
+ * 选哪个模型说：用户点过就听用户的（settings.focusModel）；没点过就按
+ * 「有真实用量 > 调过手动顺序 > 探过」挑第一个现在真有牌能登场的模型。
+ *
+ * @param {{decisions: Array, settings: Object, focusModels: string[]}} input
+ * @returns {{modelKey, providerName, group, mode, effectiveCny, priceCny, ttftMs}|null}
  */
-export function headline(ranked, providers, isTrusted = () => true, focusModels = [], settings = {}) {
-  const fxFor = (s) => Number(ensureFx(s).rates.CNY) || DISPLAY_FX_DEFAULT
-  const nameOf = (id) => providers.find((p) => p.id === id)?.name || '未知站'
+export function decisionHeadline({ decisions = [], settings = {}, focusModels = [] } = {}) {
+  const mode = normalizeDecisionMode(settings.headlineMode)
+  // 只留「现在真有牌能登场」的模型：没有可用供给的模型下不了结论
+  const usable = decisions.filter(
+    (d) => d.chosenOfferId && d.candidates.some((c) => c.offerId === d.chosenOfferId),
+  )
+  if (usable.length === 0) return null
 
-  const groups = ranked
-    .map((group) => {
-      const rows = group.rows.filter((row) => isTrusted(row.offerId))
-      if (rows.length < 2) return null
-      const cheapest = rows[0].blendedUsdPerMtok
-      const priciest = rows[rows.length - 1].blendedUsdPerMtok
-      // cheapest=0 合法（同 rankByModel 的处理）；priciest=0 时除零无意义
-      if (cheapest === null || priciest === null || priciest <= 0) return null
-      return {
-        modelKey: group.modelKey,
-        top: rows[0],
-        spreadPct: Math.round(((priciest - cheapest) / priciest) * 100),
-      }
-    })
-    .filter(Boolean)
+  const byKey = new Map(usable.map((d) => [d.modelKey, d]))
+  const focused = settings.focusModel ? byKey.get(String(settings.focusModel)) : null
+  const fromUsage = focusModels.map((key) => byKey.get(key)).find(Boolean)
+  const picked = focused || fromUsage || usable[0]
+  // 在能登场的牌里按看板档位重排：缺数据（没探过针）的由 compareByBasis 排到最后
+  const chosen =
+    [...picked.candidates]
+      .filter((c) => c.admission?.ok)
+      .sort((a, b) => compareByBasis(a, b, mode))[0] || null
+  if (!chosen) return null
 
-  let best = null
-  for (const key of focusModels) {
-    const hit = groups.find((g) => g.modelKey === key)
-    if (hit) {
-      best = hit
-      break
-    }
-  }
-  if (!best) best = [...groups].sort((a, b) => b.spreadPct - a.spreadPct)[0]
-  if (!best) return null
-
-  // 排序口径是美元；text 固定按人民币，界面自己按显示币种格式化
-  const priceUsd = Math.round(best.top.blendedUsdPerMtok * 10000) / 10000
-  const price = Math.round(priceUsd * fxFor(settings) * 100) / 100
-  const providerName = nameOf(best.top.providerId)
   return {
-    modelKey: best.modelKey,
-    providerName,
-    price,
-    priceUsd,
-    spreadPct: best.spreadPct,
-    // 一句人话，别写成「模型 X 目前站点 Y 最便宜」这种机器腔
-    text: `同样用 ${best.modelKey}，现在选「${providerName}」最划算：¥${price.toFixed(2)}/百万 token，比最贵的站省 ${best.spreadPct}%。`,
+    modelKey: picked.modelKey,
+    providerName: chosen.providerName ?? picked.chosenProviderName ?? null,
+    group: chosen.group || '',
+    mode,
+    // 三档各自的关键数字（人民币口径，前端按显示币种格式化）；拿不到就是 null
+    effectiveCny: chosen.effective ?? null,
+    priceCny: chosen.price ?? null,
+    ttftMs: typeof chosen.ttftMs === 'number' ? chosen.ttftMs : null,
   }
 }

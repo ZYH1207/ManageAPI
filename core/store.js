@@ -68,8 +68,17 @@ export function emptyDb() {
       // 首字门槛（毫秒），0 = 不限。只会是 1000~20000 的整档：
       // 取档口径在 core/latency.js#snapTtftMs，写入侧（PATCH）负责归一
       maxTtftMs: 0,
+      // 决策侧重（智能决策页顶部三档）：value = 性价比（价格 ÷ 质量，默认）、
+      // price = 名义价格、speed = 首字速度。只改排序，不改准入，
+      // 口径见 core/decision-mode.js
+      decisionMode: 'value',
+      // 看板顶部结论句自己的档位：和 decisionMode 分开——路由按策略派活，
+      // 看板只是换一个角度看同一批「能登场」的站，两边互不干扰
+      headlineMode: 'value',
+      // 看板顶部结论句里选中的模型（归一化 key）；null = 自动挑（用量 > 手动排序 > 探过）
+      focusModel: null,
       // 放行可疑供给：默认 false，探针判定不可信/过期的会被排到后面。
-      // 打开后它们按有效成本正常参与竞争——风险由用户自己承担。
+      // 打开后它们按当前决策侧重正常参与竞争——风险由用户自己承担。
       allowUntrusted: false,
       // 免费池跨栏偏好：同一个模型同时出现在中转站与平台时怎么选。
       //   'platform'  平台优先（更怕假货）

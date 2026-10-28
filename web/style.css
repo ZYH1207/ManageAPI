@@ -662,11 +662,50 @@ main { flex: 1; min-width: 0; display: flex; flex-direction: column; overflow: h
 }
 
 /* -------------------------------------------------------------- headline */
-/* 概览顶部那句「谁最便宜」：借 B 的摘要句式——不做彩色大块，只留一句话 + 一条细线 */
+/* 概览顶部那句「选用谁」：借 B 的摘要句式——不做彩色大块，只留一句话 + 一条细线 */
 .headline {
+  position: relative;
   padding: 0 0 18px;
   margin-bottom: 20px;
   border-bottom: 1px solid var(--border);
+}
+
+/* 结论句里的三档：直接长在「按……算」中间。
+   尺度按句子本身走（12px / 1 行高），所以它读起来像一句话里的一块，不是贴上去的控件；
+   容器只给很浅的底和 1px 边，选中项才浮起来——三个挤在一起也不吵。 */
+.headline-basis {
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
+  position: relative;
+  top: -1px;
+  margin: 0 3px;
+  padding: 0;
+  vertical-align: middle;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--hover);
+  white-space: nowrap;
+}
+.headline-basis-item {
+  padding: 0 7px;
+  border: none;
+  border-radius: 5px;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.5;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+.headline-basis-item:hover { color: var(--text); background: var(--surface-2); }
+/* 选中项用强调色淡底：浅色主题下是薄荷色、深色主题下是半透明绿，
+   两边都「比底子亮一点」，不会像纯白底那样在深色里陷进去 */
+.headline-basis-item.active {
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 600;
 }
 .headline .kicker {
   font-size: 11px;
@@ -682,6 +721,67 @@ main { flex: 1; min-width: 0; display: flex; flex-direction: column; overflow: h
 }
 .headline .line strong { color: var(--text); font-weight: 600; }
 .headline .line strong:last-of-type { color: var(--accent); }
+
+/* 结论句里的模型名：看着像句子的一部分，但下面有虚线，点得出来 */
+.headline-model {
+  padding: 0;
+  border: none;
+  background: none;
+  font: inherit;
+  font-weight: 500;
+  color: var(--text);
+  cursor: pointer;
+}
+/* 虚线只画在模型名下面，不带那个小三角——不然 ▾ 和后面的逗号会粘成一团 */
+.headline-model .hm-name { border-bottom: 1px dashed var(--border-strong); }
+.headline-model:hover { color: var(--accent); }
+.headline-model:hover .hm-name { border-bottom-color: var(--accent); }
+.headline-model .caret { margin-left: 4px; font-size: 9px; color: var(--muted); }
+.headline-model:hover .caret { color: var(--accent); }
+
+/* 模型下拉：绝对定位贴着句子，不把下面的统计卡顶下去 */
+.headline-menu {
+  position: absolute;
+  z-index: 30;
+  top: calc(100% - 8px);
+  left: 0;
+  min-width: 320px;
+  max-width: 520px;
+  max-height: 340px;
+  overflow: auto;
+  padding: 6px;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(16, 24, 40, 0.12);
+}
+.headline-menu-head {
+  padding: 4px 8px 6px;
+  font-size: 11px;
+  color: var(--faint);
+  letter-spacing: 0.4px;
+}
+.headline-menu-item {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  padding: 6px 8px;
+  border: none;
+  border-radius: 6px;
+  background: none;
+  color: var(--text);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+.headline-menu-item:hover { background: var(--hover); }
+.headline-menu-item.active { background: var(--accent-soft); }
+.headline-menu-item.active .mono { color: var(--accent); font-weight: 600; }
+.headline-menu-item[disabled] { color: var(--faint); cursor: not-allowed; }
+.headline-menu-item[disabled]:hover { background: none; }
+.headline-menu-item .sub { font-size: 11px; color: var(--faint); white-space: nowrap; }
 
 /* ----------------------------------------------------------------- stats */
 .stats {
@@ -905,6 +1005,47 @@ main { flex: 1; min-width: 0; display: flex; flex-direction: column; overflow: h
 .ttft-tick:hover { opacity: 0.85; }
 .ttft-tick.active { opacity: 1; outline: 2px solid var(--accent); outline-offset: 1px; }
 .ttft-tick.off.active { color: var(--text); font-weight: 500; }
+
+/* ------------------------------------------------- 决策侧重（智能决策页三档）
+   三段长条 = 三种互斥的取舍，不是同一条滑轨上的程度。
+   所以刻意和上面那条 20 格刻度条长得不一样：那边是「挑一个门檻」，这边是「选一种价值观」。
+   选中段：强调色淡底 + 细描边 + 标题染色。不用下划线：那看着像进度条，
+   而这三档是互斥的选项，不是同一根滑轨上的位置。 */
+.mode-card { padding: 12px 14px; display: flex; flex-direction: column; gap: 8px; }
+.mode-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.mode-label { font-size: 12px; font-weight: 500; color: var(--text); }
+.mode-note { font-size: 11px; color: var(--faint); }
+.mode-bar {
+  display: flex; align-items: stretch; gap: 2px;
+  padding: 3px; border-radius: 9px;
+  background: var(--hover); border: 1px solid var(--border);
+}
+.mode-seg {
+  flex: 1 1 0; min-width: 104px; position: relative;
+  display: flex; flex-direction: column; align-items: flex-start; gap: 1px;
+  padding: 6px 12px 7px; border: none; border-radius: 7px;
+  background: transparent; color: var(--muted); cursor: pointer; text-align: left;
+  transition: background 0.12s, color 0.12s;
+}
+/* 分隔线画在段与段之间，而不是每段都描边——描边会让未选中段看着像按钮堆 */
+.mode-seg + .mode-seg::before {
+  content: ''; position: absolute; left: -1px; top: 8px; bottom: 8px;
+  width: 1px; background: var(--border);
+}
+.mode-seg:hover { background: var(--surface-2); color: var(--text); }
+.mode-seg-label { font-size: 12px; font-weight: 500; line-height: 1.3; }
+.mode-seg-hint { font-size: 11px; color: var(--faint); line-height: 1.3; }
+.mode-seg.active {
+  background: var(--accent-soft); color: var(--text);
+  box-shadow: inset 0 0 0 1px var(--accent-mid);
+}
+.mode-seg.active .mode-seg-label { color: var(--accent); font-weight: 600; }
+.mode-seg.active .mode-seg-hint { color: var(--muted); }
+.mode-seg.active::before,
+.mode-seg.active + .mode-seg::before { display: none; }
+
+/* 当前排序依据的那一列：淡淡地标出来，一眼看得出「为什么是这个顺序」 */
+td.sort-by, th.sort-by { color: var(--accent); font-weight: 500; }
 
 /* -------------------------------------------------------------- 分组输入 */
 .group-input { width: 96px; padding: 3px 7px; font-size: 12px; }

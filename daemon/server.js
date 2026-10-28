@@ -26,6 +26,12 @@ import {
 import { selectCandidates, listPublicModels, explain, admissionFailure } from '../core/router.js'
 import { snapTtftMs, ttftTierTable, describeTtftLimit } from '../core/latency.js'
 import { pauseStatus, normalizeWindows, isTime, MAX_WINDOWS } from '../core/schedule.js'
+import {
+  DECISION_MODES,
+  decisionModeTable,
+  describeDecisionMode,
+  normalizeDecisionMode,
+} from '../core/decision-mode.js'
 import { splitOffers, isFreeOffer, resolvePool, FREE_PREFIX, FREE_BASE_PATH } from '../core/free.js'
 import { rankFreePool } from '../core/rank-free.js'
 import * as platforms from '../core/platforms/index.js'
@@ -170,7 +176,7 @@ async function buildState({ light = false } = {}) {
   const scoreMap = scoresFor(db)
   const maxTtftMs = Number(db.settings.maxTtftMs) || 0
   // 用户开关：放行可疑供给。打开后探针判定不可信/过期的照样参与排序，
-  // 由「有效成本 = 价格 ÷ 质量」自己去权衡——质量差的价格会被除上去。
+  // 由当前决策侧重（性价比 / 价格 / 首字速度）决定先后。
   const allowUntrusted = Boolean(db.settings.allowUntrusted)
 
   // 探针口径的可信度：没探过的保留（否则新用户永远看不到结论），
@@ -241,7 +247,7 @@ async function buildState({ light = false } = {}) {
   const summary = pricing.summarize(paidOffers, db.settings, benchmarks, isTrusted)
 
   const usage = await usageSummary({ days: 30 })
-  // 关注度：有真实用量 > 调过手动顺序 > 探过。headline 优先推你真正在用的模型
+  // 关注度：有真实用量 > 调过手动顺序 > 探过。结论句默认推你真正在用的模型
   const focusOrder = [
     ...new Set([
       ...Object.entries(usage.byModel || {})
@@ -251,8 +257,6 @@ async function buildState({ light = false } = {}) {
       ...db.probes.map((p) => p.modelKey).filter(Boolean),
     ]),
   ]
-
-  const topLine = pricing.headline(ranked, db.providers, isTrusted, focusOrder, db.settings)
 
   // 长期表现：探针 + 真实流量，按时间衰减加权，供概览页排名
   const longTerm = longTermScores(db.probes, db.traffic)
@@ -334,6 +338,21 @@ async function buildState({ light = false } = {}) {
     }
   })
 
+  // 看板顶部结论：直接吃 decisions（和决策页「当前选」、网关派活同一份），
+  // 档位 / 关注模型都在这里定，不在 pricing 里再从 ranked 挑一遍
+  const topLine = pricing.decisionHeadline({
+    decisions,
+    settings: db.settings,
+    focusModels: focusOrder,
+  })
+  // 结论句里那个可点的模型名：本机未被忽略、并且填了价格的模型（就是 decisions 这批）。
+  // 没有可用供给的也列出来但标灰——比默默消失强，至少看得出「这个模型现在没人接单」
+  const headlineModels = decisions.map((decision) => ({
+    modelKey: decision.modelKey,
+    available: decision.candidates.filter((c) => c.admission?.ok).length,
+    total: decision.candidates.length,
+  }))
+
   const result = {
     settings: db.settings,
     // 「定时关闭检测」当前状态：暂停中 / 几点恢复 / 下次几点开始。
@@ -342,6 +361,13 @@ async function buildState({ light = false } = {}) {
     // 首字门槛的 20 档 + 速度等级：前端直接照着渲染，不在浏览器里另算一份
     ttftTiers: ttftTierTable(),
     ttftLimitText: describeTtftLimit(db.settings.maxTtftMs),
+    // 决策侧重：三档的标签 / 说明由服务端下发，前端只负责画和发 PATCH
+    decisionMode: normalizeDecisionMode(db.settings.decisionMode),
+    decisionModes: decisionModeTable(),
+    decisionModeText: describeDecisionMode(db.settings.decisionMode),
+    // 看板结论句的档位：与 decisionMode 分开存，概览页自己那条三档条改的就是它
+    headlineMode: normalizeDecisionMode(db.settings.headlineMode),
+    headlineModeText: describeDecisionMode(db.settings.headlineMode),
     dataDir: store.dataDir(),
     // 令牌与余额挂在站点上：它们是「一个后台账号一套」，跟下面挂几个 Key 无关
     // 顺序按 sortOrder（站点卡上的上移/下移），没设过的按创建时间兜底
@@ -424,6 +450,8 @@ async function buildState({ light = false } = {}) {
     decisions,
     summary,
     headline: topLine,
+    // 结论句里可点的模型下拉：本机未忽略且填了价格的模型，带可用供给数
+    headlineModels,
     siteRanking,
     scores,
     probeTotal: db.probes.length,
@@ -539,6 +567,32 @@ route('PATCH', /^\/api\/settings$/, async (ctx) => {
       // 取档收口在这里：不论前端发什么数字，落库的都是 1000~20000 的整档，
       // 否则「20 档」只是界面上的说法，路由读到的还是原始值
       db.settings.maxTtftMs = snapTtftMs(v)
+    }
+    // 两个档位，同一个校验口径：decisionMode 管路由派活，headlineMode 管看板那句话。
+    // 非法值直接 400，不静默回落：一个拼错的档位名若被当成「性价比」，用户会以为
+    // 自己在按速度排、实际却在按价格排——静默错配置比报错危险得多。
+    for (const key of ['decisionMode', 'headlineMode']) {
+      if (ctx.body[key] === undefined) continue
+      const v = String(ctx.body[key])
+      if (!DECISION_MODES.some((mode) => mode.key === v)) {
+        throw new HttpError(
+          400,
+          `${key === 'decisionMode' ? '决策侧重' : '看板档位'}只能是 ${DECISION_MODES.map((mode) => mode.key).join(' / ')}`,
+        )
+      }
+      db.settings[key] = v
+    }
+    if (ctx.body.focusModel !== undefined) {
+      // 看板结论句里选中的模型：空 / null = 交回自动（按用量 > 手动排序 > 探过 挑）
+      if (ctx.body.focusModel === null || ctx.body.focusModel === '') {
+        db.settings.focusModel = null
+      } else {
+        const v = String(ctx.body.focusModel).trim()
+        if (!v) throw new HttpError(400, '关注模型不能是空字符串')
+        // 归一化后再落库：free/glm-5.3 与 glm-5.3 是同一个模型，
+        // 两处各存一份迟早对不上（决策页、看板、路由都要按同一把 key 找）
+        db.settings.focusModel = inv.normalizeModelKey(v)
+      }
     }
     // 全局默认站点单价：所有站口径一致时只填一次（如「全部 1:1 充值」填 1）
     if (ctx.body.defaultUnitPrice !== undefined) {

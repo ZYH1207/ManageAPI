@@ -224,7 +224,6 @@ const PATTERNS = [
   [/^(.+) 官方降价$/, '$1 official price dropped'],
   [/^(.+) 恢复供给$/, '$1 is back'],
   [/^(.+) ([\d.]+) → ([\d.]+)$/, '$1 $2 → $3'],
-  [/^同样用 (.+)，现在选「(.+)」最划算$/, 'Same $1 — cheapest at "$2" right now'],
   // 探针证据行
   [/^最高数字 (\d+)，finish_reason=(\w+)，completion_tokens=(\d+)$/, 'max number $1, finish_reason=$2, completion_tokens=$3'],
   [/^实际返回：(.*)$/, 'raw output: $1'],
@@ -612,9 +611,6 @@ Object.assign(EN, {
   '「令牌」是站点后台的登录凭证，只用来读余额、不参与对话。获取：登录后台 → F12 → Network → 点任意 <code>/api/v1/</code> 请求 → 复制 Request Headers 里的 <code>Authorization</code>（去掉 <code>Bearer </code> 前缀）。令牌会过期，失效后重新复制。':
     'The token is your site login credential — used only to read balance and usage, never for chat. To get it: log in → F12 → Network → click any <code>/api/v1/</code> request → copy <code>Authorization</code> from Request Headers (drop the <code>Bearer </code> prefix). Tokens expire in 7–30 days; copy a fresh one when they do.',
 
-  // 概览的一句话结论（带 <strong>）
-  '同样用 {model}，现在选「{provider}」最划算：{price}/百万 token，比最贵的站省 {pct}%。':
-    'For {model}, {provider} is the best deal right now: {price}/Mtok — {pct}% less than the priciest site.',
 })
 
 // 第三遍：按真实渲染出来的原文校正（词典 key 必须是「空白已归一化」的原文）
@@ -638,11 +634,6 @@ Object.assign(EN, {
     '<b>Use this site\u2019s prices</b>: takes this site\u2019s existing prices as the baseline — use it when you trust the site.<br />',
   '<b>载入内置参考价</b>：用工具内置的一份官方价（截至 {asOf}），价格常变，务必核对。':
     '<b>Load built-in prices</b>: uses the bundled official price list (as of {asOf}). Prices change often — verify before relying on it.',
-})
-
-Object.assign(EN, {
-  '注意：<b>同一个模型在不同站的状态是各自独立的</b>（A 站健康、B 站掉包很正常），所以这里按「站 × 模型」逐条评估，状态下方会写明具体原因。':
-    'Note: <b>the same model can be healthy on one site and swapped on another</b>, so each site × model is judged on its own. The reason appears under the status.',
 })
 
 Object.assign(EN, {
@@ -747,6 +738,33 @@ Object.assign(EN, {
     'They still sort by price ÷ quality, so half the quality doubles the cost — only a large enough discount wins. The TTFT gate still applies separately. Turn this off if you care more about trustworthy output.',
   '已放行可疑供给，它们会正常参与选站': 'Suspicious supplies are now allowed to compete',
   '已恢复：可疑供给不再登场': 'Restored: suspicious supplies are no longer routed',
+})
+
+// 决策侧重（性价比 / 价格 / 首字速度）
+Object.assign(EN, {
+  '决策侧重': 'Decision basis',
+  '只改「谁排前面」，不放开准入': 'Changes ranking only, never admission',
+  '性价比': 'Value',
+  '首字速度': 'TTFT speed',
+  '价格 ÷ 质量': 'price ÷ quality',
+  '名义单价': 'list price',
+  '首字延迟': 'first-token latency',
+  '决策侧重已切到「{mode}」，下面的排序和网关选站都跟着变了':
+    'Decision basis switched to "{mode}" — both the ranking below and gateway site selection follow it',
+  // 看板顶部结论句：用哪个站、按哪档算的、那个档的关键数字
+  '选用{provider}的 {model}，按{basis}算{verdict}：{metric}':
+    'Picked {provider} for {model} — {verdict} on {basis}: {metric}',
+  '最划算': 'best value',
+  '最快': 'fastest',
+  '/百万 token': '/Mtok',
+  '换一个模型看结论': 'Switch to another model',
+  '本机未被忽略的模型': 'Models on this machine (ignored ones excluded)',
+  '现在没有可用供给': 'no usable supply right now',
+  '没有可用供给': 'no usable supply',
+  '{n} / {total} 条供给可用': '{n} / {total} supplies usable',
+  '{n} 条可用': '{n} usable',
+  '只改这句结论的算法，不改网关派活': 'Changes only how this sentence is computed — routing is untouched',
+  '看板结论句改按「{mode}」算（网关派活没变）': 'Headline now uses "{mode}" (routing unchanged)',
 })
 
 // 免费页
@@ -1284,8 +1302,6 @@ Object.assign(EN, {
 
 // 打磨补漏（二）：模板整句与按钮 title
 Object.assign(EN, {
-  '同样用 {model}，现在选「{provider}」最划算：{price}/百万 token，比最贵的站省 {pct}%。':
-    'Same {model} — "{provider}" is the cheapest now: {price}/M tok, {pct}% cheaper than the priciest.',
   '按分组倍率折算': 'Priced as base price × group ratio',
   '直接填单价': 'Enter unit prices directly',
   '价格 ÷ 质量': 'price ÷ quality',
