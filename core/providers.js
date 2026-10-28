@@ -114,6 +114,11 @@ const TIMEOUTS = {
  * @returns {{models:string[], raw:number, elapsedMs:number}}
  */
 export async function listModels({ baseUrl, apiKey, timeoutMs = TIMEOUTS.listModels }) {
+  // API 端点允许为空（新建站点时只填网站地址，端点在加 Key 时才填）。
+  // 这里必须拦住：否则会拼出 "null/models" 这种请求，报错完全看不懂
+  if (!String(baseUrl || '').trim()) {
+    throw new Error('这个站点还没有填 API 端点。在「密钥」面板里填上 https://站点域名/v1 再同步')
+  }
   const url = `${String(baseUrl).replace(/\/+$/, '')}/models`
   const started = Date.now()
   const payload = await requestJson(url, { apiKey, timeoutMs })
@@ -335,7 +340,7 @@ export async function tryBalanceWithKeys({ baseUrl, apiKeys = [], adminToken, ti
  */
 export async function fetchAvailableChannels({ baseUrl, adminToken, timeoutMs = 10000 }) {
   const origin = originOf(baseUrl, { stripApiPrefix: true })
-  if (!origin) throw new Error(`站点地址无法解析：${baseUrl}`)
+  if (!origin) throw new Error('这个站点还没有填 API 端点。在「密钥」面板里填上 https://站点域名/v1 再试')
   const payload = await requestJson(`${origin}/api/v1/channels/available`, {
     apiKey: adminToken,
     timeoutMs,
@@ -474,7 +479,7 @@ export async function fetchAnnouncements({ baseUrl, apiKey, adminToken, kind, ti
  */
 export async function fetchSiteDailySpend({ baseUrl, adminToken, date, timeoutMs = TIMEOUTS.siteSpend }) {
   const origin = originOf(baseUrl, { stripApiPrefix: true })
-  if (!origin) throw new Error(`站点地址无法解析：${baseUrl}`)
+  if (!origin) throw new Error('这个站点还没有填 API 端点。在「密钥」面板里填上 https://站点域名/v1 再试')
   const day = String(date || '').slice(0, 10)
   if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) throw new Error(`日期格式不对：${date}`)
 
@@ -530,7 +535,7 @@ export async function fetchSiteDailySpend({ baseUrl, adminToken, date, timeoutMs
 
 export async function fetchSiteUsage({ baseUrl, adminToken, timeoutMs = TIMEOUTS.siteUsage }) {
   const origin = originOf(baseUrl, { stripApiPrefix: true })
-  if (!origin) throw new Error(`站点地址无法解析：${baseUrl}`)
+  if (!origin) throw new Error('这个站点还没有填 API 端点。在「密钥」面板里填上 https://站点域名/v1 再试')
   const paths = ['/api/v1/usage/summary', '/api/v1/usage/stats', '/api/v1/user/profile']
 
   const results = {}

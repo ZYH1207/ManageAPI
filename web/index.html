@@ -1075,13 +1075,10 @@
           </select>
         </label>
         <label>名称<input name="name" placeholder="例如：XX 中转站" required /></label>
-        <label>网站地址<input name="siteUrl" placeholder="https://example.com" /></label>
-        <label>API 端点<input name="baseUrl" placeholder="https://api.example.com/v1" required /></label>
+        <label>网站地址<input name="siteUrl" placeholder="https://example.com" required /></label>
         <p class="hint" style="grid-column:1/-1;margin:-4px 0 2px">
-          <b>网站地址</b>只用于卡片上的「打开站点」按钮，填后台网址即可（可选）。<br />
-          <b>API 端点</b>是程序真正请求的地址，一般形如 <code>https://站点域名/v1</code>；
-          没写 <code>/v1</code> 会自动补。如果复制的是带 <code>/dashboard</code>、<code>/console</code>
-          这类后台路径的网址，那是网站地址，不要填到这里。
+          填站点网址即可，卡片上「打开站点」会跳这里。<b>API 端点（<code>/v1</code> 那个）在添加 Key 时填</b>——
+          两者常常不一样，后台在 <code>/dashboard</code>、API 在 <code>/v1</code>。
         </p>
         <label>类型
           <select name="kind">

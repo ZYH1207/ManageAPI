@@ -1200,6 +1200,8 @@ function providersHtml({ withForm = true, panel = '', actions = '' } = {}) {
             <input name="label" placeholder="标签" />
             <input name="secret" placeholder="sk-... 粘贴完整 Key" autocomplete="off" required />
             <input name="group" placeholder="分组（可选）" style="width:118px" title="这把 Key 属于站点的哪个分组，同步模型时会自动带上" />
+            <input name="apiBase" placeholder="API 端点，如 https://api.example.com/v1" style="width:260px"
+              value="${esc(p.baseUrl || '')}" title="${t('程序真正请求的地址。留空则沿用这个站已保存的端点；没写 /v1 会自动补')}" />
             <button type="submit">添加 Key</button>
           </form>
           ${
@@ -1243,7 +1245,7 @@ function providersHtml({ withForm = true, panel = '', actions = '' } = {}) {
             </label>
             <div class="keyrow" style="border:none;padding-top:4px">
               <span class="hint" style="margin:0">
-                ${t('两者常不一样：后台在 /dashboard，API 在 /v1。改完点保存生效。')}
+                ${t('网站地址用于卡片链接；API 端点也可以直接在「密钥」里随 Key 一起填。')}
               </span>
               <span class="grow"></span>
               <button type="submit" class="primary tiny">${t('保存')}</button>
@@ -5060,12 +5062,19 @@ const form = event.target.closest('[data-form="add-key"]')
   if (keySubmitBtn) keySubmitBtn.disabled = true
   const providerId = form.closest('[data-provider]').dataset.provider
   const data = Object.fromEntries(new FormData(form))
+  // API 端点和 Key 一起填：新建站点时只要求填网站地址，端点在真正要请求时才需要。
+  // 只在这个字段有值时写回 provider，留空表示沿用已保存的端点
+  const apiBase = String(data.apiBase || '').trim()
+  delete data.apiBase
   try {
     const inModal = Boolean(form.closest('#prov-modal-body'))
+    if (apiBase) {
+      state = await api('PATCH', `/api/providers/${providerId}`, { baseUrl: apiBase })
+    }
     state = await api('POST', '/api/credentials', { ...data, providerId })
     render()
     if (inModal) reopenProvPanel(form, 'keys')
-    toast('Key 已加密保存')
+    toast(apiBase ? 'Key 已加密保存，API 端点已更新' : 'Key 已加密保存')
   } catch (error) {
     toast(error.message, true)
     if (keySubmitBtn) keySubmitBtn.disabled = false

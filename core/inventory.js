@@ -50,9 +50,19 @@ export function normalizeModelKey(name) {
  * 给卡片上的「打开站点」链接用。两者分开是因为它们经常不同：
  * 后台在 https://x.com/dashboard，API 在 https://x.com/v1。
  */
+/**
+ * 规范化 API 端点（baseUrl）：去掉尾部斜杠；没写版本号时补 /v1。
+ *
+ * 这个字段只存 **API 端点**，不存网站地址——网站地址是另一个字段 siteUrl，
+ * 给卡片上的「打开站点」链接用。两者分开是因为它们经常不同：
+ * 后台在 https://x.com/dashboard，API 在 https://x.com/v1。
+ *
+ * 允许为空：新建站点时只要求填网站地址，API 端点在添加 Key 时才填
+ * （很多人是先有站、后有 Key，或者一个站有多个端点）。
+ */
 export function normalizeBaseUrl(input) {
   let url = String(input ?? '').trim()
-  if (!url) throw new Error('baseUrl 不能为空')
+  if (!url) return ''
   if (!/^https?:\/\//i.test(url)) url = `https://${url}`
   url = url.replace(/\/+$/, '')
   if (!/\/v\d+$/i.test(url)) url = `${url}/v1`
@@ -72,20 +82,24 @@ export function normalizeSiteUrl(input) {
 
 // ---------------------------------------------------------------- providers
 
-export async function createProvider({ name, baseUrl, siteUrl = '', kind = 'unknown', note = '' }) {
+export async function createProvider({ name, baseUrl = '', siteUrl = '', kind = 'unknown', note = '' }) {
   if (!name || !String(name).trim()) throw new Error('站点名称不能为空')
   const normalized = normalizeBaseUrl(baseUrl)
+  const site = normalizeSiteUrl(siteUrl)
+  // 两个地址至少给一个：否则既不知道去哪请求、也没有可打开的页面
+  if (!normalized && !site) throw new Error('网站地址和 API 端点至少要填一个')
   return mutate((db) => {
-    if (db.providers.some((p) => p.baseUrl === normalized)) {
+    if (normalized && db.providers.some((p) => p.baseUrl === normalized)) {
       throw new Error(`该 API 端点已存在：${normalized}`)
     }
     const provider = {
       id: newId('p'),
       name: String(name).trim(),
-      baseUrl: normalized,
+      // 可以为空：API 端点在添加 Key 时填
+      baseUrl: normalized || null,
       // 网站地址：只给卡片上的「打开站点」用，和 API 端点分开
       // （后台常在 /dashboard，API 在 /v1，两者不是一回事）
-      siteUrl: normalizeSiteUrl(siteUrl) || null,
+      siteUrl: site || null,
       kind,
       note,
       // 排序号：站点卡的顺序（小的在前），新建的排到最后
@@ -111,7 +125,8 @@ export async function updateProvider(id, patch) {
     const provider = db.providers.find((p) => p.id === id)
     if (!provider) throw new Error(`站点不存在：${id}`)
     if (patch.name !== undefined) provider.name = String(patch.name).trim()
-    if (patch.baseUrl !== undefined) provider.baseUrl = normalizeBaseUrl(patch.baseUrl)
+    // API 端点：空串表示清空（还没填 Key 时它就是空的）
+    if (patch.baseUrl !== undefined) provider.baseUrl = normalizeBaseUrl(patch.baseUrl) || null
     // 网站地址：空串表示清空（卡片上就不显示「打开站点」了）
     if (patch.siteUrl !== undefined) provider.siteUrl = normalizeSiteUrl(patch.siteUrl) || null
     if (patch.kind !== undefined) {
