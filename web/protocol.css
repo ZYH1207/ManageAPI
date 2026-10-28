@@ -334,7 +334,10 @@
   flex-wrap: wrap;
   padding: 8px 2px;
   border-bottom: 1px solid var(--divider);
+  cursor: pointer;
+  border-radius: 7px;
 }
+.pp-record-row:hover { background: var(--hover); }
 .pp-record-row:last-child { border-bottom: none; }
 .pp-record-main {
   display: flex;

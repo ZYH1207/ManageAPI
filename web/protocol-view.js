@@ -1318,6 +1318,15 @@ function renderRecords() {
       <div class="pp-record-list">${rows}</div>
     </div>`
 
+  els.records.querySelectorAll('.pp-record-row').forEach((row) => {
+    const recordId = row.dataset.record
+    // 整行可点：点中间那长串任意位置都能展开记录详情，不用去够右下角的「查看」
+    row.addEventListener('click', (event) => {
+      // 行内的「删除」按钮按自己的逻辑走，别把展开详情也触发了
+      if (event.target.closest('button')) return
+      viewRecord(recordId)
+    })
+  })
   els.records.querySelectorAll('[data-view-record]').forEach((button) => {
     button.addEventListener('click', () => viewRecord(button.dataset.viewRecord))
   })
