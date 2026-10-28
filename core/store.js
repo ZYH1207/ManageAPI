@@ -13,9 +13,10 @@ import { mkdir, readFile, writeFile, chmod, access } from 'node:fs/promises'
 import { constants } from 'node:fs'
 import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto'
 import { defaultMonitor, ensureMonitor } from './monitor.js'
+import { ensureProtocolRecords } from './protocol-records.js'
 import { writeJsonAtomic } from './fsx.js'
 
-const DB_VERSION = 4
+const DB_VERSION = 5
 
 /**
  * 归一化分组名。定义在存储层（零依赖），台账层再导出——两边共用同一份，
@@ -306,6 +307,7 @@ function migrate(db) {
   const version = Number(db.version) || 1
   if (version >= DB_VERSION) {
     ensureMonitor(db)
+    ensureProtocolRecords(db)
     return db
   }
 
@@ -334,6 +336,8 @@ function migrate(db) {
       `[migrate] v4 合并重复供给 ${collapse.removed} 条，重置指向 ${collapse.remapped} 条探针`,
     )
   }
+  // v5：协议探查记录（新键，缺省补空数组，幂等）
+  ensureProtocolRecords(db)
   db.version = DB_VERSION
   ensureMonitor(db)
   return db

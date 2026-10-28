@@ -48,6 +48,13 @@ import { recordUsage, usageSummary, tokensUsedByKey, resetUsage, readUsage, loca
 import { buildMonitorView, markAlertsRead, markAnnouncementsRead, applySnapshot } from '../core/monitor.js'
 import { collectProviderSnapshots } from './monitor-runner.js'
 import { runProbes } from './probe-runner.js'
+import { probeProtocols } from '../core/protocol-probe.js'
+import {
+  saveProtocolRecord,
+  removeProtocolRecord,
+  clearProtocolRecords,
+  buildProtocolRecord,
+} from '../core/protocol-records.js'
 import { REFERENCE_AS_OF, listReference } from '../core/model-prices.js'
 import { listPresetSites, listPresetPlatforms } from '../core/catalog.js'
 
@@ -1622,6 +1629,311 @@ route('PUT', /^\/api\/decisions\/([^/]+)\/order$/, async (ctx) => {
 })
 
 // ------------------------------------------------------------------- probes
+
+/**
+ * 协议探查的 Key 选择顺序和 probe-runner 保持一致：
+ * offer 上绑的 Key → 同站同分组的 Key → 同站任意 Key。
+ * 两边各写一份的话，页面显示「有 Key」、真正探测却说没有，是最难查的那种不一致。
+ */
+function credentialForOffer(db, offer) {
+  if (offer.credentialId) {
+    const exact = db.credentials.find((c) => c.id === offer.credentialId)
+    if (exact) return exact
+  }
+  return (
+    db.credentials.find(
+      (c) => c.providerId === offer.providerId && (c.group || '') === (offer.group || ''),
+    ) ||
+    db.credentials.find((c) => c.providerId === offer.providerId) ||
+    null
+  )
+}
+
+/** 协议探查页的级联选择器数据：站点 → 分组 → 模型（带探针状态标签）。 */
+function protocolTargets(db) {
+  const ignored = inv.ignoredModelSet(db)
+  // 状态标签和探针页同一份判定：scoresFor + admissionTags，这里只透传，不另判一遍
+  const scoreMap = scoresFor(db)
+  const maxTtftMs = Number(db.settings.maxTtftMs) || 0
+  const allowUntrusted = Boolean(db.settings.allowUntrusted)
+  const sites = []
+
+  const providers = [...db.providers].sort(
+    (a, b) =>
+      (Number(a.sortOrder) || 0) - (Number(b.sortOrder) || 0) ||
+      String(a.createdAt || '').localeCompare(String(b.createdAt || '')),
+  )
+
+  for (const provider of providers) {
+    const groups = new Map()
+    for (const offer of db.offers) {
+      if (offer.providerId !== provider.id || offer.delistedAt) continue
+      const name = String(offer.upstreamName || offer.modelKey || '').trim()
+      if (!name) continue
+      const groupName = offer.group || ''
+      if (!groups.has(groupName)) groups.set(groupName, new Map())
+      const models = groups.get(groupName)
+      // 同组同名模型只留一条；offerId 指向第一条，探测时按它取 Key
+      if (models.has(name)) continue
+      const modelKey = inv.normalizeModelKey(offer.modelKey || name)
+      // 模型当前状况：与探针/比价页同一口径（admissionTags 唯一实现）。
+      // 前端拿去画标签，并在状况不佳时提醒「协议测试可能出现偏差」
+      const score = scoreMap.get(offer.id)
+      let tags = []
+      let blocked = null
+      let probeStatus = null
+      if (score) {
+        const tooSlow = maxTtftMs > 0 && typeof score.ttftMs === 'number' && score.ttftMs > maxTtftMs
+        const gateRow = {
+          ...score,
+          tooSlow,
+          allowUntrusted,
+          samples: (score.samples || 0) + (score.trafficSamples || 0),
+        }
+        tags = admissionTags(gateRow)
+        blocked = score.blocked || null
+        probeStatus = score.status || null
+      }
+      models.set(name, {
+        offerId: offer.id,
+        model: name,
+        modelKey,
+        ignored: ignored.has(modelKey),
+        hasKey: Boolean(credentialForOffer(db, offer)),
+        tags,
+        blocked,
+        probeStatus,
+      })
+    }
+
+    const groupList = [...groups.entries()]
+      .map(([name, models]) => ({
+        name,
+        label: name || '（默认分组）',
+        hasKey: [...models.values()].some((model) => model.hasKey),
+        models: [...models.values()].sort((a, b) => a.model.localeCompare(b.model)),
+      }))
+      .filter((group) => group.models.length > 0)
+      .sort((a, b) => a.name.localeCompare(b.name))
+
+    if (groupList.length === 0) continue
+    sites.push({
+      id: provider.id,
+      name: provider.name,
+      baseUrl: provider.baseUrl,
+      kind: provider.kind || 'unknown',
+      paused: Boolean(provider.paused),
+      groups: groupList,
+    })
+  }
+
+  return sites
+}
+
+/** Anthropic 系模型才探 Anthropic Messages：模型名里带 claude / anthropic 才算。 */
+function looksAnthropic(model) {
+  return /claude|anthropic/i.test(String(model || ''))
+}
+
+route('GET', /^\/api\/protocol\/targets$/, async () => {
+  const db = await store.readDbCached()
+  const sites = protocolTargets(db)
+  return {
+    sites,
+    modelCount: sites.reduce(
+      (sum, site) => sum + site.groups.reduce((n, group) => n + group.models.length, 0),
+      0,
+    ),
+    at: new Date().toISOString(),
+  }
+})
+
+route('POST', /^\/api\/protocol\/probe$/, async (ctx) => {
+  const body = ctx.body || {}
+  let target
+
+  if (body.mode === 'manual') {
+    const baseUrl = String(body.baseUrl || '').trim()
+    const apiKey = String(body.apiKey || '').trim()
+    const model = String(body.model || '').trim()
+    if (!baseUrl) throw new HttpError(400, '请填写 API 地址')
+    if (!apiKey) throw new HttpError(400, '请填写 API Key')
+    if (!model) throw new HttpError(400, '请填写模型名')
+    target = {
+      mode: 'manual',
+      baseUrl: inv.normalizeBaseUrl(baseUrl),
+      apiKey,
+      model,
+      authMode: ['auto', 'bearer', 'x-api-key'].includes(body.authMode) ? body.authMode : 'auto',
+      label: `${inv.normalizeBaseUrl(baseUrl)} / ${model}`,
+      anthropicSkipped: !looksAnthropic(model),
+    }
+  } else {
+    const db = await store.readDb()
+    const offer = db.offers.find((row) => row.id === body.offerId)
+    if (!offer) throw new HttpError(404, '模型记录不存在，可能已下线或删除')
+    const provider = db.providers.find((p) => p.id === offer.providerId)
+    if (!provider) throw new HttpError(404, '站点不存在')
+    const credential = credentialForOffer(db, offer)
+    if (!credential) throw new HttpError(400, '这个分组没有 Key，先去「站点」页加一个')
+    const apiKey = await inv.revealSecret(credential.id)
+    if (!apiKey) throw new HttpError(400, 'Key 解密失败，可能是 master.key 被替换过')
+    target = {
+      mode: 'gateway',
+      providerId: provider.id,
+      providerName: provider.name,
+      group: offer.group || '',
+      offerId: offer.id,
+      baseUrl: provider.baseUrl,
+      apiKey,
+      model: offer.upstreamName || offer.modelKey,
+      authMode: 'auto',
+      label: `${provider.name} / ${offer.group || '默认分组'} / ${offer.upstreamName}`,
+      anthropicSkipped: !looksAnthropic(offer.upstreamName || offer.modelKey),
+    }
+  }
+
+  // 非 Anthropic 模型（名字里没 claude/anthropic）跳过 Anthropic Messages：
+  // 站点对非 Claude 模型的 /messages 几乎必拒，测了只会产出一整片误导性红圆
+  const protocolScope = target.anthropicSkipped ? ['chat', 'responses'] : undefined
+
+  const timeoutMs = Math.min(Math.max(Number(body.timeoutMs) || 45000, 5000), 60000)
+  const overallTimeoutMs = Math.min(Math.max(Number(body.overallTimeoutMs) || 240000, 20000), 300000)
+  const options = {
+    baseUrl: target.baseUrl,
+    apiKey: target.apiKey,
+    model: target.model,
+    authMode: target.authMode,
+    protocols: protocolScope,
+    timeoutMs,
+    overallTimeoutMs,
+  }
+
+  // 测试 / 脚本走 ?format=json 一次拿完整结果；浏览器走 NDJSON 实时看进度
+  const wantJson =
+    ctx.query.get('format') === 'json' ||
+    String(ctx.req.headers.accept || '').toLowerCase().includes('application/json')
+
+  // 探完落一条记录（同一目标只留最新）。badStatus 从 targets 同一口徃的标签来，
+  // 记录页要提醒「当时这个模型状况就不佳，红圆可能是状态问题不是协议问题」
+  const saveRecord = async (result) => {
+    const db = await store.readDb()
+    const entry = protocolTargets(db)
+      .flatMap((site) => site.groups.flatMap((group) => group.models))
+      .find((model) => model.offerId === target.offerId)
+    const statusTags = entry ? entry.tags || [] : []
+    const badStatus = statusTags.some((kind) => kind !== 'ok' && kind !== 'fallback')
+    const record = buildProtocolRecord({ result, target, statusTags, badStatus })
+    await store.mutate((db2) => saveProtocolRecord(db2, record))
+    return record
+  }
+
+  if (wantJson) {
+    const result = await probeProtocols(options)
+    const record = await saveRecord(result)
+    return { ...result, target: { ...result.target, ...target, apiKey: undefined }, recordId: record.id }
+  }
+
+  ctx.res.writeHead(200, {
+    'Content-Type': 'application/x-ndjson; charset=utf-8',
+    'Cache-Control': 'no-store',
+    Connection: 'keep-alive',
+  })
+  const controller = new AbortController()
+  const send = (event) => {
+    if (ctx.res.writableEnded || ctx.res.destroyed) return
+    ctx.res.write(`${JSON.stringify(event)}\n`)
+  }
+  // 浏览器关页面 / 点停止：把还在飞的探测请求一起取消
+  ctx.res.on('close', () => controller.abort())
+
+  try {
+    // onProgress 也会发 type:'result'（无 recordId 的原始结果），滤掉避免前端收到两份；
+    // 真正的最终结果由下面显式 send（带 recordId）
+    const result = await probeProtocols({
+      ...options,
+      signal: controller.signal,
+      onProgress: (event) => {
+        if (event.type !== 'result') send(event)
+      },
+    })
+    let recordId = null
+    try {
+      const record = await saveRecord(result)
+      recordId = record.id
+    } catch (error) {
+      // 记录写盘失败不该吞掉探查结果，只在流里提醒一句
+      send({ type: 'record-error', error: error?.message || String(error) })
+    }
+    send({ type: 'result', result: { ...result, target: { ...result.target, ...target, apiKey: undefined }, recordId } })
+    send({ type: 'done' })
+  } catch (error) {
+    send({ type: 'error', error: error?.message || String(error) })
+  } finally {
+    if (!ctx.res.writableEnded) ctx.res.end()
+  }
+  return undefined
+})
+
+// ------------------------------------------------------------- 协议记录
+
+route('GET', /^\/api\/protocol\/records$/, async () => {
+  const db = await store.readDbCached()
+  const list = db.protocolProbes || []
+  // 列表视图裁掉能力明细：那是点开单条详情才要的
+  return {
+    records: [...list]
+      .sort((a, b) => String(b.ts || '').localeCompare(String(a.ts || '')))
+      .map((row) => ({
+        id: row.id,
+        ts: row.ts,
+        durationMs: row.durationMs,
+        mode: row.mode,
+        label: row.label,
+        baseUrl: row.baseUrl,
+        model: row.model,
+        skippedProtocols: row.skippedProtocols || [],
+        statusTags: row.statusTags || [],
+        badStatus: Boolean(row.badStatus),
+        summary: row.summary || null,
+        protocols: Object.fromEntries(
+          Object.entries(row.protocols || {}).map(([id, protocol]) => [
+            id,
+            {
+              surface: protocol.surface,
+              real: protocol.real,
+              summary: protocol.summary,
+            },
+          ]),
+        ),
+      })),
+    total: list.length,
+  }
+})
+
+route('GET', /^\/api\/protocol\/records\/([\w-]+)$/, async (ctx) => {
+  const db = await store.readDbCached()
+  const record = (db.protocolProbes || []).find((row) => row.id === ctx.params[0])
+  if (!record) throw new HttpError(404, '记录不存在（可能已被清空）')
+  return { record }
+})
+
+route('DELETE', /^\/api\/protocol\/records\/([\w-]+)$/, async (ctx) => {
+  let removed = 0
+  await store.mutate((db) => {
+    removed = removeProtocolRecord(db, ctx.params[0])
+  })
+  if (!removed) throw new HttpError(404, '记录不存在')
+  return { ok: true, removed }
+})
+
+route('DELETE', /^\/api\/protocol\/records$/, async () => {
+  let removed = 0
+  await store.mutate((db) => {
+    removed = clearProtocolRecords(db)
+  })
+  return { ok: true, removed }
+})
 
 route('POST', /^\/api\/probes\/run$/, async (ctx) => {
   const limit = Math.min(Number(ctx.body.limit) || 5, 20)

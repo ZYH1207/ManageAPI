@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>协议探查 · ManageAPI</title>
+  <link rel="stylesheet" href="/style.css" />
+  <link rel="stylesheet" href="/protocol.css" />
+  <script>
+    /* 和主界面共用主题键，进页面不闪白 */
+    try {
+      const forced = new URLSearchParams(location.search).get('theme')
+      const saved = forced || localStorage.getItem('manageapi.theme')
+      if (saved === 'dark') document.documentElement.dataset.theme = 'dark'
+    } catch {}
+  </script>
+</head>
+<body>
+  <div class="pp-shell">
+    <header class="pp-top">
+      <div class="pp-brand">
+        <span class="pp-logo">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M4 7h16" /><path d="M4 12h10" /><path d="M4 17h7" />
+            <circle cx="19" cy="12" r="2.5" /><circle cx="14" cy="17" r="2.5" />
+          </svg>
+        </span>
+        <div>
+          <h1>协议探查</h1>
+          <p>表面协议 · 真实协议 · 原生能力差异</p>
+        </div>
+      </div>
+      <div class="pp-top-actions">
+        <a class="pp-link" href="/">返回管理台</a>
+        <a class="pp-link" href="/#probes">探针页</a>
+        <button id="theme-btn" class="ghost" type="button">深色模式</button>
+      </div>
+    </header>
+
+    <main class="pp-main">
+      <section class="card pp-intro">
+        <div class="pp-intro-head">
+          <div>
+            <h2>选择要探查的模型，或直接粘 API</h2>
+            <p class="hint">
+              勾选任意站点 / 分组 / 模型做批量探查；每个模型发二十多个小请求。
+              非 Anthropic 模型自动跳过 Anthropic 协议。结果不影响评分与路由。
+            </p>
+          </div>
+          <div class="seg" id="mode-seg">
+            <button type="button" data-mode="gateway" class="active">网关内模型</button>
+            <button type="button" data-mode="manual">手动粘贴 API</button>
+          </div>
+        </div>
+
+        <div id="gateway-panel">
+          <div class="pp-tree">
+            <div class="pp-tree-col">
+              <div class="pp-tree-head"><b>站点</b><button type="button" class="ghost tiny" data-tree="site-all">全选</button></div>
+              <div class="pp-tree-list" id="site-list"></div>
+            </div>
+            <div class="pp-tree-col">
+              <div class="pp-tree-head"><b>分组</b><button type="button" class="ghost tiny" data-tree="group-all">全选</button></div>
+              <div class="pp-tree-list" id="group-list"></div>
+            </div>
+            <div class="pp-tree-col pp-tree-col-wide">
+              <div class="pp-tree-head"><b>模型</b><span class="pp-tree-count" id="model-count"></span><button type="button" class="ghost tiny" data-tree="model-all">全选</button></div>
+              <div class="pp-tree-list" id="model-list"></div>
+            </div>
+          </div>
+        </div>
+
+        <div id="manual-panel" hidden>
+          <div class="pp-form pp-form-manual">
+            <label class="pp-field">
+              <span>API 地址（填到 /v1）</span>
+              <input id="manual-base" placeholder="https://api.example.com/v1" autocomplete="off" spellcheck="false" />
+            </label>
+            <label class="pp-field">
+              <span>API Key</span>
+              <input id="manual-key" type="password" placeholder="sk-..." autocomplete="off" spellcheck="false" />
+            </label>
+            <label class="pp-field">
+              <span>模型名</span>
+              <input id="manual-model" placeholder="gpt-4o-mini / claude-sonnet-4-5" autocomplete="off" spellcheck="false" />
+            </label>
+            <label class="pp-field">
+              <span>Anthropic 鉴权</span>
+              <select id="manual-auth">
+                <option value="auto">自动（Bearer + x-api-key）</option>
+                <option value="bearer">只发 Bearer</option>
+                <option value="x-api-key">只发 x-api-key</option>
+              </select>
+            </label>
+          </div>
+          <p class="hint">Key 只在本机 daemon 内存里用一次，不写盘、不记录。官方 Anthropic 用 x-api-key，多数中转站用 Bearer。</p>
+        </div>
+
+        <div class="pp-actions">
+          <div class="pp-target-note" id="target-note"></div>
+          <div class="pp-action-buttons">
+            <button type="button" class="ghost" id="stop-btn" hidden>停止</button>
+            <button type="button" class="primary" id="run-btn" disabled>开始探查</button>
+          </div>
+        </div>
+      </section>
+
+      <section id="progress-root" hidden></section>
+      <section id="result-root"></section>
+      <section id="records-root"></section>
+    </main>
+  </div>
+
+  <!-- 批量过多确认：圆角卡片 + 遮罩 -->
+  <div id="batch-modal" class="pp-modal" hidden>
+    <div class="pp-modal-backdrop" data-modal-cancel></div>
+    <div class="pp-modal-card" role="dialog" aria-modal="true">
+      <h3>一次探查的模型有点多</h3>
+      <p id="batch-modal-text">
+        这次要探查 <b id="batch-modal-count">0</b> 个模型，每个模型会发二十多个小请求，
+        可能消耗较多 Token。确定要继续吗？
+      </p>
+      <div class="pp-modal-actions">
+        <button type="button" class="ghost" id="batch-modal-off">不再提示</button>
+        <button type="button" class="primary" id="batch-modal-ok">确定，开始探查</button>
+      </div>
+    </div>
+  </div>
+
+  <script type="module" src="/protocol.js"></script>
+</body>
+</html>
