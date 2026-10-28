@@ -44,40 +44,48 @@ export function normalizeModelKey(name) {
 }
 
 /**
- * 规范化 baseUrl：去掉尾部斜杠；没写 /v1 时补上（多数中转站都挂在 /v1 下）。
+ * 规范化 API 端点（baseUrl）：去掉尾部斜杠；没写版本号时补 /v1。
  *
- * 用户常常直接粘后台页面地址（`https://x.com/dashboard/v1`、`/console`、`/panel`），
- * 那是网页不是 API 端点，拼出来的 `/dashboard/v1/models` 会返回 HTML，
- * 同步时报「返回的不是 JSON」。所以先把已知的后台路径段剥掉。
- * 只剥这些明确的段，不动用户的自定义子路径（反代挂在 /api-proxy 之类的情况）。
+ * 这个字段只存 **API 端点**，不存网站地址——网站地址是另一个字段 siteUrl，
+ * 给卡片上的「打开站点」链接用。两者分开是因为它们经常不同：
+ * 后台在 https://x.com/dashboard，API 在 https://x.com/v1。
  */
-const CONSOLE_SEGMENTS = /\/(dashboard|console|panel|admin|web|app|user|home)(?=\/|$)/gi
-
 export function normalizeBaseUrl(input) {
   let url = String(input ?? '').trim()
   if (!url) throw new Error('baseUrl 不能为空')
   if (!/^https?:\/\//i.test(url)) url = `https://${url}`
   url = url.replace(/\/+$/, '')
-  // 剥后台路径段（可能有多段，如 /dashboard/v1 → /v1）
-  url = url.replace(CONSOLE_SEGMENTS, '')
-  url = url.replace(/\/+$/, '')
   if (!/\/v\d+$/i.test(url)) url = `${url}/v1`
   return url
 }
 
+/**
+ * 规范化网站地址（siteUrl）：只要求是个 http(s) 地址，不加 /v1、不改路径。
+ * 卡片上的「打开站点」直接跳它，所以用户填什么后台地址就该是什么。
+ */
+export function normalizeSiteUrl(input) {
+  let url = String(input ?? '').trim()
+  if (!url) return ''
+  if (!/^https?:\/\//i.test(url)) url = `https://${url}`
+  return url.replace(/\/+$/, '')
+}
+
 // ---------------------------------------------------------------- providers
 
-export async function createProvider({ name, baseUrl, kind = 'unknown', note = '' }) {
+export async function createProvider({ name, baseUrl, siteUrl = '', kind = 'unknown', note = '' }) {
   if (!name || !String(name).trim()) throw new Error('站点名称不能为空')
   const normalized = normalizeBaseUrl(baseUrl)
   return mutate((db) => {
     if (db.providers.some((p) => p.baseUrl === normalized)) {
-      throw new Error(`该地址已存在：${normalized}`)
+      throw new Error(`该 API 端点已存在：${normalized}`)
     }
     const provider = {
       id: newId('p'),
       name: String(name).trim(),
       baseUrl: normalized,
+      // 网站地址：只给卡片上的「打开站点」用，和 API 端点分开
+      // （后台常在 /dashboard，API 在 /v1，两者不是一回事）
+      siteUrl: normalizeSiteUrl(siteUrl) || null,
       kind,
       note,
       // 排序号：站点卡的顺序（小的在前），新建的排到最后
@@ -104,6 +112,8 @@ export async function updateProvider(id, patch) {
     if (!provider) throw new Error(`站点不存在：${id}`)
     if (patch.name !== undefined) provider.name = String(patch.name).trim()
     if (patch.baseUrl !== undefined) provider.baseUrl = normalizeBaseUrl(patch.baseUrl)
+    // 网站地址：空串表示清空（卡片上就不显示「打开站点」了）
+    if (patch.siteUrl !== undefined) provider.siteUrl = normalizeSiteUrl(patch.siteUrl) || null
     if (patch.kind !== undefined) {
       // 系别白名单：vendor（厂商直连）/ relay（通用中转）/ unknown，
       // 以及自动识别出的三系——识别来源见 kindSource

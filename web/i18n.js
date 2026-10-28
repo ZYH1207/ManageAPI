@@ -281,6 +281,14 @@ const EN = {
 
   // ---- 通用
   '保存': 'Save',
+  '站点地址': 'Site addresses',
+  '网站地址': 'Site URL',
+  'API 端点': 'API endpoint',
+  '地址': 'Addresses',
+  '只用于卡片上的「打开站点」按钮，填后台网址即可': 'Only used by the card\u2019s "open site" button — paste the dashboard URL',
+  '程序真正请求的地址，一般形如 https://站点域名/v1': 'The address the app actually calls, usually https://your-site/v1',
+  '两者常不一样：后台在 /dashboard，API 在 /v1。改完点保存生效。':
+    'They often differ: the dashboard lives at /dashboard, the API at /v1. Save to apply.',
   '取消': 'Cancel',
   '删除': 'Delete',
   '关闭': 'Close',

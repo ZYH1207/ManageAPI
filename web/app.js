@@ -188,6 +188,19 @@ function providerName(id) {
   return state?.providers.find((p) => p.id === id)?.name || '未知站'
 }
 
+/**
+ * 卡片上「打开站点」该跳哪。
+ *
+ * 优先用 siteUrl（用户填的后台网址）；老数据没有这个字段时回落到 API 端点的
+ * 源站（https://x.com/v1 → https://x.com），至少能打开站点首页而不是 404。
+ */
+function siteLinkOf(p) {
+  if (p?.siteUrl) return p.siteUrl
+  const base = String(p?.baseUrl || '')
+  const m = base.match(/^(https?):\/\/([^/]+)/i)
+  return m ? `${m[1]}://${m[2]}` : ''
+}
+
 // ------------------------------------------------------------------ 渲染
 
 // --------------------------------------------------------------- 通知中心
@@ -1080,7 +1093,7 @@ function providersHtml({ withForm = true, panel = '', actions = '' } = {}) {
           <div class="prov-id">
             ${loginLightDot(p)}
             <b>${esc(p.name)}</b>
-            ${p.baseUrl ? `<a class="icon-btn prov-open" href="${esc(p.baseUrl)}" target="_blank" rel="noreferrer" title="${t('打开站点后台')}">${icon('external')}</a>` : ''}
+            ${siteLinkOf(p) ? `<a class="icon-btn prov-open" href="${esc(siteLinkOf(p))}" target="_blank" rel="noreferrer" title="${t('打开站点后台')}">${icon('external')}</a>` : ''}
             ${kindText ? `<span class="badge ${kindMeta.cls}" title="${esc(p.kindSource === 'manual' ? t('系别由用户手动设置') : t('系别由添加站点/登录时自动探测得出'))}">${esc(kindText)}</span>` : ''}
             ${
               freeNames.length
@@ -1159,6 +1172,7 @@ function providersHtml({ withForm = true, panel = '', actions = '' } = {}) {
           <button data-act="open-login" title="用站点后台的账号密码登录，自动获取并续期令牌——令牌过期不再需要手动换">${icon('key')}账号登录</button>
           <button data-act="prov-sync-all" title="同步模型 + 读余额 + 识别分组，一次跑完">${icon('refresh')}一键同步</button>
           <button data-act="prov-panel" data-panel="keys">${icon('key')}密钥</button>
+          <button data-act="prov-panel" data-panel="settings" title="改网站地址和 API 端点">${icon('servers')}${t('地址')}</button>
           <button data-act="prov-panel" data-panel="rates">${icon('columns')}分组倍率</button>
           <button data-act="open-group-picker" title="从站点读分组，选你买的那个，倍率自动填到下面所有模型">${icon('columns')}导入倍率</button>
           <button data-act="usage-check" title="用管理令牌拉站方用量，和我们的估算对比">${icon('receipt')}用量核对</button>
@@ -1211,6 +1225,31 @@ function providersHtml({ withForm = true, panel = '', actions = '' } = {}) {
           ${groupRows}
         </div>` : ''}
         <div data-pane="usage">${renderUsageCheck(p.id)}</div>
+        <div data-pane="settings">
+          <form class="keylist" data-form="provider-endpoints" style="border-top:1px solid var(--border);padding-top:10px">
+            <div class="keyrow" style="border:none;padding-bottom:2px">
+              <span style="color:var(--muted);font-size:12px">${t('站点地址')}</span>
+              <span class="grow"></span>
+            </div>
+            <label class="keyrow" style="border:none;gap:8px">
+              <span style="min-width:76px">${t('网站地址')}</span>
+              <input name="siteUrl" value="${esc(p.siteUrl || '')}" placeholder="https://example.com"
+                style="flex:1" title="${t('只用于卡片上的「打开站点」按钮，填后台网址即可')}" />
+            </label>
+            <label class="keyrow" style="border:none;gap:8px">
+              <span style="min-width:76px">${t('API 端点')}</span>
+              <input name="baseUrl" value="${esc(p.baseUrl || '')}" placeholder="https://api.example.com/v1"
+                style="flex:1" title="${t('程序真正请求的地址，一般形如 https://站点域名/v1')}" />
+            </label>
+            <div class="keyrow" style="border:none;padding-top:4px">
+              <span class="hint" style="margin:0">
+                ${t('两者常不一样：后台在 /dashboard，API 在 /v1。改完点保存生效。')}
+              </span>
+              <span class="grow"></span>
+              <button type="submit" class="primary tiny">${t('保存')}</button>
+            </div>
+          </form>
+        </div>
         </div>
       </div>`
   }).join('')
@@ -1439,7 +1478,7 @@ function openProvPanel(button, pane) {
   }
   body.innerHTML = ''
   body.appendChild(fragment)
-  const paneTitle = { keys: '密钥', rates: '分组倍率', usage: '用量核对' }[pane] || '详情'
+  const paneTitle = { keys: '密钥', rates: '分组倍率', usage: '用量核对', settings: '地址' }[pane] || '详情'
   if (title) title.textContent = `${name} · ${paneTitle}`
   modal.hidden = false
   translateDom(modal)
@@ -3396,7 +3435,7 @@ function renderMonitor() {
             ${kindLabel ? `<span class="badge">${esc(kindLabel)}</span>` : ''}
           </div>
           <div class="prov-head-right">
-            ${prov.baseUrl ? `<a class="icon-btn" href="${esc(prov.baseUrl)}" target="_blank" rel="noreferrer" title="${t('打开站点')}">${icon('external')}</a>` : ''}
+            ${siteLinkOf(prov) ? `<a class="icon-btn" href="${esc(siteLinkOf(prov))}" target="_blank" rel="noreferrer" title="${t('打开站点')}">${icon('external')}</a>` : ''}
           </div>
         </div>
         <div class="prov-tiles">
@@ -3411,7 +3450,7 @@ function renderMonitor() {
         <div class="monitor-site-groups">${groupChips || `<span class="hint">${t('还没读到分组倍率')}</span>`}${more}</div>
         <div class="prov-actions">
           <button data-monitor-provider="${esc(row.providerId)}">${icon('refresh')} ${t('同步这个站')}</button>
-          ${prov.baseUrl ? `<a class="link-btn" href="${esc(prov.baseUrl)}" target="_blank" rel="noreferrer">${icon('external')} ${t('打开站点')}</a>` : ''}
+          ${siteLinkOf(prov) ? `<a class="link-btn" href="${esc(siteLinkOf(prov))}" target="_blank" rel="noreferrer">${icon('external')} ${t('打开站点')}</a>` : ''}
         </div>
       </div>`
     })
@@ -4062,7 +4101,7 @@ document.addEventListener('click', async (event) => {
 
   const provPanelBtn = event.target.closest('[data-act="prov-panel"]')
   if (provPanelBtn) {
-    openProvPanel(provPanelBtn, provPanelBtn.dataset.panel === 'rates' ? 'rates' : 'keys')
+    openProvPanel(provPanelBtn, provPanelBtn.dataset.panel || 'keys')
     return
   }
 
@@ -4988,7 +5027,32 @@ document.addEventListener('submit', async (event) => {
     return
   }
 
-  const form = event.target.closest('[data-form="add-key"]')
+// 站点地址面板：网站地址（卡片链接用）与 API 端点（真正请求用）分开存
+const endpointForm = event.target.closest('[data-form="provider-endpoints"]')
+if (endpointForm) {
+  event.preventDefault()
+  const providerId = endpointForm.closest('[data-provider]')?.dataset.provider
+  if (!providerId) return
+  const data = Object.fromEntries(new FormData(endpointForm))
+  const submitBtn = endpointForm.querySelector('button[type="submit"]')
+  if (submitBtn?.disabled) return
+  if (submitBtn) submitBtn.disabled = true
+  try {
+    state = await api('PATCH', `/api/providers/${providerId}`, {
+      siteUrl: String(data.siteUrl || '').trim(),
+      baseUrl: String(data.baseUrl || '').trim(),
+    })
+    render()
+    reopenProvPanel(endpointForm, 'settings')
+    toast('地址已保存')
+  } catch (error) {
+    toast(error.message, true)
+    if (submitBtn) submitBtn.disabled = false
+  }
+  return
+}
+
+const form = event.target.closest('[data-form="add-key"]')
   if (!form) return
   event.preventDefault()
   const keySubmitBtn = form.querySelector('button[type="submit"], button:not([type])')
