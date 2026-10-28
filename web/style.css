@@ -1129,18 +1129,23 @@ main { flex: 1; min-width: 0; display: flex; flex-direction: column; overflow: h
 .ttft-scale-label { font-size: 12px; font-weight: 500; color: var(--text); white-space: nowrap; }
 .ttft-scale-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 /*
- * 自动路由这一组（开关 + 正在使用 + 轮巡进度）必须整体换行：
- * 此前它们是三个独立 flex 项，最后一个「正在使用」胶囊被挤到第二行最左边，
- * 和开关隔着半屏，看着像两个不相干的东西。整组用 margin-left:auto 靠右，
- * 内部自己换行，行内仍然粘在一起。
+ * 自动路由这一组（开关 + 正在使用 + 轮巡进度）：独占一行、从最左边起排。
+ *
+ * 两版之间踩过的坑，记下来别再犯：
+ *   1. 三项各自当 flex 项 → 胶囊被挤到第二行最左，和开关隔半屏；
+ *   2. 整组 margin-left:auto → 换行后整组贴在右边，左边缘和上一行错开，更难看。
+ * 结论：这组信息量够大（模型名 + 站点 + 分组 + 轮巡进度），本来就该自己占一行；
+ * flex-basis:100% 让它稳定换行，justify-content:flex-start 与 .ttft-scale 的
+ * align-items:flex-start 同一条左边缘，上下两行对齐。
  */
 .auto-route-side {
-  margin-left: auto;
-  display: inline-flex;
+  flex-basis: 100%;
+  margin-left: 0;
+  display: flex;
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
-  justify-content: flex-end;
+  justify-content: flex-start;
   max-width: 100%;
 }
 .ttft-scale-now { font-size: 12px; color: var(--muted); min-width: 108px; }
