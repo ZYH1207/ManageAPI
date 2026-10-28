@@ -850,6 +850,13 @@ button.sm { padding: 4px 9px; font-size: 12px; }
 @container (max-width: 400px) {
   .prov-head .hint { display: none; }
 }
+/* 中等宽度（两列 ~430px）：时间也开始挤站名，藏掉；按钮组已经收过一档，
+   站点名到这一档就该能完整显示了 */
+@container (max-width: 460px) {
+  .prov-head .hint { display: none; }
+  /* 系别徽章让路：截成「S」这种半个词反而难看，直接藏（信息在「编辑」里有） */
+  .prov-id .badge[class*='kindchip'] { display: none; }
+}
 .prov-head .hint { white-space: nowrap; }
 .prov-head { display: flex; align-items: center; gap: 10px; }
 .prov-id { display: flex; align-items: center; gap: 8px; min-width: 0; }
@@ -890,10 +897,19 @@ button.sm { padding: 4px 9px; font-size: 12px; }
 
 .prov-id b {
   font-size: 15px; font-weight: 600;
-  max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  /* 站点名是这一行最该保住的信息：给它保底宽度（约 7 个字符），
+     右侧按钮组和徽章各自收紧后，正常名字都能完整显示 */
+  max-width: 320px; min-width: 72px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.prov-head-right { margin-left: auto; display: flex; align-items: center; gap: 6px; }
-.prov-head-right .hint { margin: 0; font-size: 11px; }
+/* 右上角一排站点级操作（打开站点 / 编辑 / 暂停 / 删除）+ 拖拽把手：
+   图标按钮收一档（20px）、间距 1px——四个 26px 按钮加间距能把窄卡片的
+   站点名挤成「C…」甚至 0 宽 */
+.prov-head-right { margin-left: auto; display: flex; align-items: center; gap: 1px; }
+.prov-head-right .hint { margin: 0; font-size: 11px; margin-right: 4px; }
+.prov-head-right .icon-btn { width: 20px; height: 20px; border-radius: 5px; }
+.prov-head-right .icon-btn svg { width: 13px; height: 13px; }
+.prov-head-right .prov-pri { margin-right: 2px; }
 .icon-btn {
   display: grid; place-items: center;
   width: 26px; height: 26px; padding: 0;
