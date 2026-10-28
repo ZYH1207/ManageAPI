@@ -339,6 +339,48 @@
 }
 .pp-record-row:hover { background: var(--hover); }
 .pp-record-row:last-child { border-bottom: none; }
+
+/* 协议记录独立页 */
+.pp-records-page { padding: 16px 18px; }
+.pp-retention {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.pp-retention-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+.pp-retention-switch input[type='checkbox'] {
+  width: 14px;
+  height: 14px;
+  accent-color: var(--accent);
+  padding: 0;
+}
+.pp-retention input[type='number'] {
+  width: 64px;
+  padding: 3px 6px;
+  font-size: 12px;
+}
+.pp-rec-filters {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin: 12px 0 4px;
+}
+.pp-record-detail { padding: 4px 0 10px; }
+.pp-record-detail-loading {
+  padding: 14px;
+  color: var(--faint);
+  font-size: 12px;
+}
+.pp-record-row[aria-expanded='true'] {
+  background: var(--accent-soft);
+}
 .pp-record-main {
   display: flex;
   align-items: center;

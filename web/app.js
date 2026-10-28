@@ -3,6 +3,7 @@ import { getLang, onLangChange, restoreDom, setLang, t, translateDom } from './i
 import { renderFreeRelayPane, vendorChipClass, vendorOf, vendorLabel } from './free-relay.js'
 import { renderFreePlatformPane } from './free-platform.js'
 import { ensureProtocolView } from './protocol-view.js'
+import { ensureProtocolRecordsView } from './protocol-records-view.js'
 import { facetsOf, matchRow, subtotalOf } from './usage-filter.js'
 
 const $ = (sel, root = document) => root.querySelector(sel)
@@ -4854,7 +4855,7 @@ const SIDEBAR_KEY = 'manageapi.sidebarCollapsed'
   }
 })()
 
-const TABS = ['overview', 'monitor', 'free', 'pricing', 'decision', 'probes', 'protocol', 'gateway', 'usage', 'benchmark']
+const TABS = ['overview', 'monitor', 'free', 'pricing', 'decision', 'probes', 'protocol', 'protocol-records', 'gateway', 'usage', 'benchmark']
 
 /** 折叠状态：'provider:xxx' / 'pricing:模型名' / 'probe:站点id' */
 const collapsedPanels = new Set()
@@ -4896,6 +4897,7 @@ const TAB_META = {
   decision: { title: '智能决策', sub: '候选排序与手动调整' },
   probes: { title: '探针', sub: '指纹 / 截断 / 计费 / 缓存' },
   protocol: { title: '协议探查', sub: '表面协议 · 真实协议 · 原生能力差异' },
+  'protocol-records': { title: '协议记录', sub: '全部探查历史 · 筛选与自动清理' },
   gateway: { title: '网关', sub: '一个入口接管全部流量' },
   usage: { title: '用量', sub: '按 Key / 模型 / 站点统计' },
   benchmark: { title: '基准价', sub: '倍率换算的参照物' },
@@ -4969,6 +4971,11 @@ function setTab(name) {
   if (name === 'protocol') {
     ensureProtocolView($(`#view-protocol`))
     translateDom($('#view-protocol') || document.body)
+  }
+  // 协议记录 tab 永远对应完整大库：每次进页重置筛选、拉全量
+  if (name === 'protocol-records') {
+    ensureProtocolRecordsView($(`#view-protocol-records`))
+    translateDom($('#view-protocol-records') || document.body)
   }
 }
 

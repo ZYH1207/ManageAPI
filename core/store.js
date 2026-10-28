@@ -99,6 +99,9 @@ export function emptyDb() {
       balanceWarnUsd: 1.5,
       // 价格展示币种：只影响渲染，不影响比较口径（比较一律用美元）。
       displayCurrency: 'USD',
+      // 协议记录按天自动清理：0 = 永不自动清（默认）；>0 = 删掉比这个天数更旧的记录。
+      // 清理动作在读记录页时惰性执行（core/protocol-records.js#pruneProtocolRecords）。
+      protocolRecordMaxAgeDays: 0,
     // 全局忽略的模型（归一化后的 key）：不参与比价、决策、探针、网关
     ignoredModels: [],
     },

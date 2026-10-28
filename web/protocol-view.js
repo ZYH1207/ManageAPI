@@ -224,7 +224,6 @@ function skeletonHtml() {
 
     <section id="pp-progress-root" hidden></section>
     <section id="pp-result-root"></section>
-    <section id="pp-records-root"></section>
 
     <div id="pp-batch-modal" class="pp-modal" hidden>
       <div class="pp-modal-backdrop" data-modal-cancel></div>
@@ -259,7 +258,6 @@ export function ensureProtocolView(view) {
       stop: view.querySelector('#pp-stop-btn'),
       progress: view.querySelector('#pp-progress-root'),
       result: view.querySelector('#pp-result-root'),
-      records: view.querySelector('#pp-records-root'),
       modeSeg: view.querySelector('#pp-mode-seg'),
       modal: view.querySelector('#pp-batch-modal'),
       gatewayPanel: view.querySelector('#pp-gateway-panel'),
@@ -278,9 +276,8 @@ export function ensureProtocolView(view) {
 }
 
 async function reloadTargetsAndRecords() {
-  await Promise.all([loadTargets(), loadRecords()])
+  await loadTargets()
   renderTree()
-  renderRecords()
   updateTargetNote()
 }
 
@@ -768,7 +765,6 @@ async function runBatch(targets) {
   state.abort = null
   setRunning(false)
   els.progress.hidden = true
-  renderRecords()
 }
 
 async function readNdjson(response, onEvent) {
@@ -1256,18 +1252,10 @@ function appendResultError(target, message) {
   els.result.prepend(wrap.firstElementChild)
 }
 
-// ---------------------------------------------------------------- 协议记录
 
-async function loadRecords() {
-  try {
-    const response = await fetch('/api/protocol/records', { headers: { Accept: 'application/json' } })
-    const data = await response.json().catch(() => ({}))
-    if (response.ok) state.records = data.records || []
-  } catch {
-    state.records = []
-  }
-}
+// ---------------------------------------------------------------- 供协议记录页复用
 
+/** 记录行左侧的三个表面协议灯（未测的灰灯，被跳过的带说明）。 */
 function recordSummaryDots(record) {
   return PROTOCOL_ORDER.map((id) => {
     const protocol = record.protocols?.[id]
@@ -1280,101 +1268,23 @@ function recordSummaryDots(record) {
   }).join('')
 }
 
-function renderRecords() {
-  if (!els) return
-  const records = state.records
-  if (records.length === 0) {
-    els.records.innerHTML = ''
-    return
-  }
-  const rows = records
-    .map(
-      (record) => `
-        <div class="pp-record-row" data-record="${esc(record.id)}">
-          <div class="pp-record-main">
-            <span class="pp-record-dots">${recordSummaryDots(record)}</span>
-            <span class="pp-record-label">${esc(record.label)}</span>
-            ${(record.statusTags || []).length && record.badStatus ? `<span class="badge warn">${esc(t('测时状况不佳'))}</span>` : ''}
-            <span class="pp-record-meta">${esc(new Date(record.ts).toLocaleString())}</span>
-          </div>
-          <div class="pp-record-side">
-            <span class="pp-record-real">${esc(
-              [...new Set(Object.values(record.protocols || {}).map((protocol) => protocol.real?.label).filter(Boolean))].join('；') || '—',
-            )}</span>
-            <button type="button" class="ghost tiny" data-view-record="${esc(record.id)}">${esc(t('查看'))}</button>
-            <button type="button" class="ghost tiny danger" data-del-record="${esc(record.id)}">${esc(t('删除'))}</button>
-          </div>
-        </div>`,
-    )
-    .join('')
-
-  els.records.innerHTML = `
-    <div class="card pp-records">
-      <div class="pp-records-head">
-        <b>${esc(t('模型协议记录'))}</b>
-        <span class="hint">${esc(t('每个模型只留最新一次'))}；${esc(t('{n} 条', { n: records.length }))}</span>
-        <span style="margin-left:auto"><button type="button" class="ghost tiny danger" id="pp-clear-records">${esc(t('清空记录'))}</button></span>
-      </div>
-      <div class="pp-record-list">${rows}</div>
-    </div>`
-
-  els.records.querySelectorAll('.pp-record-row').forEach((row) => {
-    const recordId = row.dataset.record
-    // 整行可点：点中间那长串任意位置都能展开记录详情，不用去够右下角的「查看」
-    row.addEventListener('click', (event) => {
-      // 行内的「删除」按钮按自己的逻辑走，别把展开详情也触发了
-      if (event.target.closest('button')) return
-      viewRecord(recordId)
-    })
-  })
-  els.records.querySelectorAll('[data-view-record]').forEach((button) => {
-    button.addEventListener('click', () => viewRecord(button.dataset.viewRecord))
-  })
-  els.records.querySelectorAll('[data-del-record]').forEach((button) => {
-    button.addEventListener('click', async () => {
-      button.disabled = true
-      try {
-        await fetch(`/api/protocol/records/${button.dataset.delRecord}`, { method: 'DELETE' })
-        await loadRecords()
-        renderRecords()
-      } catch (error) {
-        button.textContent = t('失败')
-        console.warn(error)
-      }
-    })
-  })
-  els.records.querySelector('#pp-clear-records')?.addEventListener('click', async () => {
-    if (!confirm(t('清空全部协议记录？'))) return
-    await fetch('/api/protocol/records', { method: 'DELETE' }).catch(() => {})
-    await loadRecords()
-    renderRecords()
-  })
-}
-
-async function viewRecord(id) {
-  try {
-    const response = await fetch(`/api/protocol/records/${id}`, { headers: { Accept: 'application/json' } })
-    const data = await response.json().catch(() => ({}))
-    if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`)
-    const record = data.record
-    const entry = {
-      ...record,
-      recordId: record.id,
-      target: {
-        label: record.label,
-        baseUrl: record.baseUrl,
-        model: record.model,
-      },
-    }
-    const wrap = document.createElement('div')
-    wrap.innerHTML = resultCardHtml(entry, {})
-    const block = wrap.firstElementChild
-    block.querySelectorAll('[data-del-record]').forEach((button) => button.remove())
-    els.result.prepend(block)
-    wireResultCard(block)
-    openDefaultDetail(block)
-    block.scrollIntoView({ behavior: 'smooth', block: 'start' })
-  } catch (error) {
-    showNotice(`${t('读不到记录：')}${error.message || error}`, 'danger')
-  }
+export {
+  esc,
+  secs,
+  PROTOCOL_ORDER,
+  PROTOCOL_SHORT,
+  PROTOCOL_FULL,
+  SURFACE_LABEL,
+  STATUS_TAG,
+  BLOCKED_LABEL,
+  STATUS_WARNING_HTML,
+  surfaceBadgeClass,
+  surfaceDotClass,
+  realBadgeClass,
+  capDotClass,
+  conclusionHtml,
+  resultCardHtml,
+  wireResultCard,
+  openDefaultDetail,
+  recordSummaryDots,
 }

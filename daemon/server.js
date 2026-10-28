@@ -53,6 +53,7 @@ import {
   saveProtocolRecord,
   removeProtocolRecord,
   clearProtocolRecords,
+  pruneProtocolRecords,
   buildProtocolRecord,
 } from '../core/protocol-records.js'
 import { REFERENCE_AS_OF, listReference } from '../core/model-prices.js'
@@ -1878,6 +1879,14 @@ route('POST', /^\/api\/protocol\/probe$/, async (ctx) => {
 // ------------------------------------------------------------- 协议记录
 
 route('GET', /^\/api\/protocol\/records$/, async () => {
+  // 开了「按天自动清理」就顺手清一次（惰性执行：读记录页时才清，不用定时器）
+  const retention = Number((await store.readDb()).settings.protocolRecordMaxAgeDays) || 0
+  let pruned = 0
+  if (retention > 0) {
+    await store.mutate((db) => {
+      pruned = pruneProtocolRecords(db, retention)
+    })
+  }
   const db = await store.readDbCached()
   const list = db.protocolProbes || []
   // 列表视图裁掉能力明细：那是点开单条详情才要的
@@ -1908,7 +1917,21 @@ route('GET', /^\/api\/protocol\/records$/, async () => {
         ),
       })),
     total: list.length,
+    pruned,
+    retentionDays: retention,
   }
+})
+
+/** 自动清理开关：days=0 关闭；1~365 按天清理。 */
+route('PATCH', /^\/api\/protocol\/records\/retention$/, async (ctx) => {
+  const days = Math.round(Number(ctx.body.days) || 0)
+  if (days < 0 || days > 365) throw new HttpError(400, '清理天数必须是 0~365（0 = 关闭自动清理）')
+  let pruned = 0
+  await store.mutate((db) => {
+    db.settings.protocolRecordMaxAgeDays = days
+    pruned = pruneProtocolRecords(db, days)
+  })
+  return { ok: true, retentionDays: days, pruned }
 })
 
 route('GET', /^\/api\/protocol\/records\/([\w-]+)$/, async (ctx) => {

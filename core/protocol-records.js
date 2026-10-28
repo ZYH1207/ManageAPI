@@ -1,13 +1,12 @@
 /**
  * 协议探查记录：每次探查的结果落一份到 db.protocolProbes。
  *
- * 为什么单独一个文件：存取口径（留哪些字段、上限多少条、列表视图裁掉什么）
- * 收在一处，server.js 只管调。探查结果里 requests / evidence 很占地方，
- * 记录里裁掉——记录回答的是「这个模型上次测出来是什么」，不是原始报文。
+ * 为什么单独一个文件：存取口径（留哪些字段、怎么清理）收在一处，server.js 只管调。
+ * 探查结果里 requests / evidence 很占地方，记录里裁掉——记录回答的是
+ * 「这次探查看出来是什么」，不是原始报文。
+ *
+ * 保留策略：默认永不自动清（用户要看完整历史）；开了「自动清理」才按天数删旧记录。
  */
-
-/** 最多留多少条：一条完整能力明细约 6KB，60 条 ≈ 0.4MB，和 db.json 其余部分一个量级 */
-export const MAX_RECORDS = 60
 
 /** 幂等：db 里没有这个键就补上。migrate 和读取路径都调它。 */
 export function ensureProtocolRecords(db) {
@@ -16,15 +15,13 @@ export function ensureProtocolRecords(db) {
 }
 
 /**
- * 存一条探查记录。同一目标（同站同分组同模型，或同一手动地址+模型）只留最新一条
- * ——「模型协议记录」回答的是每个模型当前是什么协议形态，历史堆叠只会让人看花眼。
+ * 存一条探查记录。**每次探查都追加一条**，不去重、不封顶：
+ * 协议记录页对应的是完整历史库，重测同一模型也是一次新证据（站方可能改了实现）。
+ * 清理只走两条路：用户手动删，或开了「按天自动清理」。
  */
 export function saveProtocolRecord(db, record) {
   ensureProtocolRecords(db)
-  const key = recordKey(record)
-  const rest = db.protocolProbes.filter((row) => rowKey(row) !== key)
-  rest.push(record)
-  db.protocolProbes = rest.slice(-MAX_RECORDS)
+  db.protocolProbes.push(record)
   return record
 }
 
@@ -42,21 +39,21 @@ export function clearProtocolRecords(db) {
   return removed
 }
 
-function rowKey(row) {
-  return rowKeyOf({ mode: row.mode, offerId: row.offerId, baseUrl: row.baseUrl, model: row.model })
-}
-
-function recordKey(record) {
-  return rowKeyOf({
-    mode: record.mode,
-    offerId: record.offerId,
-    baseUrl: record.baseUrl,
-    model: record.model,
+/**
+ * 按天自动清理：删掉比 maxAgeDays 天更旧的记录。返回删了几条。
+ * maxAgeDays <= 0 视为关闭，不动任何数据。
+ */
+export function pruneProtocolRecords(db, maxAgeDays) {
+  ensureProtocolRecords(db)
+  const days = Number(maxAgeDays) || 0
+  if (days <= 0) return 0
+  const cutoff = Date.now() - days * 86400_000
+  const before = db.protocolProbes.length
+  db.protocolProbes = db.protocolProbes.filter((row) => {
+    const ts = Date.parse(row.ts || '')
+    return !(Number.isFinite(ts) && ts < cutoff)
   })
-}
-
-function rowKeyOf({ mode, offerId, baseUrl, model }) {
-  return `${mode || 'gateway'}::${offerId || ''}::${String(baseUrl || '').toLowerCase()}::${model || ''}`
+  return before - db.protocolProbes.length
 }
 
 /**

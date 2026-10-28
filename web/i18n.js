@@ -254,6 +254,9 @@ const EN = {
   '检测是否偷工': 'Quality checks',
   '协议探查': 'Protocols',
   '表面协议与真实协议': 'Surface vs real protocol',
+  '协议记录': 'Protocol log',
+  '全部探查历史': 'Full probe history',
+  '全部探查历史 · 筛选与自动清理': 'Full history · filters & retention',
   '网关': 'Gateway',
   '一个入口接管': 'One endpoint',
   '用量': 'Usage',
@@ -1596,6 +1599,15 @@ Object.assign(EN, {
   '测时状况不佳': 'Poor shape at probe time',
   '暂停': 'paused',
   '默认分组': 'default group',
+  '自动清理': 'Auto-prune',
+  '删掉超过': 'Drop records older than',
+  '天前的记录': 'days',
+  '保存': 'Save',
+  '保存失败：': 'Save failed: ',
+  '手动': 'Manual',
+  '没有匹配筛选的记录': 'No records match the filters',
+  '还没有协议记录——去「协议探查」测一次就有了': 'No protocol records yet — run a probe on the Protocols tab first',
+  '加载中…': 'Loading…',
 })
 
 // 比价组头的官方有效成本参照 + 基准价页「官方有效成本」表单
