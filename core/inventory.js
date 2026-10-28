@@ -43,11 +43,23 @@ export function normalizeModelKey(name) {
     .trim()
 }
 
-/** 规范化 baseUrl：去掉尾部斜杠；没写 /v1 时补上（多数中转站都挂在 /v1 下）。 */
+/**
+ * 规范化 baseUrl：去掉尾部斜杠；没写 /v1 时补上（多数中转站都挂在 /v1 下）。
+ *
+ * 用户常常直接粘后台页面地址（`https://x.com/dashboard/v1`、`/console`、`/panel`），
+ * 那是网页不是 API 端点，拼出来的 `/dashboard/v1/models` 会返回 HTML，
+ * 同步时报「返回的不是 JSON」。所以先把已知的后台路径段剥掉。
+ * 只剥这些明确的段，不动用户的自定义子路径（反代挂在 /api-proxy 之类的情况）。
+ */
+const CONSOLE_SEGMENTS = /\/(dashboard|console|panel|admin|web|app|user|home)(?=\/|$)/gi
+
 export function normalizeBaseUrl(input) {
   let url = String(input ?? '').trim()
   if (!url) throw new Error('baseUrl 不能为空')
   if (!/^https?:\/\//i.test(url)) url = `https://${url}`
+  url = url.replace(/\/+$/, '')
+  // 剥后台路径段（可能有多段，如 /dashboard/v1 → /v1）
+  url = url.replace(CONSOLE_SEGMENTS, '')
   url = url.replace(/\/+$/, '')
   if (!/\/v\d+$/i.test(url)) url = `${url}/v1`
   return url

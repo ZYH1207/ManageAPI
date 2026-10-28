@@ -1076,6 +1076,11 @@
         </label>
         <label>名称<input name="name" placeholder="例如：XX 中转站" required /></label>
         <label>地址<input name="baseUrl" placeholder="https://api.example.com/v1" required /></label>
+        <p class="hint" style="grid-column:1/-1;margin:-4px 0 2px">
+          填 <b>API 端点</b>，不是后台网页地址：一般形如 <code>https://站点域名/v1</code>，
+          结尾的 <code>/v1</code> 会自动补。如果复制的是带 <code>/dashboard</code>、<code>/console</code>
+          这类后台路径的网址，把后面那段去掉。
+        </p>
         <label>类型
           <select name="kind">
             <option value="unknown">不确定</option>

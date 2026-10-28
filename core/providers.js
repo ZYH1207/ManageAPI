@@ -45,7 +45,17 @@ async function requestJson(url, { apiKey, timeoutMs = 15000, headers = {}, metho
   try {
     return JSON.parse(text)
   } catch {
-    throw new Error(`返回的不是 JSON：${text.slice(0, 120)}`)
+    // 返回 HTML 而不是 JSON，几乎都是「地址填成了后台网页」——把排查方向直接说出来，
+    // 否则用户只能看到一串 <!doctype html>，不知道该改什么
+    const looksHtml = /^\s*<(!doctype|html)/i.test(text)
+    const shown = text.slice(0, 120).replace(/\s+/g, ' ')
+    if (looksHtml) {
+      throw new Error(
+        `返回的是网页而不是 JSON 接口（${url}）。多半是「地址」被填成了后台页面——` +
+          `应该填 API 端点，形如 https://站点域名/v1，不要带 /dashboard、/console 这类后台路径。返回片段：${shown}`,
+      )
+    }
+    throw new Error(`返回的不是 JSON（${url}）：${shown}`)
   }
 }
 
