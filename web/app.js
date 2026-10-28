@@ -2821,6 +2821,16 @@ function pauseToast(pause) {
   return pause.next ? `已保存：现在照常探测，${pause.next} 起暂停` : '已保存'
 }
 
+/** 探针筛选后的目标：三个条件取交集，与表格展示同一份 state.offers（在役供给），口径一致 */
+function probeFilteredOffers() {
+  return state.offers.filter(
+    (o) =>
+      (!probeFilters.providerId || o.providerId === probeFilters.providerId) &&
+      (!probeFilters.group || (o.group || '') === probeFilters.group) &&
+      (!probeFilters.model || o.upstreamName === probeFilters.model),
+  )
+}
+
 function renderProbes() {
   const view = $('#view-probes')
   const providersWithOffers = state.providers.filter((p) => state.offers.some((o) => o.providerId === p.id))
@@ -2869,16 +2879,39 @@ function renderProbes() {
     )
     .join('')
 
+  // 筛选下拉的选项做级联：选了站点，分组/模型只列该站点下的；选了分组，模型只列该分组下的。
+  // 三个条件互不排斥，可以只用一个，也可以叠到「某站 × 某分组 × 某模型」= 单个供给。
+  const groupOpts = [...new Set(state.offers.filter((o) => !probeFilters.providerId || o.providerId === probeFilters.providerId).map((o) => o.group || ''))].filter(Boolean).sort()
+  const modelOpts = [...new Set(state.offers.filter((o) => !probeFilters.providerId || o.providerId === probeFilters.providerId).filter((o) => !probeFilters.group || (o.group || '') === probeFilters.group).map((o) => o.upstreamName))].sort()
+  const probeTargets = probeFilteredOffers()
+  const probeFiltered = probeFilters.providerId || probeFilters.group || probeFilters.model
+  const probeBtn = probeFiltered ? t('探测所选（{n} 个）', { n: probeTargets.length }) : t('探测全部（{n} 个）', { n: probeTargets.length })
+  const filterSelect = (field, allLabel, options, current) => `
+    <select data-probe-filter="${field}">
+      <option value="">${esc(allLabel)}</option>
+      ${options
+        .map(
+          ({ v, label }) =>
+            `<option value="${esc(v)}" ${v === current ? 'selected' : ''}>${esc(label)}</option>`,
+        )
+        .join('')}
+    </select>`
+
   const intro = `
     <div class="card">
       <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap">
         <div style="flex:1;min-width:240px">
-          <div style="font-weight:500">主动探测</div>
-          <div class="hint" style="margin:4px 0 0">
-            每个模型发 5 个请求：指纹 + 计费、截断、缓存（连发两次）、身份自述。结果进入评分，路由据此排除可疑的站。
-          </div>
+          <div style="font-weight:500">${t('主动探测')}</div>
+          <div class="hint" style="margin:4px 0 0">${t('每个模型发 5 个请求：指纹 + 计费、截断、缓存（连发两次）、身份自述。结果进入评分，路由据此排除可疑的站。')}</div>
         </div>
-        <button class="primary" data-act="probe-all">探测全部（最多 5 个）</button>
+        <button class="primary" data-act="probe-all" ${probeTargets.length === 0 ? 'disabled' : ''}>${esc(probeBtn)}</button>
+      </div>
+      <div class="probe-filter-row">
+        <span class="hint" style="white-space:nowrap">筛选（可叠加，取交集）：</span>
+        ${filterSelect('providerId', t('全部站点'), providersWithOffers.map((p) => ({ v: p.id, label: p.name })), probeFilters.providerId)}
+        ${filterSelect('group', t('全部分组'), groupOpts.map((g) => ({ v: g, label: g })), probeFilters.group)}
+        ${filterSelect('model', t('全部模型'), modelOpts.map((m) => ({ v: m, label: m })), probeFilters.model)}
+        <span class="hint">选站点=整站；站点+分组=该分组；只选模型=所有站里的这个模型</span>
       </div>
       <div style="display:flex;align-items:center;gap:20px;flex-wrap:wrap;margin-top:14px;padding-top:12px;border-top:1px dashed var(--border)">
         <label class="field-inline">自动探测
@@ -4523,6 +4556,10 @@ const TABS = ['overview', 'monitor', 'free', 'pricing', 'decision', 'probes', 'g
 /** 折叠状态：'provider:xxx' / 'pricing:模型名' / 'probe:站点id' */
 const collapsedPanels = new Set()
 
+/** 探针页「探测」的筛选条件：站点 / 分组 / 模型，三个取交集，可单独用也可叠加。
+ *  存模块级变量：探测完 re-render 不丢，切页回来也还在。 */
+const probeFilters = { providerId: '', group: '', model: '' }
+
 /** 站点卡的搜索与分页（站点多了以后一屏放不下） */
 let siteQuery = ''
 let sitePage = 1
@@ -5822,9 +5859,18 @@ document.addEventListener('click', async (event) => {
   }
 
   if (action === 'probe-all') {
+    // 前端按筛选条件算好目标清单，服务端照单全收（不再默认砍到 5 个）。
+    // 清单为空就提示，不让用户点了个寂寞。
+    const targets = probeFilteredOffers()
+    if (targets.length === 0) {
+      toast('筛选条件下没有可探测的模型，先调一下筛选', true)
+      return
+    }
+    // 一次探十几个以上会真实花钱（每个模型 5 个请求），超过 10 个先确认一次
+    if (targets.length > 10 && !confirm(`将探测 ${targets.length} 个模型，每个发 5 个请求，可能消耗较多 Token。继续？`)) return
     toast('正在探测，需要几秒到几十秒…')
     await withBusy(actionButton, async () => {
-      const result = await api('POST', '/api/probes/run', { limit: 5 })
+      const result = await api('POST', '/api/probes/run', { offerIds: targets.map((o) => o.id) })
       state = result
       render()
       const okCount = result.probeResults.filter((r) => r.ok).length
@@ -6362,6 +6408,19 @@ document.addEventListener('change', async (event) => {
       toast(error.message, true)
       render()
     }
+    return
+  }
+
+  // 探针页的筛选下拉：只改本地状态重渲染，不写库。
+  // 级联：上游条件变了，下游选中的值可能已不在选项里，还在就保留，不在就重置。
+  if (input.dataset.probeFilter) {
+    probeFilters[input.dataset.probeFilter] = input.value
+    const pool = state.offers.filter((o) => !probeFilters.providerId || o.providerId === probeFilters.providerId)
+    if (!pool.some((o) => (o.group || '') === probeFilters.group)) probeFilters.group = ''
+    if (!pool.some((o) => (!probeFilters.group || (o.group || '') === probeFilters.group) && o.upstreamName === probeFilters.model)) {
+      probeFilters.model = ''
+    }
+    render()
     return
   }
 

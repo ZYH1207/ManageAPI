@@ -627,6 +627,11 @@ Object.assign(EN, {
   '每个模型发 5 个请求：指纹 + 计费、截断、缓存（连发两次）、身份自述。结果进入评分，路由据此排除可疑的站。':
     'Five requests per model: fingerprint + billing, truncation, cache (twice), self-identification. The results feed the score that routing uses to exclude suspicious sites.',
   '探测全部（最多 5 个）': 'Probe all (max 5)',
+  '探测全部（{n} 个）': 'Probe all ({n})',
+  '探测所选（{n} 个）': 'Probe selected ({n})',
+  '全部站点': 'All sites',
+  '全部分组': 'All groups',
+  '全部模型': 'All models',
   '指纹 100% 表示每次都精确返回了要求的内容，低于这个值说明上游可能把请求转给了别的模型。 截断一栏是「没被截断」的比例，计费一栏是「用量正常」的比例。':
     'Fingerprint 100% means the exact requested output came back every time; lower means the upstream may be rerouting. Truncation is the share not truncated; Billing is the share with normal usage.',
 

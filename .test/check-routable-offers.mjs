@@ -190,6 +190,29 @@ try {
   ok(paths.size === 1 && [...paths][0] === '/v1/chat/completions', '探测只打了甲站')
   ok(models.has('model-a') && models.has('model-c'), '在役的 model-a / model-c 被正常探测')
 
+  // ---- 点名清单（offerIds）：照单全收不截断；无差别调用仍然限量 ----
+  // 扩到 8 个在役模型（跳过被忽略的 model-b），才能验证「超过默认限量 5 也全探」
+  site1Models = ['model-a', 'model-c', 'model-e', 'model-f', 'model-g', 'model-h', 'model-i', 'model-j']
+  const syncAll = await call('POST', `/api/providers/${p1.id}/sync`)
+  const allIds = syncAll.offers.map((o) => o.id)
+  ok(allIds.length === 8, `甲站现在 8 个在役供给（得到 ${allIds.length}）`)
+
+  probed.length = 0
+  const picked = await call('POST', '/api/probes/run', { offerIds: allIds })
+  ok(
+    picked.probeResults.length === 8,
+    `点名 8 个 offerIds 全部被探测，不被默认限量砍到 5（探到 ${picked.probeResults.length}）`,
+  )
+  ok(new Set(probed.map((line) => line.split(' ')[1])).size === 8, '8 个模型各收到真实探测请求')
+
+  probed.length = 0
+  const one = await call('POST', '/api/probes/run', { offerIds: [allIds[0]] })
+  ok(one.probeResults.length === 1, '点名单个 offerId 只探那一个')
+
+  probed.length = 0
+  const capped = await call('POST', '/api/probes/run', { limit: 3 })
+  ok(capped.probeResults.length === 3, `无差别调用仍按 limit 截断（探到 ${capped.probeResults.length}）`)
+
   console.log('')
   if (failed === 0) console.log('全部通过 ✓')
   else {

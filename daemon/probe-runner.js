@@ -29,7 +29,9 @@ export async function runProbes({ providerId, offerId, offerIds, limit = 5 } = {
     db.credentials.find((c) => c.providerId === offer.providerId)
 
   targets = targets.filter((offer) => credentialFor(offer))
-  if (!offerId) targets = targets.slice(0, limit)
+  // 前端点名的 offerIds 照单全收：那是用户按筛选条件勾好的清单，截断会让
+  // 「探测所选」悄悄少探。限量只管无差别调用（定时轮巡、老版不带筛选的「探测全部」）。
+  if (!offerId && !(Array.isArray(offerIds) && offerIds.length > 0)) targets = targets.slice(0, limit)
 
   // 4 路并发：一轮 10 个目标串行跑满 45 秒超时时要 7 分钟以上，
   // 站点会在这期间持续处于「探针过期」而掉出路由池。写盘仍由 mutate 串行，

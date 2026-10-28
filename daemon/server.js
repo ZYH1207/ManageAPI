@@ -1623,6 +1623,7 @@ route('POST', /^\/api\/probes\/run$/, async (ctx) => {
   const results = await runProbes({
     providerId: ctx.body.providerId,
     offerId: ctx.body.offerId,
+    offerIds: ctx.body.offerIds,
     limit,
   })
   if (results.length === 0) {
