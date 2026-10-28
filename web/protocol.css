@@ -348,6 +348,9 @@
   font-size: 12px;
   flex: none;
 }
+/* .seg 是 display:inline-flex，会盖掉 [hidden] 的 UA 样式——不显式压回去的话，
+   这个切换框在网关/比价等所有页都会露出来，而不只是协议探查页。 */
+.pp-top-seg[hidden] { display: none; }
 .pp-top-seg button {
   padding: 3px 11px;
   border-radius: 6px;
