@@ -12,8 +12,10 @@ import { join } from 'node:path'
 import { mkdir, readFile, writeFile, chmod, access } from 'node:fs/promises'
 import { constants } from 'node:fs'
 import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto'
-import { defaultMonitor, ensureMonitor } from './monitor.js'
+import { ensureMonitor, defaultMonitor } from './monitor.js'
 import { ensureProtocolRecords } from './protocol-records.js'
+import { ensureEmptyEvents } from './empty-guard.js'
+import { ensureFaultSignals } from './fault-signal.js'
 import { writeJsonAtomic } from './fsx.js'
 
 const DB_VERSION = 5
@@ -110,6 +112,12 @@ export function emptyDb() {
       // 协议记录按天自动清理：0 = 永不自动清（默认）；>0 = 删掉比这个天数更旧的记录。
       // 清理动作在读记录页时惰性执行（core/protocol-records.js#pruneProtocolRecords）。
       protocolRecordMaxAgeDays: 0,
+      // 空回合守卫（异常诊断页）：上游只吐了思考、正文和工具调用都空的时候自动补问。
+      //   enabled  默认关闭——它是个「我遇到了才要开」的开关，不是常开功能
+      //   mode     'same' = 同站再问一遍（便宜、不换上下文）
+      //            'switch' = 换一家再问（同站必然犯病时才管用）
+      // 判定口径与记录结构在 core/empty-guard.js，网关取用见 daemon/server.js
+      emptyGuard: { enabled: false, mode: 'same' },
     // 全局忽略的模型（归一化后的 key）：不参与比价、决策、探针、网关
     ignoredModels: [],
     },
@@ -321,6 +329,8 @@ function migrate(db) {
   if (version >= DB_VERSION) {
     ensureMonitor(db)
     ensureProtocolRecords(db)
+    ensureEmptyEvents(db)
+    ensureFaultSignals(db)
     return db
   }
 
@@ -351,6 +361,10 @@ function migrate(db) {
   }
   // v5：协议探查记录（新键，缺省补空数组，幂等）
   ensureProtocolRecords(db)
+  // 空回合记录（新键，纯追加，幂等）
+  ensureEmptyEvents(db)
+  // 故障信号（新键，纯追加，幂等）
+  ensureFaultSignals(db)
   db.version = DB_VERSION
   ensureMonitor(db)
   return db

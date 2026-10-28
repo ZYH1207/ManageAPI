@@ -29,6 +29,7 @@ const RECOVERY_INTERVAL_MIN = 10
 export function startProbeScheduler({
   runProbes,
   collectMonitor = null,
+  recheckDetours = null,
   logger = console,
   // 测试用：e2e 要把「60 秒一轮」压到亚秒级才验得出「到点关、到点开」
   tickMs = Number(process.env.MANAGE_API_PROBE_TICK_MS) || CHECK_INTERVAL_MS,
@@ -37,6 +38,7 @@ export function startProbeScheduler({
   let running = false
   let collecting = false
   let refreshingFx = false
+  let rechecking = false
   // 暂停状态只在「翻转」时打一条日志：每分钟刷一条会把日志淹掉
   let pausedLogged = false
 
@@ -84,6 +86,25 @@ export function startProbeScheduler({
         } finally {
           collecting = false
         }
+      }
+    }
+
+    // --------------------------------------------------------------- 改道复检
+    // 空回合守卫把原站挂起后，这里每 20 分钟悄悄摸一次（见核心模块 DETOUR_RECHECK_MS）。
+    // 放在「探测间隔 <= 0 就直接返回」之前：用户可能关掉了定时探测，但改道
+    // 必须能自己解除，否则流量会永远停在别家
+    if (recheckDetours && !rechecking) {
+      rechecking = true
+      try {
+        const results = await recheckDetours({ logger })
+        if (results.length > 0) {
+          const back = results.filter((r) => r.resolved === 'recovered').length
+          logger.info?.(`[改道复检] 检查 ${results.length} 条，${back} 条已恢复并切回`)
+        }
+      } catch (error) {
+        logger.warn?.(`[改道复检] 失败：${error.message}`)
+      } finally {
+        rechecking = false
       }
     }
 

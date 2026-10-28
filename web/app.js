@@ -450,6 +450,7 @@ function render() {
   renderGateway()
   renderUsage()
   renderBenchmark()
+  renderDiagnostics()
   // 分组抽屉挂在 body 上，不在任何 view 里；一键同步 / 改倍率 / 自动轮询改了 state，
   // 它得跟着重画（paintGroupModels 会保留滚动位置，不然 15 秒一跳回到顶部）
   paintGroupModels()
@@ -4109,6 +4110,268 @@ function renderBenchmark() {
     </div>`
 }
 
+// ------------------------------------------------------------- 异常诊断视图
+// 异常诊断页 空回合守卫：中转站吞掉工具调用时静默断线的现场就在这里。
+
+/**
+ * 异常诊断页：目前只放「空回合守卫」这一件事。
+ *
+ * 数据不塞进 state：空回合记录会一直长，而 state 每 15 秒被轮询整体重取一遍，
+ * 把它塞进去等于每轮都搬一遍几百条历史。这里单独按需拉。
+ */
+let diagnosticsData = null
+
+async function loadDiagnostics() {
+  try {
+    diagnosticsData = await api('GET', '/api/diagnostics')
+  } catch (error) {
+    diagnosticsData = { error: error.message }
+  }
+  renderDiagnostics()
+  translateDom($('#view-diagnostics') || document.body)
+}
+
+function fmtAgo(iso) {
+  if (!iso) return t('—')
+  const ms = Date.now() - Date.parse(iso)
+  if (!Number.isFinite(ms)) return t('—')
+  if (ms < 60_000) return t('刚刚')
+  const min = Math.floor(ms / 60_000)
+  if (min < 60) return t('{n} 分钟前', { n: min })
+  const hour = Math.floor(min / 60)
+  if (hour < 24) return t('{n} 小时前', { n: hour })
+  return t('{n} 天前', { n: Math.floor(hour / 24) })
+}
+
+/** 处置结果 → 徽章配色：救回来的绿、白忙一场的黄、关着的灰 */
+const EMPTY_ACTION_STYLE = {
+  'repaired-local': 'ok',
+  'retry-same': 'ok',
+  'retry-switch': 'ok',
+  'repair-failed': 'warn',
+  'no-retry': 'warn',
+  'gave-up': 'warn',
+  off: '',
+}
+
+const EMPTY_ACTION_TEXT = {
+  'repaired-local': '本地重建',
+  'retry-same': '同站补问',
+  'retry-switch': '换一家补问',
+  'repair-failed': '标记解析失败',
+  'no-retry': '没别家可换',
+  'gave-up': '补问后仍空',
+  off: '守卫关闭，未处置',
+}
+
+function renderDiagnostics() {
+  const view = $('#view-diagnostics')
+  if (!view) return
+  const data = diagnosticsData
+  if (!data) {
+    view.innerHTML = `<div class="empty"><h3>${t('正在读取…')}</h3></div>`
+    return
+  }
+  if (data.error) {
+    view.innerHTML = `<div class="empty"><h3>${t('读取失败')}</h3><p>${esc(data.error)}</p></div>`
+    return
+  }
+
+  const guard = data.guard || { enabled: false, mode: 'same' }
+  const summary = data.summary || {}
+  const tiers = data.tiers || []
+  const events = data.events || []
+  const detours = data.detours || []
+
+  const tierRows = tiers
+    .map(
+      (tier) => `
+      <tr>
+        <td>${esc(tier.label)}</td>
+        <td class="num">${tier.retries === 0 ? t('不补问') : t('{n} 次', { n: tier.retries })}</td>
+        <td class="num">${tier.waitMs ? `${Math.round(tier.waitMs / 1000)}s` : t('—')}</td>
+      </tr>`,
+    )
+    .join('')
+
+  const faultSummary = data.faults?.summary || { active: 0, faulty: 0, degraded: 0, subscribers: 0 }
+  const faultList = data.faults?.active || []
+  const FAULT_LEVEL_TEXT = { faulty: 'faulty', degraded: 'degraded', notice: 'notice' }
+  const faultRows = faultList.length
+    ? faultList
+        .map(
+          (signal) => `
+        <tr>
+          <td>${esc(signal.scope?.model || signal.scope?.modelKey || '')}</td>
+          <td>${esc(signal.scope?.providerName || t('未知站'))}</td>
+          <td><span class="badge ${signal.level === 'faulty' ? 'warn' : ''}">${
+            signal.level === 'faulty' ? t('严重') : t('降级')
+          }</span></td>
+          <td style="max-width:320px">${esc(t(signal.reason || ''))}</td>
+          <td>${esc(signal.suggested === 'avoid' ? t('避开') : signal.suggested === 'deprioritize' ? t('降优先级') : t('无'))}</td>
+          <td style="white-space:nowrap">${esc(signal.expiresAt ? fmtAgo(signal.expiresAt).replace('前', '后') : t('不过期'))}</td>
+        </tr>`,
+        )
+        .join('')
+    : `<tr><td colspan="6" class="muted" style="text-align:center;padding:14px">${t('当前没有生效中的故障信号')}</td></tr>`
+
+  const detourRows = detours.length
+    ? detours
+        .map(
+          (row) => `
+        <tr>
+          <td>${esc(row.model || '')}</td>
+          <td>${esc(row.providerName || t('未知站'))}</td>
+          <td><span class="badge ok">${esc(row.replacedByProviderName || t('已切走'))}</span></td>
+          <td>${esc(fmtAgo(row.since).replace('前', ''))}</td>
+          <td class="num">${row.checkCount || 0}</td>
+          <td>
+            <button class="ghost tiny" data-act="diag-resolve-detour" data-offer="${esc(row.offerId)}" title="不等复检，立刻把流量切回原站">${t('立即切回')}</button>
+          </td>
+        </tr>`,
+        )
+        .join('')
+    : `<tr><td colspan="6" class="muted" style="text-align:center;padding:14px">${t('当前没有改道，流量都在原站上')}</td></tr>`
+
+  const eventRows = events.length
+    ? events
+        .slice(0, 80)
+        .map((event) => {
+          const style = EMPTY_ACTION_STYLE[event.action] ?? ''
+          const actionText = EMPTY_ACTION_TEXT[event.action] || event.action
+          const recovered = event.recovered ? `<span class="badge ok">${t('已救回')}</span>` : ''
+          return `
+        <tr>
+          <td style="white-space:nowrap">${esc(fmtAgo(event.ts))}</td>
+          <td>${esc(event.model || '')}</td>
+          <td>${esc(event.providerName || '')}</td>
+          <td><span class="badge ${style}">${esc(t(actionText))}</span> ${recovered}</td>
+          <td class="num">${event.textChars}</td>
+          <td class="num">${event.wastedInput + event.wastedOutput}</td>
+        </tr>`
+        })
+        .join('')
+    : `<tr><td colspan="6" class="muted" style="text-align:center;padding:14px">${t('还没遇到过空回合')}</td></tr>`
+
+  view.innerHTML = `
+    <div class="card">
+      <div class="card-head">
+        <div>
+          <h3>${t('空回合守卫')}</h3>
+          <div class="meta">${t('中转站把模型想调的工具吞掉时，这一轮会「什么都没说」就结束——客户端只能安静地停下。这个开关会在检测到空回合后自动补问一次。')}</div>
+        </div>
+      </div>
+      <div class="switch-row">
+        <label class="switch">
+          <input type="checkbox" id="empty-guard-enabled" ${guard.enabled ? 'checked' : ''} />
+          <span class="switch-track"><span class="switch-knob"></span></span>
+          <span class="switch-text">
+            <b>${t('启用空回合守卫')}</b>
+            <span>${t('默认关闭。遇到「跑着跑着自己断了、也不汇报」时打开它；不想让网关替你重发就关掉。关闭时仍然记录每一次空回合，只是不补问。')}</span>
+          </span>
+        </label>
+      </div>
+      <div class="switch-row" style="margin-top:14px">
+        <div class="field-inline" style="display:flex;align-items:center;gap:10px">
+          <span>${t('补问模式')}</span>
+          <div class="seg" role="group">
+            <button type="button" data-act="diag-set-mode" data-mode="same" class="${guard.mode === 'same' ? 'active' : ''}">${t('同站补问')}</button>
+            <button type="button" data-act="diag-set-mode" data-mode="switch" class="${guard.mode === 'switch' ? 'active' : ''}">${t('换一家补问')}</button>
+          </div>
+        </div>
+        <div class="hint" style="margin-top:8px">
+          ${guard.mode === 'same'
+            ? t('同站补问：拿同一个问题再问原来那家。便宜、上下文不变，适合偶发抽风。')
+            : t('换一家补问：从智能决策判完之后能打的站里，挑价格和速度都最接近的一家顶上。原站会被临时改道，每 20 分钟复检一次，连续正常就自动切回。')}
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <div>
+          <h3>${t('故障信号')}</h3>
+          <div class="meta">${t('诊断系统发现「这家供给真的不能用」时会向外发一条信号，自动路由收到后自己决定怎么处理。救回来了的不发——不影响你干活就不打扰它。')}</div>
+        </div>
+      </div>
+      <div class="badges" style="margin-bottom:10px">
+        <span class="badge ${faultSummary.active > 0 ? 'warn' : 'ok'}">${t('生效中 {n} 条', { n: faultSummary.active || 0 })}</span>
+        <span class="badge">${t('严重 {n}', { n: faultSummary.faulty || 0 })}</span>
+        <span class="badge">${t('降级 {n}', { n: faultSummary.degraded || 0 })}</span>
+        <span class="badge ${faultSummary.subscribers > 0 ? 'ok' : ''}" title="${esc(t('0 表示现在没有模块在接收这些信号（自动路由没开或没接上）'))}">
+          ${faultSummary.subscribers > 0 ? t('{n} 个接收方', { n: faultSummary.subscribers }) : t('无人接收')}
+        </span>
+      </div>
+      <table class="table">
+        <thead><tr>
+          <th>${t('模型')}</th><th>${t('站点')}</th><th>${t('严重度')}</th>
+          <th>${t('原因')}</th><th>${t('建议')}</th><th>${t('到期')}</th>
+        </tr></thead>
+        <tbody>${faultRows}</tbody>
+      </table>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <div>
+          <h3>${t('补问档位')}</h3>
+          <div class="meta">${t('补问要花多久是能估出来的：用这一轮的思考量 ÷ 这家站的实测速度，再加上首字延迟。预计越贵，补得越少。')}</div>
+        </div>
+      </div>
+      <table class="table">
+        <thead><tr><th>${t('预计补问耗时')}</th><th class="num">${t('最多补问')}</th><th class="num">${t('单次上限')}</th></tr></thead>
+        <tbody>${tierRows}</tbody>
+      </table>
+      <p class="hint" style="margin:10px 0 0">
+        ${t('另外两条硬规则：同一个站 5 分钟内已经空过 2 次，就不再问它（直接换一家）；单次上限到了还没见到正文就放弃，不会无限等。')}
+      </p>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <div>
+          <h3>${t('临时改道')}</h3>
+          <div class="meta">${t('原站被挂起后，流量先走别家。每 {n} 分钟带工具复检原站一次，连续两次正常就自动切回。', { n: data.recheckMinutes || 20 })}</div>
+        </div>
+      </div>
+      <table class="table">
+        <thead><tr>
+          <th>${t('模型')}</th><th>${t('原站')}</th><th>${t('当前走')}</th>
+          <th>${t('开始于')}</th><th class="num">${t('复检次数')}</th><th></th>
+        </tr></thead>
+        <tbody>${detourRows}</tbody>
+      </table>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <div>
+          <h3>${t('发生记录')}</h3>
+          <div class="meta">
+            ${t('共 {total} 次：工具调用被吞 {dropped} 次、纯空 {empty} 次；补问救回 {recovered} 次；最近一次 {ago}。', {
+              total: summary.total || 0,
+              dropped: summary.toolCallDropped || 0,
+              empty: summary.noContent || 0,
+              recovered: summary.recovered || 0,
+              ago: fmtAgo(summary.lastAt),
+            })}
+          </div>
+        </div>
+        <div class="card-actions">
+          <button class="ghost tiny" data-act="diag-refresh">${t('刷新')}</button>
+          <button class="ghost tiny" data-act="diag-clear-events">${t('清空记录')}</button>
+        </div>
+      </div>
+      <table class="table">
+        <thead><tr>
+          <th>${t('时间')}</th><th>${t('模型')}</th><th>${t('站点')}</th>
+          <th>${t('处置')}</th><th class="num">${t('正文')}</th><th class="num">${t('白烧 token')}</th>
+        </tr></thead>
+        <tbody>${eventRows}</tbody>
+      </table>
+    </div>`
+}
+
 // --------------------------------------------- 官方有效成本表单（基准价页）
 
 /** 表单数字框读值：空/非法 → null */
@@ -4955,7 +5218,7 @@ const SIDEBAR_KEY = 'manageapi.sidebarCollapsed'
   }
 })()
 
-const TABS = ['overview', 'monitor', 'free', 'pricing', 'decision', 'probes', 'protocol', 'gateway', 'usage', 'benchmark']
+const TABS = ['overview', 'monitor', 'free', 'pricing', 'decision', 'probes', 'protocol', 'gateway', 'usage', 'benchmark', 'diagnostics']
 
 /** 折叠状态：'provider:xxx' / 'pricing:模型名' / 'probe:站点id' */
 const collapsedPanels = new Set()
@@ -5026,6 +5289,7 @@ const TAB_META = {
   gateway: { title: '网关', sub: '一个入口接管全部流量' },
   usage: { title: '用量', sub: '按 Key / 模型 / 站点统计' },
   benchmark: { title: '基准价', sub: '倍率换算的参照物' },
+  diagnostics: { title: '异常诊断', sub: '空回合守卫：上游把工具调用吞了怎么办' },
 }
 
 function setPageSub(text) {
@@ -5096,6 +5360,8 @@ function setTab(name) {
   }
   // 监控数据比 state 重，按需拉：第一次进这个页才请求
   if (name === 'monitor' && !monitorData) void loadMonitor(monitorDays)
+  // 异常诊断页按需拉：数据不塞进 state（空回合记录会一直长，不该每次都随手轮询）
+  if (name === 'diagnostics') void loadDiagnostics()
   // 协议探查也是按需拉：目标列表和记录在每次进页时刷新（站点页加的 Key 才能立刻看到）
   if (name === 'protocol') {
     setProtocolViewMode(protocolViewMode, { resetStore: false })
@@ -6231,6 +6497,49 @@ document.addEventListener('click', async (event) => {
     return
   }
 
+  // ---------------------------------------------------- 异常诊断 · 空回合守卫
+  if (action === 'diag-set-mode') {
+    const mode = actionButton.dataset.mode
+    try {
+      await api('PATCH', '/api/diagnostics', { mode })
+      await loadDiagnostics()
+      toast(mode === 'same' ? t('已切换：同站补问') : t('已切换：换一家补问'))
+    } catch (error) {
+      toast(error.message, true)
+    }
+    return
+  }
+
+  if (action === 'diag-refresh') {
+    await loadDiagnostics()
+    toast(t('已刷新'))
+    return
+  }
+
+  if (action === 'diag-clear-events') {
+    if (!confirm(t('清空空回合记录？只清发生记录，开关和当前改道都不动，清空后无法恢复。'))) return
+    try {
+      await api('DELETE', '/api/diagnostics/events')
+      await loadDiagnostics()
+      toast(t('记录已清空'))
+    } catch (error) {
+      toast(error.message, true)
+    }
+    return
+  }
+
+  if (action === 'diag-resolve-detour') {
+    const offerId = actionButton.dataset.offer
+    try {
+      await api('DELETE', `/api/diagnostics/detours/${offerId}`)
+      await loadDiagnostics()
+      toast(t('已切回原站'))
+    } catch (error) {
+      toast(error.message, true)
+    }
+    return
+  }
+
   if (action === 'ignored-models') {
     openIgnoredModels()
     return
@@ -6991,6 +7300,17 @@ document.addEventListener('change', async (event) => {
     } catch (error) {
       toast(error.message, true)
       render()
+    }
+    return
+  }
+
+  if (input.id === 'empty-guard-enabled') {
+    try {
+      await api('PATCH', '/api/diagnostics', { enabled: input.checked })
+      await loadDiagnostics()
+      toast(input.checked ? t('空回合守卫已开启') : t('空回合守卫已关闭（仍会记录）'))
+    } catch (error) {
+      toast(error.message, true)
     }
     return
   }

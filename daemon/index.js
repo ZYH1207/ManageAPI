@@ -13,6 +13,7 @@ import { startProbeScheduler } from './scheduler.js'
 import { runProbes } from './probe-runner.js'
 import { ensureFailoverToken } from '../core/failover.js'
 import { collectProviderSnapshots } from './monitor-runner.js'
+import { runDetourRechecks } from './detour-runner.js'
 import { spawn } from 'node:child_process'
 import { mkdir } from 'node:fs/promises'
 import { existsSync, statSync } from 'node:fs'
@@ -184,7 +185,12 @@ function shutdown(signal) {
   }, 5000).unref()
 }
 
-startProbeScheduler({ runProbes, collectMonitor: collectProviderSnapshots, logger: console })
+startProbeScheduler({
+  runProbes,
+  collectMonitor: collectProviderSnapshots,
+  recheckDetours: runDetourRechecks,
+  logger: console,
+})
 
 for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => shutdown(signal))
 

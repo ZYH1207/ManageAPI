@@ -70,6 +70,16 @@ function blockedText(reason, { pending = false } = {}) {
  */
 export function admissionOf(row) {
   if (!row) return { ok: false, kind: 'none', text: '没有候选' }
+  // 临时改道：这家的工具调用最近被上游吞掉，网关把它挂起、流量走别家。
+  // 不是「坏站」，是「先别用它」——复检连续正常后会自动解除（见 empty-guard）
+  if (row.detour) {
+    const to = row.detour.replacedByProviderName
+    return {
+      ok: false,
+      kind: 'detoured',
+      text: `临时改道中${to ? `：当前走 ${to}` : ''}（原站每 20 分钟复检，正常了自动切回）`,
+    }
+  }
   // 慢速：这是用户自己设的线，不因「放行可疑供给」而失效
   if (row.tooSlow) {
     return { ok: false, kind: 'slow', text: `慢速：首字 ${row.ttftMs}ms 超过门槛` }
@@ -137,6 +147,8 @@ export function admissionTags(row) {
   const samples = Number(row.samples) || 0
   // 慢速：用户自己设的线
   if (row.tooSlow) tags.push('slow')
+  // 临时改道：空回合守卫把它挂起了（和「坏站」是两件事，单独一个标签）
+  if (row.detour) tags.push('detoured')
   // 结果可疑：指纹不符 / 输出截断 / 用量虚报，单次即可定性（同 score.js 的 degraded）
   if (row.status === 'degraded' || faults.length > 0) tags.push('degraded')
   if (typeof availability === 'number' && availability < THRESHOLDS.availability) {
@@ -208,7 +220,22 @@ export function admissionFailure(candidates, { model = '', maxTtftMs = 0 } = {})
  *            只是同类里靠后 + 自动路由不把它当「最优」；故障到期自动恢复
  * @returns {Array<{offer,provider,credential,price,quality,routable,effective,status,ttftMs}>}
  */
-export function selectCandidates({ offers, providers, credentials, scores, benchmarks, settings, model, order, isFaulted }) {
+export function selectCandidates({
+  offers,
+  providers,
+  credentials,
+  scores,
+  benchmarks,
+  settings,
+  model,
+  order,
+  // 外部监控上报的真实故障（core/failover.js#faultMatcher）：降级不拉黑
+  isFaulted,
+  // 空回合守卫的临时改道账（core/empty-guard.js#activeDetours）：
+  // 和 isFaulted 是两件事——那是「别的进程报上来的故障」，这是「这套网关自己
+  // 抓到的、并且已经动手改过道的」。两个都要认，见下面 row 的注释
+  detours,
+}) {
   const key = normalizeModelKey(model)
   const maxTtftMs = Number(settings?.maxTtftMs) || 0
   // 用户开关：探针说可疑的也让它正常参与排序（首字上限仍然独立生效）
@@ -274,6 +301,9 @@ export function selectCandidates({ offers, providers, credentials, scores, bench
       offer,
       provider,
       credential,
+      // 空回合守卫的改道账（生效中才有值）：准入与界面都读这一份，
+      // 不允许另写一处「这个站现在能不能用」
+      detour: detours?.get?.(offer.id) || null,
       price,
       // 名义单价（美元/百万 token）：价格档排序用，展示仍走 price（人民币）
       priceUsd,

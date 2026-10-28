@@ -47,6 +47,15 @@ function sse(res, deltas, { usage, finishReason }) {
 /** 缓存模拟用的内存集合：同一模型 + 同一长 prompt 的第二次请求命中。 */
 const seenPrompts = new Set()
 
+/** EMPTY_ONCE=1：只有第一个请求空，之后正常（验证补问能救回） */
+const EMPTY_ONCE = process.env.EMPTY_ONCE === '1'
+let emptyDropped = 0
+function emptyShouldDrop() {
+  if (!EMPTY_ONCE) return true
+  emptyDropped += 1
+  return emptyDropped === 1
+}
+
 /** Responses 协议的 SSE：按 event: 名事件发，最后一个事件带 usage。 */
 function sseResponses(res, text, { usage, failMidStream = false } = {}) {
   res.writeHead(200, {
@@ -102,6 +111,14 @@ function sseResponses(res, text, { usage, failMidStream = false } = {}) {
 }
 
 createServer(async (req, res) => {
+  // 测试辅助：把「只空一次」的计数器归零。EMPTY_ONCE 是进程级全局，
+  // 多个测试用例连着跑时前一个用例会把那一次用掉，后面的就永远遇不上空回合
+  if (req.url.includes('/__reset')) {
+    emptyDropped = 0
+    res.writeHead(200, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify({ ok: true }))
+    return
+  }
   if (req.url.includes('/models')) {
     res.writeHead(200, { 'Content-Type': 'application/json' })
     res.end(JSON.stringify({ data: [{ id: 'test-model-a' }, { id: 'test-model-b' }] }))
@@ -172,6 +189,62 @@ createServer(async (req, res) => {
     if (MODE === 'fail') {
       res.writeHead(503, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify({ error: { message: 'upstream unavailable', type: 'server_error' } }))
+      return
+    }
+
+    // 方言泄漏站：工具调用没被翻译成 tool_calls，而是原样漏进了正文——
+    // 这种网关能本地解析重建（见 core/tool-repair.js），不用补问。
+    // 用 EMPTY_ONCE=1 控制：第一次漏、之后正常，方便对比「本地重建」与「补问」
+    if (MODE === 'leak' && emptyShouldDrop()) {
+      const body = await readBody(req)
+      const hasTools = Array.isArray(body?.tools) && body.tools.length > 0
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        Connection: 'keep-alive',
+      })
+      const emit = (obj) => res.write(`data: ${JSON.stringify(obj)}\n\n`)
+      if (hasTools) {
+        // 模型方言原样漏进正文：外壳 + invoke + parameter 都完整
+        emit({ choices: [{ delta: { content: 'Let me read it.\n<｜DSML｜function_calls>\n' }, index: 0 }] })
+        emit({
+          choices: [
+            {
+              delta: {
+                content:
+                  '<｜DSML｜invoke name="read_file">\n' +
+                  '<｜DSML｜parameter name="path" string="true">/tmp/leak.txt</｜DSML｜parameter>\n' +
+                  '</｜DSML｜invoke>\n</｜DSML｜function_calls>',
+              },
+              index: 0,
+            },
+          ],
+        })
+      }
+      emit({ choices: [{ delta: {}, index: 0, finish_reason: 'stop' }] })
+      emit({ choices: [], usage: { prompt_tokens: 900, completion_tokens: 80, total_tokens: 980 } })
+      res.write('data: [DONE]\n\n')
+      res.end()
+      return
+    }
+
+    // 空回合站：客户端带了 tools 时，只在思考里打转，正文与 tool_calls 都不给，
+    // 收尾却是正常的 stop——模拟 DeepSeek 工具调用被上游翻译层吞掉的真实现场。
+    // 用 EMPTY_ONCE 环境变量控制：设 1 = 只空第一次，第二次开始正常（验证补问能救回）
+    if (MODE === 'empty' && emptyShouldDrop()) {
+      const body = await readBody(req)
+      const hasTools = Array.isArray(body?.tools) && body.tools.length > 0
+      res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' })
+      const emit = (obj) => res.write(`data: ${JSON.stringify(obj)}\n\n`)
+      if (hasTools) {
+        // 先流一段思考（让它不算「纯空」，但正文为 0、无工具调用）
+        emit({ choices: [{ delta: { reasoning_content: 'Let me check the file first...' }, index: 0 }] })
+        emit({ choices: [{ delta: { reasoning_content: '</｜tool▁calls▁begin｜> (swallowed)' }, index: 0 }] })
+      }
+      emit({ choices: [{ delta: {}, index: 0, finish_reason: 'stop' }] })
+      emit({ choices: [], usage: { prompt_tokens: 1200, completion_tokens: 30, total_tokens: 1230 } })
+      res.write('data: [DONE]\n\n')
+      res.end()
       return
     }
     const body = await readBody(req)

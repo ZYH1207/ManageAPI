@@ -23,8 +23,17 @@ import {
   createStreamInspector,
   extractNonStream,
   usageNumbers,
+  isTerminalChunk,
+  rewriteAppendedChunk,
 } from '../core/wire.js'
-import { detailRows } from '../core/usage-detail.js'
+import { detailRow, sumBuckets, facetOptions } from '../core/usage-detail.js'
+import {
+  appendDetail,
+  readDetail,
+  listDetailDays,
+  pruneDetail,
+  DETAIL_RETENTION_DAYS,
+} from '../core/usage-ledger.js'
 import {
   selectCandidates,
   listPublicModels,
@@ -74,6 +83,38 @@ import {
 } from '../core/protocol-records.js'
 import { REFERENCE_AS_OF, listReference } from '../core/model-prices.js'
 import { listPresetSites, listPresetPlatforms } from '../core/catalog.js'
+import {
+  normalizeEmptyGuard,
+  judgeEmptyTurn,
+  buildEmptyEvent,
+  estimateRetryCost,
+  planEmptyRetry,
+  ensureEmptyEvents,
+  recordEmptyEvent,
+  clearEmptyEvents,
+  summarizeEmptyEvents,
+  ensureDetours,
+  activeDetours,
+  recordDetour,
+  resolveDetour,
+  recentEmptyHits,
+  pickClosestCandidate,
+  DETOUR_RECHECK_MS,
+  STALE_HITS,
+  RETRY_TIERS,
+} from '../core/empty-guard.js'
+import { repairToolCalls, buildRepairChunks } from '../core/tool-repair.js'
+import {
+  buildFaultSignal,
+  judgeEmptyFault,
+  publishFault,
+  faultSubscriberCount,
+  activeFaultSignals,
+  combineWithDetours,
+  summarizeFaultSignals,
+  applyFaultToFailover,
+  FAULT_WINDOW_MS,
+} from '../core/fault-signal.js'
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url))
 const WEB_DIR = resolve(__dirname, '../web')
@@ -2622,31 +2663,98 @@ route('GET', /^\/api\/usage$/, async (ctx) => {
 })
 
 /**
- * 详细用量：汇总与明细来自两个不同的存储，分开返回、分开标来源。
+ * 详细用量。三个数字各来自**明确写在这里**的三个地方，口径不许混：
  *
- *   totals   —— usage.json 聚合：全部请求，按天 × Key × 站点 × 模型汇总，不受日志长度限制
- *   requests —— 决策日志（db.routing）：最近 500 条里落在区间内的，带首字 / 耗时 /
- *               缓存读 / 缓存写 / 思考 / 速度 / 换站原因
+ *   totals   —— usage.json 全量聚合：这段时间真的花了多少（不受日志/明细条数限制）
+ *   subtotal —— 同一份全量聚合按「站点 / 分组 / 模型」过滤后求和。**不是**把
+ *               明细行加起来——明细有保留期和条数上限，拿它求和必然和 totals 对不上，
+ *               那正是「上面 20 条、下面 182 条」的来历
+ *   requests —— 逐条账本（usage-detail/，保留 30 天）：只负责「每一条长什么样」
  *
- * 两个数字不相等是正常的（汇总包含日志已经被挤掉的请求，且失败请求没有 token）。
- * 如果把两边合并成一个数字，就会得到「明明跑了 300 次，明细里只有 200 条」的困惑。
+ * 账本里没有（还没开始记 / 过期了）就退回决策日志（最近 500 条），并如实标注来源。
  */
 route('GET', /^\/api\/usage\/detail$/, async (ctx) => {
   const days = Math.min(Math.max(Number(ctx.query.get('days')) || 7, 1), 90)
-  const limit = Math.min(Math.max(Number(ctx.query.get('limit')) || 200, 1), 500)
-  const summary = await usageSummary({ days })
-  const detail = detailRows(await inv.listRouting(500), { days, limit })
+  const limit = Math.min(Math.max(Number(ctx.query.get('limit')) || 200, 1), 2000)
+  const { from, to } = usageRangeParams(ctx)
+  const summary = await usageSummary({ days, from, to })
+
+  // 筛选：站点 / 分组（带 providerId，同名分组到处都是）/ 模型
+  const filter = {
+    providerId: String(ctx.query.get('providerId') || ''),
+    group: ctx.query.get('group')
+      ? { providerId: String(ctx.query.get('groupProviderId') || ''), name: String(ctx.query.get('group')) }
+      : null,
+    model: String(ctx.query.get('model') || ''),
+  }
+
+  // 小计与下拉选项都从全量聚合算：这样「筛出来的」永远等于「这段时间真的花了多少」
+  const subtotal = sumBuckets(summary.buckets, filter)
+  const facets = facetOptions(summary.buckets, filter)
+
+  const clearedAt = await usageClearedAt()
+  const clearedMs = clearedAt ? Date.parse(clearedAt) : null
+  const floorMs = Number.isFinite(clearedMs) ? clearedMs : null
+
+  // 明细：优先逐条账本（保留期内都查得到），没有就退回决策日志
+  const rangeDays = (summary.days || []).slice(-DETAIL_RETENTION_DAYS)
+  let source = 'ledger'
+  let rawRows = await readDetail(rangeDays)
+  if (!rawRows.length) {
+    source = 'log'
+    rawRows = await inv.listRouting(500)
+  }
+
+  const matched = []
+  let scanned = 0
+  let clearedDropped = 0
+  let missingUsage = 0
+  for (const raw of rawRows) {
+    const row = detailRow(raw)
+    if (!row) continue
+    scanned += 1
+    if (floorMs !== null && row.tsMs < floorMs) {
+      clearedDropped += 1
+      continue
+    }
+    if (filter.providerId && row.providerId !== filter.providerId) continue
+    if (
+      filter.group &&
+      (row.providerId !== filter.group.providerId || (row.group || '') !== filter.group.name)
+    ) {
+      continue
+    }
+    if (filter.model && row.model !== filter.model) continue
+    if (row.prompt === null) missingUsage += 1
+    matched.push(row)
+  }
+  matched.sort((a, b) => b.tsMs - a.tsMs)
+  const shown = matched.slice(0, limit)
+
   return {
     days,
     totals: summary.totals,
-    requests: detail.rows,
+    subtotal,
+    filter,
+    facets,
+    requests: shown,
     window: {
-      available: detail.available,
-      shown: detail.shown,
-      capped: detail.capped,
-      // 上游没回 usage 的条数：汇总里的 token 不含它们，页面上必须能解释这个差额
-      missingUsage: detail.missingUsage,
-      logLimit: 500,
+      source,
+      // 明细覆盖：区间内还剩多少条可看、给了多少、被截掉多少
+      available: matched.length,
+      shown: shown.length,
+      capped: matched.length > shown.length,
+      scanned,
+      missingUsage,
+      // 账本保留天数：过期之后那几天只剩汇总
+      retentionDays: DETAIL_RETENTION_DAYS,
+      ledgerDays: (await listDetailDays()).slice(-DETAIL_RETENTION_DAYS),
+      // 清空水位线：清空之前的请求不再计入（汇总与明细同时遵守）
+      clearedAt: summary.clearedAt || null,
+      clearedDropped,
+      logLimit: source === 'log' ? 500 : null,
+      // 标记来源，前端据此说清「这些行是从哪儿来的」
+      generatedAt: new Date().toISOString(),
     },
   }
 })
@@ -2664,6 +2772,113 @@ route('PATCH', /^\/api\/gateway$/, async (ctx) => {
 route('GET', /^\/api\/gateway\/routing$/, async (ctx) => {
   const limit = Math.min(Number(ctx.query.get('limit')) || 50, 200)
   return { routing: await inv.listRouting(limit) }
+})
+
+// ------------------------------------------------------- 异常诊断 · 空回合守卫
+
+/** 诊断页的全部数据：开关、档位表、发生记录、当前改道 */
+route('GET', /^\/api\/diagnostics$/, async () => {
+  const db = await store.readDb()
+  ensureEmptyEvents(db)
+  ensureDetours(db)
+  const guard = normalizeEmptyGuard(db.settings.emptyGuard)
+  const events = [...(db.emptyTurns || [])].reverse()
+  return {
+    guard,
+    tiers: RETRY_TIERS.map((tier) => ({
+      key: tier.key,
+      label: tier.label,
+      retries: tier.retries,
+      waitMs: tier.waitMs,
+      maxMs: Number.isFinite(tier.maxMs) ? tier.maxMs : null,
+    })),
+    summary: summarizeEmptyEvents(db.emptyTurns || []),
+    events,
+    // 当前生效的改道：原站 → 现用站、从什么时候开始、下次什么时候复检
+    detours: [...activeDetours(db).values()],
+    recheckMinutes: Math.round(DETOUR_RECHECK_MS / 60000),
+    // 故障信号：几条在生效、有没有人接（自动路由订阅了就 >0）
+    faults: {
+      summary: summarizeFaultSignals(db),
+      active: [...combineWithDetours(db, activeFaultSignals(db)).values()],
+    },
+  }
+})
+
+/** 开关与模式：只改这两个字段，不和 settings 里其它开关混在一起校 */
+route('PATCH', /^\/api\/diagnostics$/, async (ctx) => {
+  const { enabled, mode } = ctx.body || {}
+  if (mode !== undefined && !['same', 'switch'].includes(String(mode))) {
+    throw new HttpError(400, '补问模式只能是 same（同站）或 switch（换一家）')
+  }
+  await store.mutate((db) => {
+    const current = normalizeEmptyGuard(db.settings.emptyGuard)
+    db.settings.emptyGuard = {
+      enabled: enabled === undefined ? current.enabled : Boolean(enabled),
+      mode: mode === undefined ? current.mode : String(mode),
+    }
+  })
+  return { ok: true }
+})
+
+/**
+ * 故障信号接口（给自动路由 / 外部消费方读）。
+ *
+ * 两种取用方式都在这里落地：
+ *   GET 拉快照 —— active 的故障，已把「临时改道」并进来，key 是 offerId
+ *   POST 订阅   —— 不，进程内用 subscribeFaults()，不要走 HTTP（见文件头）
+ *
+ * 这个接口给「人」和「外部进程」看：界面要显示有几条在生效，
+ * 别的进程（非本机同进程的模块）要拿当前故障清单也只能走这里。
+ */
+route('GET', /^\/api\/faults$/, async (ctx) => {
+  const db = await store.readDb()
+  const snapshot = combineWithDetours(db, activeFaultSignals(db))
+  return {
+    // 生效中的故障：自动路由挑优时按 offerId 过滤即可
+    active: [...snapshot.values()],
+    summary: summarizeFaultSignals(db),
+    // 订阅者数量：0 表示「现在没有人在接信号」，界面要提示出来，
+    // 否则用户会以为自动路由已经知道这件事了，其实没人听
+    subscribers: faultSubscriberCount(),
+    history: (db.faultSignals || []).slice(-50).reverse(),
+  }
+})
+
+/** 手动清掉某条供给的故障（排查时用：确认它好了就把标记摘掉） */
+route('DELETE', /^\/api\/faults\/([\w-]+)$/, async (ctx) => {
+  const key = ctx.params[0]
+  const db = await store.readDb()
+  const hit = (db.faultSignals || []).find(
+    (signal) => signal.id === key || signal.scope?.offerId === key || signal.scope?.providerId === key,
+  )
+  if (!hit) throw new HttpError(404, '没有这条故障信号')
+  await inv.clearFaults(
+    hit.scope?.offerId ? { offerId: hit.scope.offerId } : { providerId: hit.scope?.providerId },
+  )
+  publishFault(
+    buildFaultSignal({
+      kind: 'empty-turn',
+      level: 'notice',
+      active: false,
+      scope: hit.scope,
+      reason: '手动清除',
+    }),
+  )
+  return { ok: true }
+})
+
+/** 清空发生记录（只清记录，不动开关与改道） */
+route('DELETE', /^\/api\/diagnostics\/events$/, async () => {
+  const removed = await inv.clearEmptyEventsLog()
+  return { ok: true, removed }
+})
+
+/** 手动解除一条改道（不想等 20 分钟自动复检时用） */
+route('DELETE', /^\/api\/diagnostics\/detours\/([\w-]+)$/, async (ctx) => {
+  const row = await inv.resolveEmptyDetour(ctx.params[0], { reason: 'manual' })
+  if (!row) throw new HttpError(404, '没有这条改道，或已经解除了')
+  return { ok: true }
 })
 
 // ------------------------------------------------------------------ 导出
@@ -2722,6 +2937,10 @@ function flushRouting() {
   }
   if (!routingBuffer.length) return Promise.resolve()
   const batch = routingBuffer.splice(0, routingBuffer.length)
+  // 顺手写一份逐条明细账本（去掉候选详情，约 300 字节/条）。
+  // 和决策日志并行：日志是「最近发生了什么」的调试窗口（500 条），
+  // 账本是「每一条花了多少」的账（保留 30 天），用途不同别混着用
+  void appendDetail(batch)
   return inv.recordRoutingBatch(batch).catch((error) => {
     // 写失败把本批塞回队头，下个 2 秒周期重试——决策日志是排查依据，
     // 静默丢弃等于让「为什么选了它」永远查不到
@@ -2734,6 +2953,134 @@ function queueRouting(entry) {
   routingBuffer.push(entry)
   if (routingBuffer.length >= 200) flushRouting() // 上游一直失败时别把内存堆爆
   if (!routingTimer) routingTimer = setTimeout(flushRouting, 2000)
+}
+
+// 空回合记录也攒批写：理由同决策日志，尽量不让一个请求带两次整库重写。
+// 异常事件本来就少，2 秒延迟完全够用
+const emptyBuffer = []
+let emptyTimer = null
+
+function queueEmptyEvent(event) {
+  if (!event) return
+  emptyBuffer.push(event)
+  if (!emptyTimer) {
+    emptyTimer = setTimeout(() => {
+      emptyTimer = null
+      const batch = emptyBuffer.splice(0, emptyBuffer.length)
+      inv.recordEmptyBatch(batch).catch((error) => {
+        console.error('[网关] 空回合记录写盘失败：', error)
+        emptyBuffer.unshift(...batch)
+      })
+    }, 2000)
+    emptyTimer.unref?.()
+  }
+}
+
+// 故障信号也攒批写（理由同上）。区别是它还要**广播**给订阅者（自动路由）
+const faultBuffer = []
+let faultTimer = null
+
+function queueFaultSignal(signal) {
+  if (!signal) return
+  faultBuffer.push(signal)
+  if (!faultTimer) {
+    faultTimer = setTimeout(() => {
+      faultTimer = null
+      const batch = faultBuffer.splice(0, faultBuffer.length)
+      inv.recordFaultBatch(batch).catch((error) => {
+        console.error('[网关] 故障信号写盘失败：', error)
+        faultBuffer.unshift(...batch)
+      })
+    }, 2000)
+    faultTimer.unref?.()
+  }
+  // 广播是同步的：订阅方（自动路由）要能立刻生效，不能等落盘。
+  // notice 级不广播——见 core/fault-signal.js 文件头，救回来的事不打扰路由
+  if (signal.level !== 'notice') publishFault(signal)
+
+  // 同时写进自动路由那边的故障账（core/failover.js）：那是路由排序和自动路由
+  // 「不把它当最优」实际消费的那一份。只发信号不写账的话，自动路由即使订阅了
+  // 也得自己再存一份——两边各存一份必然会漂，所以收口在这一处。
+  // 这里做的是异步写，失败只记日志：诊断是旁路，不能拦这一单请求
+  store
+    .mutate((latestDb) => {
+      applyFaultToFailover(latestDb, signal)
+    })
+    .catch((error) => console.error('[故障信号] 写故障账失败：', error.message))
+}
+
+/**
+ * 一次空回合结束后，判断「这事要不要告诉路由」。
+ *
+ * 三档判定全在 core/fault-signal.js#judgeEmptyFault，这里只负责凑事实、发信号。
+ *
+ * @param {object} input
+ *   provider / offer   出问题的供给
+ *   model             客户端请求的模型名
+ *   recovered         这一轮最后有没有救回来
+ *   hadFallback       有没有别家可换
+ *   detail            附加事实（记进信号，方便排查）
+ */
+function reportEmptyFault({ candidate, model, recovered, hadFallback = true, detail = {} }) {
+  if (!candidate?.provider) return
+  // 5 分钟窗口内的命中次数：进程内滑动窗口，见 emptyHitWindow
+  const hits = countEmptyHits({
+    providerId: candidate.provider.id,
+    modelKey: inv.normalizeModelKey(model),
+  })
+  const verdict = judgeEmptyFault({ hits, recovered, hadFallback })
+  const scope = {
+    providerId: candidate.provider.id,
+    providerName: candidate.provider.name,
+    offerId: candidate.offer?.id ?? null,
+    modelKey: inv.normalizeModelKey(model),
+    model,
+  }
+  const signal = buildFaultSignal({
+    kind: 'empty-turn',
+    level: verdict.level,
+    scope,
+    reason: verdict.reason,
+    suggested: verdict.suggested,
+    hits,
+    // notice 也建信号：诊断页要看得见「发生过但没影响你」。
+    // 它不会广播（publishFault 里按 level 拦），只是落库留痕
+    detail: { ...detail, windowMs: FAULT_WINDOW_MS, recovered },
+  })
+  queueFaultSignal(signal)
+  return verdict.broadcast ? signal : null
+}
+
+/**
+ * 「最近 5 分钟内，这条供给空了几次」的滑动窗口。
+ *
+ * 为什么放内存而不是查库：这是热路径上的判断，查库要么读盘要么多一次聚合；
+ * 而且进程重启后窗口本来就该清空——重启前的「连续 3 次」说明不了重启后还会继续。
+ * 上限 500 条，超出丢最旧的，一个永远涨不上去的环形缓冲。
+ */
+const emptyHitWindow = []
+const EMPTY_HIT_WINDOW_MAX = 500
+
+function countEmptyHits({ providerId = null, modelKey = null, now = Date.now() } = {}) {
+  const since = now - FAULT_WINDOW_MS
+  let hits = 0
+  for (const hit of emptyHitWindow) {
+    if (hit.at < since) continue
+    if (hit.providerId !== providerId) continue
+    if (modelKey && hit.modelKey && hit.modelKey !== modelKey) continue
+    hits += 1
+  }
+  return hits + 1 // 含本次
+}
+
+/** 记一次空回合命中（补问成功、本地重建都算——它确实是空回合） */
+function noteEmptyHit({ providerId = null, modelKey = null }) {
+  const now = Date.now()
+  emptyHitWindow.push({ at: now, providerId, modelKey })
+  // 顺手把过期的剪掉，窗口不涨
+  const since = now - FAULT_WINDOW_MS
+  while (emptyHitWindow.length > 0 && emptyHitWindow[0].at < since) emptyHitWindow.shift()
+  while (emptyHitWindow.length > EMPTY_HIT_WINDOW_MAX) emptyHitWindow.shift()
 }
 
 // 真实流量计数先攒内存，每 5 秒刷一次盘——每个请求都重写 db.json 太重
@@ -2806,6 +3153,22 @@ export async function flushGatewayBuffers() {
   try {
     await flushRouting()
     await flushTraffic()
+    if (emptyTimer) {
+      clearTimeout(emptyTimer)
+      emptyTimer = null
+    }
+    if (emptyBuffer.length > 0) {
+      const batch = emptyBuffer.splice(0, emptyBuffer.length)
+      await inv.recordEmptyBatch(batch)
+    }
+    if (faultTimer) {
+      clearTimeout(faultTimer)
+      faultTimer = null
+    }
+    if (faultBuffer.length > 0) {
+      const batch = faultBuffer.splice(0, faultBuffer.length)
+      await inv.recordFaultBatch(batch)
+    }
   } catch (error) {
     console.error('[网关] 退出前落盘失败：', error)
   }
@@ -2832,12 +3195,18 @@ function authorizeGateway(req, db) {
 }
 
 /**
- * 把一次请求转给某个候选站。
+ * 一次上游尝试：发请求、读流、把正文/工具调用写给客户端，但**不收尾**。
  *
- * 关键在流式的提交边界：必须读到第一个 chunk 并确认它不是错误，才向客户端
- * writeHead。在这之前失败都可以静默换站；一旦提交，就只能收尾，不能重试。
+ * 收尾为什么留给调用方：空回合守卫要能在「这一轮其实什么都没说」时反悔，而
+ * finish_reason / `[DONE]` / response.completed 一旦发给客户端，这一轮就算结束了，
+ * 后面补的回答会被当成多余的东西丢掉。所以终端块先扣在手里（terminal），
+ * 由 forwardToUpstream 判完再决定发不发。
+ *
+ * resume=true 表示这是一次「接在前一次后面」的补问：响应头早就发出去了，
+ * 所以不再 writeHead，并且这次产生的思考增量必须丢掉（否则客户端会看到
+ * 两段一模一样的思考，比空回合更让人看不懂）。
  */
-async function forwardToUpstream({
+async function streamAttempt({
   candidate,
   body,
   res,
@@ -2845,9 +3214,10 @@ async function forwardToUpstream({
   pool = 'paid',
   clientSignal = null,
   protocol = 'chat',
+  resume = false,
 }) {
   const apiKey = await inv.revealSecret(candidate.credential.id)
-  if (!apiKey) return { committed: false, error: 'Key 解密失败' }
+  if (!apiKey) return { error: 'Key 解密失败', committed: resume }
 
   const isResponses = protocol === 'responses'
   const isStream = body.stream === true
@@ -2874,7 +3244,7 @@ async function forwardToUpstream({
       controller.abort()
     }, ms)
   }
-  const touch = () => armTimer(STREAM_IDLE_MS)
+  const touch = (ms = STREAM_IDLE_MS) => armTimer(ms)
   armTimer(STREAM_IDLE_MS)
 
   // 客户端先走了就别再喂上游：否则对面继续生成，白烧额度还占着连接
@@ -2913,15 +3283,39 @@ async function forwardToUpstream({
     // 后者不是站的错（上层按 clientSignal 排除）。错误文本必须能区分，否则
     // 路由日志里只剩一句 This operation was aborted，排查时看不出所以然
     if (idleTimedOut) {
-      return { committed: false, error: `上游 ${STREAM_IDLE_MS / 1000} 秒无响应（首字超时）` }
+      return { committed: resume, error: `上游 ${STREAM_IDLE_MS / 1000} 秒无响应（首字超时）` }
     }
-    return { committed: false, error: `连接失败：${error.message}` }
+    return { committed: resume, error: `连接失败：${error.message}` }
   }
 
   if (!upstreamRes.ok) {
     const text = await upstreamRes.text().catch(() => '')
     cleanup()
-    return { committed: false, error: `HTTP ${upstreamRes.status} ${text.slice(0, 160).replace(/\s+/g, ' ')}` }
+    return { committed: resume, error: `HTTP ${upstreamRes.status} ${text.slice(0, 160).replace(/\s+/g, ' ')}` }
+  }
+
+  if (!isStream) {
+    let payload
+    try {
+      payload = await upstreamRes.json()
+    } catch {
+      cleanup()
+      return { committed: resume, error: '上游返回的不是 JSON' }
+    }
+    cleanup()
+    // 协议差异收在 wire.js 里：Responses 的 error / status:"failed" /
+    // usage 字段改名都在那边处理，这里只消费归一化结果
+    const extracted = extractNonStream(protocol, payload)
+    if (extracted.error) return { committed: resume, error: extracted.error }
+    return {
+      payload,
+      committed: resume,
+      usage: extracted.usage || null,
+      ttftMs: null,
+      realCheck: extracted.realCheck,
+      // 非流式由调用方决定要不要落盘（可能要重试）
+      needsWrite: !resume,
+    }
   }
 
   const headers = {
@@ -2933,33 +3327,10 @@ async function forwardToUpstream({
     'X-ManageAPI-Pool': pool || 'paid',
   }
 
-  if (!isStream) {
-    let payload
-    try {
-      payload = await upstreamRes.json()
-    } catch {
-      cleanup()
-      return { committed: false, error: '上游返回的不是 JSON' }
-    }
-    cleanup()
-    // 协议差异收在 wire.js 里：Responses 的 error / status:"failed" /
-    // usage 字段改名都在那边处理，这里只消费归一化结果
-    const extracted = extractNonStream(protocol, payload)
-    if (extracted.error) return { committed: false, error: extracted.error }
-    res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', ...headers })
-    res.end(JSON.stringify(payload))
-    return {
-      committed: true,
-      usage: extracted.usage || null,
-      ttftMs: null,
-      realCheck: extracted.realCheck,
-    }
-  }
-
   const reader = upstreamRes.body.getReader()
   const decoder = new TextDecoder()
   let buffer = ''
-  let committed = false
+  let committed = resume
   let ttftMs = null
   // 质量信号与 usage 都交给检查器累积：两种协议的增量事件形状差得太远，
   // 在这里分叉写两套变量只会让后面每个字段都要判断一次协议
@@ -2980,6 +3351,8 @@ async function forwardToUpstream({
   // 提交前攒下的生命周期事件（Responses 的 response.created 等）。
   // 它们在 commit 时按原顺序补发，但在此之前不影响「能否换站」的判断
   const heldChunks = []
+  // 终端块（finish_reason / [DONE] / response.completed）先扣住，见函数头注释
+  const terminal = []
 
   const push = async (chunk) => {
     // 客户端已经断开时 res.write 会静默失败，drain 也不会再来——直接抛，让上层收尾
@@ -3018,9 +3391,15 @@ async function forwardToUpstream({
         if (!committed && inspected.error) {
           await reader.cancel().catch(() => {})
           cleanup()
-          return { committed: false, error: inspected.error }
+          return { committed: false, error: inspected.error, terminal }
         }
         if (inspected.drop) continue
+
+        // 终端块扣在手里：这一轮是不是空的，要等流结束才判得出来
+        if (isTerminalChunk(protocol, parsed, payloadText)) {
+          terminal.push(raw)
+          continue
+        }
 
         // 生命周期事件（response.created / in_progress）先攒着不发给客户端。
         //
@@ -3033,13 +3412,17 @@ async function forwardToUpstream({
           continue
         }
 
+        // 补问时丢掉思考增量：第一次尝试的思考已经流给客户端了，再来一遍是重复
+        const forwarded = resume ? rewriteAppendedChunk(protocol, raw, parsed) : raw
+        if (forwarded === null) continue
+
         commit()
         if (heldChunks.length > 0) {
           const held = heldChunks.join('')
           heldChunks.length = 0
           await push(held)
         }
-        await push(raw)
+        await push(forwarded)
       }
 
       // 非标准上游可能不用 \n\n 分隔，攒太多就整块放行
@@ -3060,31 +3443,311 @@ async function forwardToUpstream({
       await push(buffer)
     }
 
-    if (!committed) {
-      cleanup()
-      return { committed: false, error: '上游没有返回任何内容' }
+    cleanup()
+    const { usage, contentChars, textChars, reasoningChars, hasToolCalls, finishReason, textTail } = inspector.state
+    return {
+      committed,
+      usage: usage || null,
+      ttftMs,
+      terminal,
+      realCheck: {
+        contentChars,
+        textChars,
+        reasoningChars,
+        textTail,
+        hasToolCalls,
+        finishReason,
+        promptTokens: usage?.prompt_tokens ?? null,
+      },
     }
-
-    res.end()
   } catch (error) {
     await reader.cancel().catch(() => {})
     cleanup()
     const reason = idleTimedOut ? `上游流中断（${STREAM_IDLE_MS / 1000} 秒无数据）` : error.message
-    if (!committed) return { committed: false, error: `流中断：${reason}` }
-    if (!res.writableEnded) res.end()
-    return { committed: true, usage: inspector.state.usage, ttftMs, streamError: reason }
-  }
-
-  cleanup()
-  const { usage, contentChars, hasToolCalls, finishReason } = inspector.state
-  return {
-    committed: true,
-    usage,
-    ttftMs,
-    realCheck: { contentChars, hasToolCalls, finishReason, promptTokens: usage?.prompt_tokens ?? null },
+    const { usage, contentChars, textChars, reasoningChars, hasToolCalls, finishReason, textTail } = inspector.state
+    return {
+      committed,
+      usage: usage || null,
+      ttftMs,
+      terminal,
+      streamError: reason,
+      realCheck: {
+        contentChars,
+        textChars,
+        reasoningChars,
+        textTail,
+        hasToolCalls,
+        finishReason,
+        promptTokens: usage?.prompt_tokens ?? null,
+      },
+    }
   }
 }
 
+/**
+ * 补问成本估算要的「这家站、这个模型有多快」。
+ *
+ * 首字用探针/流量测出来的 ttftMs（评分里就有）；生成速度用最近 7 天的真实
+ * 用量（usage.json 里按「总耗时 − 首字」算出的 tok/s，见 core/usage.js）。
+ * 两个都拿不到就返回 null，由 estimateRetryCost 用兜底值——宁可估慢一点。
+ */
+async function speedFor(candidate) {
+  const ttftMs = Number(candidate?.ttftMs) || null
+  let tps = null
+  try {
+    const summary = await usageSummary({ days: 7 })
+    const row = summary?.byProvider?.[candidate.provider.id]
+    if (row && Number(row.avgTps) > 0) tps = Number(row.avgTps)
+  } catch {
+    /* 用量文件读不出来就按兜底速度估，不影响主流程 */
+  }
+  return { ttftMs, tps }
+}
+
+/**
+ * 把请求转给某个候选站，并在「空回合」时按档位自动补问一次。
+ *
+ * 空回合守卫的完整链路：
+ *   1. 一次尝试没吐出任何正文和工具调用（或中途断流且还没吐出东西）
+ *   2. 按这一轮的思考量 + 该站实测速度，估算「再问一遍要多久」
+ *   3. 越贵补得越少（RETRY_TIERS）；同一个站 5 分钟内已经空过 2 次就不再问它
+ *   4. mode='same' 就同站再问；mode='switch' 就换一家最像的（价格、速度最近）
+ *   5. 每次空回合都落一条记录，界面上能看到「发生过、怎么处置的」
+ *
+ * 所有判断都收在 core/empty-guard.js，这里只负责按计划执行。
+ */
+async function forwardToUpstream({
+  candidate,
+  body,
+  res,
+  attemptIndex,
+  pool = 'paid',
+  clientSignal = null,
+  protocol = 'chat',
+  hooks = null,
+}) {
+  const requestHasTools = Array.isArray(body?.tools) && body.tools.length > 0
+  let current = candidate
+  let resume = false
+  let tries = 0
+
+  // 保底：不论走哪条分支，最后都要把收尾块发出去（否则客户端会一直等）
+  const finish = (outcome) => {
+    if (outcome.terminal?.length && !res.writableEnded) {
+      for (const raw of outcome.terminal) {
+        try {
+          res.write(raw)
+        } catch {
+          break
+        }
+      }
+    }
+    if (!res.writableEnded) res.end()
+    return outcome
+  }
+
+  while (true) {
+    tries += 1
+    const attemptStarted = Date.now()
+    const outcome = await streamAttempt({
+      candidate: current,
+      body,
+      res,
+      attemptIndex,
+      pool,
+      clientSignal,
+      protocol,
+      resume,
+    })
+
+    // 连接层/HTTP 层失败：不 commit 的照旧让上层换站；已 commit 的只能收尾
+    if (outcome.error) {
+      if (outcome.committed) return finish(outcome)
+      return outcome
+    }
+
+    // 非流式：内容已经完整拿到，直接落盘（重试只在流式里做——非流式一次就
+    // 拿到全部内容，判空后重发的成本比流式高得多，而且这种病是流式专属）
+    if (outcome.needsWrite) {
+      res.writeHead(200, {
+        'Content-Type': 'application/json; charset=utf-8',
+        'X-ManageAPI-Provider': encodeURIComponent(current.provider.name),
+        'X-ManageAPI-Attempts': String(attemptIndex + 1),
+        'X-ManageAPI-Pool': pool || 'paid',
+      })
+      res.end(JSON.stringify(outcome.payload))
+      if (hooks?.onEmpty && judgeEmptyTurn({ ...outcome.realCheck, requestHasTools }).empty) {
+        hooks.onEmpty({
+          candidate: current,
+          facts: { ...outcome.realCheck, requestHasTools },
+          action: 'off',
+          attempts: tries,
+          wastedMs: Date.now() - attemptStarted,
+          usage: outcome.usage,
+        })
+      }
+      return outcome
+    }
+
+    // 这次到底有没有真的吐出东西（正文 / 工具调用）。只有「什么都没吐」才允许补问：
+    // 已经说了一半再重来会让客户端读到两段重复的话
+    const facts = { ...outcome.realCheck, requestHasTools }
+    const forwardedContent = (outcome.realCheck?.textChars || 0) > 0 || Boolean(outcome.realCheck?.hasToolCalls)
+    const verdict = judgeEmptyTurn(facts)
+    const broken = Boolean(outcome.streamError)
+
+    // 先试「本地重建」：上游只是把工具调用标记漏进了正文/思考，那玩意儿就在
+    // 我们手里，自己拼回去就行——零延迟、零成本，比再问模型一遍好得多。
+    //
+    // 触发条件只看三件事：带了 tools、上游没回 tool_calls、文本里认得出标记。
+    // **不看正文空不空**——标记漏进正文时正文当然不空，那时更需要重建；
+    // 「正文必须为空」是补问的限制（怕话说到一半重来），重建不适用，
+    // 它是把收尾换成 tool_calls，而不是往已有内容后面追加
+    if (requestHasTools && !outcome.realCheck?.hasToolCalls) {
+      const allowedToolNames = (Array.isArray(body?.tools) ? body.tools : [])
+        .map((tool) => tool?.function?.name || tool?.name)
+        .filter(Boolean)
+      const repair = repairToolCalls(outcome.realCheck?.textTail || '', { allowedToolNames })
+      if (repair.calls.length > 0) {
+        // Responses 的收尾事件要带上补齐后的 output，从扣住的终端块里取原文
+        let terminalEvent = null
+        if (protocol === 'responses') {
+          for (const raw of outcome.terminal || []) {
+            const line = raw.split(/\r?\n/).find((l) => l.trim().startsWith('data:'))
+            if (!line) continue
+            try {
+              const parsed = JSON.parse(line.trim().slice(5).trim())
+              if (parsed?.type === 'response.completed') terminalEvent = parsed
+            } catch {
+              /* 不是 JSON 就算了，下面会自己造一个最小的收尾 */
+            }
+          }
+        }
+        const chunks = buildRepairChunks(protocol, repair.calls, { terminal: terminalEvent })
+        if (chunks.length > 0) {
+          // 扣住的终端块作废：它说的是 stop，我们要发的是 tool_calls
+          outcome.terminal = []
+          if (!res.writableEnded) {
+            for (const chunk of chunks) {
+              try {
+                res.write(chunk)
+              } catch {
+                break
+              }
+            }
+          }
+          hooks?.onRepaired?.({
+            candidate: current,
+            facts,
+            format: repair.format,
+            calls: repair.calls,
+            attempts: tries,
+            wastedMs: Date.now() - attemptStarted,
+            usage: outcome.usage,
+          })
+          const repaired = {
+            ...outcome,
+            committed: true,
+            terminal: [],
+            realCheck: { ...outcome.realCheck, hasToolCalls: true },
+          }
+          if (!res.writableEnded) res.end()
+          return repaired
+        }
+      }
+      // 认出了标记但解析不了：记一笔，让用户知道「这种方言还不支持」，
+      // 然后照常走补问——不猜、不瞎拼
+      if (repair.sawMarker) {
+        hooks?.onRepairFailed?.({
+          candidate: current,
+          facts,
+          rejected: repair.rejected,
+          attempts: tries,
+        })
+      }
+    }
+
+
+    // 补问之后拿到内容了：告诉调用方「刚才那些空回合已经救回来了」
+    if ((forwardedContent || (tries > 1 && !verdict.empty)) && tries > 1) {
+      hooks?.onRecovered?.({ by: current.provider.name, candidate: current })
+    }
+
+    // 正常结束（有内容，或本来就不是空回合）：收尾
+    if (!verdict.empty || forwardedContent) {
+      if (broken) {
+        // 断流但已经吐过正文：无从补救，只能如实收尾并让上层记一次失败
+        return finish({ ...outcome, streamError: outcome.streamError })
+      }
+      return finish(outcome)
+    }
+
+    // ---- 到这里：这一轮等于什么都没说（断流也算，只要还没吐过东西）----
+
+    const plan = hooks?.plan
+      ? await hooks.plan({ facts, candidate: current, attemptStarted, tries, broken })
+      : { retries: 0, waitMs: 0, reason: 'disabled' }
+
+    const canRetry = plan.retries > 0 && tries <= plan.retries && !clientSignal?.aborted
+    const nextCandidate = canRetry && hooks?.pickFallback ? hooks.pickFallback(current) : null
+
+    // 不补问（守卫关着 / 这活太贵 / 没别家可换）：如实收尾并记账
+    if (!canRetry || (plan.reason !== 'same' && !nextCandidate)) {
+      if (!outcome.committed) {
+        // 一个字节都没发出去：交回上层走普通的「换站」流程，客户端看不到这次废调用
+        return {
+          ...outcome,
+          emptyTurn: true,
+          error: broken
+            ? `空回合：${outcome.streamError}，且没有正文与工具调用`
+            : '空回合：上游没有返回正文，也没有工具调用',
+        }
+      }
+      hooks?.onEmpty?.({
+        candidate: current,
+        facts,
+        action: plan.retries > 0 && !nextCandidate ? 'no-retry' : plan.reason === 'disabled' ? 'off' : 'gave-up',
+        attempts: tries,
+        wastedMs: Date.now() - attemptStarted,
+        usage: outcome.usage,
+      })
+      return finish(outcome)
+    }
+
+    // ---- 补问 ----
+    const target = plan.reason === 'same' ? current : nextCandidate
+    hooks?.onEmpty?.({
+      candidate: current,
+      facts,
+      action: plan.reason === 'same' ? 'retry-same' : 'retry-switch',
+      attempts: tries,
+      wastedMs: Date.now() - attemptStarted,
+      usage: outcome.usage,
+      retryTo: target?.provider?.name || '',
+      plan,
+    })
+    // 换站才建改道账：同站补问是「临时问一句」，不改路由
+    if (plan.reason === 'switch' && hooks?.onDetour) {
+      hooks.onDetour({ from: current, to: target, plan })
+    }
+    current = target || current
+    // 流已经提交过，第二次就是「接着往后写」——思考要过滤，收尾沿用上一次的位置
+    resume = Boolean(outcome.committed)
+    // 上一次扣着的收尾块作废（这一轮还没结束）
+    if (plan.waitMs > 0) {
+      // 补问也要有上限：太慢的站不能无限等，见 RETRY_TIERS 的 waitMs
+      setTimeout(() => {
+        if (!res.writableEnded) {
+          try {
+            res.end()
+          } catch {
+            /* 已经断了 */
+          }
+        }
+      }, plan.waitMs).unref?.()
+    }
+  }
+}
 async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = false, protocol = 'chat') {
   const body = await readBody(req, { maxBytes: MAX_GATEWAY_BODY })
   // 客户端关闭连接时立刻取消上游请求：否则上游会继续生成，白烧额度还占着连接。
@@ -3148,6 +3811,11 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
   const manualOrder = db.manualOrder?.[inv.normalizeModelKey(model)] || null
   // 外部监控上报的真实故障：降级不拉黑（探针准入不受影响），但自动路由不把它当最优
   const isFaulted = faultMatcher(db.failover)
+  // 临时改道的站：空回合守卫把它挂起了，流量应该已经走别家。
+  // 和上面的 isFaulted 是两条独立证据来源（外部上报 vs 本机自己抓到的），
+  // 两者都成立时按更严重的处理——这里各传各的，判定在 selectCandidates 里合并
+  ensureDetours(db)
+  const detours = activeDetours(db)
   const pick = (offers) =>
     selectCandidates({
       offers,
@@ -3159,6 +3827,7 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
       model,
       order: manualOrder,
       isFaulted,
+      detours,
     })
 
   // 免费池先过闸门（额度 / 指纹 / 截断 / 过期），过了才交给路由排序。
@@ -3247,8 +3916,22 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
   const failures = []
   // 请求规模估算（只用于「计费是否明显虚报」的量级判断，不追求精确）
   const requestTokens = estimateRequestTokens(body)
+  // 本次请求碰到的空回合（可能多条）：补问成功了要把它们改成「救回来了」，
+  // 所以先攒着不立即落盘（见 hooks.onEmpty 与 hooks.onRecovered）
+  const pendingEmpties = []
 
-  for (let index = 0; index < candidates.length; index += 1) {
+  // ---- 空回合守卫 ----
+  // 配置与判定口径全部收在 core/empty-guard.js：这里只组装三个回调，
+  // 回答「这次补问贵不贵」「补问打哪家」「怎么记账」。
+  const emptyGuard = normalizeEmptyGuard(db.settings.emptyGuard)
+  const recentEmpties = db.emptyTurns || []
+
+  // 候选推进改成显式游标：守卫换站补问也要往前走同一根游标，
+  // 否则外层循环会把已经试过的站再试一遍
+  let cursor = 0
+
+  while (cursor < candidates.length) {
+    const index = cursor
     const candidate = candidates[index]
     // 客户端已断开就别再换站：后面的候选会立刻因 aborted 失败，
     // 把「根本没发出去的请求」记成它们的失败，污染可用率评分
@@ -3263,6 +3946,170 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
         pool,
         clientSignal: clientAbort.signal,
         protocol,
+        hooks: {
+          // 估算这次补问要多久 → 查档位 → 越贵补得越少（RETRY_TIERS）
+          plan: async ({ facts, candidate: current }) => {
+            if (!emptyGuard.enabled) return { retries: 0, waitMs: 0, reason: 'disabled' }
+            const speed = await speedFor(current)
+            const cost = estimateRetryCost({
+              reasoningChars: facts.reasoningChars,
+              textChars: facts.textChars,
+              ttftMs: speed.ttftMs,
+              tps: speed.tps,
+            })
+            // 这个站 5 分钟内已经空过几次：必然犯病的站不再耗时间
+            const hits = recentEmptyHits(recentEmpties, {
+              providerId: current.provider.id,
+              model,
+            })
+            const stale = hits >= STALE_HITS
+            const base = planEmptyRetry({ estimatedMs: cost.estimatedMs, staleProvider: stale })
+            // 用户选了「换一家」，或者这站已经连着空——都换成换站模式
+            const reason = emptyGuard.mode === 'switch' || stale ? 'switch' : 'same'
+            return { ...base, reason, retries: Math.max(reason === 'switch' ? 1 : 0, base.retries), estimatedMs: cost.estimatedMs }
+          },
+          // 换一家：在已经过了准入的候选里，挑价格与速度最接近的（见 empty-guard）
+          pickFallback: (current) => {
+            const closest = pickClosestCandidate(candidates, {
+              offerId: current.offer.id,
+              priceUsd: current.priceUsd,
+              ttftMs: current.ttftMs,
+            })
+            if (!closest) return null
+            const at = candidates.indexOf(closest)
+            if (at > cursor) cursor = at
+            return closest
+          },
+          // 每次空回合都落一条：不管救回来没有，用户都要能回头看
+          onEmpty: (info) => {
+            const event = buildEmptyEvent({
+              model,
+              protocol,
+              stream: body.stream === true,
+              facts: info.facts,
+              providerId: info.candidate.provider.id,
+              providerName: info.candidate.provider.name,
+              offerId: info.candidate.offer.id,
+              group: info.candidate.offer.group || '',
+              action: info.action,
+              recovered: false,
+              attempts: info.attempts,
+              wastedMs: info.wastedMs,
+              usage: info.usage,
+            })
+            // 还在尝试补问的先挂着：成功后要标「救回来了」
+            if (info.action === 'retry-same' || info.action === 'retry-switch') {
+              pendingEmpties.push(event)
+              return
+            }
+            queueEmptyEvent(event)
+            // 只有「真的没救回来」才升级成故障信号：
+            //   off       守卫关着 → 客户端确实断了一轮，算 degraded
+            //   gave-up   补问也空 → degraded
+            //   no-retry  没别家可换 → degraded
+            //   retry-*   还在试，等 onRecovered 定性，这里不发
+            if (info.action === 'off' || info.action === 'gave-up' || info.action === 'no-retry') {
+              noteEmptyHit({
+                providerId: info.candidate.provider.id,
+                modelKey: inv.normalizeModelKey(model),
+              })
+              reportEmptyFault({
+                candidate: info.candidate,
+                model,
+                recovered: false,
+                hadFallback: info.action !== 'no-retry',
+                detail: { action: info.action },
+              })
+            }
+          },
+          // 本地重建成功：不用问模型，标记就在我们手里。记一条 action=repaired
+          onRepaired: (info) => {
+            queueEmptyEvent(
+              buildEmptyEvent({
+                model,
+                protocol,
+                stream: body.stream === true,
+                facts: info.facts,
+                providerId: info.candidate.provider.id,
+                providerName: info.candidate.provider.name,
+                offerId: info.candidate.offer.id,
+                group: info.candidate.offer.group || '',
+                action: 'repaired-local',
+                recovered: true,
+                recoveredBy: `${info.format}（本地解析）`,
+                attempts: info.attempts,
+                wastedMs: info.wastedMs,
+                usage: info.usage,
+              }),
+            )
+            noteEmptyHit({ providerId: info.candidate.provider.id, modelKey: inv.normalizeModelKey(model) })
+            reportEmptyFault({
+              candidate: info.candidate,
+              model,
+              recovered: true,
+              detail: { action: 'repaired-local', format: info.format },
+            })
+          },
+          // 认出了标记但解析不了：记一笔「这种方言还不支持」，然后走补问
+          onRepairFailed: (info) => {
+            queueEmptyEvent(
+              buildEmptyEvent({
+                model,
+                protocol,
+                stream: body.stream === true,
+                facts: info.facts,
+                providerId: info.candidate.provider.id,
+                providerName: info.candidate.provider.name,
+                offerId: info.candidate.offer.id,
+                group: info.candidate.offer.group || '',
+                action: 'repair-failed',
+                recovered: false,
+                recoveredBy: '',
+                attempts: info.attempts,
+                note: info.rejected || 'unknown-format',
+              }),
+            )
+          },
+          // 补问成功：把刚才那几条挂着的标成已救回，再落盘
+          onRecovered: ({ by, candidate: recoveredFrom }) => {
+            if (recoveredFrom) {
+              noteEmptyHit({
+                providerId: recoveredFrom.provider.id,
+                modelKey: inv.normalizeModelKey(model),
+              })
+              reportEmptyFault({
+                candidate: recoveredFrom,
+                model,
+                recovered: true,
+                detail: { action: 'retry', recoveredBy: by || '' },
+              })
+            }
+            for (const event of pendingEmpties.splice(0, pendingEmpties.length)) {
+              event.recovered = true
+              event.recoveredBy = by || ''
+              queueEmptyEvent(event)
+            }
+          },
+          // 换站成功才建改道账：之后 20 分钟内流量先走别家，后台自动复检原站
+          onDetour: ({ from, to }) => {
+            if (!to) return
+            void inv
+              .recordEmptyDetour({
+                modelKey: inv.normalizeModelKey(model),
+                model,
+                offerId: from.offer.id,
+                providerId: from.provider.id,
+                providerName: from.provider.name,
+                group: from.offer.group || '',
+                replacedByOfferId: to.offer.id,
+                replacedByProviderId: to.provider.id,
+                replacedByProviderName: to.provider.name,
+                reason: 'empty-turn',
+                recheckMs: DETOUR_RECHECK_MS,
+              })
+              .catch(() => {})
+          },
+        },
       })
       if (result.committed) {
         const latencyMs = Date.now() - started
@@ -3296,6 +4143,8 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
         await recordUsage({
           keyId: keyRecord?.id ?? '-',
           providerId: candidate.offer.providerId,
+          // 分组进聚合键：详细用量的「按分组」小计要从全量聚合算，不从日志窗口算
+          group: candidate.offer.group || '',
           model: candidate.offer.modelKey || candidate.offer.upstreamName,
           inputTokens: numbers?.input,
           outputTokens: numbers?.output,
@@ -3358,6 +4207,9 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
       })
       bufferTraffic(candidate.offer.id, false, error.message || String(error))
     }
+    // 游标手动推进：补问可能已经把 cursor 推到后面那家（pickFallback），
+    // 再 ++ 一次就自然跳过已经用过的候选
+    cursor += 1
   }
 
   queueRouting({

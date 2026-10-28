@@ -8,6 +8,23 @@ import { readDb, mutate, encryptSecret, decryptSecret, normalizeGroup } from './
 import { normalizeQuota, resetIfDue, consumeQuota } from './quota.js'
 // 登录态编排：凭据解密后调 providers 的登录协议（providers 不回头 import 本文件，无循环）
 import * as providers from './providers.js'
+import {
+  ensureEmptyEvents,
+  recordEmptyEvent,
+  clearEmptyEvents,
+  recordDetour,
+  resolveDetour,
+  noteDetourCheck,
+} from './empty-guard.js'
+import {
+  ensureFaultSignals,
+  recordFaultSignal,
+  buildFaultSignal,
+  clearFaultSignals,
+  activeFaultSignals,
+  combineWithDetours,
+  summarizeFaultSignals,
+} from './fault-signal.js'
 
 export function newId(prefix) {
   return `${prefix}_${randomUUID().slice(0, 8)}`
@@ -681,6 +698,15 @@ export async function findGatewayKey(value) {
 const PROBE_KEEP_DAYS = 30
 const PROBE_KEEP_MAX = 5000
 
+/**
+ * 探针结果落库，并顺手把「这家现在有问题」翻译成故障信号。
+ *
+ * 为什么在这里而不是在探针模块里：探针只负责测，测完的结论怎么往上报告是
+ * 台账层的事。而且只有台账层知道供给的 providerId / offerId 全貌。
+ *
+ * 只对**确定的坏证据**发信号（指纹不符 / 输出截断 / 用量虚报 / 明确失败），
+ * 「过期」「没证据」不发——那不是站坏了，是我们还没测，报出去会误导路由。
+ */
 export async function recordProbe(record) {
   return mutate((db) => {
     const entry = {
@@ -698,6 +724,37 @@ export async function recordProbe(record) {
       return !Number.isFinite(ts) || ts >= cutoff
     })
     if (kept.length !== db.probes.length) db.probes = kept
+
+    // 探针结论 → 故障信号（口径见函数头）。只报「确定坏」，不报「还没测」
+    const faults = []
+    if (record.fingerprintOk === false) faults.push('指纹不符（疑似掉包）')
+    if (record.truncated === true) faults.push('输出被截断（疑似砍额度）')
+    if (record.billingInflated === true) faults.push('用量虚报')
+    if (faults.length > 0) {
+      const offer = db.offers.find((o) => o.id === record.offerId)
+      const provider = db.providers.find((p) => p.id === record.providerId)
+      recordFaultSignal(
+        db,
+        buildFaultSignal({
+          kind: 'integrity',
+          level: 'faulty',
+          scope: {
+            providerId: record.providerId,
+            providerName: provider?.name || '',
+            offerId: record.offerId,
+            modelKey: record.modelKey || offer?.modelKey || null,
+            model: offer?.upstreamName || '',
+          },
+          reason: `探针判定：${faults.join(' · ')}`,
+          suggested: 'avoid',
+          detail: { probeId: entry.id, faults },
+        }),
+      )
+    } else if (record.ok === true) {
+      // 探针这次正常 → 把这条供给之前的完整性故障解掉，
+      // 否则一次历史污点会让它永远被避开（探针是定期跑的，它自己会证明恢复）
+      clearFaultSignals(db, { offerId: record.offerId })
+    }
     return entry
   })
 }
@@ -1184,6 +1241,55 @@ export async function addTraffic(entries, windowMs = TRAFFIC_WINDOW_MS) {
 
 export async function recordRouting(entry) {
   return recordRoutingBatch([entry])
+}
+
+/**
+ * 批量写空回合记录（异常诊断页）。
+ *
+ * 和决策日志同一个理由：每个请求都 mutate 一次等于整份重写 db.json。异常事件
+ * 很少，但一旦发生往往连着几条，照样攒批写。
+ */
+export async function recordEmptyBatch(events = []) {
+  if (!events.length) return []
+  return mutate((db) => events.map((event) => recordEmptyEvent(db, event)))
+}
+
+/** 手动清空空回合记录（诊断页的「清空」按钮） */
+export async function clearEmptyEventsLog() {
+  return mutate((db) => clearEmptyEvents(db))
+}
+
+/** 建一条临时改道账：原站出问题，流量先走别家，20 分钟后复检 */
+export async function recordEmptyDetour(entry) {
+  return mutate((db) => recordDetour(db, entry))
+}
+
+/** 解除改道（复检连续正常 / 用户手动） */
+export async function resolveEmptyDetour(offerId, options = {}) {
+  return mutate((db) => resolveDetour(db, offerId, options))
+}
+
+/** 批量写故障信号（攒批理由同决策日志） */
+export async function recordFaultBatch(signals = []) {
+  if (!signals.length) return []
+  return mutate((db) => signals.map((signal) => recordFaultSignal(db, signal)))
+}
+
+/** 清掉某个供给上的故障信号（恢复时调） */
+export async function clearFaults({ offerId = null, providerId = null } = {}) {
+  return mutate((db) => clearFaultSignals(db, { offerId, providerId }))
+}
+
+/** 故障快照（已把临时改道并进来）：自动路由挑优时读这一份就够 */
+export async function faultSnapshot() {
+  const db = await readDb()
+  ensureFaultSignals(db)
+  return combineWithDetours(db, activeFaultSignals(db))
+}
+
+/** 记一次改道复检的结果（连续正常到阈值就自动解除改道） */
+export async function noteEmptyDetourCheck(offerId, { ok } = {}) {
+  return mutate((db) => noteDetourCheck(db, offerId, { ok }))
 }
 
 /**

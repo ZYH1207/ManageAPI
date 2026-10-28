@@ -180,6 +180,9 @@ function textLength(content) {
 
 const TOOL_ITEM_TYPES = new Set(['function_call', 'custom_tool_call', 'tool_call'])
 
+/** 攒给「工具调用本地重建」用的原文上限：16K 足够装下几段方言标记 */
+const TEXT_TAIL_LIMIT = 16000
+
 /** Responses 里纯生命周期、不含任何正文的事件：先攒着，不靠它们提交 */
 const RESPONSES_LIFECYCLE = new Set([
   'response.created',
@@ -203,7 +206,26 @@ const RESPONSES_LIFECYCLE = new Set([
  * 所以永远不丢。Chat 的 usage chunk 是网关自己要的，可以藏起来。
  */
 export function createStreamInspector(protocol, { clientWantsUsage = false } = {}) {
-  const state = { usage: null, contentChars: 0, hasToolCalls: false, finishReason: null }
+  // textChars / reasoningChars 分开记："这一轮有没有说话"要用正文数，"站点有没有偷工"
+  // 用正文+思考（见 quality-signals）。混成一个数字两种判定必然互相带偏。
+  //
+  // 另外攒一份「文字原文」（只留尾部，上限见 TEXT_TAIL_LIMIT）：上游把工具调用
+  // 标记漏进正文/思考时，空回合守卫要拿它本地重建（见 core/tool-repair.js）。
+  // 只攒尾部是因为标记总在这一轮刚生成的那一小段里，一个大回答不值得全存。
+  const state = {
+    usage: null,
+    contentChars: 0,
+    textChars: 0,
+    reasoningChars: 0,
+    textTail: '',
+    hasToolCalls: false,
+    finishReason: null,
+  }
+  const rememberText = (piece) => {
+    if (!piece) return
+    const next = state.textTail + piece
+    state.textTail = next.length > TEXT_TAIL_LIMIT ? next.slice(-TEXT_TAIL_LIMIT) : next
+  }
 
   if (protocol === 'responses') {
     return {
@@ -229,13 +251,18 @@ export function createStreamInspector(protocol, { clientWantsUsage = false } = {
         }
 
         if (type === 'response.output_text.delta') {
+          state.textChars += String(parsed.delta || '').length
           state.contentChars += String(parsed.delta || '').length
+          rememberText(String(parsed.delta || ''))
         } else if (
           type === 'response.reasoning_summary_text.delta' ||
           type === 'response.reasoning_text.delta'
         ) {
-          // 思考摘要也算「有内容」：只输出思考、正文为空的响应不该被判成空回答
+          // 思考摘要也算「有内容」：只输出思考、正文为空的响应不该被判成站点偷工。
+          // 但它不算「客户拿到了正文」——空回合守卫看的是 textChars
+          state.reasoningChars += String(parsed.delta || '').length
           state.contentChars += String(parsed.delta || '').length
+          rememberText(String(parsed.delta || ''))
         } else if (type === 'response.output_item.added' || type === 'response.output_item.done') {
           if (TOOL_ITEM_TYPES.has(parsed.item?.type)) state.hasToolCalls = true
         } else if (RESPONSES_TERMINAL.has(type)) {
@@ -249,7 +276,10 @@ export function createStreamInspector(protocol, { clientWantsUsage = false } = {
             for (const item of response.output || []) {
               if (item?.type === 'message') {
                 for (const part of item.content || []) {
-                  if (typeof part?.text === 'string') state.contentChars += part.text.length
+                  if (typeof part?.text === 'string') {
+                    state.textChars += part.text.length
+                    state.contentChars += part.text.length
+                  }
                 }
               }
               if (TOOL_ITEM_TYPES.has(item?.type)) state.hasToolCalls = true
@@ -278,9 +308,15 @@ export function createStreamInspector(protocol, { clientWantsUsage = false } = {
       const choice = Array.isArray(parsed?.choices) ? parsed.choices[0] : null
       if (choice) {
         const delta = choice.delta || {}
-        if (typeof delta.content === 'string') state.contentChars += delta.content.length
+        if (typeof delta.content === 'string') {
+          state.textChars += delta.content.length
+          state.contentChars += delta.content.length
+          rememberText(delta.content)
+        }
         if (typeof delta.reasoning_content === 'string') {
+          state.reasoningChars += delta.reasoning_content.length
           state.contentChars += delta.reasoning_content.length
+          rememberText(delta.reasoning_content)
         }
         if (Array.isArray(delta.tool_calls) && delta.tool_calls.length > 0) {
           state.hasToolCalls = true
@@ -319,11 +355,18 @@ export function extractNonStream(protocol, payload) {
 
     const usage = normalizeUsage('responses', payload?.usage)
     let contentChars = 0
+    let textChars = 0
+    let reasoningChars = 0
     let hasToolCalls = false
     for (const item of payload?.output || []) {
-      if (item?.type === 'message') contentChars += textLength(item.content)
+      if (item?.type === 'message') {
+        textChars += textLength(item.content)
+        contentChars += textLength(item.content)
+      }
+      if (item?.type === 'reasoning') reasoningChars += textLength(item.content) + textLength(item.summary)
       if (TOOL_ITEM_TYPES.has(item?.type)) hasToolCalls = true
     }
+    contentChars += reasoningChars
     const finishReason =
       payload?.status === 'incomplete' ? 'length' : hasToolCalls ? 'tool_calls' : 'stop'
 
@@ -331,6 +374,8 @@ export function extractNonStream(protocol, payload) {
       usage: usage || null,
       realCheck: {
         contentChars,
+        textChars,
+        reasoningChars,
         hasToolCalls,
         finishReason,
         promptTokens: usage?.prompt_tokens ?? null,
@@ -344,13 +389,85 @@ export function extractNonStream(protocol, payload) {
   const usage = payload?.usage || null
   const choice = payload?.choices?.[0]
   const message = choice?.message || {}
+  const textChars = (message.content || '').length
+  const reasoningChars = (message.reasoning_content || '').length
   return {
     usage,
     realCheck: {
-      contentChars: (message.content || '').length + (message.reasoning_content || '').length,
+      contentChars: textChars + reasoningChars,
+      textChars,
+      reasoningChars,
       hasToolCalls: Boolean(message.tool_calls?.length),
       finishReason: choice?.finish_reason ?? null,
       promptTokens: usage?.prompt_tokens ?? null,
     },
   }
+}
+
+// ------------------------------------------------------- 空回合守卫的两个工具
+
+/**
+ * 这一块是不是「这一轮的收尾」。
+ *
+ * 为什么需要认出来：空回合守卫要能在收尾之前反悔。收尾块（finish_reason /
+ * `[DONE]` / `response.completed`）一旦转发出去，客户端就认定这一轮结束了，
+ * 之后再补一次回答就变成「同一轮里出现两次收尾」，客户端只会取前者。
+ * 所以收尾块必须先扣在手里，等判完再决定发不发。
+ *
+ * @returns {boolean} true = 收尾块，先攒着
+ */
+export function isTerminalChunk(protocol, parsed, payloadText) {
+  if (payloadText === '[DONE]') return true
+  if (!parsed) return false
+  if (protocol === 'responses') {
+    const type = parsed?.type || (parsed?.object === 'response' ? 'response.completed' : null)
+    return RESPONSES_TERMINAL.has(type)
+  }
+  const choice = Array.isArray(parsed?.choices) ? parsed.choices[0] : null
+  return Boolean(choice?.finish_reason)
+}
+
+const REASONING_EVENT = /^response\.reasoning/
+
+/**
+ * 把「第二次补问」的流接到已经发出去的那一轮后面时的过滤器。
+ *
+ * 为什么不能原样转发：第一次尝试的思考已经流给客户端了。补问时模型会把同样的
+ * 推理再想一遍，原样转发的结果是「两段一模一样的思考」——比空回合更让人看不懂。
+ * 所以补问只放正文和工具调用，思考一律丢掉。
+ *
+ * Responses 的收尾事件（response.completed）里带着完整 output，也必须把
+ * reasoning 条目剥掉，否则客户端从终态里又读到一遍思考。
+ *
+ * @returns {string|null} null = 这块丢掉
+ */
+export function rewriteAppendedChunk(protocol, raw, parsed) {
+  if (!parsed) return raw
+
+  if (protocol === 'responses') {
+    const type = parsed?.type || (parsed?.object === 'response' ? 'response.completed' : null)
+    if (REASONING_EVENT.test(type || '')) return null
+    const itemType = parsed?.item?.type
+    if (itemType === 'reasoning') return null
+    if (RESPONSES_TERMINAL.has(type) && parsed.response && Array.isArray(parsed.response.output)) {
+      const response = {
+        ...parsed.response,
+        output: parsed.response.output.filter((item) => item?.type !== 'reasoning'),
+      }
+      return `data: ${JSON.stringify({ ...parsed, response })}\n\n`
+    }
+    return raw
+  }
+
+  const choice = Array.isArray(parsed?.choices) ? parsed.choices[0] : null
+  const delta = choice?.delta
+  if (!delta || delta.reasoning_content === undefined) return raw
+  const rest = { ...delta }
+  delete rest.reasoning_content
+  // 只带思考的增量整块丢掉；同一个 chunk 里既有思考又有正文的，重写成只剩正文
+  if (!rest.content && !rest.tool_calls?.length) return null
+  const choices = parsed.choices.map((item, index) =>
+    index === 0 ? { ...item, delta: rest } : item,
+  )
+  return `data: ${JSON.stringify({ ...parsed, choices })}\n\n`
 }
