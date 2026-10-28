@@ -287,14 +287,10 @@ const EN = {
   '地址': 'Addresses',
   '只用于卡片上的「打开站点」按钮，填后台网址即可': 'Only used by the card\u2019s "open site" button — paste the dashboard URL',
   '程序真正请求的地址，一般形如 https://站点域名/v1': 'The address the app actually calls, usually https://your-site/v1',
-  '网站地址用于卡片链接；API 端点也可以直接在「密钥」里随 Key 一起填。':
-    'The site URL drives the card link; the API endpoint can also be set alongside a key under "Keys".',
   '整站填一次即可，所有 Key 共用。站点地址（卡片上「打开站点」用的那个）在「地址」里改。':
     'Set once per site — every key shares it. The site URL (used by the card\u2019s "open site" button) is edited under "Addresses".',
   '程序真正请求的地址，整站共用一份；没写 /v1 会自动补':
     'The address the app actually calls; one per site. /v1 is appended automatically',
-  '程序真正请求的地址。留空则沿用这个站已保存的端点；没写 /v1 会自动补':
-    'The address the app actually calls. Leave empty to keep the saved endpoint; /v1 is appended automatically',
   '取消': 'Cancel',
   '删除': 'Delete',
   '关闭': 'Close',
