@@ -28,12 +28,19 @@ function emptyRow() {
     // 缓存写入（站点按 cache_creation 单独计费，通常是输入价的 1.25 倍）。
     // 之前完全没记，这部分花费一直按 0 算——累计能到几万 token
     cacheCreation: 0,
+    // 思考 token（reasoning）：已经含在 output 里，单独存一份是为了看清「钱花在思考上了」
+    reasoning: 0,
     // 1 = 这一行的 input 里包含缓存（老数据）；新记录 input 是净值，不写这个字段
     inputIncludesCached: 0,
     latencySum: 0,
     latencyCount: 0,
     ttftSum: 0,
     ttftCount: 0,
+    // 生成窗口（总耗时 − 首字）与这段时间产出的 output：两者相除才是真实的
+    // token/秒。只累加「流式且有首字」的请求——非流式没有首字，把整段耗时
+    // 当生成窗口会把速度算低一半以上。
+    genSum: 0,
+    genOutput: 0,
   }
 }
 
@@ -79,7 +86,11 @@ function todayKey(iso) {
  * 记一次请求。写入串行化，避免并发请求互相覆盖。
  * @param {{keyId:string, providerId:string, model:string, inputTokens?:number,
  *          outputTokens?:number, cachedTokens?:number, cacheCreationTokens?:number,
- *          latencyMs?:number, ttftMs?:number, ok?:boolean, ts?:string}} entry
+ *          reasoningTokens?:number, latencyMs?:number, ttftMs?:number,
+ *          ok?:boolean, ts?:string}} entry
+ *
+ * inputTokens 是**净值**（已扣掉缓存读/写）：上游字段名与净值换算全部收在
+ * core/wire.js 的 usageNumbers()，这里不再做减法。
  */
 export async function recordUsage(entry) {
   const data = await readUsage()
@@ -91,16 +102,13 @@ export async function recordUsage(entry) {
 
   row.requests += 1
   if (entry.ok === false) row.errors += 1
-  // input 存**净值**（不含缓存读/写）：站点计费把「新读」「命中缓存」「写入缓存」
-  // 当成三个独立项，混在一个字段里再做减法还原，边界一定会漂。
-  // 老数据没有 inputIncludesCached 标记，花费算法仍按「input 含缓存」还原
-  const rawInput = Number(entry.inputTokens) || 0
-  const cached = Number(entry.cachedTokens) || 0
-  const cacheCreation = Number(entry.cacheCreationTokens) || 0
-  row.input += Math.max(0, rawInput - cached - cacheCreation)
-  row.output += Number(entry.outputTokens) || 0
-  row.cached += cached
-  row.cacheCreation += cacheCreation
+  const output = Number(entry.outputTokens) || 0
+  row.input += Math.max(0, Number(entry.inputTokens) || 0)
+  row.output += output
+  row.cached += Number(entry.cachedTokens) || 0
+  // 这两个字段是后加的，老行没有 → 先兜底再累加
+  row.cacheCreation = (row.cacheCreation || 0) + (Number(entry.cacheCreationTokens) || 0)
+  row.reasoning = (row.reasoning || 0) + (Number(entry.reasoningTokens) || 0)
   if (Number.isFinite(entry.latencyMs)) {
     row.latencySum += entry.latencyMs
     row.latencyCount += 1
@@ -108,6 +116,16 @@ export async function recordUsage(entry) {
   if (Number.isFinite(entry.ttftMs)) {
     row.ttftSum += entry.ttftMs
     row.ttftCount += 1
+  }
+  // 生成速度只算「流式（有首字）且真有输出」的请求，见 emptyRow 的 genSum 注释
+  if (
+    Number.isFinite(entry.ttftMs) &&
+    Number.isFinite(entry.latencyMs) &&
+    output > 0 &&
+    entry.latencyMs > entry.ttftMs
+  ) {
+    row.genSum = (row.genSum || 0) + (entry.latencyMs - entry.ttftMs)
+    row.genOutput = (row.genOutput || 0) + output
   }
   bucket[composite] = row
 
@@ -131,17 +149,41 @@ function addRow(target, row) {
   target.input += row.input
   target.output += row.output
   target.cached += row.cached
+  // 这里曾经漏了 cacheCreation：明细行有值、汇总恒为 0，页面上的「缓存写入」
+  // 永远是 0，花费也一直少算这一项。后加的字段一律 || 0 兜底（老行没有它们）
+  target.cacheCreation += row.cacheCreation || 0
+  target.reasoning = (target.reasoning || 0) + (row.reasoning || 0)
   target.latencySum += row.latencySum
   target.latencyCount += row.latencyCount
   target.ttftSum += row.ttftSum
   target.ttftCount += row.ttftCount
+  target.genSum = (target.genSum || 0) + (row.genSum || 0)
+  target.genOutput = (target.genOutput || 0) + (row.genOutput || 0)
 }
 
 function finalize(row) {
+  const billedInput = (row.input || 0) + (row.cached || 0) + (row.cacheCreation || 0)
+  // 生成速度的分母（总耗时 − 首字）从这一版才开始累加，老行没有。
+  // 补法：流式请求占全部时（ttftCount === latencyCount，非流式没有首字）
+  // 总耗时减首字就是生成窗口，算出来是准确的；混合行补不出来，宁可显示「—」。
+  // 这是**读时**换算，不改 usage.json，老数据也能立刻看到速度。
+  const allStreamed =
+    (row.ttftCount || 0) > 0 && row.ttftCount === row.latencyCount
+  const genSum =
+    (row.genSum || 0) > 0
+      ? row.genSum
+      : allStreamed
+        ? Math.max(0, (row.latencySum || 0) - (row.ttftSum || 0))
+        : 0
+  const genOutput = (row.genOutput || 0) > 0 ? row.genOutput : genSum > 0 ? row.output || 0 : 0
   return {
     ...row,
     avgLatencyMs: row.latencyCount ? Math.round(row.latencySum / row.latencyCount) : null,
     avgTtftMs: row.ttftCount ? Math.round(row.ttftSum / row.ttftCount) : null,
+    // 命中率分母是「输入 + 缓存读 + 缓存写」，与 core/wire.js 的 usageNumbers 同口径
+    cacheHitRate: billedInput > 0 ? row.cached / billedInput : null,
+    // 真实生成速度：只统计有首字的流式请求（见 emptyRow 的 genSum 注释）
+    avgTps: genSum > 0 ? Math.round((genOutput / (genSum / 1000)) * 10) / 10 : null,
   }
 }
 

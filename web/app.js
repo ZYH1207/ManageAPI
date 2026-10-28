@@ -2,6 +2,7 @@
 import { getLang, onLangChange, restoreDom, setLang, t, translateDom } from './i18n.js'
 import { renderFreeRelayPane, vendorChipClass, vendorOf, vendorLabel } from './free-relay.js'
 import { renderFreePlatformPane } from './free-platform.js'
+import { facetsOf, matchRow, subtotalOf } from './usage-filter.js'
 
 const $ = (sel, root = document) => root.querySelector(sel)
 
@@ -3000,6 +3001,9 @@ function renderGateway() {
       <div class="group-head">
         <span class="model">路由决策</span>
         <span class="count">${okCount} / ${routing.length} 成功</span>
+        <button class="ghost tiny" data-act="open-usage-detail" title="${esc(
+          t('每次请求的 token、缓存读/写、首字、生成速度、换站原因'),
+        )}">${icon('table')}${t('详细用量')}</button>
       </div>
       <table>
         <thead><tr>
@@ -3041,8 +3045,13 @@ function renderUsage() {
   }
 
   const seg = `
-    <div class="seg">
-      ${[7, 30, 90].map((d) => `<button data-range="${d}" class="${d === usageRange ? 'active' : ''}">${d} 天</button>`).join('')}
+    <div class="usage-head">
+      <div class="seg">
+        ${[7, 30, 90].map((d) => `<button data-range="${d}" class="${d === usageRange ? 'active' : ''}">${d} 天</button>`).join('')}
+      </div>
+      <button data-act="open-usage-detail" title="${esc(
+        t('每次请求的 token、缓存读/写、首字、生成速度、换站原因'),
+      )}">${icon('table')}${t('详细用量')}</button>
     </div>`
 
   const maxTokens = Math.max(1, ...dayEntries.map(([, row]) => tokenTotal(row)))
@@ -3110,7 +3119,18 @@ function renderUsage() {
     <div class="stats" style="margin-top:16px">
       <div class="stat"><div class="k">请求数</div><div class="v">${totals.requests}</div></div>
       <div class="stat"><div class="k">输入 token</div><div class="v">${formatTokens(totals.input)}</div></div>
+      <div class="stat"><div class="k">缓存读</div><div class="v">${formatTokens(totals.cached)}</div></div>
+      <div class="stat"><div class="k">缓存写</div><div class="v">${formatTokens(totals.cacheCreation)}</div></div>
       <div class="stat"><div class="k">输出 token</div><div class="v">${formatTokens(totals.output)}</div></div>
+      <div class="stat"><div class="k">命中率</div><div class="v">${pct(totals.cacheHitRate)}</div></div>
+      <div class="stat"><div class="k">平均首字</div><div class="v">${msText(totals.avgTtftMs)}</div></div>
+      <div class="stat" title="${esc(
+        totals.avgTps === null
+          ? t('老数据算不出准确速度：只有流式请求的耗时能分开算，新的流式请求进来后这里会有值。')
+          : '',
+      )}"><div class="k">生成速度</div><div class="v">${
+        totals.avgTps === null ? '—' : `${tpsText(totals.avgTps)}<small>tok/s</small>`
+      }</div></div>
       <div class="stat"><div class="k">错误</div><div class="v">${totals.errors || 0}</div></div>
     </div>
 
@@ -3141,6 +3161,324 @@ function renderUsage() {
       <table>
         <thead><tr><th>站点</th><th class="num">请求</th><th class="num">输入</th><th class="num">输出</th><th class="num">平均耗时</th></tr></thead>
         <tbody>${providerRows || emptyRow(5)}</tbody>
+      </table>
+    </div>`
+}
+
+// ------------------------------------------------------------- 详细用量
+
+let usageDetail = null
+let usageDetailDays = 7
+// 区间切换得很快时，先发后到的响应会把新数据盖回去——用序号丢弃过期响应
+let usageDetailSeq = 0
+// 明细筛选：站点 / 分组 / 模型（与的关系）。分组带 providerId，因为不同站有同名分组
+let usageDetailFilter = { providerId: '', group: null, model: '' }
+// 分组下拉的选项（value 是下标，因为分组名里什么都可能有，不往 value 里塞）
+let usageDetailGroupOptions = []
+
+/** 毫秒：拿不到就显示「—」，不要用 0 冒充（0ms 首字是假的） */
+function msText(value) {
+  const n = Number(value)
+  if (!Number.isFinite(n) || n <= 0) return '—'
+  return n >= 1000 ? `${(n / 1000).toFixed(1)}s` : `${Math.round(n)}ms`
+}
+
+/** 生成速度：token/秒。保留一位小数，拿不到给「—」 */
+function tpsText(value) {
+  const n = Number(value)
+  return Number.isFinite(n) && n > 0 ? n.toFixed(1) : '—'
+}
+
+async function openUsageDetail(days = usageDetailDays) {
+  const sheet = $('#usage-detail')
+  if (!sheet) return
+  const seq = ++usageDetailSeq
+  usageDetailDays = days
+  // 先开弹窗再拉数据：本地接口很快，但先给个壳子比让人以为没点上好
+  sheet.hidden = false
+  usageDetail = null
+  paintUsageDetail()
+  translateDom(sheet)
+  let res = null
+  try {
+    res = await api('GET', `/api/usage/detail?days=${days}`)
+  } catch (error) {
+    if (seq === usageDetailSeq) {
+      closeUsageDetail()
+      toast(`详细用量读取失败：${error.message}`, true)
+    }
+    return
+  }
+  if (seq !== usageDetailSeq) return
+  usageDetail = res
+  paintUsageDetail()
+  // paintUsageDetail 内部不走 t()，英文界面下靠这层 DOM 翻译兜底
+  translateDom($('#usage-detail') || document.body)
+}
+
+function closeUsageDetail() {
+  const sheet = $('#usage-detail')
+  if (sheet) sheet.hidden = true
+  usageDetail = null
+  usageDetailSeq += 1
+  // 筛选不跨次保留：下次打开多半是想从头看
+  usageDetailFilter = { providerId: '', group: null, model: '' }
+  usageDetailGroupOptions = []
+}
+
+// 结果列的短标签：决策日志里存的是英文 outcome（stream-broken / failed），
+// 直接铺在表里会把列撑到溢出；原文放到 title 里，想对日志还能对上
+const OUTCOME_LABEL = { ok: '成功', 'stream-broken': '断流', failed: '全部失败' }
+
+// 明细表最多画多少行：筛选在**全部**明细上做，只是不把 500 行一次性塞进 DOM
+const UD_ROW_LIMIT = 200
+
+function paintUsageDetail() {
+  const sheet = $('#usage-detail')
+  const body = $('#usage-detail-body')
+  const sub = $('#usage-detail-sub')
+  if (!sheet || !body) return
+
+  const seg = `<div class="seg ud-seg">${[1, 7, 30]
+    .map(
+      (d) =>
+        `<button data-act="usage-detail-range" data-days="${d}" class="${d === usageDetailDays ? 'active' : ''}">${t('{n} 天', { n: d })}</button>`,
+    )
+    .join('')}</div>`
+
+  if (!usageDetail) {
+    if (sub) sub.textContent = ''
+    body.innerHTML = `${seg}<p class="hint">${t('正在读取…')}</p>`
+    return
+  }
+
+  const totals = usageDetail.totals || {}
+  const win = usageDetail.window || {}
+  const requests = usageDetail.requests || []
+  if (sub) sub.textContent = t('最近 {n} 天', { n: usageDetail.days })
+
+  const stat = (k, v, note = '') =>
+    `<div class="stat"><div class="k">${k}</div><div class="v">${v}${
+      note ? `<small>${note}</small>` : ''
+    }</div></div>`
+
+  // 汇总里的生成速度只统计流式请求（见 core/usage.js 的 genSum 注释）。老数据分不出
+  // 非流式请求的耗时，补不出来时用下面明细窗口的速度兜底——那是逐请求算的，准确，
+  // 只是窗口不同，所以必须写清楚。
+  const windowTps = (() => {
+    let out = 0
+    let gen = 0
+    for (const r of requests) {
+      if (!r.genMs || !r.output) continue
+      out += r.output
+      gen += r.genMs
+    }
+    return gen > 0 ? Math.round((out / (gen / 1000)) * 10) / 10 : null
+  })()
+  const tpsFromWindow = totals.avgTps === null && windowTps !== null
+
+  const stats = `<div class="stats ud-stats">
+    ${stat(t('请求数'), totals.requests || 0, totals.errors ? t('错误 {n}', { n: totals.errors }) : '')}
+    ${stat(t('输入'), formatTokens(totals.input))}
+    ${stat(t('缓存读'), formatTokens(totals.cached))}
+    ${stat(t('缓存写'), formatTokens(totals.cacheCreation))}
+    ${stat(t('输出'), formatTokens(totals.output))}
+    ${stat(t('思考'), formatTokens(totals.reasoning || 0))}
+    ${stat(t('命中率'), pct(totals.cacheHitRate))}
+    ${stat(t('平均首字'), msText(totals.avgTtftMs))}
+    ${stat(t('平均耗时'), msText(totals.avgLatencyMs))}
+    ${stat(
+      t('生成速度'),
+      tpsText(totals.avgTps ?? windowTps),
+      (totals.avgTps ?? windowTps) === null ? '' : t('tok/s'),
+    )}
+  </div>`
+
+  // ---- 筛选：站点 / 分组 / 模型（与的关系，下级只列上级已经筛出来的那些）
+  // 为什么逐级收窄：先选了站点，分组下拉里就不该出现别的站的分组（同名分组很多），
+  // 模型下拉也只该列这个站真有流量的模型——否则选完是 0 条，看着像坏了。
+  const facets = facetsOf(requests)
+  // 切了区间之后原来的选择可能已经不在这批明细里，留着只会筛出一片空白
+  if (
+    usageDetailFilter.providerId &&
+    !facets.providers.some((p) => p.id === usageDetailFilter.providerId)
+  ) {
+    usageDetailFilter.providerId = ''
+    usageDetailFilter.group = null
+  }
+  const groupRows = requests.filter(
+    (row) => !usageDetailFilter.providerId || row.providerId === usageDetailFilter.providerId,
+  )
+  const groupOptions = facetsOf(groupRows).groups
+  const groupIndex = usageDetailFilter.group
+    ? groupOptions.findIndex(
+        (g) =>
+          g.providerId === usageDetailFilter.group.providerId &&
+          g.name === usageDetailFilter.group.name,
+      )
+    : -1
+  if (usageDetailFilter.group && groupIndex < 0) usageDetailFilter.group = null
+  usageDetailGroupOptions = groupOptions
+
+  const modelRows = groupRows.filter(
+    (row) =>
+      !usageDetailFilter.group ||
+      (row.providerId === usageDetailFilter.group.providerId &&
+        (row.group || '') === usageDetailFilter.group.name),
+  )
+  const modelOptions = facetsOf(modelRows).models
+  if (usageDetailFilter.model && !modelOptions.some((m) => m.name === usageDetailFilter.model)) {
+    usageDetailFilter.model = ''
+  }
+
+  const filtered = requests.filter((row) => matchRow(row, usageDetailFilter))
+  const filtering = Boolean(
+    usageDetailFilter.providerId || usageDetailFilter.group || usageDetailFilter.model,
+  )
+  const subtotal = filtering ? subtotalOf(filtered) : null
+  const shownRows = filtered.slice(0, UD_ROW_LIMIT)
+
+  const option = (value, label, selected) =>
+    `<option value="${esc(value)}"${selected ? ' selected' : ''}>${esc(label)}</option>`
+  const filters = `<div class="ud-filters">
+    <label class="ud-filter">${t('站点')}
+      <select data-usage-filter="provider">
+        ${option('', t('全部（{n}）', { n: requests.length }), !usageDetailFilter.providerId)}
+        ${facets.providers
+          .map((p) => option(p.id, `${p.name}（${p.count}）`, p.id === usageDetailFilter.providerId))
+          .join('')}
+      </select>
+    </label>
+    <label class="ud-filter">${t('分组')}
+      <select data-usage-filter="group">
+        ${option('', t('全部（{n}）', { n: groupRows.length }), groupIndex < 0)}
+        ${groupOptions
+          .map((g, index) =>
+            option(String(index), `${g.name || t('未指定分组')}（${g.count}）`, index === groupIndex),
+          )
+          .join('')}
+      </select>
+    </label>
+    <label class="ud-filter">${t('模型')}
+      <select data-usage-filter="model">
+        ${option('', t('全部（{n}）', { n: modelRows.length }), !usageDetailFilter.model)}
+        ${modelOptions
+          .map((m) => option(m.name, `${m.name}（${m.count}）`, m.name === usageDetailFilter.model))
+          .join('')}
+      </select>
+    </label>
+    ${
+      filtering
+        ? `<button class="ghost tiny" data-act="usage-detail-clear">${t('清除筛选')}</button>`
+        : ''
+    }
+  </div>`
+
+  const subChip = (k, v) => `<span class="ud-sub"><b>${v}</b> ${k}</span>`
+  const subtotalHtml = subtotal
+    ? `<div class="ud-subtotal">
+        <span class="ud-subtotal-title">${t('筛出 {n} 条的小计', { n: subtotal.requests })}</span>
+        ${subChip(t('输入'), formatTokens(subtotal.input))}
+        ${subChip(t('缓存读'), formatTokens(subtotal.cached))}
+        ${subChip(t('缓存写'), formatTokens(subtotal.cacheCreation))}
+        ${subChip(t('输出'), formatTokens(subtotal.output))}
+        ${subChip(t('命中率'), pct(subtotal.cacheHitRate))}
+        ${subChip(t('平均首字'), msText(subtotal.avgTtftMs))}
+        ${subChip(
+          t('速度'),
+          subtotal.avgTps === null ? '—' : `${tpsText(subtotal.avgTps)} ${t('tok/s')}`,
+        )}
+      </div>`
+    : ''
+
+  const notes = [
+    t('明细来自决策日志（最多 {limit} 条）：区间内 {available} 条，这里列出最近 {shown} 条。', {
+      limit: win.logLimit || 500,
+      available: win.available || 0,
+      shown: win.shown || 0,
+    }),
+    win.missingUsage > 0
+      ? t('其中 {n} 条上游没有返回 usage：token 记作「—」，汇总里的 token 也不含它们。', {
+          n: win.missingUsage,
+        })
+      : '',
+    filtering
+      ? t('上面的汇总按 usage.json 全量聚合，不受筛选影响；筛出的小计只看明细窗口里的那几条。')
+      : '',
+    filtering && filtered.length > shownRows.length
+      ? t('匹配 {n} 条，表里只画最近 {shown} 条。', {
+          n: filtered.length,
+          shown: shownRows.length,
+        })
+      : '',
+    tpsFromWindow
+      ? t('汇总里算不出速度（老数据分不出非流式请求的耗时），上面的速度是下面明细窗口的平均值。')
+      : '',
+    t(
+      '输入为净值（prompt_tokens 减掉缓存读和缓存写）；命中率 = 缓存读 ÷（输入 + 缓存读 + 缓存写）；速度 = 输出 token ÷（总耗时 − 首字），只对流式请求计算。',
+    ),
+  ]
+    .filter(Boolean)
+    .map((line) => `<p class="ud-note">${line}</p>`)
+    .join('')
+
+  const rows = shownRows
+    .map((r) => {
+      const ok = r.outcome === 'ok'
+      const tip = [
+        r.protocol
+          ? `${r.protocol}${r.stream === true ? ' · 流式' : r.stream === false ? ' · 非流式' : ''}`
+          : '',
+        `${t('尝试')} ${r.attempts}`,
+        r.upstreamModel && r.upstreamModel !== r.model ? `上游模型 ${r.upstreamModel}` : '',
+        ...r.failures.map((f) => `${f.providerName}: ${f.error}${f.ms ? ` (${f.ms}ms)` : ''}`),
+      ]
+        .filter(Boolean)
+        .join(' · ')
+      const site = r.providerName
+        ? `${esc(r.providerName)}${
+            r.group
+              ? ` <span class="badge ${r.pool === 'free' ? 'vchip-free' : groupChipOf(r.providerId, r.group)}">${esc(r.group)}</span>`
+              : ''
+          }`
+        : `<span class="badge danger">${t('全部失败')}</span>`
+      return `<tr class="${ok ? '' : 'ud-bad'}" title="${esc(tip)}">
+        <td style="color:var(--faint)">${fmtDateTime(r.ts)}</td>
+        <td>${esc(r.keyName || '—')}</td>
+        <td class="mono ud-model">${esc(r.model)}</td>
+        <td>${site}</td>
+        <td class="num">${msText(r.ttftMs)}</td>
+        <td class="num">${msText(r.latencyMs)}</td>
+        <td class="num">${msText(r.genMs)}</td>
+        <td class="num">${r.input === null ? `<span class="badge warn">${t('无 usage')}</span>` : formatTokens(r.input)}</td>
+        <td class="num">${r.cached === null ? '—' : formatTokens(r.cached)}</td>
+        <td class="num">${r.cacheCreation === null ? '—' : formatTokens(r.cacheCreation)}</td>
+        <td class="num">${r.output === null ? '—' : formatTokens(r.output)}</td>
+        <td class="num">${r.reasoning === null ? '—' : formatTokens(r.reasoning)}</td>
+        <td class="num">${pct(r.cacheHitRate)}</td>
+        <td class="num">${tpsText(r.tps)}</td>
+        <td>${ok ? `<span class="badge ok">${t('成功')}</span>` : `<span class="badge danger" title="${esc(r.outcome)}">${esc(
+          OUTCOME_LABEL[r.outcome] ? t(OUTCOME_LABEL[r.outcome]) : r.outcome,
+        )}</span>`}${r.attempts > 1 ? ` <span class="badge">${r.attempts}</span>` : ''}</td>
+      </tr>`
+    })
+    .join('')
+
+  const emptyText = filtering
+    ? t('没有符合筛选的明细。')
+    : t('这段时间没有经过网关的请求。')
+
+  body.innerHTML = `${seg}${stats}${filters}${subtotalHtml}${notes}
+    <div class="table-wrap ud-table">
+      <table>
+        <thead><tr>
+          <th>${t('时间')}</th><th>Key</th><th>${t('模型')}</th><th>${t('站点')}</th>
+          <th class="num">${t('首字')}</th><th class="num">${t('耗时')}</th><th class="num">${t('生成')}</th>
+          <th class="num">${t('输入')}</th><th class="num">${t('缓存读')}</th><th class="num">${t('缓存写')}</th>
+          <th class="num">${t('输出')}</th><th class="num">${t('思考')}</th>
+          <th class="num">${t('命中率')}</th><th class="num">${t('速度')}</th><th>${t('结果')}</th>
+        </tr></thead>
+        <tbody>${rows || `<tr><td colspan="15" class="ud-empty">${emptyText}</td></tr>`}</tbody>
       </table>
     </div>`
 }
@@ -4232,7 +4570,7 @@ document.addEventListener('keydown', (event) => {
   }
   if (event.key !== 'Escape') return
   closeLangMenu()
-  for (const id of ['help-modal', 'contact-modal', 'group-modal', 'pf-accounts-modal', 'add-provider-modal', 'prov-modal', 'login-modal']) {
+  for (const id of ['help-modal', 'contact-modal', 'group-modal', 'pf-accounts-modal', 'add-provider-modal', 'prov-modal', 'login-modal', 'usage-detail']) {
     const modal = document.getElementById(id)
     if (modal && !modal.hidden) modal.hidden = true
   }
@@ -4242,6 +4580,8 @@ document.addEventListener('keydown', (event) => {
   if (notify && !notify.hidden) notify.hidden = true
   // 分组模型抽屉也是悬浮层，Esc 一并收
   closeGroupModels()
+  // 详细用量弹窗有自己的状态（拉过的数据），关的时候顺手清掉
+  if (usageDetail) closeUsageDetail()
 })
 
 document.addEventListener('click', async (event) => {
@@ -4548,6 +4888,30 @@ document.addEventListener('click', async (event) => {
     } catch (error) {
       toast(error.message, true)
     }
+  }
+
+  if (action === 'open-usage-detail') {
+    await openUsageDetail()
+    return
+  }
+
+  if (action === 'usage-detail-range') {
+    const days = Number(actionButton.dataset.days) || 7
+    // 同一区间且已经拉到数据就不重复请求（连点不抖动）
+    if (days === usageDetailDays && usageDetail) return
+    await openUsageDetail(days)
+    return
+  }
+
+  if (action === 'close-usage-detail') {
+    closeUsageDetail()
+    return
+  }
+
+  if (action === 'usage-detail-clear') {
+    usageDetailFilter = { providerId: '', group: null, model: '' }
+    paintUsageDetail()
+    translateDom($('#usage-detail') || document.body)
     return
   }
 
@@ -5763,6 +6127,24 @@ document.addEventListener('click', (event) => {
 }, true)
 
 document.addEventListener('change', async (event) => {
+  // 详细用量的筛选：站点 / 分组 / 模型。只在已经拉到的明细上重算，不再请求接口
+  const udFilter = event.target.closest?.('[data-usage-filter]')
+  if (udFilter) {
+    const field = udFilter.dataset.usageFilter
+    if (field === 'provider') {
+      usageDetailFilter.providerId = udFilter.value
+      // 换了站点，原来选的分组不属于它了
+      usageDetailFilter.group = null
+    } else if (field === 'group') {
+      usageDetailFilter.group = udFilter.value === '' ? null : usageDetailGroupOptions[Number(udFilter.value)] || null
+    } else if (field === 'model') {
+      usageDetailFilter.model = udFilter.value
+    }
+    paintUsageDetail()
+    translateDom($('#usage-detail') || document.body)
+    return
+  }
+
   // 分组选择弹窗的 radio：键盘（Tab + 方向键）也能选——radio 此前 tabindex=-1，
   // 键盘完全无法选择分组
   if (event.target.matches?.('input[name="pick-group"]')) {

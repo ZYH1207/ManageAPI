@@ -506,6 +506,42 @@ const EN = {
     'Point any client at this URL with any gateway key to reach every site',
   '网关 Key': 'Gateway key',
 
+  // ---- 详细用量（每次请求的 token / 缓存 / 首字 / 速度）
+  '详细用量': 'Usage detail',
+  '最近 {n} 天': 'Last {n} days',
+  '错误 {n}': '{n} errors',
+  '首字': 'TTFT',
+  '生成': 'Gen',
+  '生成速度': 'Gen speed',
+  '缓存读': 'Cache read',
+  '缓存写': 'Cache write',
+  '思考': 'Thinking',
+  '命中率': 'Hit rate',
+  '速度': 'Speed',
+  '无 usage': 'no usage',
+  '全部失败': 'all failed',
+  '断流': 'broken',
+  '正在读取…': 'Loading…',
+  '全部': 'All',
+  '全部（{n}）': 'All ({n})',
+  '清除筛选': 'Clear filter',
+  '筛出 {n} 条的小计': 'Subtotal of {n} matched',
+  '匹配 {n} 条，表里只画最近 {shown} 条。': '{n} matched — only the newest {shown} are drawn.',
+  '上面的汇总按 usage.json 全量聚合，不受筛选影响；筛出的小计只看明细窗口里的那几条。':
+    'The summary above is the full usage.json aggregate and ignores the filter; the subtotal covers only the detail window.',
+  '没有符合筛选的明细。': 'No detail rows match the filter.',
+  '这段时间没有经过网关的请求。': 'No gateway requests in this period.',
+  '明细来自决策日志（最多 {limit} 条）：区间内 {available} 条，这里列出最近 {shown} 条。':
+    'Details come from the routing log (last {limit}): {available} in range, newest {shown} shown here.',
+  '其中 {n} 条上游没有返回 usage：token 记作「—」，汇总里的 token 也不含它们。':
+    '{n} of them got no usage from upstream — tokens show “—” and are excluded from the totals.',
+  '汇总里算不出速度（老数据分不出非流式请求的耗时），上面的速度是下面明细窗口的平均值。':
+    'The aggregate cannot yield a speed (old rows cannot separate non-stream latency); the value above is the detail window’s average.',
+  '老数据算不出准确速度：只有流式请求的耗时能分开算，新的流式请求进来后这里会有值。':
+    'Old rows cannot yield an accurate speed — only stream latency can be separated; this fills in once new stream requests arrive.',
+  '输入为净值（prompt_tokens 减掉缓存读和缓存写）；命中率 = 缓存读 ÷（输入 + 缓存读 + 缓存写）；速度 = 输出 token ÷（总耗时 − 首字），只对流式请求计算。':
+    'Input is net of cache read/write; hit rate = cache read ÷ (input + cache read + cache write); speed = output tokens ÷ (latency − TTFT), streams only.',
+
   // ---- 用量
   '按天': 'By day',
   '按 Key': 'By key',
@@ -1093,7 +1129,7 @@ Object.assign(EN, {
   '余额告警阈值（¥，0 = 不告警）': 'Low-balance threshold (¥, 0 = off)',
   '同步只读站点公开/后台数据，不打真实对话请求，所以可以比探针勤。 余额要走站点后台接口，需要先在「站点」页填「令牌」。':
     'Collection only reads public or backend data and never sends a real chat request, so it can run more often than probes. Balances come from the site backend API — fill in the site token first.',
-  '耗时': 'Took',
+  '耗时': 'Latency',
   '结果': 'Result',
   '上次同步 {ago}': 'Last sync {ago}',
   '还没有同步过': 'never collected',

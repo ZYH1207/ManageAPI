@@ -987,6 +987,21 @@
     </div>
   </div>
 
+  <!-- 详细用量：每次请求的 token / 缓存 / 首字 / 生成速度。只读，数据来自网关自己的记账 -->
+  <div id="usage-detail" class="modal" hidden>
+    <div class="modal-backdrop" data-act="close-usage-detail"></div>
+    <div class="modal-panel ud-panel" role="dialog" aria-modal="true" aria-labelledby="usage-detail-title">
+      <div class="modal-head">
+        <div class="gs-head">
+          <span class="hint" id="usage-detail-sub"></span>
+          <h3 id="usage-detail-title">详细用量</h3>
+        </div>
+        <button class="ghost" data-act="close-usage-detail">关闭</button>
+      </div>
+      <div class="modal-body gs-body" id="usage-detail-body"></div>
+    </div>
+  </div>
+
   <div id="login-modal" class="modal" hidden>
     <div class="modal-backdrop" data-act="close-login"></div>
     <div class="modal-panel" style="width:min(420px,calc(100vw - 40px))">

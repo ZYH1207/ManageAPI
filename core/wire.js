@@ -73,6 +73,102 @@ export function normalizeUsage(protocol, raw) {
   }
 }
 
+/**
+ * 上游 usage → 网关自己的数字口径（**唯一实现**）。
+ *
+ * 为什么必须收在一处：同一份用量在不同上游里字段名完全不同，而且同一家还会
+ * 同时回好几个别名（实测 sub2api 一个 usage 里既有 prompt_tokens_details.cached_tokens
+ * 又有 prompt_cache_hit_tokens / cache_read_input_tokens）。网关、决策日志、详细用量页
+ * 各写一份取值顺序，迟早出现「汇总说命中 40%、明细说命中 0%」这种对不上的账。
+ *
+ * 取值规则：
+ *   - 主字段（prompt / completion / total）按**优先级取第一个有值的**，同名别名语义相同
+ *   - 缓存读 / 缓存写 / 思考 token 取**所有别名的最大值**：这几项经常同时出现且其中
+ *     一份是 0（Anthropic 系把 cache_read_input_tokens 报 0，真正命中的在
+ *     cached_tokens 里），按优先级取第一个会稳定取到那个 0
+ *   - input 是**净值**：prompt_tokens 是 OpenAI 约定（含缓存）→ 减掉缓存读/写；
+ *     只有 input_tokens 时按 Anthropic 约定（不含缓存）原样当净值。混在一个字段里
+ *     再做减法还原，边界一定漂；负数按 0 处理
+ *   - cacheHitRate 的分母是「输入 + 缓存读 + 缓存写」，命中率才是「这次请求有多少
+ *     输入走了缓存」，不是「缓存占 prompt 的比例」
+ *
+ * 拿不到 usage（上游没回）返回 null，调用方必须把这种情况显式呈现成「无 usage」，
+ * 不能当成 0 token——0 和「不知道」是两件事。
+ */
+export function usageNumbers(raw) {
+  if (!raw || typeof raw !== 'object') return null
+  const ptd = raw.prompt_tokens_details || {}
+  const ctd = raw.completion_tokens_details || {}
+  const itd = raw.input_tokens_details || {}
+  const otd = raw.output_tokens_details || {}
+
+  const finite = (value) => {
+    if (value === null || value === undefined || value === '') return null
+    const n = Number(value)
+    return Number.isFinite(n) ? n : null
+  }
+  const first = (...values) => {
+    for (const value of values) {
+      const n = finite(value)
+      if (n !== null) return n
+    }
+    return null
+  }
+  const biggest = (...values) => {
+    let best = null
+    for (const value of values) {
+      const n = finite(value)
+      if (n === null) continue
+      if (best === null || n > best) best = n
+    }
+    return best
+  }
+
+  const prompt = first(raw.prompt_tokens, raw.input_tokens) ?? 0
+  const output = first(raw.completion_tokens, raw.output_tokens) ?? 0
+  const cached =
+    biggest(
+      ptd.cached_tokens,
+      itd.cached_tokens,
+      raw.cached_tokens,
+      raw.prompt_cache_hit_tokens,
+      raw.cache_read_input_tokens,
+    ) ?? 0
+  const cacheCreation =
+    biggest(
+      raw.cache_creation_input_tokens,
+      ptd.cache_creation_tokens,
+      itd.cache_creation_tokens,
+      raw.prompt_cache_write_tokens,
+    ) ?? 0
+  const reasoning =
+    biggest(
+      ctd.reasoning_tokens,
+      otd.reasoning_tokens,
+      raw.completion_thinking_tokens,
+      raw.reasoning_tokens,
+    ) ?? 0
+
+  // 净值口径：prompt_tokens 是 OpenAI 约定（**含**缓存），要减；只有 input_tokens
+  // 时按 Anthropic 约定（**不含**缓存）原样当净值，否则会把整笔输入减成 0
+  const input =
+    finite(raw.prompt_tokens) !== null
+      ? Math.max(0, prompt - cached - cacheCreation)
+      : Math.max(0, prompt)
+  const billedInput = input + cached + cacheCreation
+  return {
+    // prompt 保留上游原值：核验「站点虚报」时要和本地估算比的是它，不是净值
+    prompt,
+    input,
+    output,
+    cached,
+    cacheCreation,
+    reasoning,
+    total: first(raw.total_tokens) ?? prompt + output,
+    cacheHitRate: billedInput > 0 ? cached / billedInput : null,
+  }
+}
+
 /** 从 message.content（字符串或分段数组）里取出纯文本长度 */
 function textLength(content) {
   if (typeof content === 'string') return content.length

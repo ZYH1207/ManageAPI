@@ -338,6 +338,32 @@ input:focus, select:focus {
    直接复用 .modal / .modal-panel：圆角、浅底、细边、居中，和站点卡、其它弹窗同一套语言。
    之前试过右侧抽屉，样式和项目整体不搭，改成居中卡片。 */
 .gs-panel { width: min(520px, calc(100vw - 40px)); max-height: min(680px, calc(100vh - 80px)); }
+/* 详细用量：逐请求的多列明细，沿用同一套弹窗语言但放得更宽；列多时横向滚动 */
+.ud-panel { width: min(1120px, calc(100vw - 40px)); max-height: min(760px, calc(100vh - 60px)); }
+.ud-seg { margin-bottom: 12px; }
+/* 十来个汇总数字挤在一行会看不清，缩一点字号多排两列 */
+.ud-stats { grid-template-columns: repeat(auto-fit, minmax(116px, 1fr)); gap: 8px; margin-bottom: 10px; }
+.ud-stats .stat { padding: 9px 12px 11px; }
+.ud-stats .stat .v { font-size: 17px; }
+.ud-table { margin-top: 6px; }
+.ud-table th, .ud-table td { white-space: nowrap; padding-left: 8px; padding-right: 8px; }
+.ud-table td.ud-model { max-width: 190px; overflow: hidden; text-overflow: ellipsis; }
+.ud-table tr.ud-bad td { background: var(--danger-soft); }
+.ud-note { margin: 0 0 4px; font-size: 11px; color: var(--faint); line-height: 1.7; }
+.ud-empty { padding: 26px 0; text-align: center; color: var(--faint); }
+/* 筛选条：三个下拉 + 清除。select 默认 width:100%，这里必须收窄 */
+.ud-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 0 0 10px; }
+.ud-filter { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; color: var(--faint); }
+.ud-filter select { width: auto; max-width: 240px; padding: 3px 6px; font-size: 12px; border-radius: 7px; }
+/* 筛出的小计：和上面的全量卡片分开，视觉上要能一眼看出「这是另一个口径」 */
+.ud-subtotal {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 12px;
+  padding: 8px 12px; margin-bottom: 10px;
+  background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px;
+  font-size: 12px; color: var(--faint);
+}
+.ud-subtotal-title { font-weight: 500; color: var(--text); }
+.ud-sub b { color: var(--text); font-weight: 600; }
 .gs-head { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .gs-head .hint { margin: 0; font-size: 11px; color: var(--faint); }
 .gs-head h3 { font-size: 15px; font-weight: 600; overflow-wrap: anywhere; }
@@ -956,6 +982,8 @@ main { flex: 1; min-width: 0; display: flex; flex-direction: column; overflow: h
 
 /* --------------------------------------------------------------- 范围切换 */
 .seg { display: inline-flex; gap: 2px; background: var(--hover); padding: 2px; border-radius: 8px; }
+/* 用量页顶部：左边区间切换，右边「详细用量」按钮 */
+.usage-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .seg button {
   border: none;
   background: none;

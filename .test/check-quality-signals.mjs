@@ -103,10 +103,18 @@ console.log('[5] 缓存读/写分项计费')
 console.log('[6] usage 记录：input 存净值，缓存分项单列')
 {
   const { readFile } = await import('node:fs/promises')
-  const src = await readFile(new URL('../core/usage.js', import.meta.url), 'utf8')
-  ok(/row\.input \+= Math\.max\(0, rawInput - cached - cacheCreation\)/.test(src), 'input 减去缓存读/写后再入库')
-  ok(/row\.cacheCreation \+= cacheCreation/.test(src), '缓存写入单独累加')
-  ok(/inputIncludesCached/.test(src.replace(/\/\/.*$/gm, '')), '有老数据兼容标记')
+  const usageSrc = await readFile(new URL('../core/usage.js', import.meta.url), 'utf8')
+  const wireSrc = await readFile(new URL('../core/wire.js', import.meta.url), 'utf8')
+  // 净值换算收在 wire.js 的 usageNumbers：上游别名多，两处各算一遍迟早漂移
+  // （cache_creation 就是这样漏的）
+  ok(/prompt - cached - cacheCreation/.test(wireSrc), 'wire.js 里做净值换算（prompt 减缓存读/写）')
+  ok(
+    /row\.input \+= Math\.max\(0, Number\(entry\.inputTokens\) \|\| 0\)/.test(usageSrc),
+    'usage.js 直接累加净值（不再自己做减法）',
+  )
+  ok(/row\.cacheCreation = \(row\.cacheCreation \|\| 0\)/.test(usageSrc), '缓存写入单独累加（老行先兜底）')
+  ok(/target\.cacheCreation \+= row\.cacheCreation \|\| 0/.test(usageSrc), '汇总也累加缓存写入（曾经漏过，恒为 0）')
+  ok(/inputIncludesCached/.test(usageSrc.replace(/\/\/.*$/gm, '')), '有老数据兼容标记')
 }
 
 console.log('')

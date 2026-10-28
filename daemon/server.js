@@ -22,7 +22,9 @@ import {
   upstreamPath,
   createStreamInspector,
   extractNonStream,
+  usageNumbers,
 } from '../core/wire.js'
+import { detailRows } from '../core/usage-detail.js'
 import { selectCandidates, listPublicModels, explain, admissionFailure } from '../core/router.js'
 import { snapTtftMs, ttftTierTable, describeTtftLimit } from '../core/latency.js'
 import { pauseStatus, normalizeWindows, isTime, MAX_WINDOWS } from '../core/schedule.js'
@@ -2071,6 +2073,36 @@ route('GET', /^\/api\/usage$/, async (ctx) => {
   return { usage: await usageSummary({ days }) }
 })
 
+/**
+ * 详细用量：汇总与明细来自两个不同的存储，分开返回、分开标来源。
+ *
+ *   totals   —— usage.json 聚合：全部请求，按天 × Key × 站点 × 模型汇总，不受日志长度限制
+ *   requests —— 决策日志（db.routing）：最近 500 条里落在区间内的，带首字 / 耗时 /
+ *               缓存读 / 缓存写 / 思考 / 速度 / 换站原因
+ *
+ * 两个数字不相等是正常的（汇总包含日志已经被挤掉的请求，且失败请求没有 token）。
+ * 如果把两边合并成一个数字，就会得到「明明跑了 300 次，明细里只有 200 条」的困惑。
+ */
+route('GET', /^\/api\/usage\/detail$/, async (ctx) => {
+  const days = Math.min(Math.max(Number(ctx.query.get('days')) || 7, 1), 90)
+  const limit = Math.min(Math.max(Number(ctx.query.get('limit')) || 200, 1), 500)
+  const summary = await usageSummary({ days })
+  const detail = detailRows(await inv.listRouting(500), { days, limit })
+  return {
+    days,
+    totals: summary.totals,
+    requests: detail.rows,
+    window: {
+      available: detail.available,
+      shown: detail.shown,
+      capped: detail.capped,
+      // 上游没回 usage 的条数：汇总里的 token 不含它们，页面上必须能解释这个差额
+      missingUsage: detail.missingUsage,
+      logLimit: 500,
+    },
+  }
+})
+
 route('POST', /^\/api\/usage\/reset$/, async () => {
   await resetUsage()
   return buildState()
@@ -2660,6 +2692,9 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
       })
       if (result.committed) {
         const latencyMs = Date.now() - started
+        // 上游 usage → 网关口径（净值 / 缓存读 / 缓存写 / 思考）：只在 wire.js 算一次，
+        // 记账、决策日志、详细用量页全部吃这一份，否则三处各写一份取值顺序必然漂移
+        const numbers = usageNumbers(result.usage)
         queueRouting({
           model,
           pool,
@@ -2674,6 +2709,9 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
           outcome: result.streamError ? 'stream-broken' : 'ok',
           latencyMs,
           ttftMs: result.ttftMs ?? null,
+          // 协议 / 是否流式：详细用量页要能解释「为什么这条没有首字/没有速度」
+          protocol,
+          stream: body.stream === true,
           usage: result.usage || null,
           candidates: explain(allCandidates),
           failures,
@@ -2682,16 +2720,11 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
           keyId: keyRecord?.id ?? '-',
           providerId: candidate.offer.providerId,
           model: candidate.offer.modelKey || candidate.offer.upstreamName,
-          inputTokens: result.usage?.prompt_tokens,
-          outputTokens: result.usage?.completion_tokens,
-          cachedTokens: result.usage?.prompt_tokens_details?.cached_tokens,
-          // 缓存写入是独立计费项（站点按 cache_creation 收，通常是输入价的 1.25 倍）。
-          // 上游字段名各家不一，Anthropic 系在 cache_creation_input_tokens，
-          // OpenAI 兼容层常放在 prompt_tokens_details.cache_creation_tokens
-          cacheCreationTokens:
-            result.usage?.cache_creation_input_tokens ??
-            result.usage?.prompt_tokens_details?.cache_creation_tokens ??
-            0,
+          inputTokens: numbers?.input,
+          outputTokens: numbers?.output,
+          cachedTokens: numbers?.cached,
+          cacheCreationTokens: numbers?.cacheCreation,
+          reasoningTokens: numbers?.reasoning,
           latencyMs,
           ttftMs: result.ttftMs,
           ok: !result.streamError,
@@ -2715,7 +2748,8 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
               modelKey: candidate.offer.modelKey || null,
               localTokens: requestTokens,
               reportedPrompt: Number(result.usage.prompt_tokens) || null,
-              reportedCached: Number(result.usage?.prompt_tokens_details?.cached_tokens) || 0,
+              // 与 usage 记账同一份归一化结果（上游别名很多，别在这里另写一遍）
+              reportedCached: numbers?.cached ?? 0,
             })
             .catch(() => {})
         }
