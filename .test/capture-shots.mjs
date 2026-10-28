@@ -121,7 +121,6 @@ const pages = [
   { name: 'free', hash: '#free' },
   { name: 'free-platform', hash: '#free/platform' },
   { name: 'free-relay', hash: '#free/relay' },
-  { name: 'pricing', hash: '#pricing' },
   { name: 'decision', hash: '#decision' },
   { name: 'probes', hash: '#probes' },
   { name: 'gateway', hash: '#gateway' },

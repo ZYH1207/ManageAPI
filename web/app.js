@@ -18,14 +18,13 @@ const AUTOREFRESH_KEY = 'manageapi.autorefresh'
 let autoRefresh = localStorage.getItem(AUTOREFRESH_KEY) !== '0'
 let refreshTimer = null
 // 比价页「只显示允许放行」：纯前端过滤，本地记住开关。默认关（保持原来的全表视图）
-const ONLY_ADMITTED_KEY = 'manageapi.pricingOnlyAdmitted'
-let onlyAdmitted = localStorage.getItem(ONLY_ADMITTED_KEY) === '1'
 // 决策页「只显示可使用」：同款纯前端过滤，本地记住开关。默认关（保持原来的全表视图）。
 // 只改展示不改派活：网关仍按 admission.ok 派活，手动顺序也照旧整表参与
 const DECISION_ONLY_ADMITTED_KEY = 'manageapi.decisionOnlyAdmitted'
 let decisionOnlyAdmitted = localStorage.getItem(DECISION_ONLY_ADMITTED_KEY) === '1'
 // 这两个页签要看评分/候选明细，轮询时走完整 state；其它页只要轻量那份省带宽
-const HEAVY_TABS = new Set(['pricing', 'decision'])
+// （比价页已并入智能决策，见 renderDecision）
+const HEAVY_TABS = new Set(['decision'])
 
 /**
  * 价速比列：价格 ÷ 首字延迟，越小越优先（排序口径在 core/decision-mode.js#tierMetricOf，
@@ -57,15 +56,15 @@ function money(value) {
 }
 
 /**
- * 显示币种：'CNY' / 'USD'（站内美元，与人民币 1:1）/ 'RUSD'（真实美元，按汇率折算）。
- * 只影响渲染，不参与任何比较——比较口径走的是 core/pricing.js。
+ * 显示单位：'USD'（站内美元，与人民币 1:1）/ 'RUSD'（真实美元，按汇率折算）。
+ * CNY 已退出（计费口径与站内 USD 完全相同，迁移只是改名）；
+ * 换单位真的会变数：R$ 下所有价格 ÷ 汇率。只影响渲染，不参与任何比较。
  */
 function displayCur() {
-  const v = String(state?.settings?.displayCurrency || 'USD').toUpperCase()
-  return v === 'CNY' || v === 'RUSD' ? v : 'USD'
+  return String(state?.settings?.displayCurrency || 'USD').toUpperCase() === 'RUSD' ? 'RUSD' : 'USD'
 }
 function priceSym() {
-  return displayCur() === 'CNY' ? '¥' : displayCur() === 'RUSD' ? 'R$' : '$'
+  return displayCur() === 'RUSD' ? 'R$' : '$'
 }
 /** 1 USD = ? CNY。真源是 settings.fx.rates.CNY，fxUsdCny 只是兼容镜像 */
 function rateCny() {
@@ -88,8 +87,8 @@ function priceText(cny) {
 /**
  * 站点「1 个额度单位」值多少真实人民币。
  *
- * 中转站绝大多数是 1:1 充值（充 ¥1 到账 1 单位额度），卡上的「充值汇率」填 1，
- * 这时额度数值本身就是人民币。**默认就是 1**，不按市场汇率兜底——
+ * 中转站绝大多数是 1:1 充值（充 ¥1 到账 1 单位额度），这时额度数值本身就是人民币。
+ * **默认就是 1**，不按市场汇率兜底——
  * 那个兜底假设「站内美元 = 真美元」，正是余额凭空 ×6.68 的根源。
  * 真按美元扣费的国外站，把充值汇率填成市场汇率（如 6.68）。
  * 与后端 core/monitor.js 的 siteUnitPrice 同一口径。
@@ -209,15 +208,15 @@ function groupChipOf(providerId, groupName) {
  * 模型行的币种下拉 + 手选标记。
  *
  * 币种不是纯展示：core/pricing.js 的 offerCost 按它决定要不要折汇率
- * （标 USD 就原样当美元）。所以一旦用户自己选过，同步就不能再改——
- * 否则数字不动、标签变了，比价直接差一个汇率。标记点一下能重新跟随站点。
+ * （标 USD 就原样当美元）。所以一旦用户自己选过（currencySource:'custom'），
+ * 同步就不能再改——否则数字不动、标签变了，比价直接差一个汇率。
+ * 标记点一下能重新跟随站点声明。
  */
-function currencyCell(offer, width = 70) {
+function currencyCell(offer, width = 96) {
   const custom = offer.currencySource === 'custom'
   return `
     <select data-field="currency" style="width:${width}px" title="${t('真实美元 R.Dollar：国外模型专用，按汇率换算；站内美元与人民币 1:1')}">
-      <option value="USD" ${offer.currency === 'USD' ? 'selected' : ''}>USD</option>
-      <option value="CNY" ${offer.currency === 'CNY' ? 'selected' : ''}>CNY</option>
+      <option value="USD" ${offer.currency !== 'RUSD' ? 'selected' : ''}>USD</option>
       <option value="RUSD" ${offer.currency === 'RUSD' ? 'selected' : ''}>R.Dollar</option>
     </select>
     ${custom
@@ -232,16 +231,6 @@ function currencyCell(offer, width = 70) {
  * 别在比价表里每行都摆一个垃圾桶——那排垃圾桶占地方、还容易被当成「删这一条供给」。
  * 口径和站点卡分组胶囊、del-group 的确认文案保持一致：Key 决定分组归属。
  */
-function orphanGroupKeys() {
-  const keys = new Set()
-  for (const o of state.offers || []) {
-    if (o.group) keys.add(`${o.providerId}::${o.group}`)
-  }
-  for (const c of state.credentials || []) {
-    keys.delete(`${c.providerId}::${c.group || ''}`)
-  }
-  return keys
-}
 
 let toastTimer = null
 function toast(message, isError = false) {
@@ -964,7 +953,6 @@ function render() {
   renderOverview()
   renderMonitor()
   renderFree()
-  renderPricing()
   renderDecision()
   renderProbes()
   renderGateway()
@@ -1816,15 +1804,23 @@ function providersHtml({ withForm = true, panel = '', actions = '' } = {}) {
           </div>
         </div>
 
-        <div class="prov-tiles">
-          <div data-provider="${esc(p.id)}">
-            <span class="k">余额</span>
-            <b>${hasQuota ? `${priceSym()}${money(dispAmount(p.quotaRemaining, p))}` : '—'}</b>
-            ${giftHint}
+        <div class="prov-tiles prov-tiles--duo">
+          <div class="prov-tile-duo" data-provider="${esc(p.id)}">
+            <div>
+              <span class="k">${t('余额')}</span>
+              <b>${hasQuota ? `${priceSym()}${money(dispAmount(p.quotaRemaining, p))}` : '—'}</b>
+              ${giftHint}
+            </div>
+            <div>
+              <span class="k">${t('阈值')} ${statusBadge}</span>
+              <b><span class="edit-warn" data-act="edit-warn" data-provider="${esc(p.id)}" title="${esc(t('点击修改告警阈值（全站统一一条线，按这个站的额度单位计；0 = 关闭）'))}">${warnUsd > 0 ? `${priceSym()}${money(dispPrice(warnCny))}` : '—'}</span></b>
+            </div>
           </div>
           <div>
-            <span class="k">已定价</span>
-            <b>${priced.length} <span class="of">/ ${offers.length}</span></b>
+            <button class="tile-feature" data-act="open-pricing-sheet" data-provider="${esc(p.id)}" title="${esc(t('点这里改每个模型的价格：没定价的排最前面，点数字或横杠就能填'))}">
+              <span class="k">${t('定价修改')}</span>
+              <b>${priced.length} <span class="of">/ ${offers.length}</span></b>
+            </button>
           </div>
           <div>
             <span class="k">Key</span>
@@ -1832,24 +1828,14 @@ function providersHtml({ withForm = true, panel = '', actions = '' } = {}) {
           </div>
         </div>
 
-        <div class="prov-tiles prov-tiles--3">
-          <div>
-            <span class="k">阈值 · 状态</span>
-            <b>${warnUsd > 0 ? `${priceSym()}${money(dispPrice(warnCny))} · ` : ''}${statusBadge}</b>
-          </div>
-          <div title="${esc(t('站点充值汇率：充 1 元到账多少站点额度。1:1 充值的站填 1；充 ¥100 到账 $120 填 0.83。留空 = 按市场汇率折算。「实际消费」用它把站点账单换算成人民币。'))}">
-            <span class="k">${t('充值汇率')}</span>
-            <b><input class="unit-price" type="number" step="0.0001" min="0" placeholder="1"
-              value="${p.unitPrice ?? ''}" data-act="unit-price" /></b>
-          </div>
+        <div class="prov-tiles">
           <div title="${esc(t('「令牌」是站点后台的登录凭证，一次填好整站通用，用来读余额、公告和分组'))}">
             <span class="k">令牌</span>
             <b>${p.hasAdminToken
               ? (p.tokenStatus === 'invalid'
                 ? '<span class="badge danger">已失效</span>'
                 : '<span class="badge ok">已填</span>')
-              : '<span class="badge">未填</span>'}</b>
-            <button class="ghost tiny" data-act="set-admin-token" data-provider="${esc(p.id)}" title="${esc(p.adminTokenTail ? `${t('令牌尾号')} …${p.adminTokenTail}` : t('未填站点令牌'))}">${p.hasAdminToken ? '更换' : '填写'}</button>
+              : '<span class="badge">未填</span>'}<button class="ghost tiny" data-act="set-admin-token" data-provider="${esc(p.id)}" title="${esc(p.adminTokenTail ? `${t('令牌尾号')} …${p.adminTokenTail}` : t('未填站点令牌'))}">${p.hasAdminToken ? '更换' : '填写'}</button></b>
           </div>
         </div>
 
@@ -2200,6 +2186,11 @@ function openKeyModels(providerId, credentialId, filter = 'all') {
   openModelsSheet({ kind: 'key', providerId, credentialId, filter })
 }
 
+/** 站点卡「已定价 9 / 9」的入口：这站全部模型的定价清单，没定价的就地补 */
+function openPricingSheet(providerId, filter = 'all') {
+  openModelsSheet({ kind: 'pricing', providerId, filter, q: '' })
+}
+
 function openModelsSheet(next) {
   const sheet = $('#group-models')
   if (!sheet) return
@@ -2249,6 +2240,103 @@ function modelRowHtml(m) {
         <span class="grow"></span>
         <span class="gs-price">${price}</span>
       </div>`
+}
+
+/**
+ * 定价视图：这个站全部模型，哪些已定价、哪些没有，就地改价。
+ *
+ * 行内改价完全照搬比价页的管线（data-offer + data-field → stagePriceEdit）：
+ * 暂存、去抖、焦点保护（表格带 .pricing-table 类）全部原样生效，两边口径不会分家。
+ * 未定价的排前面：这个弹窗的主要用途就是补价，欠账的要一眼看到。
+ */
+function pricingSheetView() {
+  const { providerId, filter, q } = modelsSheet
+  const provider = (state.providers || []).find((p) => p.id === providerId)
+  if (!provider) return null
+  const all = (state.offers || []).filter((o) => o.providerId === providerId)
+  const isPriced = (o) => o.inPrice !== null || o.outPrice !== null || o.ratio !== null
+  const priced = all.filter(isPriced)
+  const unpriced = all.filter((o) => !isPriced(o))
+  const query = String(q || '').trim().toLowerCase()
+  const matchQ = (o) =>
+    !query ||
+    String(o.upstreamName || '').toLowerCase().includes(query) ||
+    String(o.group || '').toLowerCase().includes(query)
+  const base = filter === 'unpriced' ? unpriced : filter === 'priced' ? priced : all
+  const models = base.filter(matchQ).sort((a, b) => {
+    const pa = isPriced(a) ? 1 : 0
+    const pb = isPriced(b) ? 1 : 0
+    if (pa !== pb) return pa - pb
+    return String(a.upstreamName || '').localeCompare(String(b.upstreamName || ''))
+  })
+  const segBtn = (id, label, n) =>
+    `<button type="button" data-act="pricing-sheet-filter" data-filter="${id}" class="${
+      filter === id ? 'active' : ''
+    }">${label}<span class="seg-count">${n}</span></button>`
+  const head = `
+    <div class="gs-meta">
+      <span class="hint">${t('点数字或横杠就地改，回车保存；倍率填了按倍率走，不填按输入/输出单价走')}</span>
+      <span class="grow"></span>
+      <input id="pricing-sheet-search" class="search" type="search" placeholder="${esc(t('搜索模型名…'))}" value="${esc(modelsSheet.q || '')}" style="width:180px" />
+    </div>`
+  const empty = `<div class="empty small"><p>${
+    all.length === 0 ? t('这个站还没有同步过模型。') : t('没有匹配的模型。')
+  }</p>${
+    all.length === 0 ? `<p class="hint">${t('点「一键同步」拉一次模型列表，再回来定价。')}</p>` : ''
+  }</div>`
+  const table = `<div class="table-wrap"><table class="pricing-table ps-table">
+      <thead><tr><th>${t('模型')}</th><th class="num">${t('输入 / 输出 / 倍率')}</th><th>${t('币种')}</th><th></th></tr></thead>
+      <tbody>${models.map(pricingSheetRowHtml).join('')}</tbody>
+    </table></div>`
+  return {
+    title: t('定价'),
+    seg: `<div class="seg gs-seg">${segBtn('all', t('全部'), all.length)}${segBtn(
+      'unpriced',
+      t('未定价'),
+      unpriced.length,
+    )}${segBtn('priced', t('已定价'), priced.length)}</div>`,
+    meta: `${t('{n} 个模型', { n: models.length })} · ${t('已定价 {priced} / {total}', {
+      priced: priced.length,
+      total: all.length,
+    })}`,
+    models,
+    customBody: all.length === 0 ? empty : `${head}${models.length ? table : empty}`,
+  }
+}
+
+/**
+ * 定价清单里的一行：三个数字（输入 / 输出 / 倍率）直接摆出来，不写已定价/未定价。
+ * 空档显示横杠，点数字或横杠就地变输入框（edit-price-slot）。
+ * 语义与比价页一致：倍率填了按倍率走，不填按输入/输出单价走。
+ */
+function pricingSheetRowHtml(offer) {
+  const priced = offer.inPrice !== null || offer.outPrice !== null || offer.ratio !== null
+  const perCall = offer.priceUnit === 'per_call'
+  const slot = (field, title, off = false) => {
+    if (off) return `<span class="price-slot is-off" title="${esc(title)}">—</span>`
+    const v = offer[field]
+    const empty = v === null || v === undefined || v === ''
+    return `<button type="button" class="price-slot${empty ? ' is-empty' : ''}" data-act="edit-price-slot" data-offer="${esc(offer.id)}" data-field="${field}" title="${esc(title)}">${empty ? '—' : esc(v)}</button>`
+  }
+  return `
+  <tr data-offer="${esc(offer.id)}"${priced ? '' : ' class="is-unpriced"'}>
+    <td class="mono"><span class="offer-name" title="${esc(offer.upstreamName)}">${esc(offer.upstreamName)}</span>${
+      offer.group
+        ? ` <span class="badge ${groupChipOf(offer.providerId, offer.group)}"><span class="gc-name">${esc(offer.group)}</span></span>`
+        : ''
+    }${perCall ? ' <span class="badge">按次</span>' : ''}</td>
+    <td class="num"><span class="price-trio">${
+      slot('inPrice', perCall ? t('每次请求的价格。点击修改') : t('输入价（每百万 token）。点击修改'))
+    }<span class="ps-sep">/</span>${
+      slot('outPrice', t('输出价。点击修改'), perCall)
+    }<span class="ps-sep">/</span>${
+      slot('ratio', t('倍率：填了按倍率走（实际价 = 这里 × 输入/输出），不填按输入/输出单价走。点击修改'))
+    }</span></td>
+    <td>
+      <div class="unit-cell">${currencyCell(offer)}</div>
+    </td>
+    <td><button class="ghost tiny" data-act="mark-free" data-offer="${esc(offer.id)}" title="${esc(t('把输入/输出价都设为 0，这条就进免费池（不进比价和自动选站）'))}">${t('标为免费')}</button></td>
+  </tr>`
 }
 
 /** 分组视图：这个分组里有哪些模型。分组没了返回 null（弹窗自己收起） */
@@ -2328,8 +2416,17 @@ function paintGroupModels() {
   const body = $('#group-models-body')
   if (!sheet || !body) return
 
+  // 定价清单四列（模型/三数字/币种单位/操作），默认 520px 装不下；其余清单维持窄面板
+  const panel = sheet.querySelector('.modal-panel')
+  if (panel) panel.classList.toggle('gs-panel-wide', modelsSheet.kind === 'pricing')
+
   const provider = (state.providers || []).find((p) => p.id === modelsSheet.providerId)
-  const view = modelsSheet.kind === 'key' ? keySheetView() : groupSheetView()
+  const view =
+    modelsSheet.kind === 'key'
+      ? keySheetView()
+      : modelsSheet.kind === 'pricing'
+        ? pricingSheetView()
+        : groupSheetView()
   // 目标没了（分组被删 / Key 被删）→ 弹窗没有存在意义，直接收起
   if (!view) {
     closeGroupModels()
@@ -2352,27 +2449,49 @@ function paintGroupModels() {
     view.title,
     view.seg || '',
     view.meta,
-    view.models,
+    // 定价视图的行是可编辑输入框，整段 HTML 进签名；清单视图仍是只读行，用 models 就够
+    view.customBody ?? view.models,
     view.foot,
   ])
   if (body.dataset.sig === sig) return
   body.dataset.sig = sig
 
   const scrollTop = body.scrollTop
-  const rows = view.models.map(modelRowHtml).join('')
-  const head = `
-    <div class="gs-meta">
-      <span class="hint">${view.meta}</span>
-      <span class="grow"></span>
-      <span class="hint">${t('价格：输入 / 输出，每百万 token')}</span>
-    </div>`
-  const empty = `<div class="empty small"><p>${view.emptyTitle}</p><p class="hint">${view.emptyHint}</p></div>`
-  body.innerHTML = `${view.seg || ''}${view.models.length ? head : ''}${
-    view.models.length ? `<div class="gs-list">${rows}</div>` : empty
-  }${view.foot ? `<p class="hint gs-foot">${view.foot}</p>` : ''}`
+  let inner
+  if (view.customBody !== undefined) {
+    // 定价视图：自带表格（可编辑输入框），不再套 gs-list 只读行
+    inner = `${view.seg || ''}${view.customBody}`
+  } else {
+    const rows = view.models.map(modelRowHtml).join('')
+    const head = `
+      <div class="gs-meta">
+        <span class="hint">${view.meta}</span>
+        <span class="grow"></span>
+        <span class="hint">${t('价格：输入 / 输出，每百万 token')}</span>
+      </div>`
+    const empty = `<div class="empty small"><p>${view.emptyTitle}</p><p class="hint">${view.emptyHint}</p></div>`
+    inner = `${view.seg || ''}${view.models.length ? head : ''}${
+      view.models.length ? `<div class="gs-list">${rows}</div>` : empty
+    }${view.foot ? `<p class="hint gs-foot">${view.foot}</p>` : ''}`
+  }
+  body.innerHTML = inner
   body.scrollTop = scrollTop
   translateDom(body)
 }
+
+// 定价弹窗里的搜索：只过滤本弹窗的行，不动全局筛选。
+// 重画会丢焦点，画完把焦点和光标还回去，不然打一个字就得重新点输入框
+document.addEventListener('input', (event) => {
+  if (event.target.id !== 'pricing-sheet-search') return
+  if (!modelsSheet || modelsSheet.kind !== 'pricing') return
+  modelsSheet.q = event.target.value
+  paintGroupModels()
+  const el = $('#pricing-sheet-search')
+  if (el) {
+    el.focus()
+    el.setSelectionRange(el.value.length, el.value.length)
+  }
+})
 
 // --------------------------------------------------------------- 免费池视图
 
@@ -2625,237 +2744,6 @@ function officialChipHtml(official) {
     : priceText(official.blendedCnyPerMtok)
   return `<span class="official-chip" title="${esc(title)}">${t('原厂')} ${cur}${official.in ?? '—'}/${cur}${official.out ?? '—'} /M → ${t('有效')} ${eff}/M</span>`
 }
-
-function renderPricing() {
-  const view = $('#view-pricing')
-
-  // 未定价的供给：不管有没有已定价的，都要给出来填——否则新用户进来是一片空白
-  const unpricedBlock = state.unpriced.length === 0 ? '' : `
-    <h3 class="section-title">还没定价的供给（${state.unpriced.length}）</h3>
-    <p class="hint">填「倍率」最省事：实际价 = 基准价 × 倍率。不知道倍率就直接填输入/输出单价。站上真的白送就点「标为免费」。</p>
-    <div class="table-wrap">
-      <table>
-        <thead><tr>
-          <th>站点</th><th>上游模型名</th><th class="num">基准价</th>
-          <th class="num">输入价</th><th class="num">输出价</th><th class="num">倍率</th><th>单位 / 币种</th><th></th>
-        </tr></thead>
-        <tbody>
-          ${state.unpriced.map((offer) => {
-            const bench = state.benchmarks[offer.modelKey] || state.benchmarks[offer.upstreamName]
-            const hasBench = bench && (bench.in !== null || bench.out !== null)
-            const benchText = hasBench
-              ? `${bench.currency === 'CNY' ? '¥' : '$'}${bench.in ?? '—'}/${bench.out ?? '—'}`
-              : '<span style="color:var(--faint)">无基准</span>'
-            return `
-            <tr data-offer="${esc(offer.id)}">
-              <td>${esc(providerName(offer.providerId))}</td>
-              <td class="mono">${esc(offer.upstreamName)}${offer.group ? ` <span class="badge ${groupChipOf(offer.providerId, offer.group)}">${esc(offer.group)}</span>` : ''}</td>
-              <td class="num" style="color:var(--faint)">${benchText}</td>
-              <td class="num"><input type="number" step="0.001" placeholder="—" value="${offer.inPrice ?? ''}" data-field="inPrice" ${offer.priceUnit === 'per_call' ? 'title="按次计费：这里填每次请求的价格"' : ''} /></td>
-              <td class="num"><input type="number" step="0.001" placeholder="—" value="${offer.priceUnit === 'per_call' ? '' : offer.outPrice ?? ''}" data-field="outPrice" ${offer.priceUnit === 'per_call' ? 'disabled title="按次计费不区分输入/输出"' : ''} /></td>
-              <td class="num"><input class="ratio" type="number" step="0.01" placeholder="倍率" value="${offer.ratio ?? ''}" data-field="ratio" /></td>
-              <td>
-                <select data-field="priceUnit" style="width:64px" title="计价单位：按次 = 输入价填每次请求的价格">
-                  <option value="per_mtok" ${offer.priceUnit !== 'per_1k' && offer.priceUnit !== 'per_call' ? 'selected' : ''}>/M</option>
-                  <option value="per_1k" ${offer.priceUnit === 'per_1k' ? 'selected' : ''}>/1k</option>
-                  <option value="per_call" ${offer.priceUnit === 'per_call' ? 'selected' : ''}>/次</option>
-                </select>
-                ${currencyCell(offer, 64)}
-              </td>
-              <td><button class="ghost tiny" data-act="mark-free" data-offer="${esc(offer.id)}" title="把输入/输出价都设为 0，这条就进免费池（不进比价和自动选站）">标为免费</button></td>
-            </tr>`
-          }).join('')}
-        </tbody>
-      </table>
-    </div>`
-
-  if (state.ranked.length === 0) {
-    view.innerHTML = `
-      <div class="empty" style="margin-bottom:18px">
-        <h3>${state.unpriced.length ? '模型已同步，但还没定价' : '还没有模型'}</h3>
-        <p>${state.unpriced.length
-          ? '在下面的表格里给每个模型填一个倍率（或直接填单价），就能开始比价。'
-          : '先去「站点」同步模型列表。'}</p>
-        <button class="primary" data-goto="${state.unpriced.length ? 'benchmark' : 'providers'}">
-          ${state.unpriced.length ? '先去载入基准价' : '去站点页'}
-        </button>
-      </div>
-      ${unpricedBlock}`
-    return
-  }
-
-  const filterText = filters.pricing.trim().toLowerCase()
-  // 搜索要能搜到任何一种写法：合并后分组键是归一键，用户记住的多半是站上那个名字
-  const visibleGroups = state.ranked.filter((group) => {
-    if (!filterText) return true
-    const haystack = [group.modelKey, group.display, ...(group.variants || [])]
-    return haystack.filter(Boolean).some((name) => String(name).toLowerCase().includes(filterText))
-  })
-  const ignoredCount = (state.settings?.ignoredModels || []).length
-  const orphanGroups = orphanGroupKeys()
-  // 合并入口上的数字：疑似未合并的组数（已合并的是常态，不拿来当角标）
-  const mergeGroupCount = (state.modelMerge?.suggestions || []).length
-
-  // 「只显示允许放行」按服务端下发的 admission 过滤：门禁结论只有
-  // core/router.js#admissionOf 一份，前端不拿标签自己再拼一遍「什么算不合格」。
-  // 冷却中 / 评分过期 / 未探测都算允许放行——它们不是坏站，仍会登场兜底；
-  // 被隐藏的正是慢速 / 结果可疑 / 不稳定 / 没有可信样本。
-  // admission 缺失时（旧后端）不隐藏：宁可多显示，也不要静默吞掉供给。
-  let hiddenRows = 0
-  const shownGroups = []
-  for (const group of visibleGroups) {
-    if (!onlyAdmitted) {
-      shownGroups.push({ group, rows: group.rows })
-      continue
-    }
-    const rows = group.rows.filter((row) => state.scores?.[row.offerId]?.admission?.ok !== false)
-    hiddenRows += group.rows.length - rows.length
-    // 一行都不剩的模型整组不出现，免得留一堆空壳表
-    if (rows.length > 0) shownGroups.push({ group, rows })
-  }
-
-  const groups = shownGroups.map(({ group, rows: shownRows }) => {
-    const panelKey = `pricing:${group.modelKey}`
-    const isCollapsed = collapsedPanels.has(panelKey)
-    const rows = shownRows.map((row) => {
-      const score = state.scores[row.offerId]
-      // 状态标签由服务端按 core/router.js#admissionTags 下发：慢速 / 可疑 / 不稳定
-      // 可以同时成立，全都标出来。价目表里只标「毛病」：可用是默认、兜底是决策页的概念
-      const badges = statusBadges(score?.tags, {
-        blocked: score?.blocked || score?.pendingRecovery,
-        hide: ['ok', 'fallback'],
-      })
-      const cacheCell =
-        row.cacheHitRate === null || row.cacheHitRate === undefined
-          ? '—'
-          : `${Math.round(row.cacheHitRate * 100)}%`
-      // 模式只看 offer.pricingMode，不能拿 row.ratio 推断：
-      // 切成「倍率」但还没填倍率时 ratio 是 null，会被误判成手动
-      const mode = row.pricingMode === 'ratio' ? 'ratio' : 'manual'
-      const perCall = Boolean(row.perCall)
-      // 综合成本列：按次行显示「/次」，按 token 行显示「/百万 token」；
-      // 下面的小字是本行有效成本占官方的百分比（波峰口径），一眼看出是官方的几折
-      const officialPct =
-        !perCall &&
-        group.official &&
-        group.official.blendedCnyPerMtok > 0 &&
-        row.blendedCnyPerMtok !== null
-          ? (row.blendedCnyPerMtok / group.official.blendedCnyPerMtok) * 100
-          : null
-      const officialPctText =
-        officialPct === null ? '' : officialPct < 1 ? '<1%' : `${Math.round(officialPct)}%`
-      const costCell = perCall
-        ? row.callPriceCny === null
-          ? '—'
-          : `<div>¥${money(row.callPriceCny)}<span class="sub">/次</span></div>`
-        : `${row.blendedCnyPerMtok === null ? '—' : priceText(row.blendedCnyPerMtok)}${
-            row.hasOffPeak && row.offPeakBlendedCnyPerMtok !== null ? `<div class="sub">空闲 ${priceText(row.offPeakBlendedCnyPerMtok)}</div>` : ''
-          }${
-            officialPctText
-              ? `<div class="sub" title="${esc(t('本行有效成本为原厂有效成本的 {pct}（按波峰口径）', { pct: officialPctText }))}">${t('原厂')} ${officialPctText}</div>`
-              : ''
-          }`
-      // 计费单位是站点声明、识别出来的（模型广场 billing_mode），不是每行手选的
-      // 配置项——所以只读展示（unitBadge-removal）。/M 是大家都懂的默认口径，不显示，免得满屏噪音；
-      // 只有 /1k、/次 这种「和默认不一样」的才标出来。真要手动改，去「站点」页
-      const unitBadge = perCall || row.priceUnit === 'per_1k'
-        ? `<span class="badge unit-badge" title="${t('计费单位：由站点声明的计费形式识别而来；手动修改请到「站点」页的模型行')}">${
-            perCall ? t('/次') : t('/1k')
-          }</span>`
-        : ''
-      const modeCell = `
-        <div class="seg-mini">
-          <button class="${mode === 'ratio' ? 'is-on' : ''}" data-act="offer-mode" data-mode="ratio" title="按分组倍率折算">倍率</button>
-          <button class="${mode === 'manual' ? 'is-on' : ''}" data-act="offer-mode" data-mode="manual" title="直接填单价">价格</button>
-        </div>`
-      return `
-      <tr class="${row.isCheapest ? 'cheapest' : ''}" data-offer="${esc(row.offerId)}">
-        <td>${esc(providerName(row.providerId))}</td>
-        <td class="mono"><span class="offer-name" title="${esc(row.upstreamName)}">${esc(row.upstreamName)}</span>${
-          badges || perCall
-            ? `<span class="offer-tags">${badges}${perCall ? '<span class="badge">按次</span>' : ''}</span>`
-            : ''
-        }</td>
-        <td class="num sub-cell">${cacheCell}</td>
-        <td><span class="group-chip-cell">${row.group ? `<span class="badge ${groupChipOf(row.providerId, row.group)}" title="${esc(row.group)}"><span class="gc-name">${esc(row.group)}</span>${
-          orphanGroups.has(`${row.providerId}::${row.group}`)
-            ? `<button class="chip-x" data-act="del-group" data-provider="${esc(row.providerId)}" data-group="${esc(row.group)}" title="删掉这个分组（比价页「＋」复制出来的，没挂 Key，别处没有删除入口）">${icon('trash')}</button>`
-            : ''
-        }</span>` : `<span style="color:var(--faint)" title="${t('该行的 Key 没有分组')}">${t('默认')}</span>`}<button class="ghost tiny" data-act="dup-offer" title="同一个模型在另一档套餐里也有时，复制一条单独跟踪（分组归属跟随 Key，行内不可直接改）">＋</button></span></td>
-        <td>${modeCell}</td>
-        <td class="num"><input type="number" step="0.001" placeholder="—" value="${row.inPrice ?? ''}" data-field="inPrice" ${perCall ? 'title="按次计费：这里填每次请求的价格"' : mode === 'ratio' ? 'title="原价。实际价 = 这个值 × 倍率"' : ''} /></td>
-        <td class="num"><input type="number" step="0.001" placeholder="—" value="${perCall ? '' : row.outPrice ?? ''}" data-field="outPrice" ${perCall ? 'disabled title="按次计费不区分输入/输出"' : mode === 'ratio' ? 'title="原价。实际价 = 这个值 × 倍率"' : ''} /></td>
-        <td>
-          <div class="unit-cell">
-            ${currencyCell(row)}
-            ${unitBadge}
-          </div>
-        </td>
-        <td class="num"><input class="ratio" type="number" step="0.01" placeholder="倍率" value="${row.ratio ?? ''}" data-field="ratio" ${mode === 'manual' ? 'disabled title="当前按手填单价算，切到「倍率」才能填"' : ''} /></td>
-        <td class="num">${row.ttftMs ? `${row.ttftMs}ms` : '—'}</td>
-        <td class="num">${costCell}</td>
-        <td class="num">${row.isCheapest ? '<span class="badge ok">最便宜</span>' : row.deltaPct === null ? '—' : `+${row.deltaPct}%`}</td>
-      </tr>`
-    }).join('')
-
-    return `
-      <div class="table-wrap">
-        <div class="group-head">
-          <button class="ghost tiny" data-act="toggle-panel" data-panel="${esc(panelKey)}">${isCollapsed ? '▸' : '▾'}</button>
-          <span class="model mono">${esc(group.display || group.modelKey)}</span>
-          ${(group.variants || []).length > 1 ? `<span class="badge" title="${t('这些站里同一个模型有 {n} 种写法，已合并成一行比价', { n: group.variants.length })}：${esc(group.variants.join(' / '))}">${t('已合并 {n} 种写法', { n: group.variants.length })}</span>` : ''}
-          ${officialChipHtml(group.official)}
-          ${group.spreadPct === null ? '' : `<span class="spread">价差 ${group.spreadPct}%</span>`}
-          <span class="count">${group.providerCount} 个站 · ${shownRows.length === group.rows.length ? `${group.rows.length} 条供给` : `${shownRows.length} / ${group.rows.length} 条供给`}</span>
-        </div>
-        ${isCollapsed ? '' : `
-        <table class="pricing-table">
-          <thead><tr>
-            <th>站点</th><th>上游模型名</th><th class="num">缓存</th><th>分组</th>
-            <th>模式</th>
-            <th class="num">输入价</th><th class="num">输出价</th>
-            <th>币种 / 单位</th><th class="num">倍率</th>
-            <th class="num">首字</th><th class="num">${t('综合成本')}<div class="sub">${t('{sym}/M · 按次行 /次', { sym: priceSym() })}</div></th><th class="num">价差</th>
-          </tr></thead>
-          <tbody>${rows}</tbody>
-        </table>`}
-      </div>`
-  }).join('')
-
-  view.innerHTML = `
-    <div class="toolbar">
-      <input id="pricing-search" class="search" type="search" placeholder="搜索模型名…" value="${esc(filters.pricing)}" />
-      <span class="hint" style="margin:0">${
-        onlyAdmitted && hiddenRows
-          ? t('{shown} / {total} 个模型 · 已隐藏 {n} 条供给', {
-              shown: shownGroups.length,
-              total: state.ranked.length,
-              n: hiddenRows,
-            })
-          : t('{shown} / {total} 个模型', { shown: shownGroups.length, total: state.ranked.length })
-      }</span>
-      <label class="switch switch-inline" title="${t('打开后只显示准入通过的供给：慢速 / 结果可疑 / 不稳定 / 没有可信样本 / 冷却中（额度不足、限流）整行隐藏；评分过期、未探测的仍然显示（它们不是坏站）。随时可切。')}">
-        <input type="checkbox" id="pricing-only-admitted" ${onlyAdmitted ? 'checked' : ''} />
-        <span class="switch-track"><span class="switch-knob"></span></span>
-        <span class="switch-text"><b>${t('只显示允许放行')}</b></span>
-      </label>
-      <span class="grow"></span>
-      <button class="with-icon" data-act="merge-models" title="${t('把同一个模型的不同写法归到一起（少个 v、点写成横线、带日期尾巴）')}">
-        ${icon('swap')}${t('同模型合并')}${mergeGroupCount ? ` ${mergeGroupCount}` : ''}
-      </button>
-      <button class="with-icon" data-act="ignored-models" title="${t('忽略后不再参与比价、智能决策、探针和网关')}">
-        ${icon('eye-off')}${t('忽略模型')}${ignoredCount ? ` ${ignoredCount}` : ''}
-      </button>
-    </div>
-    <p class="hint">${t('价格直接改，失焦即保存。「{sym}/百万 token」是综合成本：输入按 25%、输出按 75% 加权。中转站按美元标价、实际按人民币 1:1 扣费，所以这里的 $ 和 ¥ 是同一个数。', { sym: priceSym() })}</p>
-    <p class="hint">${t('倍率模式下，输入 / 输出价填的是「原价」：实际价 = 原价 × 倍率。基准价只是导入时自动填进这两个框的默认值，手改过就以手改的为准。')}</p>
-    ${ignoredCount ? `<p class="hint">已忽略 ${ignoredCount} 个模型：它们不出现在比价、智能决策、探针和网关里。<button class="ghost tiny" data-act="ignored-models">管理</button></p>` : ''}
-    ${groups ||
-    (onlyAdmitted && hiddenRows
-      ? `<div class="empty"><h3>${t('没有允许放行的供给')}</h3><p>${t('当前范围内有 {n} 条供给被这个开关隐藏了：慢速、结果可疑、不稳定、没有可信样本或冷却中。关掉开关就能看到它们。', { n: hiddenRows })}</p></div>`
-      : '')}${unpricedBlock}`
-}
-
 
 // --------------------------------------------------------------- 刷新
 
@@ -3386,9 +3274,13 @@ function renderDecision() {
 
   if (decisions.length === 0) {
     view.innerHTML = `
-      <div class="empty"><h3>还没有可决策的模型</h3><p>先在比价页给模型填上价格。</p></div>`
+      <div class="empty"><h3>还没有可决策的模型</h3><p>先去站点卡的「定价修改」给模型填上价格。</p></div>`
     return
   }
+
+  // 比价页并入了本页：这两个入口（同模型合并 / 忽略模型）是从比价工具栏搬来的
+  const ignoredCount = (state.settings?.ignoredModels || []).length
+  const mergeGroupCount = (state.modelMerge?.suggestions || []).length
 
   const filterText = filters.decision.trim().toLowerCase()
   // 搜索要能搜到任何一种写法：合并后 modelKey 是身份键，用户记住的多半是站上那个名字
@@ -3451,6 +3343,16 @@ function renderDecision() {
         blocked: candidate.blocked || candidate.pendingRecovery,
       })
       const isChosen = candidate.offerId === decision.chosenOfferId
+      // 官方参照（比价页并进来的那套）：分子分母都是综合成本（同口径），
+      // 不是质量加权后的 effective——那个和官方比不出「几折」的意思
+      const officialPct =
+        decision.official &&
+        decision.official.blendedCnyPerMtok > 0 &&
+        candidate.blendedCnyPerMtok !== null
+          ? (candidate.blendedCnyPerMtok / decision.official.blendedCnyPerMtok) * 100
+          : null
+      const officialPctText =
+        officialPct === null ? '' : officialPct < 1 ? '<1%' : `${Math.round(officialPct)}%`
       // 整行可点 = 勾它为当前使用（点选逻辑见文件尾部的 pointerup 分支）：
       // 只改勾选，顺序不动；能不能真发出去看状态列，失败了网关会往后转移
       return `
@@ -3473,7 +3375,14 @@ function renderDecision() {
               ? `<div class="sub">${candidate.samples} ${t('样本')}</div>`
               : ''
           }</td>
-          <td class="num${sortMark('value')}">${candidate.effective === null ? '—' : priceText(candidate.effective)}</td>
+          <td class="num${sortMark('value')}">${candidate.effective === null ? '—' : priceText(candidate.effective)}${
+            // 官方参照（比价页并进来的那套）：本行综合成本是原厂有效成本的几折。
+            // 与原比价页同口径：分子分母都是「输入25%/输出75%」加权的综合成本，
+            // 不拿质量加权后的 effective 去比——那会比出另一个意思
+            officialPct === null
+              ? ''
+              : `<div class="sub" title="${esc(t('本行综合成本为原厂有效成本的 {pct}（按波峰口径）', { pct: officialPctText }))}">${t('原厂')} ${officialPctText}</div>`
+          }</td>
           <td class="num${sortMark('speed')}">${
             stale
               ? `<span class="badge" title="${t('评分已过期：超过有效期没重新探测，首字是旧证据，不作数')}">${t('评分过期')}</span>`
@@ -3499,6 +3408,7 @@ function renderDecision() {
                   : ''
               }`
             : '没有可用供给'}</span>
+          ${officialChipHtml(decision.official)}
           ${decision.manual ? '<button class="ghost tiny" data-act="reset-order">恢复自动</button>' : ''}
         </div>
         ${isCollapsed ? '' : `
@@ -3517,7 +3427,7 @@ function renderDecision() {
   // 否则用户看到同一模型 8 条候选里有两套名字会以为是重复数据
   const mergedCount = decisions.filter((d) => (d.variants || []).length > 1).length
   const mergedHint = mergedCount
-    ? `<p class="hint">${t('其中 {n} 个模型在不同站写法不一（少个 v、点写成横线等），已按同一个模型合并排序——候选里会标出「该站写作…」的那种少数派写法。要调整合并关系，去比价页的「同模型合并」。', { n: mergedCount })}</p>`
+    ? `<p class="hint">${t('其中 {n} 个模型在不同站写法不一（少个 v、点写成横线等），已按同一个模型合并排序——候选里会标出「该站写作…」的那种少数派写法。要调整合并关系，点右上角「同模型合并」。', { n: mergedCount })}</p>`
     : ''
 
   view.innerHTML = `
@@ -3539,6 +3449,13 @@ function renderDecision() {
         <span class="switch-track"><span class="switch-knob"></span></span>
         <span class="switch-text"><b>${t('只显示可使用')}</b></span>
       </label>
+      <span class="grow"></span>
+      <button class="with-icon" data-act="merge-models" title="${t('把同一个模型的不同写法归到一起（少个 v、点写成横线、带日期尾巴）')}">
+        ${icon('swap')}${t('同模型合并')}${mergeGroupCount ? ` ${mergeGroupCount}` : ''}
+      </button>
+      <button class="with-icon" data-act="ignored-models" title="${t('忽略后不再参与比价、智能决策、探针和网关')}">
+        ${icon('eye-off')}${t('忽略模型')}${ignoredCount ? ` ${ignoredCount}` : ''}
+      </button>
     </div>
     <p class="hint">排序按上面的「决策侧重」。拖动整行（或最左边的把手）能改默认先后（没勾选时按这个派活）；点一下整行就是勾它为当前使用——顺序不动，再点一下取消勾选。勾选 &gt; 拖的先后 &gt; 自动排序。</p>
     <p class="hint">${t('注意：<b>同一个模型在不同站的状态是各自独立的</b>（A 站健康、B 站掉包很正常），所以这里按「站 × 模型」逐条评估，状态下方会写明具体原因。')}</p>
@@ -4958,8 +4875,7 @@ function renderBenchmark() {
       </td>
       <td>
         <select data-field="currency" style="width:88px">
-          <option value="USD" ${entry.currency !== 'CNY' && entry.currency !== 'RUSD' ? 'selected' : ''}>USD</option>
-          <option value="CNY" ${entry.currency === 'CNY' ? 'selected' : ''}>CNY</option>
+          <option value="USD" ${entry.currency !== 'RUSD' ? 'selected' : ''}>USD</option>
           <option value="RUSD" ${entry.currency === 'RUSD' ? 'selected' : ''}>R.Dollar</option>
         </select>
       </td>
@@ -5011,7 +4927,6 @@ function renderBenchmark() {
         <select id="bench-add-currency" style="width:88px" title="${t('真实美元 R.Dollar = 国外模型原厂价专用，按汇率换算；站内美元与人民币 1:1')}">
           <option value="USD">USD</option>
           <option value="RUSD">R.Dollar</option>
-          <option value="CNY">CNY</option>
         </select>
         <span id="bench-add-preview" class="hint" style="margin:0"></span>
         <button id="btn-bench-add" class="primary" disabled>${t('保存原厂价')}</button>
@@ -5027,11 +4942,10 @@ function renderBenchmark() {
       <input id="benchmark-search" class="search" type="search" placeholder="搜索模型名…" value="${esc(filters.benchmark)}" />
       <span class="hint" style="margin:0">${layering ? `${matching.length} 条与本地供给相关 · 共 ${entries.length} 条` : `共 ${entries.length} 条`}</span>
       <span style="flex:1"></span>
-      <label class="field-inline" title="${t('只影响价格显示的符号；站内美元与人民币 1:1，数值不变')}">
-        <span>${t('显示币种')}</span>
+      <label class="field-inline" title="${t('站内 $ 与人民币 1:1；R$（真实美元）按汇率折算，切过去所有价格变小（除以汇率）')}">
+        <span>${t('价格单位')}</span>
         <select id="display-currency" data-act="display-currency" style="width:110px">
-          <option value="USD" ${state.settings.displayCurrency !== 'CNY' && state.settings.displayCurrency !== 'RUSD' ? 'selected' : ''}>USD $</option>
-          <option value="CNY" ${state.settings.displayCurrency === 'CNY' ? 'selected' : ''}>CNY ¥</option>
+          <option value="USD" ${state.settings.displayCurrency !== 'RUSD' ? 'selected' : ''}>USD $</option>
           <option value="RUSD" ${state.settings.displayCurrency === 'RUSD' ? 'selected' : ''}>R$ R.Dollar</option>
         </select>
       </label>
@@ -5833,7 +5747,7 @@ const SIDEBAR_KEY = 'manageapi.sidebarCollapsed'
   }
 })()
 
-const TABS = ['overview', 'monitor', 'pricing', 'decision', 'probes', 'protocol', 'gateway', 'usage', 'benchmark', 'diagnosis']
+const TABS = ['overview', 'monitor', 'decision', 'probes', 'protocol', 'gateway', 'usage', 'benchmark', 'diagnosis']
 
 /** 暂时隐藏但代码全部保留的 tab：恢复 = index.html 取消导航注释 + 从这里移除。
  *  隐藏视图的循环必须包含它们，否则切页时 #view-free 不会被动收起来。 */
@@ -5932,6 +5846,7 @@ function setTab(name) {
   const [tabPart, panePart] = String(name || '').split('/')
   if (tabPart === 'free' && ['relay', 'platform'].includes(panePart)) freePane = panePart
   name = tabPart === 'providers' ? 'monitor' : tabPart // 旧书签 #providers 落到合并后的站点页
+  if (name === 'pricing') name = 'decision' // 旧书签 #pricing：比价页已并入智能决策
 
   // 「使用说明」不在侧边栏里，但 #help 要能直接打开（弹窗里那个「在新页面打开」链接）
   if (name === 'help') {
@@ -6355,6 +6270,55 @@ document.addEventListener('click', async (event) => {
   const card = actionButton.closest('[data-provider]')
   const providerId = card?.dataset.provider
 
+  // 阈值数字就地编辑：点一下变输入框，回车/失焦保存，Esc 取消，留空不动。
+  // 阈值全局只有一条（settings.balanceWarnUsd，站内额度单位），卡上显示的是
+  // 按本站单价折算后的「这个站的告警线」——所以输入的数按本站单价折回去再存
+  if (action === 'edit-warn') {
+    const p = (state.providers || []).find((x) => x.id === providerId)
+    const unit = siteUnitCny(p)
+    const raw = Number(state.settings.balanceWarnUsd ?? state.settings.balanceWarnCny) || 0
+    const input = document.createElement('input')
+    input.type = 'number'
+    input.step = '0.01'
+    input.min = '0'
+    input.className = 'inline-num-edit'
+    input.value = raw > 0 ? String(Math.round(raw * unit * 100) / 100) : ''
+    input.title = t('回车保存，Esc 取消；留空 = 不改')
+    actionButton.replaceWith(input)
+    input.focus()
+    input.select()
+    // Enter 直接调 commit，不押在 blur 上（blur 在某些环境不可靠）；blur 只作点击别处时的兜底，
+    // done 防重入：Enter 已保存后 blur 再触发也不会重复 PATCH
+    let saving = false
+    let done = false
+    const commit = async () => {
+      if (done || saving) return
+      const v = input.value.trim()
+      if (v === '') { done = true; render(); return }
+      const n = Number(v)
+      if (!Number.isFinite(n) || n < 0) { done = true; toast('阈值不能是负数', true); render(); return }
+      saving = true
+      try {
+        const usd = Math.round((n / unit) * 100) / 100
+        state = await api('PATCH', '/api/settings', { balanceWarnUsd: usd })
+        done = true
+        await loadMonitor(monitorDays)
+        render()
+        toast(usd === 0 ? '余额告警已关闭' : '余额告警阈值已保存')
+      } catch (error) {
+        done = true
+        toast(error.message, true)
+        render()
+      }
+    }
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); commit() }
+      if (e.key === 'Escape') { done = true; render() }
+    })
+    input.addEventListener('blur', () => { if (!done) commit() })
+    return
+  }
+
   // 「自定义」：展开起止日期输入（先只展开，不查；查询按钮再拉数据）
   if (action === 'usage-custom-toggle') {
     const today = todayKey()
@@ -6520,6 +6484,65 @@ document.addEventListener('click', async (event) => {
     const credentialId = actionButton.dataset.credential
     if (!target || !credentialId) return
     openKeyModels(target, credentialId, actionButton.dataset.filter || 'all')
+    return
+  }
+
+  if (action === 'open-pricing-sheet') {
+    // 站点卡「已定价 9 / 9」：点开看这站全部模型的定价情况，就地改价
+    const target = actionButton.dataset.provider || providerId
+    if (!target) return
+    openPricingSheet(target, 'all')
+    return
+  }
+
+  if (action === 'pricing-sheet-filter') {
+    if (!modelsSheet || modelsSheet.kind !== 'pricing') return
+    modelsSheet.filter = actionButton.dataset.filter || 'all'
+    paintGroupModels()
+    return
+  }
+
+  if (action === 'edit-price-slot') {
+    // 定价弹窗的三个数字（输入/输出/倍率）：点一下变输入框，回车/失焦保存，Esc 取消。
+    // 语义与比价页一致：倍率填了按倍率走，清空按输入/输出单价走——pricingMode 是权威，
+    // 所以改倍率必须连着它一起写，不能只改 ratio（见 core/pricing.js resolveOfferPrice）。
+    const offerId = actionButton.dataset.offer
+    const field = actionButton.dataset.field
+    const offer = (state.offers || []).find((o) => o.id === offerId)
+    if (!offerId || !field || !offer) return
+    const input = document.createElement('input')
+    input.type = 'number'
+    input.step = field === 'ratio' ? '0.01' : '0.001'
+    input.className = 'price-slot-input'
+    const cur = offer[field]
+    input.value = cur === null || cur === undefined ? '' : String(cur)
+    input.title = t('回车保存，Esc 取消；留空 = 清空')
+    actionButton.replaceWith(input)
+    input.focus()
+    input.select()
+    // 提交逻辑自己发 PATCH，别让全局 change 委托再叠一层暂存
+    input.addEventListener('change', (e) => e.stopPropagation())
+    let done = false
+    const commit = () => {
+      if (done) return
+      done = true
+      const raw = input.value.trim()
+      const value = raw === '' ? null : raw
+      const prev = offer[field] === null || offer[field] === undefined ? null : String(offer[field])
+      if (value === prev) {
+        render()
+        return
+      }
+      stagePriceEdit(offerId, field, value)
+      if (field === 'ratio') stagePriceEdit(offerId, 'pricingMode', value === null ? 'manual' : 'ratio')
+      void flushPriceEdits(offerId)
+      render()
+    }
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); commit() }
+      if (e.key === 'Escape') { done = true; render() }
+    })
+    input.addEventListener('blur', () => { if (!done) commit() })
     return
   }
 
@@ -6895,20 +6918,10 @@ document.addEventListener('click', async (event) => {
     const hasToken = card?.dataset.hasToken === '1'
     if (!providerId) return
     const failed = []
-    const notes = []
+    let syncResult = null
     await withBusy(btn, async () => {
-      // 先把站点后台令牌列表里的新 Key 拉进来，同步才会按新 Key 的分组拉模型。
-      // 拉取失败不拦后面几步：令牌失效时「识别分组」会给出更准的报错。
-      if (hasToken) {
-        try {
-          const pulled = await api('POST', `/api/providers/${providerId}/pull-keys`, {})
-          if (pulled.imported?.length) notes.push(`新拉到 ${pulled.imported.length} 把密钥`)
-        } catch (error) {
-          failed.push(`拉取密钥：${error.message}`)
-        }
-      }
       try {
-        await api('POST', `/api/providers/${providerId}/sync`, {})
+        syncResult = await api('POST', `/api/providers/${providerId}/sync`, {})
       } catch (error) {
         failed.push(`同步：${error.message}`)
       }
@@ -6927,7 +6940,15 @@ document.addEventListener('click', async (event) => {
       state = await api('GET', '/api/state')
       render()
     })
-    toast(failed.length ? `部分完成：${failed.join('；')}` : notes.length ? `已同步（${notes.join('，')}）` : '已同步', failed.length > 0)
+    // 一键导入的结果：新收了站上几把密钥要说清，一把没收（没令牌/读不到）不打扰
+    const keyImport = syncResult?.sync?.keyImport
+    let doneMsg = failed.length ? `部分完成：${failed.join('；')}` : '已同步'
+    if (keyImport?.imported > 0) {
+      doneMsg = failed.length
+        ? doneMsg
+        : t('已同步，新导入 {count} 把密钥', { count: keyImport.imported })
+    }
+    toast(doneMsg, failed.length > 0)
     return
   }
 
@@ -7307,10 +7328,10 @@ document.addEventListener('click', async (event) => {
   if (action === 'reset-currency') {
     const offerId = actionButton.dataset.offer
     try {
-      // 清掉手选标记：之后同步按站方声明的币种落价（广场/渠道报的是人民币）
+      // 清掉手选标记：之后同步按站方声明的币种落价
       state = await api('PATCH', `/api/offers/${offerId}`, { currencySource: 'site' })
       render()
-      toast('已恢复跟随站点：下次同步按站方声明的币种落价')
+      toast(t('已恢复跟随站点：下次同步按站方声明的币种落价'))
     } catch (error) {
       toast(error.message, true)
     }
@@ -8009,7 +8030,6 @@ document.addEventListener('input', (event) => {
     return
   }
   const map = {
-    'pricing-search': ['pricing', renderPricing],
     'decision-search': ['decision', renderDecision],
     'benchmark-search': ['benchmark', renderBenchmark],
   }
@@ -8101,17 +8121,6 @@ document.addEventListener('change', async (event) => {
     return
   }
 
-  if (input.id === 'pricing-only-admitted') {
-    // 纯本地开关：只改视图，不往服务端存（不同人看同一份数据可以有不同口径）
-    onlyAdmitted = input.checked
-    try {
-      localStorage.setItem(ONLY_ADMITTED_KEY, onlyAdmitted ? '1' : '0')
-    } catch {
-      /* 隐私模式下 localStorage 可能不可用 */
-    }
-    renderPricing()
-    return
-  }
 
   if (input.id === 'decision-only-admitted') {
     // 同比价页「只显示允许放行」：纯本地开关，只改视图，不往服务端存
@@ -8231,22 +8240,6 @@ document.addEventListener('change', async (event) => {
           ? `「${group || '未指定分组'}」${updated} 个模型已更新，和站点值一致`
           : `「${group || '未指定分组'}」${updated} 个模型已改为自定义倍率${siteRatio !== null && siteRatio !== undefined ? `（站点值 ×${siteRatio}，可随时恢复）` : ''}`,
       )
-    } catch (error) {
-      toast(error.message, true)
-    }
-    return
-  }
-
-  // 站点单价：只影响「实际消费」的折算，留空回落默认（美元站=市场汇率、人民币站=1）
-  if (input.dataset.act === 'unit-price') {
-    const row = input.closest('[data-provider]')
-    if (!row) return
-    try {
-      state = await api('PATCH', `/api/providers/${row.dataset.provider}`, {
-        unitPrice: input.value === '' ? null : Number(input.value),
-      })
-      render()
-      toast(input.value === '' ? '站点单价已清空（按默认汇率折算）' : '站点单价已保存')
     } catch (error) {
       toast(error.message, true)
     }

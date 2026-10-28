@@ -441,6 +441,8 @@ async function buildState({ light = false } = {}) {
   const decisions = rankedWithCache.map((group) => {
     const model = group.rows[0]?.upstreamName || group.modelKey
     const order = db.manualOrder?.[model] || db.manualOrder?.[group.modelKey] || null
+    // 候选行要标「官方 xx%」：综合成本从 rank 行按 offerId 取，不重复算
+    const costByOffer = new Map(group.rows.map((r) => [r.offerId, r]))
     const candidates = selectCandidates({
       offers: paidOffers,
       providers: db.providers,
@@ -452,7 +454,20 @@ async function buildState({ light = false } = {}) {
       order,
       isFaulted,
     })
-    const rankedCandidates = explain(candidates)
+    const rankedCandidates = explain(candidates).map((c) => {
+      // 比价页已并入决策页：候选行上的「官方 xx%」要和比价页同口径，
+      // 所以把 rank 算好的综合成本（含峰谷）按 offerId 搬到候选上，
+      // 块头官方参照直接用同一份 group.official（officialCost，唯一口径）
+      const row = costByOffer.get(c.offerId)
+      return row
+        ? {
+            ...c,
+            blendedCnyPerMtok: row.blendedCnyPerMtok ?? null,
+            offPeakBlendedCnyPerMtok: row.offPeakBlendedCnyPerMtok ?? null,
+            hasOffPeak: Boolean(row.hasOffPeak),
+          }
+        : c
+    })
     // 勾选 > 排序：决策页点选的那条就是「当前选」，与顺序无关（顺序不动）。
     // 勾选的不在候选里（被暂停/删了）才回落到「第一条能登场的」。
     // 勾选的牌哪怕准入没放行也算数——人的明确指定，探针准入管不住人手点的；
@@ -467,6 +482,9 @@ async function buildState({ light = false } = {}) {
       modelKey: group.modelKey,
       display: group.display || group.modelKey,
       variants: group.variants || [],
+      // 官方价参照（原厂价 + 官方有效成本）：比价页并进来后由决策页展示，
+      // 计算源仍是 benchmarks × officialCost，不在决策里另算一遍
+      official: group.official || null,
       candidates: rankedCandidates,
       pinnedOfferId,
       chosenOfferId: winner?.offerId ?? null,
@@ -839,7 +857,8 @@ route('PATCH', /^\/api\/settings$/, async (ctx) => {
     }
     if (ctx.body.displayCurrency !== undefined) {
       const v = String(ctx.body.displayCurrency).toUpperCase()
-      if (v !== 'CNY' && v !== 'USD' && v !== 'RUSD') throw new HttpError(400, '显示币种只能是 CNY / USD / RUSD')
+      // CNY 已退出单位体系：与站内 USD 计费完全同口径（1:1），老值在迁移里改名
+      if (v !== 'USD' && v !== 'RUSD') throw new HttpError(400, '价格单位只能是 USD / RUSD（真实美元）')
       db.settings.displayCurrency = v
     }
     if (ctx.body.balanceWarnUsd !== undefined || ctx.body.balanceWarnCny !== undefined) {
@@ -981,55 +1000,51 @@ route('DELETE', /^\/api\/credentials\/([\w-]+)$/, async (ctx) => {
 
 // ------------------------------------------------------- 同步模型 / 余额
 
-/**
- * 从站点后台令牌列表拉取新 Key：只补缺，不动已有凭据的分组。
- * 给「一键同步」用：用户在站点后台建了新令牌，不用手动复制粘贴。
- */
-route('POST', /^\/api\/providers\/([\w-]+)\/pull-keys$/, async (ctx) => {
-  const providerId = ctx.params[0]
-  const db = await store.readDb()
-  const provider = db.providers.find((p) => p.id === providerId)
-  if (!provider) throw new HttpError(404, '站点不存在')
-  const adminToken = await inv.revealAdminToken(providerId)
-  if (!adminToken) throw new HttpError(400, '需要站点令牌（「账号登录」或手动填写）才能读后台的密钥列表')
-
-  let fetched
-  try {
-    fetched = await providers.fetchTokenList({ baseUrl: provider.baseUrl, adminToken, timeoutMs: 20000 })
-    await inv.setTokenStatus(provider.id, { ok: true })
-  } catch (error) {
-    // 401/403 说明令牌本身失效，别的错（网络、结构）不算令牌的锅
-    if (/HTTP (401|403)/.test(String(error?.message || ''))) {
-      await inv.setTokenStatus(provider.id, { ok: false, message: error.message })
-    }
-    throw error
-  }
-
-  const importedIds = await inv.importMissingCredentials(providerId, fetched.items)
-  const fresh = await store.readDb()
-  return {
-    source: fetched.source,
-    total: fetched.items.length,
-    imported: fresh.credentials
-      .filter((c) => importedIds.includes(c.id))
-      .map((c) => ({ id: c.id, label: c.label, tail: c.tail, group: c.group })),
-  }
-})
-
 route('POST', /^\/api\/providers\/([\w-]+)\/sync$/, async (ctx) => {
   const db = await store.readDb()
   const provider = db.providers.find((p) => p.id === ctx.params[0])
   if (!provider) throw new HttpError(404, '站点不存在')
+
+  // 一键导入：点同步时先把站点后台建过的密钥（令牌列表）收进来，
+  // 新 Key 一起参与本轮模型同步。没填令牌 / 站点不暴露列表接口都不算错，
+  // 同步主体仍是已有的 Key——导入只是顺手，不能让它把同步撜住。
+  const syncTimeoutMs = Math.min(Number(db.settings.probeTimeoutMs) || 15000, 20000)
+  let keyImport = { attempted: false, imported: 0, skipped: 0, total: 0, labels: [] }
+  try {
+    const adminToken = await inv.revealAdminToken(provider.id)
+    if (adminToken) {
+      const fetched = await providers.fetchTokenList({
+        baseUrl: provider.baseUrl,
+        adminToken,
+        timeoutMs: syncTimeoutMs,
+      })
+      const result = await inv.importProviderKeys(provider.id, fetched.items)
+      keyImport = { attempted: true, ...result, source: fetched.source }
+    }
+  } catch (error) {
+    keyImport = {
+      attempted: true,
+      imported: 0,
+      skipped: 0,
+      total: 0,
+      labels: [],
+      error: error.message || String(error),
+    }
+  }
+  // 导入可能刚建了新 Key：目标清单要按落库后的台账重取
+  let dbNow = db
+  if (keyImport.imported > 0) dbNow = await store.readDb()
+
   // 同步模型时把该站**所有** Key 都试一遍，取并集。
   // 只试第一个 Key 是个坑：加了一把新 Key 之后，同步用的还是那把旧的，
   // 旧的过期了就会「明明填了新 Key 却拉不到模型」。
   const targets = ctx.body.credentialId
-    ? db.credentials.filter((c) => c.id === ctx.body.credentialId)
-    : db.credentials.filter((c) => c.providerId === provider.id)
+    ? dbNow.credentials.filter((c) => c.id === ctx.body.credentialId)
+    : dbNow.credentials.filter((c) => c.providerId === provider.id)
   if (targets.length === 0) throw new HttpError(400, '该站点还没有 Key，先添加一个')
 
   const previous = new Set(
-    db.offers.filter((o) => o.providerId === provider.id).map((o) => o.upstreamName),
+    dbNow.offers.filter((o) => o.providerId === provider.id).map((o) => o.upstreamName),
   )
 
   // 逐把 Key 同步，各自带自己的分组——不能先并集再统一塞进第一把的分组，
@@ -1038,7 +1053,6 @@ route('POST', /^\/api\/providers\/([\w-]+)\/sync$/, async (ctx) => {
   // 拉取并行、写盘串行：串行拉取时最坏情况是「N 把 Key × 超时」，
   // 两把就能等一分半；而 mutate 是读-改-写，并发写会互相覆盖。
   const startedAt = Date.now()
-  const syncTimeoutMs = Math.min(Number(db.settings.probeTimeoutMs) || 15000, 20000)
   const fetched = await Promise.all(
     targets.map(async (credential) => {
       const apiKey = await inv.revealSecret(credential.id)
@@ -1121,6 +1135,7 @@ route('POST', /^\/api\/providers\/([\w-]+)\/sync$/, async (ctx) => {
       // 每把 Key 各自拉到几个模型——总数是并集，用户看到「11 个」时能对上账
       perKey,
       failures,
+      keyImport,
     },
   }
 })

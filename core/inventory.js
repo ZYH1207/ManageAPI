@@ -307,36 +307,61 @@ export async function createCredential({ providerId, label, secret, group = '', 
 }
 
 /**
- * 把站点后台令牌列表里的 Key 补进本地凭据：只补缺，不动已有的。
- * 「是不是同一把 Key」复用 matchTokenBySecret 的口径（剥 sk- 前缀全等，
- * 全不中再看唯一尾号）——站点把列表里的 Key 打了星号掩码时，靠尾号也
- * 能认出「这把已经有了」，不会重复导入一把没用的掩码值。
- * 新 Key 的分组直接用令牌自带的，记 auto（后台识别不覆盖用户手选）。
- * 返回新导入的凭据 id 列表。
+ * 把站点后台令牌列表里的密钥一键导入为本站 Key（幂等）。
+ *
+ * 去重口径与 matchTokenBySecret 一致：两边都剥掉 sk- 前缀再比完整 key，
+ * 撞不上的才建。站点返回的 key 保持原样存——它就是站点要校验的原文，
+ * 自作主张补 sk- 反而可能发出站点不认的 Authorization。
+ *
+ * 分组记 groupSource:'auto'（令牌列表只是线索），用户之后手选分组不会被覆盖。
+ *
+ * @returns {{imported:number, skipped:number, total:number, labels:string[]}}
  */
-export async function importMissingCredentials(providerId, items) {
-  const db = await readDb()
-  const known = []
-  for (const credential of db.credentials.filter((c) => c.providerId === providerId)) {
-    known.push({ id: credential.id, key: (await revealSecret(credential.id)) || '' })
-  }
-  const imported = []
-  for (const item of Array.isArray(items) ? items : []) {
-    const secret = String(item?.key || '').trim()
-    // 掩码值（含星号）和过短的残值补进来也同步不了模型，宁可跳过
-    if (!secret || secret.includes('*') || secret.replace(/^sk-/i, '').length < 8) continue
-    if (providers.matchTokenBySecret(known, secret)) continue
-    const credential = await createCredential({
-      providerId,
-      label: String(item.name || '').trim() || `后台导入 …${secret.slice(-4)}`,
-      secret,
-      group: item.group || '',
-      groupSource: 'auto',
+export async function importProviderKeys(providerId, items) {
+  const list = (Array.isArray(items) ? items : [])
+    .map((t) => ({
+      name: String(t?.name || '').trim(),
+      key: String(t?.key || '').trim(),
+      group: normalizeGroup(typeof t?.group === 'string' ? t.group : String(t?.group?.name || '')),
+    }))
+    .filter((t) => {
+      // 掩码值（含星号）和过短残值导进来也同步不了模型，宁可跳过
+      return t.key && !t.key.includes('*') && t.key.replace(/^sk-/i, '').length >= 8
     })
-    known.push({ id: credential.id, key: secret })
-    imported.push(credential.id)
+  const db = await readDb()
+  if (!db.providers.some((p) => p.id === providerId)) throw new Error(`站点不存在：${providerId}`)
+  const existing = new Set()
+  for (const credential of db.credentials || []) {
+    if (credential.providerId !== providerId) continue
+    const secret = await decryptSecret(credential.secret)
+    existing.add(String(secret).replace(/^sk-/i, '').trim())
   }
-  return imported
+  const fresh = list.filter((t) => !existing.has(t.key.replace(/^sk-/i, '').trim()))
+  const skipped = list.length - fresh.length
+  if (fresh.length === 0) return { imported: 0, skipped, total: list.length, labels: [] }
+  // encryptSecret 是异步的，先全部加密完再进同步 mutate，别在回调里 await
+  const encrypted = await Promise.all(fresh.map((t) => encryptSecret(t.key)))
+  const labels = await mutate((db) => {
+    const created = []
+    for (let i = 0; i < fresh.length; i += 1) {
+      const t = fresh[i]
+      db.credentials.push({
+        id: newId('c'),
+        providerId,
+        label: t.name || `站点密钥 ${t.key.slice(-4)}`,
+        secret: encrypted[i],
+        // 只留尾部四位做识别，避免任何界面回显完整 key
+        tail: t.key.slice(-4),
+        group: t.group,
+        groupSource: 'auto',
+        expiresAt: null,
+        createdAt: nowIso(),
+      })
+      created.push(t.name || `站点密钥 ${t.key.slice(-4)}`)
+    }
+    return created
+  })
+  return { imported: labels.length, skipped, total: list.length, labels }
 }
 
 export async function updateCredential(id, patch) {

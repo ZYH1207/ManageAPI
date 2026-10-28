@@ -378,6 +378,15 @@ export function remapManualOrderKeys(table, offers, next, prev = {}) {
 }
 
 function migrate(db) {
+  // CNY 退出单位体系（2026-10-29）：只剩 站内 USD / 真实美元 RUSD 两档。
+  // CNY 的计费口径与站内 USD 完全相同（1:1），迁移只是改名，不影响任何价格。
+  // 放在版本检查之前：它不是结构迁移，而是对新旧库都成立的归一（幂等），
+  // 且老客户端若还把 CNY 写进来，下次读取也会自愈
+  if (db.settings?.displayCurrency === 'CNY') db.settings.displayCurrency = 'USD'
+  for (const offer of db.offers || []) {
+    if (String(offer.currency || '').toUpperCase() === 'CNY') offer.currency = 'USD'
+  }
+
   const version = Number(db.version) || 1
   if (version >= DB_VERSION) {
     ensureMonitor(db)

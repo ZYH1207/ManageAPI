@@ -611,8 +611,9 @@ export async function fetchTokenList({ baseUrl, adminToken, timeoutMs = 15000 })
 
   const attempts = [
     { path: '/api/v1/keys', source: 'sub2api' },
-    { path: '/api/token/?p=0&size=100', source: 'one-api' },
-    { path: '/api/token?p=0&size=100', source: 'one-api' },
+    // size 开到 1000： relay 用户在站上建上百个令牌很常见，默认页大小会漏
+    { path: '/api/token/?p=0&size=1000', source: 'one-api' },
+    { path: '/api/token?p=0&size=1000', source: 'one-api' },
   ]
 
   const tried = []

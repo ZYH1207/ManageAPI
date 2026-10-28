@@ -360,6 +360,8 @@ const EN = {
   '请求数': 'Requests',
   '总计': 'Total',
   '币种': 'Currency',
+  '价格单位': 'Price unit',
+  '站内 $ 与人民币 1:1；R$（真实美元）按汇率折算，切过去所有价格变小（除以汇率）': 'Site $ is 1:1 with CNY; R$ (real dollar) converts by FX rate — switch and every price divides by the rate',
   '月限额': 'Monthly limit',
   '复制': 'Copy',
   '轮换': 'Rotate',
@@ -984,19 +986,16 @@ Object.assign(EN, {
   '该站余额（{sym}）': 'Site balance ({sym})',
   '各站花费（堆叠）': 'Spend by site (stacked)',
   '该站每日花费': 'Daily spend for this site',
-  '充值汇率': 'Top-up rate',
   '默认站单价': 'Default site unit price',
   '令牌尾号': 'Token tail',
   '「令牌」是站点后台的登录凭证，一次填好整站通用，用来读余额、公告和分组': 'The token is the site login credential — fill it once per site for balance, announcements and groups',
   '未填站点令牌': 'No site token',
-  '站点充值汇率：充 1 元到账多少站点额度。1:1 充值的站填 1（绝大多数）；充 ¥100 到账 $120 填 0.83。留空 = 1:1。「实际消费」用它把站点额度换算成人民币。': 'Top-up rate: how much site credit ¥1 buys. 1:1 sites enter 1 (most relays); ¥100 for $120 → 0.83. Empty = 1:1. Actual spend converts site credit with it.',
   '今天': 'Today',
   '本周': 'This week',
   '本月': 'This month',
   '模型消费 / 实际消费': 'Model spend / actual spend',
   '模型消费': 'Model spend',
   '实际消费': 'Actual spend',
-  '实际按充值汇率折算': 'actual converts with your top-up rate',
   '置信度高': 'high confidence',
   '置信度中': 'medium confidence',
   '置信度低（样本少）': 'low confidence (few samples)',
@@ -1420,6 +1419,9 @@ Object.assign(EN, {
 // 监控页站点卡（仿 upstream-ops 渠道卡）
 Object.assign(EN, {
   '阈值 · 状态': 'Threshold · status',
+  '阈值': 'Threshold',
+  '点击修改告警阈值（全站统一一条线，按这个站的额度单位计；0 = 关闭）': 'Click to edit the low-balance threshold (one global line, in this site\'s credit units; 0 = off)',
+  '回车保存，Esc 取消；留空 = 不改': 'Enter to save, Esc to cancel; empty = keep current',
   '同步这个站': 'Sync this site',
   '打开站点': 'Open site',
   '未设阈值': 'No threshold',
@@ -1532,6 +1534,23 @@ Object.assign(EN, {
   'Key 已加密保存': 'Key saved (encrypted)',
   '站点已添加': 'Site added',
   '已同步': 'Synced',
+  '已同步，新导入 {count} 把密钥': 'Synced — imported {count} new keys from the site',
+  '点开看每个模型定价了没有，没定价的在这里直接补': 'Open per-model pricing — fill in the missing ones here',
+  '定价': 'Pricing',
+  '定价修改': 'Edit pricing',
+  '点这里改每个模型的价格：没定价的排最前面，点数字或横杠就能填': 'Click to edit per-model prices: unpriced models first — click a number or dash to fill one in',
+  '已定价 {priced} / {total}': 'Priced {priced} / {total}',
+  '停手 2 秒自动保存；填「倍率」最省事：实际价 = 基准价 × 倍率': 'Auto-saves 2s after you stop; easiest is the ratio: price = benchmark × ratio',
+  '点数字或横杠就地改，回车保存；倍率填了按倍率走，不填按输入/输出单价走': 'Click a number or dash to edit, Enter to save; with a ratio the actual price = price × ratio, without it the prices are final',
+  '输入 / 输出 / 倍率': 'Input / Output / Ratio',
+  '输入价（每百万 token）。点击修改': 'Input price per million tokens. Click to edit',
+  '每次请求的价格。点击修改': 'Price per request. Click to edit',
+  '输出价。点击修改': 'Output price. Click to edit',
+  '倍率：填了按倍率走（实际价 = 这里 × 输入/输出），不填按输入/输出单价走。点击修改': 'Ratio: when set, price × ratio applies; when empty, the input/output prices are final. Click to edit',
+  '回车保存，Esc 取消；留空 = 清空': 'Enter to save, Esc to cancel; empty = clear',
+  '这个站还没有同步过模型。': 'No models synced for this site yet.',
+  '点「一键同步」拉一次模型列表，再回来定价。': 'Run “Sync all” to fetch the model list, then come back to price.',
+  '没有匹配的模型。': 'No matching models.',
   '这个站采完了': 'Site collected',
   '汇率已更新（手动）': 'FX rate updated (manual)',
   'Key 已删除': 'Key deleted',
@@ -1616,11 +1635,11 @@ Object.assign(EN, {
 
 // 模型行的币种「手选」标记：币种决定要不要折汇率，用户选过就不能被同步覆盖
 Object.assign(EN, {
-  '手选': 'Custom',
   '币种是你手选的，同步不会改它。点一下恢复跟随站点声明':
     'You picked this currency, so sync leaves it alone. Click to follow the site again.',
   '已恢复跟随站点：下次同步按站方声明的币种落价':
     'Following the site again — the next sync applies the currency the site declares.',
+  '手选': 'Custom',
 
   // ---- 协议探查（web/protocol-view.js）
   '选择要探查的模型，或直接粘 API': 'Pick models to probe, or paste an API directly',
@@ -1813,7 +1832,7 @@ Object.assign(EN, {
 Object.assign(EN, {
   '峰': 'peak ',
   '谷': '/off-peak ',
-  '本行有效成本为原厂有效成本的 {pct}（按波峰口径）':
+  '本行综合成本为原厂有效成本的 {pct}（按波峰口径）':
     'This row costs {pct} of the official effective cost (peak basis)',
   '由于中转站模板原因，1 美元 = 1 人民币。为了站内比价方便，特增加单位「真实美元 R.Dollar」：国外模型的原厂价用它填，按汇率折算；常规情况不使用 CNY。':
     'Relay templates quote in "dollars" but actually charge the same number in CNY (1 dollar = 1 CNY). For easier comparison we add the unit "Real Dollar (R.Dollar)": use it for official vendor prices of foreign models, converted by the FX rate. Avoid CNY in normal cases.',

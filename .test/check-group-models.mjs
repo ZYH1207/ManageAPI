@@ -161,7 +161,7 @@ try {
   await fetch(`${base}/api/settings`, {
     method: 'PATCH',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ ignoredModels: ['model-b'], displayCurrency: 'CNY' }),
+    body: JSON.stringify({ ignoredModels: ['model-b'], displayCurrency: 'USD' }),
   })
 
   // ------------------------------------------------------------ 2. 数据口径
@@ -332,7 +332,7 @@ try {
   ok(view.meta.includes('2 个模型'), `顶部标了模型数（实际「${view.meta}」）`)
   ok(view.rows.some((r) => r.name === 'model-b' && r.text.includes('已忽略')), '被忽略的模型也在清单里，并标着「已忽略」')
   const rowA = view.rows.find((r) => r.name === 'model-a')?.text || ''
-  ok(rowA.includes('¥1.00') && rowA.includes('¥4.00'), `显示的是乘过倍率的实际价（实际「${rowA}」）`)
+  ok(rowA.includes('$1.00') && rowA.includes('$4.00'), `显示的是乘过倍率的实际价（实际「${rowA}」）`)
 
   // -------------------------------------------------------- 5. 换分组换内容
   console.log('[5] 换一颗胶囊 → 内容跟着换')
@@ -344,7 +344,7 @@ try {
   }
   ok(view.title === '备用分组' && view.rows.length === 3, `抽屉内容换成了备用分组（${view.rows.length} 个模型）`)
   const rowE = view.rows.find((r) => r.name === 'model-e')?.text || ''
-  ok(rowE.includes('按次') && rowE.includes('¥0.500'), `按次模型显示 /次 单价（实际「${rowE}」）`)
+  ok(rowE.includes('按次') && rowE.includes('$0.500'), `按次模型显示 /次 单价（实际「${rowE}」）`)
   ok(view.rows.some((r) => r.name === 'model-f' && r.text.includes('免费')), '0 元模型标了「免费」')
 
   // -------------------------------------------------------- 6. 还没同步的分组

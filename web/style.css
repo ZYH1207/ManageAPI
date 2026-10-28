@@ -374,6 +374,8 @@ input:focus, select:focus {
    直接复用 .modal / .modal-panel：圆角、浅底、细边、居中，和站点卡、其它弹窗同一套语言。
    之前试过右侧抽屉，样式和项目整体不搭，改成居中卡片。 */
 .gs-panel { width: min(520px, calc(100vw - 40px)); max-height: min(680px, calc(100vh - 80px)); }
+/* 定价清单四列装得下就行，不贪宽：模型名+分组胶囊 / 三数字 / 币种 / 标为免费 */
+.gs-panel.gs-panel-wide { width: min(660px, calc(100vw - 40px)); }
 /* 详细用量：逐请求的多列明细，沿用同一套弹窗语言但放得更宽；列多时横向滚动 */
 .ud-panel { width: min(1120px, calc(100vw - 40px)); max-height: min(760px, calc(100vh - 60px)); }
 .ud-seg { margin-bottom: 12px; }
@@ -1207,13 +1209,9 @@ button.sm { padding: 4px 9px; font-size: 12px; }
 .prov-head .hint { white-space: nowrap; }
 .prov-head { display: flex; align-items: center; gap: 10px; }
 .prov-id { display: flex; align-items: center; gap: 8px; min-width: 0; }
+
+/* 站点卡「识别系别」收成单枚放大镜后不折行（主线 ac6d777） */
 .prov-id > .ghost.tiny { white-space: nowrap; flex: none; }
-/* 站点卡第二排瓦片变三列（多了「站点单价」）：列宽按内容分配，
-   阈值那一列最宽，单价和令牌窄一些，避免文字被压成三行 */
-.prov-tiles--3 { grid-template-columns: 1.25fr 0.85fr 0.9fr !important; }
-.prov-tiles--3 > div { gap: 2px; }
-.prov-tiles--3 b { font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.prov-tiles input.unit-price { width: 100%; padding: 2px 6px; font-size: 13px; font-weight: 600; }
 
 /* 读不到站点账单时的占位：不要用危红色，那是「出错」，这里只是「没这个接口」 */
 .spend-pair .spend-muted { color: var(--faint); font-weight: 500; font-size: 15px; }
@@ -1280,6 +1278,31 @@ a.icon-btn:hover { text-decoration: none; }
 .prov-tiles b { font-size: 15px; font-weight: 600; letter-spacing: -0.2px; display: flex; align-items: center; gap: 6px; }
 .prov-tiles b .of { font-size: 12px; font-weight: 400; color: var(--faint); }
 .prov-tiles .badge { font-size: 11px; }
+/* 余额+阈值合并小卡：占一个格子（比别的格稍宽，要容下左右两半），
+   内部左右两半：左余额、右阈值，正常/告警徽章挂在阈值标签行（在数值上方）。
+   这两项本来就是同一件事——余额离阈值还有多远，不值得各占一张卡。
+   必须写在 .prov-tiles 基础规则之后：同优先级，后写者赢 */
+.prov-tiles--duo { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.prov-tiles .prov-tile-duo { display: grid; grid-template-columns: 1fr 1fr; gap: 3px 8px; }
+.prov-tile-duo > div { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.prov-tile-duo .k { font-size: 11px; color: var(--faint); display: flex; align-items: center; gap: 4px; flex-wrap: wrap; row-gap: 2px; }
+/* 数值比别的格小一号：半列只有 ~40px，15px 的「$9.54」会撑破 */
+.prov-tile-duo b { font-size: 13px; font-weight: 600; letter-spacing: -0.2px; display: flex; align-items: center; gap: 6px; }
+/* 徽章比全局小一号：半列塞不下「阈值 + 正常」就折到独行，仍在数值上方 */
+.prov-tile-duo .badge { font-size: 10px; padding: 1px 4px; }
+/* 令牌 tile：徽章和「更换/填写」挤在同一个 b 里，窄列下按钮文字会被压成竖排 */
+.prov-tiles b button { flex: none; white-space: nowrap; }
+/* 阈值数字可点改：虚线下摆暗示可编辑，悬停变色；编辑时就在原位变输入框，
+   撑满那半列、去 spinner（不然数字被箭头挤到显示不全） */
+.edit-warn { cursor: pointer; border-bottom: 1px dashed var(--border); }
+.edit-warn:hover { color: var(--accent); border-bottom-color: var(--accent); }
+.prov-tile-duo .inline-num-edit {
+  width: 100%; min-width: 0; padding: 1px 2px;
+  font-size: 13px; font-weight: 600;
+  appearance: textfield; -moz-appearance: textfield;
+}
+.prov-tile-duo .inline-num-edit::-webkit-outer-spin-button,
+.prov-tile-duo .inline-num-edit::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
 .prov-tiles--2 { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); margin-top: 8px; }
 /* 两格块里标签在上、值在下；右侧可以挂一个小按钮（和 upstream-ops 的「用量」位置一致） */
 .prov-tiles--2 > div { flex-direction: column; align-items: flex-start; gap: 3px; padding: 8px 10px 9px; position: relative; }
@@ -1742,6 +1765,62 @@ button.with-icon { display: inline-flex; align-items: center; gap: 6px; white-sp
 .keyrow .key-models .gs-count {
   padding: 0 6px; margin: 0;
   border: 1px solid var(--border); border-radius: 6px; background: var(--surface);
+}
+
+/* 站点卡「定价修改」格子：整格是入口（点开定价清单）。
+   标签做成强调色胶囊，让人一眼看出这是功能不是统计数字；
+   hover 时数字变色加下划线补一刀提示 */
+.tile-feature {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 3px;
+  width: 100%; padding: 0; margin: 0;
+  border: 0; background: none;
+  font: inherit; color: inherit;
+  cursor: pointer; text-align: left;
+}
+.tile-feature .k {
+  color: var(--accent); font-weight: 600;
+  background: var(--accent-soft);
+  padding: 1px 7px; border-radius: 999px;
+}
+.tile-feature:hover .k { color: #fff; background: var(--accent); }
+.tile-feature:hover b { color: var(--accent); text-decoration: underline; }
+.tile-feature .of { font-weight: 400; }
+
+/* 定价弹窗（ps-table）：比价页的行内改价搬进了居中弹窗。
+   注意选择器必须写成 .pricing-table.ps-table 双类——单写 .ps-table 会输给
+   下面 .pricing-table { min-width: 1000px }（同优先级后写者赢），
+   表格被撑到 1000px 而弹窗只有 520px，价格列全被推到滚动区外（踩过一次） */
+.pricing-table.ps-table { min-width: 0; }
+/* 币种和「手选」徽章横排一行，别叠成两层把行撑高 */
+.pricing-table.ps-table .unit-cell { flex-direction: row; flex-wrap: wrap; align-items: center; }
+.ps-table td input[type='number'] { width: 72px; }
+.ps-table .unit-cell { gap: 4px; }
+
+/* 三个数字（输入/输出/倍率）：平时是纯文本，点击变输入框；
+   空档显示横杠——作者口径：不写已定价/未定价，数字自己会说话 */
+.price-trio {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 1px;
+  font-variant-numeric: tabular-nums;
+}
+.ps-sep { color: var(--faint); margin: 0 3px; }
+.price-slot {
+  padding: 1px 4px;
+  border: 0; border-radius: 4px; background: none;
+  color: inherit; font: inherit;
+  cursor: text;
+  min-width: 22px;
+}
+.price-slot:hover { color: var(--accent); background: var(--accent-soft); }
+.price-slot.is-empty { color: var(--faint); }
+.price-slot.is-off { color: var(--faint); cursor: default; }
+.price-slot.is-off:hover { color: var(--faint); background: none; }
+.price-slot-input {
+  width: 76px;
+  padding: 2px 5px;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
 }
 .keyrow .key-models .gs-count b { color: var(--text); }
 .keyrow .key-models .gs-count:hover b { color: var(--accent); }

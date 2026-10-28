@@ -117,15 +117,16 @@ try {
   let now = (await store.readDb()).offers.find((o) => o.id === row.id)
   ok(now.currencySource === undefined, `提交相同币种不记 custom（${now.currencySource}）`)
 
+  // CNY 已退出单位体系：写入会被迁移改名成 USD（计费 1:1），但「手选过」仍要记录
   await inv.updateOfferPrice(row.id, { currency: 'CNY' })
   now = (await store.readDb()).offers.find((o) => o.id === row.id)
-  ok(now.currency === 'CNY' && now.currencySource === 'custom', `改成 CNY 记 custom（${now.currency}/${now.currencySource}）`)
+  ok(now.currency === 'USD' && now.currencySource === 'custom', `改成 CNY 记 custom 且改名 USD（${now.currency}/${now.currencySource}）`)
 
   // 手选之后再落价，默认值不覆盖它
   const priced = inv.applySitePricing({ ...now, inPrice: null, outPrice: null }, {
     exact: site, rate: 0.5, sitePrice: site, hasBench: true,
   })
-  ok(priced === 'ratio' && now.currency === 'CNY', `手选后落价不覆盖（${now.currency}）`)
+  ok(priced === 'ratio' && now.currency === 'USD', `手选后落价不覆盖（${now.currency}）`)
 
   console.log('[3] 价格源不要假装知道币种')
 
@@ -220,13 +221,13 @@ try {
     let o = st.offers.find((x) => x.id === row.id)
     ok(o.currencySource === undefined, `清掉手选标记（${o.currencySource}）`)
 
-    // 用户把币种改成 USD → 记手选
-    st = await call('PATCH', `/api/offers/${row.id}`, { currency: 'USD' })
+    // 用户把币种改成 R.Dollar → 记手选（USD 是默认值，改成它不算改过）
+    st = await call('PATCH', `/api/offers/${row.id}`, { currency: 'RUSD' })
     o = st.offers.find((x) => x.id === row.id)
-    ok(o.currency === 'USD' && o.currencySource === 'custom', `改成 USD 记 custom（${o.currency}/${o.currencySource}）`)
+    ok(o.currency === 'RUSD' && o.currencySource === 'custom', `改成 RUSD 记 custom（${o.currency}/${o.currencySource}）`)
 
     // 再点一次下拉、选回同一个值 → 不该算改过
-    st = await call('PATCH', `/api/offers/${row.id}`, { currency: 'USD' })
+    st = await call('PATCH', `/api/offers/${row.id}`, { currency: 'RUSD' })
     o = st.offers.find((x) => x.id === row.id)
     ok(o.currencySource === 'custom', `同值重复提交保持原状（${o.currencySource}）`)
   } finally {
