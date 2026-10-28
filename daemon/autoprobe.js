@@ -30,11 +30,104 @@
 import * as store from '../core/store.js'
 import * as inv from '../core/inventory.js'
 import { normalizeAutoRoute } from '../core/auto-route.js'
+import { selectCandidates } from '../core/router.js'
+import { scoreOffers } from '../core/score.js'
+import { normalizeDecisionMode, tierMetricOf } from '../core/decision-mode.js'
 
 /** 距最近一次网关请求超过这么久，就算「自动路由空闲了」，停止轮巡 */
 export const AUTOPROBE_ACTIVITY_WINDOW_MS = 10 * 60_000
-/** 活跃期内的轮巡节奏（实时性由漂移监视器保证，探针只低频刷新基础分） */
+/**
+ * 活跃期内的轮巡节奏（实时性由漂移监视器保证，探针只低频刷新基础分）
+ */
 export const AUTOPROBE_PASS_INTERVAL_MS = 60 * 60_000
+/**
+ * 单轮最多探多少条供给（「决赛圈」上限）。
+ *
+ * 为什么必须限：真实库里 300+ 条在役供给，全场全量 = 上千个真实请求，
+ * 既慢又烧钱，和「自动路由省钱」的初衷正好相反。自动路由一单只派给一个模型，
+ * 需要新鲜证据的只有「现役 + 可能接替它的那几个」，其余慢变模型没必要每小时扫。
+ */
+export const PATROL_MAX_OFFERS = 12
+/** 除现役模型外，还盯几个可接替的模型（按当前档位标量取最优的几条） */
+export const PATROL_ALT_MODELS = 4
+
+/**
+ * 本轮轮巡探谁：只探「决赛圈」——现役模型的全部在役供给 + 可能接替它的前几个
+ * 模型各自最优的一条。上限 PATROL_MAX_OFFERS。
+ *
+ * 与路由同口径：routeableOffers（未下线/未暂停/未忽略）打底，去掉欠费站
+ * （余额读数 ≤ 0 的不探，充上值自动回场）；候选排序用 selectCandidates +
+ * tierMetricOf 的现成实现，不在这里另写一套准入/档位逻辑。
+ *
+ * 现役模型还没定（刚开开关、一次流量都没有）时退回「全场前 N 条」，
+ * 至少能给自动路由攒出第一份可选集。
+ */
+export function patrolTargets(db, record = normalizeAutoRoute(db.settings?.autoRoute)) {
+  const routeable = inv.routeableOffers(db).filter((offer) => {
+    const provider = db.providers.find((p) => p.id === offer.providerId)
+    if (!provider) return false
+    // null 是「没读过余额」，不能当 0（Number(null)===0 会把没读过余额的站全跳过）
+    const raw = provider.quotaRemaining
+    if (raw === null || raw === undefined || raw === '') return true
+    const remaining = Number(raw)
+    return !(Number.isFinite(remaining) && remaining <= 0)
+  })
+  if (routeable.length <= PATROL_MAX_OFFERS) return routeable
+
+  const settings = db.settings || {}
+  const scores = scoreOffers(db.probes, db.traffic, {
+    maxAgeMs: (Number(settings.scoreMaxAgeHours) || 6) * 3600 * 1000,
+  })
+  const mode = normalizeDecisionMode(settings.decisionMode)
+  const currentModel = record?.modelKey || null
+
+  const picked = []
+  const seen = new Set()
+  const take = (offer) => {
+    if (!offer || seen.has(offer.id) || picked.length >= PATROL_MAX_OFFERS) return
+    seen.add(offer.id)
+    picked.push(offer)
+  }
+
+  // 1) 现役模型的全部在役供给（它才是此刻真正在服务的，证据必须新鲜）
+  if (currentModel) {
+    for (const offer of routeable) {
+      if ((offer.modelKey || offer.upstreamName) === currentModel) take(offer)
+    }
+  }
+
+  // 2) 可能接替它的模型：按当前档位标量排序，每个模型取最优的那条供给
+  const byModel = new Map()
+  for (const offer of routeable) {
+    const key = offer.modelKey || offer.upstreamName
+    if (!key || key === currentModel) continue
+    if (!byModel.has(key)) byModel.set(key, [])
+    byModel.get(key).push(offer)
+  }
+  const ranked = []
+  for (const [modelKey, offers] of byModel) {
+    const rows = selectCandidates({
+      offers,
+      providers: db.providers,
+      credentials: db.credentials,
+      scores,
+      benchmarks: {},
+      settings,
+      model: modelKey,
+      order: db.manualOrder?.[modelKey] || null,
+    })
+    const winner = rows.find((row) => row.admission?.ok && !row.balanceDepleted)
+    if (!winner) continue
+    ranked.push({ offer: winner.offer, metric: tierMetricOf(winner, mode) })
+  }
+  ranked.sort((a, b) => a.metric - b.metric)
+  for (const r of ranked.slice(0, PATROL_ALT_MODELS)) take(r.offer)
+
+  // 3) 一条都没挑到（现役模型还没有在役供给）才按原顺序兜底，别让首轮空转。
+  // 挑到了就不再补——多探一条都是白烧的钱
+  if (picked.length === 0) for (const offer of routeable) take(offer)
+  return picked
+}
 
 /**
  * @param {{runProbes: Function, logger?: object}} deps
@@ -60,18 +153,9 @@ export function createAutoRouteProber({ runProbes, logger = console }) {
     try {
       const db = await store.readDb()
       // 自动路由被关掉就不探：哪怕刚才还有流量（正在关机前的收尾请求）
-      if (!normalizeAutoRoute(db.settings.autoRoute).enabled) return
-      // 探针目标与路由/定时探针同口径（routeableOffers：未下线、未暂停、未忽略），
-      // 再去掉欠费站——余额读数 ≤ 0 的站探了也是白烧
-      const targets = inv.routeableOffers(db).filter((offer) => {
-        const provider = db.providers.find((p) => p.id === offer.providerId)
-        if (!provider) return false
-        // null 是「没读过余额」，不能当 0（Number(null)===0 会把没读过余额的站全部跳过）
-        const raw = provider.quotaRemaining
-        if (raw === null || raw === undefined || raw === '') return true
-        const remaining = Number(raw)
-        return !(Number.isFinite(remaining) && remaining <= 0)
-      })
+      const record = normalizeAutoRoute(db.settings.autoRoute)
+      if (!record.enabled) return
+      const targets = patrolTargets(db, record)
       if (targets.length === 0) return
       lastPassAt = Date.now()
       const results = await runProbes({ offerIds: targets.map((o) => o.id), lite: !full, cache: 'auto' })
