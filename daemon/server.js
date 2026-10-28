@@ -1490,6 +1490,17 @@ route('POST', /^\/api\/providers\/([\w-]+)\/usage-check$/, async (ctx) => {
   }
 })
 
+/**
+ * 余额写回站点。字段口径（余额 / 赠金 / 到期）在 inv.applyBalanceResult，
+ * 这里只负责找到站点——手动读余额、采集、重登重试三处都走它，别再各写一遍。
+ */
+async function persistBalance(providerId, result, at) {
+  return store.mutate((db) => {
+    const provider = db.providers.find((p) => p.id === providerId)
+    return inv.applyBalanceResult(provider, result, at)
+  })
+}
+
 route('POST', /^\/api\/providers\/([\w-]+)\/balance$/, async (ctx) => {
   const db = await store.readDb()
   const provider = db.providers.find((p) => p.id === ctx.params[0])
@@ -1518,10 +1529,7 @@ route('POST', /^\/api\/providers\/([\w-]+)\/balance$/, async (ctx) => {
         kind: provider.kind,
       })
       if (retried.ok) {
-        await inv.updateProvider(provider.id, {
-          quotaRemaining: retried.remaining,
-          currency: retried.currency,
-        })
+        await persistBalance(provider.id, retried)
         return { ...(await buildState()), balance: retried }
       }
       result.reason = retried.reason || result.reason
@@ -1534,18 +1542,17 @@ route('POST', /^\/api\/providers\/([\w-]+)\/balance$/, async (ctx) => {
   }
   // 余额是账号级的，写回站点——挂在 Key 上会导致「加第二个 Key 余额显示 0」
   if (result.ok) {
-    await inv.updateProvider(provider.id, {
-      quotaRemaining: result.remaining,
-      currency: result.currency,
+    // 写回站点 + 手动刷一次余额也进曲线——否则用户点了刷新，图上却没动静。
+    // 两件事放同一份 mutate 里，卡片和曲线不会一个新一个旧
+    const at = new Date().toISOString()
+    await store.mutate((current) => {
+      inv.applyBalanceResult(
+        current.providers.find((p) => p.id === provider.id),
+        result,
+        at,
+      )
+      return applySnapshot(current, { providerId: provider.id, at, balance: result })
     })
-    // 手动刷一次余额也进曲线——否则用户点了刷新，图上却没动静。
-    await store.mutate((current) =>
-      applySnapshot(current, {
-        providerId: provider.id,
-        at: new Date().toISOString(),
-        balance: result,
-      }),
-    )
   }
   return { ...(await buildState()), balance: result }
 })

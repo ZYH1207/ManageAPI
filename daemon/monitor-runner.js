@@ -145,14 +145,10 @@ export async function collectProviderSnapshots({ providerId = null, logger = con
     const ms = Date.now() - started
     const applied = await store.mutate((current) => {
       const out = applySnapshot(current, snap)
-      // 余额是账号级的，顺手写回站点——站点卡片上就能看到最新值
+      // 余额是账号级的，顺手写回站点——站点卡片上就能看到最新值（含赠金）
       if (snap.balance?.ok) {
         const target = current.providers.find((p) => p.id === provider.id)
-        if (target) {
-          target.quotaRemaining = snap.balance.remaining
-          target.currency = snap.balance.currency
-          target.quotaUpdatedAt = at
-        }
+        inv.applyBalanceResult(target, snap.balance, at)
       }
       recordRun(current, {
         providerId: provider.id,

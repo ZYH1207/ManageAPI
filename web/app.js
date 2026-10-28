@@ -1247,6 +1247,21 @@ function providersHtml({ withForm = true, panel = '', actions = '' } = {}) {
     const statusBadge = hasQuota
       ? balanceBadge(quota, warnCny)
       : '<span class="badge">余额未录入</span>'
+    // 赠金（Sub2API 的「赠送额度」）：quotaRemaining 里已经含它，这里只把
+    // 「其中多少是赠金、什么时候到期」说清楚——否则「余额 0 却还能用」看着像 bug
+    const giftAmount = p.giftBalance === null || p.giftBalance === undefined ? NaN : Number(p.giftBalance)
+    const giftText =
+      Number.isFinite(giftAmount) && giftAmount > 0
+        ? `${priceSym()}${money(dispAmount(giftAmount, p.currency))}`
+        : ''
+    const giftHint = giftText
+      ? `<span class="hint" title="${esc(
+          t('余额里含赠金 {amount}，{date} 到期。赠金按站点自己的规则抵扣，到期后自动失效。', {
+            amount: giftText,
+            date: p.giftExpiry ? fmtDateTime(p.giftExpiry) : t('没有固定到期日'),
+          }),
+        )}">${t('其中赠金 {amount}', { amount: giftText })}</span>`
+      : ''
 
     return `
       <div class="card prov-card${p.paused ? ' is-paused' : ''}" data-provider="${esc(p.id)}" data-has-token="${p.hasAdminToken ? '1' : '0'}">
@@ -1278,6 +1293,7 @@ function providersHtml({ withForm = true, panel = '', actions = '' } = {}) {
           <div data-provider="${esc(p.id)}">
             <span class="k">余额</span>
             <b>${hasQuota ? `${priceSym()}${money(dispAmount(p.quotaRemaining, p.currency))}` : '—'}</b>
+            ${giftHint}
           </div>
           <div>
             <span class="k">已定价</span>

@@ -394,6 +394,10 @@ const EN = {
   '还没同步过模型，先去「一键同步」': 'No models synced yet — run “Sync all” first',
   '还没有 Key，加一个才能拉模型。': 'No key yet — add one to sync models.',
   '余额未录入': 'Balance not set',
+  '其中赠金 {amount}': 'incl. {amount} gift credit',
+  '余额里含赠金 {amount}，{date} 到期。赠金按站点自己的规则抵扣，到期后自动失效。':
+    'Balance includes {amount} of gift credit, expiring {date}. Gift credit is deducted by the site\u2019s own rules and lapses on expiry.',
+  '没有固定到期日': 'no fixed expiry',
   '从站点读分组，选你买的那个，倍率自动填到下面所有模型': 'Read groups from the site, pick yours, ratios fill in below',
   '用管理令牌拉站方用量，和我们的估算对比': 'Pull the site\u2019s own usage and compare with our estimate',
   '填后台登录令牌后，可自动读余额': 'Fill in a login token to read the balance automatically',

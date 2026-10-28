@@ -202,9 +202,23 @@ export async function tryBalance({ baseUrl, apiKey, adminToken, kind, timeoutMs 
           // 只有明确写了 currency 才当人民币
           const money = data?.balance ?? data?.credits
           if (typeof money === 'number') {
+            // 赠金是另一个口袋：/api/v1/user/profile 只给本金 balance，
+            // 「赠送额度」在 /api/v1/rewards/overview 里。以前只看 profile，
+            // 「本金 0 + 赠金 2」的站被读成 0——卡片一片红、低于阈值告警也说反话
+            const gift = await fetchGiftBalance({
+              baseUrl,
+              adminToken,
+              timeoutMs: Math.min(timeoutMs, 5000),
+            })
             return {
               ok: true,
-              remaining: money,
+              // 可用 = 本金 + 赠金可用。赠金只能按站点规则抵扣（还有有效期），
+              // 但它确实能花；漏掉会让「余额够不够」的判断整体偏保守到失真
+              remaining: gift ? Math.round((money + gift.amount) * 1e6) / 1e6 : money,
+              // 本金单独留一份：卡片要能写清「余额 $2.00（其中赠金 $2.00）」
+              principal: money,
+              giftBalance: gift?.amount ?? null,
+              giftExpiry: gift?.expiry ?? null,
               currency: String(data?.currency || '').toUpperCase() === 'CNY' ? 'CNY' : 'USD',
               via: 'admin-token',
             }
@@ -275,6 +289,43 @@ export async function tryBalance({ baseUrl, apiKey, adminToken, kind, timeoutMs 
     }
   }
   return { ok: false, reason: `余额接口不可用：${message || '未知原因'}。可手动填余额。` }
+}
+
+/**
+ * 读「赠送额度」（Sub2API 的赠金）。
+ *
+ * 和余额不是一个口袋：`/api/v1/user/profile` 只给本金 balance，赠金在
+ * `/api/v1/rewards/overview`：gift_available_balance（可用）、gift_balance（账面）、
+ * nearest_expiry（最近一笔到期）、consumption_multiplier（赠金自己的消耗倍率）。
+ *
+ * 读不到就当没有（返回 null）：这条是加分项，不能让它把余额读取拖挂——
+ * 老站点没这个接口、令牌只开了部分权限，都只是「没有赠金」，不是余额失败。
+ *
+ * @returns {Promise<{amount:number, expiry:string|null, multiplier:number|null}|null>}
+ */
+export async function fetchGiftBalance({ baseUrl, adminToken, timeoutMs = 5000 }) {
+  if (!adminToken) return null
+  const origin = originOf(baseUrl, { stripApiPrefix: true })
+  if (!origin) return null
+  try {
+    const payload = await requestJson(`${origin}/api/v1/rewards/overview`, {
+      apiKey: adminToken,
+      timeoutMs,
+    })
+    const data = payload?.data ?? payload
+    // 优先「可用」：账面余额里可能还压着冻结或已过期未清理的部分
+    const amount = Number(data?.gift_available_balance ?? data?.gift_balance)
+    if (!Number.isFinite(amount) || amount <= 0) return null
+    const multiplier = Number(data?.consumption_multiplier)
+    return {
+      amount: Math.round(amount * 1e6) / 1e6,
+      expiry: data?.nearest_expiry || null,
+      multiplier: Number.isFinite(multiplier) ? multiplier : null,
+    }
+  } catch {
+    // 401 / 404 / 超时都只意味着「这个站没有可读的赠金」，不影响本金余额
+    return null
+  }
 }
 
 /**

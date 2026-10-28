@@ -142,6 +142,27 @@ export async function updateProvider(id, patch) {
 }
 
 /**
+ * 把一次余额读取的结果写回站点（调用方在 mutate 里传 provider 对象）。
+ *
+ * 余额和赠金都是账号级的：挂在 Key 上会出现「加第二个 Key 余额显示 0」。
+ * 手动读余额、定时采集、令牌失效重登后重试三处共用这一份——
+ * remaining / giftBalance / giftExpiry 的口径只在这里定义一次。
+ */
+export function applyBalanceResult(provider, result, at = nowIso()) {
+  if (!provider || !result?.ok) return false
+  const remaining = Number(result.remaining)
+  if (!Number.isFinite(remaining)) return false
+  provider.quotaRemaining = remaining
+  if (result.currency) provider.currency = result.currency
+  provider.quotaUpdatedAt = at
+  // 赠金读不到就清掉：否则上次的赠金会一直挂着，过期后界面还写着「其中赠金 $2」
+  const gift = result.giftBalance === null || result.giftBalance === undefined ? NaN : Number(result.giftBalance)
+  provider.giftBalance = Number.isFinite(gift) ? gift : null
+  provider.giftExpiry = result.giftExpiry || null
+  return true
+}
+
+/**
  * 按给定的 id 顺序重排站点卡片（拖拽用）。
  * 只调整传进来的这些；没提到的保持原相对位置排在后面。
  */
