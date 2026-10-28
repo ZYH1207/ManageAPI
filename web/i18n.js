@@ -753,6 +753,19 @@ Object.assign(EN, {
     'Edit prices inline; saved on blur. ¥/Mtok is a blended cost: 25% input, 75% output. USD-priced sites convert at the rate on the Benchmarks page.',
 })
 
+// 比价页「只显示允许放行」开关
+Object.assign(EN, {
+  '只显示允许放行': 'Only admitted',
+  '打开后只显示准入通过的供给：慢速 / 结果可疑 / 不稳定 / 没有可信样本整行隐藏；冷却中、评分过期、未探测的仍然显示（它们不是坏站）。随时可切。':
+    'Show only supplies that pass admission: rows flagged slow, suspicious, unstable or without usable samples are hidden; cooling down, stale and never-probed rows stay visible (they are not bad sites). Toggle any time.',
+  '{shown} / {total} 个模型': '{shown} / {total} models',
+  '{shown} / {total} 个模型 · 已隐藏 {n} 条供给':
+    '{shown} / {total} models · {n} supplies hidden',
+  '没有允许放行的供给': 'No admitted supplies',
+  '当前范围内有 {n} 条供给被这个开关隐藏了：慢速、结果可疑、不稳定或没有可信样本。关掉开关就能看到它们。':
+    '{n} supplies in this view are hidden by the switch: slow, suspicious, unstable or without usable samples. Turn it off to see them.',
+})
+
 // 放行可疑供给（开关）
 Object.assign(EN, {
   '太慢': 'Too slow',

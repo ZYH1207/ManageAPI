@@ -25,7 +25,14 @@ import {
   usageNumbers,
 } from '../core/wire.js'
 import { detailRows } from '../core/usage-detail.js'
-import { selectCandidates, listPublicModels, explain, admissionFailure, admissionTags } from '../core/router.js'
+import {
+  selectCandidates,
+  listPublicModels,
+  explain,
+  admissionFailure,
+  admissionOf,
+  admissionTags,
+} from '../core/router.js'
 import { snapTtftMs, ttftTierTable, describeTtftLimit } from '../core/latency.js'
 import { pauseStatus, normalizeWindows, isTime, MAX_WINDOWS } from '../core/schedule.js'
 import {
@@ -294,6 +301,14 @@ async function buildState({ light = false } = {}) {
     // 比价页的状态标签和决策页同一份判定（core/router.js#admissionTags）：
     // 慢速、可疑、不稳定可以同时成立，前端只管照着画，不在浏览器里再判一遍
     const tooSlow = maxTtftMs > 0 && typeof score.ttftMs === 'number' && score.ttftMs > maxTtftMs
+    // 准入判定和 selectCandidates 里那份用同一个形状：samples 是探针 + 真实流量，
+    // allowUntrusted 让「放行可疑供给」在比价页也生效，否则两个页面结论会打架
+    const gateRow = {
+      ...score,
+      tooSlow,
+      allowUntrusted,
+      samples: (score.samples || 0) + (score.trafficSamples || 0),
+    }
     scores[offerId] = {
       ...score,
       // routable 表示「会不会参与路由」，受开关影响
@@ -301,8 +316,12 @@ async function buildState({ light = false } = {}) {
       // probeTrusted 是探针的原始判定，只用于界面打「可疑」标记，不受开关影响
       probeTrusted: probeTrusted(offerId),
       tooSlow,
-      // samples 在评分里只算探针，准入看的是探针 + 真实流量（同 selectCandidates）
-      tags: admissionTags({ ...score, tooSlow, samples: (score.samples || 0) + (score.trafficSamples || 0) }),
+      // samples 仍是探针样本数（探针页按「探针 + 真实流量」分开显示），
+      // 只有标签和准入用合并后的证据量
+      tags: admissionTags(gateRow),
+      // 比价页「只显示允许放行」按它过滤：门禁结论只有 admissionOf 一份，
+      // 前端不拿标签自己再拼一遍「什么算不合格」
+      admission: admissionOf(gateRow),
     }
   }
 

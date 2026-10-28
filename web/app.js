@@ -16,6 +16,9 @@ const AUTOREFRESH_MS = 15000
 const AUTOREFRESH_KEY = 'manageapi.autorefresh'
 let autoRefresh = localStorage.getItem(AUTOREFRESH_KEY) !== '0'
 let refreshTimer = null
+// 比价页「只显示允许放行」：纯前端过滤，本地记住开关。默认关（保持原来的全表视图）
+const ONLY_ADMITTED_KEY = 'manageapi.pricingOnlyAdmitted'
+let onlyAdmitted = localStorage.getItem(ONLY_ADMITTED_KEY) === '1'
 // 这两个页签要看评分/候选明细，轮询时走完整 state；其它页只要轻量那份省带宽
 const HEAVY_TABS = new Set(['pricing', 'decision'])
 
@@ -2115,10 +2118,28 @@ function renderPricing() {
   const ignoredCount = (state.settings?.ignoredModels || []).length
   const orphanGroups = orphanGroupKeys()
 
-  const groups = visibleGroups.map((group) => {
+  // 「只显示允许放行」按服务端下发的 admission 过滤：门禁结论只有
+  // core/router.js#admissionOf 一份，前端不拿标签自己再拼一遍「什么算不合格」。
+  // 冷却中 / 评分过期 / 未探测都算允许放行——它们不是坏站，仍会登场兜底；
+  // 被隐藏的正是慢速 / 结果可疑 / 不稳定 / 没有可信样本。
+  // admission 缺失时（旧后端）不隐藏：宁可多显示，也不要静默吞掉供给。
+  let hiddenRows = 0
+  const shownGroups = []
+  for (const group of visibleGroups) {
+    if (!onlyAdmitted) {
+      shownGroups.push({ group, rows: group.rows })
+      continue
+    }
+    const rows = group.rows.filter((row) => state.scores?.[row.offerId]?.admission?.ok !== false)
+    hiddenRows += group.rows.length - rows.length
+    // 一行都不剩的模型整组不出现，免得留一堆空壳表
+    if (rows.length > 0) shownGroups.push({ group, rows })
+  }
+
+  const groups = shownGroups.map(({ group, rows: shownRows }) => {
     const panelKey = `pricing:${group.modelKey}`
     const isCollapsed = collapsedPanels.has(panelKey)
-    const rows = group.rows.map((row) => {
+    const rows = shownRows.map((row) => {
       const score = state.scores[row.offerId]
       // 状态标签由服务端按 core/router.js#admissionTags 下发：慢速 / 可疑 / 不稳定
       // 可以同时成立，全都标出来。价目表里只标「毛病」：可用是默认、兜底是决策页的概念
@@ -2185,7 +2206,7 @@ function renderPricing() {
           <button class="ghost tiny" data-act="toggle-panel" data-panel="${esc(panelKey)}">${isCollapsed ? '▸' : '▾'}</button>
           <span class="model mono">${esc(group.modelKey)}</span>
           ${group.spreadPct === null ? '' : `<span class="spread">价差 ${group.spreadPct}%</span>`}
-          <span class="count">${group.providerCount} 个站 · ${group.rows.length} 条供给</span>
+          <span class="count">${group.providerCount} 个站 · ${shownRows.length === group.rows.length ? `${group.rows.length} 条供给` : `${shownRows.length} / ${group.rows.length} 条供给`}</span>
         </div>
         ${isCollapsed ? '' : `
         <table class="pricing-table">
@@ -2204,7 +2225,20 @@ function renderPricing() {
   view.innerHTML = `
     <div class="toolbar">
       <input id="pricing-search" class="search" type="search" placeholder="搜索模型名…" value="${esc(filters.pricing)}" />
-      <span class="hint" style="margin:0">${visibleGroups.length} / ${state.ranked.length} 个模型</span>
+      <span class="hint" style="margin:0">${
+        onlyAdmitted && hiddenRows
+          ? t('{shown} / {total} 个模型 · 已隐藏 {n} 条供给', {
+              shown: shownGroups.length,
+              total: state.ranked.length,
+              n: hiddenRows,
+            })
+          : t('{shown} / {total} 个模型', { shown: shownGroups.length, total: state.ranked.length })
+      }</span>
+      <label class="switch switch-inline" title="${t('打开后只显示准入通过的供给：慢速 / 结果可疑 / 不稳定 / 没有可信样本整行隐藏；冷却中、评分过期、未探测的仍然显示（它们不是坏站）。随时可切。')}">
+        <input type="checkbox" id="pricing-only-admitted" ${onlyAdmitted ? 'checked' : ''} />
+        <span class="switch-track"><span class="switch-knob"></span></span>
+        <span class="switch-text"><b>${t('只显示允许放行')}</b></span>
+      </label>
       <span class="grow"></span>
       <button class="with-icon" data-act="ignored-models" title="${t('忽略后不再参与比价、智能决策、探针和网关')}">
         ${icon('eye-off')}${t('忽略模型')}${ignoredCount ? ` ${ignoredCount}` : ''}
@@ -2213,7 +2247,10 @@ function renderPricing() {
     <p class="hint">${t('价格直接改，失焦即保存。「{sym}/百万 token」是综合成本：输入按 25%、输出按 75% 加权。人民币标价的站按「基准价」页里的汇率折算成美元比较。', { sym: priceSym() })}</p>
     <p class="hint">${t('倍率模式下，输入 / 输出价填的是「原价」：实际价 = 原价 × 倍率。基准价只是导入时自动填进这两个框的默认值，手改过就以手改的为准。')}</p>
     ${ignoredCount ? `<p class="hint">已忽略 ${ignoredCount} 个模型：它们不出现在比价、智能决策、探针和网关里。<button class="ghost tiny" data-act="ignored-models">管理</button></p>` : ''}
-    ${groups}${unpricedBlock}`
+    ${groups ||
+    (onlyAdmitted && hiddenRows
+      ? `<div class="empty"><h3>${t('没有允许放行的供给')}</h3><p>${t('当前范围内有 {n} 条供给被这个开关隐藏了：慢速、结果可疑、不稳定或没有可信样本。关掉开关就能看到它们。', { n: hiddenRows })}</p></div>`
+      : '')}${unpricedBlock}`
 }
 
 
@@ -6311,6 +6348,18 @@ document.addEventListener('change', async (event) => {
     } catch (error) {
       toast(error.message, true)
     }
+    return
+  }
+
+  if (input.id === 'pricing-only-admitted') {
+    // 纯本地开关：只改视图，不往服务端存（不同人看同一份数据可以有不同口径）
+    onlyAdmitted = input.checked
+    try {
+      localStorage.setItem(ONLY_ADMITTED_KEY, onlyAdmitted ? '1' : '0')
+    } catch {
+      /* 隐私模式下 localStorage 可能不可用 */
+    }
+    renderPricing()
     return
   }
 

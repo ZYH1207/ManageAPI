@@ -1895,6 +1895,11 @@ html[data-lang='en'] .doc[data-lang-block='en'] { display: block; }
 .switch-text { display: flex; flex-direction: column; gap: 3px; line-height: 1.55; }
 .switch-text b { font-size: 13px; font-weight: 500; color: var(--text); }
 .switch-text span { font-size: 12px; color: var(--muted); }
+/* 工具条里的紧凑开关：一行文字，不占设置页那种两行高度 */
+.switch-inline { align-items: center; gap: 8px; user-select: none; }
+.switch-inline .switch-track { margin-top: 0; }
+.switch-inline .switch-text b { font-size: 12px; font-weight: 400; color: var(--muted); }
+.switch-inline input:checked ~ .switch-text b { color: var(--text); }
 
 /* ------------------------------------------------- 免费页：分段控件里的计数 */
 .seg-count {
