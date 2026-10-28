@@ -73,6 +73,7 @@ import {
   DETAIL_RETENTION_DAYS,
 } from '../core/usage-ledger.js'
 import { buildMonitorView, markAlertsRead, markAnnouncementsRead, applySnapshot } from '../core/monitor.js'
+import { aggregateLongTerm } from '../core/offer-stats.js'
 import { readProbeSpend, clearProbeSpend, buildProbeSpendView } from '../core/probe-spend.js'
 import { collectProviderSnapshots } from './monitor-runner.js'
 import { runProbes } from './probe-runner.js'
