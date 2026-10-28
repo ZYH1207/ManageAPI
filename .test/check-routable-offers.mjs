@@ -66,6 +66,37 @@ console.log('[1] routeableOffers 单元断言（内存 db）')
   const noSettings = routeableOffers({ providers: db.providers, settings: {}, offers: db.offers })
   ok(noSettings.some((o) => o.id === 'o2'), '忽略表为空时不做模型过滤')
 }
+
+console.log('[1b] 余额探底（balanceDepleted）：判定本身 + 不在 routeableOffers 里过滤')
+{
+  const { BALANCE_DEPLETED_BELOW, balanceDepleted } = await import(
+    pathToFileURL(join(ROOT, 'core/inventory.js')).href
+  )
+  ok(BALANCE_DEPLETED_BELOW === 0.01, `探底线是 0.01（得到 ${BALANCE_DEPLETED_BELOW}）`)
+  ok(balanceDepleted({ quotaRemaining: 0 }) === true, '余额 0 算探底')
+  ok(balanceDepleted({ quotaRemaining: 0.005 }) === true, '余额 0.005 算探底')
+  ok(balanceDepleted({ quotaRemaining: 0.01 }) === true, '余额正好 0.01 算探底（≤）')
+  ok(balanceDepleted({ quotaRemaining: 0.02 }) === false, '余额 0.02 不算探底')
+  ok(balanceDepleted({ quotaRemaining: null }) === false, '余额从未读到（null）不算探底')
+  ok(balanceDepleted({}) === false, '没有余额字段不算探底')
+
+  // 探底是「准入离场」不是「数据口删掉」：routeableOffers 不过滤，
+  // 供给必须留在比价/决策表里挂红标，由「只显示准入通过」负责隐藏
+  const db = {
+    providers: [
+      { id: 'p1', quotaRemaining: 0.005 },
+      { id: 'p2', quotaRemaining: 3.5 },
+    ],
+    settings: {},
+    offers: [
+      { id: 'o1', providerId: 'p1', modelKey: 'm-a', upstreamName: 'm-a' },
+      { id: 'o2', providerId: 'p1', modelKey: 'm-b', upstreamName: 'm-b' },
+      { id: 'o3', providerId: 'p2', modelKey: 'm-a', upstreamName: 'm-a' },
+    ],
+  }
+  const kept = routeableOffers(db).map((o) => o.id)
+  ok(kept.join(',') === 'o1,o2,o3', `探底站的供给仍留在在役名单里（得到 ${kept.join(',') || '空'}）`)
+}
 console.log('')
 
 // ---------------------------------------------------------------- 端到端

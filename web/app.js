@@ -138,11 +138,14 @@ function loginLightDot(p) {
   return dot('yellow', t('已填站点令牌（非登录态）：功能可用，但不会自动续期'))
 }
 
-/** 余额状态徽章：档位全站统一——≤0 红（真没钱了）、低于阈值黄（该充值）、
- *  阈值关闭（0）不亮警告。此前站点页黄、监控页红，同一状态两种解读 */
-function balanceBadge(balance, threshold) {
+/** 余额状态徽章：档位全站统一——探底（≤0.01）红「余额不足」且整站离场、
+ *  余额 0 红、低于阈值黄（该充值）、阈值关闭（0）不亮警告。此前站点页黄、监控页红，同一状态两种解读 */
+function balanceBadge(balance, threshold, depleted = false) {
+  if (depleted) {
+    return `<span class="badge danger" title="${esc(t('余额已探底：这个站的全部模型已离场（不进比价、决策、探针和网关，也不再撞 403）。充值后点卡片上的「余额」数字重读，自动恢复'))}">${t('余额不足')}</span>`
+  }
   if (balance === null || balance === undefined) return `<span class="badge">${t('无数据')}</span>`
-  if (Number(threshold) > 0 && balance <= 0) return `<span class="badge danger">${t('低于阈值')}</span>`
+  if (Number(threshold) > 0 && balance <= 0) return `<span class="badge danger">${t('余额不足')}</span>`
   if (Number(threshold) > 0 && balance <= threshold) return `<span class="badge warn">${t('低于阈值')}</span>`
   return `<span class="badge ok">${t('正常')}</span>`
 }
@@ -1759,7 +1762,7 @@ function providersHtml({ withForm = true, panel = '', actions = '' } = {}) {
     const warnUsd = Number(state.settings.balanceWarnUsd ?? state.settings.balanceWarnCny) || 0
     const warnCny = warnUsd * siteUnitCny(p)
     const statusBadge = hasQuota
-      ? balanceBadge(quota, warnCny)
+      ? balanceBadge(quota, warnCny, Boolean(p.balanceDepleted))
       : '<span class="badge">余额未录入</span>'
     // 赠金（Sub2API 的「赠送额度」）：quotaRemaining 里已经含它，这里只把
     // 「其中多少是赠金、什么时候到期」说清楚——否则「余额 0 却还能用」看着像 bug
@@ -1808,7 +1811,7 @@ function providersHtml({ withForm = true, panel = '', actions = '' } = {}) {
           <div class="prov-tile-duo" data-provider="${esc(p.id)}">
             <div>
               <span class="k">${t('余额')}</span>
-              <b>${hasQuota ? `${priceSym()}${money(dispAmount(p.quotaRemaining, p))}` : '—'}</b>
+              <b class="edit-warn" data-act="prov-read-balance" data-provider="${esc(p.id)}" title="${esc(t('点这里重新读一次余额（充值后读完，探底离场的站当场回场）'))}">${hasQuota ? `${priceSym()}${money(dispAmount(p.quotaRemaining, p))}` : '—'}</b>
               ${giftHint}
             </div>
             <div>
@@ -3197,6 +3200,7 @@ const BLOCKED_LABEL = {
   budget: '单次请求超限',
   'rate-limit': '上游账号冷却中',
   'model-missing': '该分组没有这个模型',
+  'protocol-unsupported': '不支持该协议',
   'error-rate': '失败率过高',
 }
 /**
@@ -3224,6 +3228,8 @@ const STATUS_TAG = {
   unverified: { label: '待验证（曾余额不足）', cls: '' },
   inconclusive: { label: '证据不足', cls: '' },
   blocked: { label: '冷却中', cls: 'warn' },
+  depleted: { label: '余额不足', cls: 'danger' },
+  detoured: { label: '临时改道', cls: 'warn' },
   billing: { label: '余额不足 · 请充值', cls: 'danger' },
   'awaiting-recovery': { label: '等确认恢复', cls: 'warn' },
   fallback: { label: '兜底', cls: '' },
@@ -6949,6 +6955,24 @@ document.addEventListener('click', async (event) => {
         : t('已同步，新导入 {count} 把密钥', { count: keyImport.imported })
     }
     toast(doneMsg, failed.length > 0)
+    return
+  }
+
+  // 读余额：只刷新这一项，不给整站跑一遍同步。探底离场的站，充值后靠它当场回场
+  if (action === 'prov-read-balance') {
+    const providerId = actionButton.dataset.provider
+    if (!providerId) return
+    await withBusy(actionButton, async () => {
+      try {
+        await api('POST', `/api/providers/${providerId}/balance`, {})
+      } catch (error) {
+        toast(t('读余额失败：{error}', { error: error.message }), true)
+        return
+      }
+      state = await api('GET', '/api/state')
+      render()
+      toast(t('余额已更新'))
+    })
     return
   }
 

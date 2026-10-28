@@ -444,9 +444,36 @@ export function ignoredModelSet(db) {
 }
 
 /**
+ * 余额探底线（站内额度单位）：余额 ≤ 0.01 视为「没钱了」，不是「快没钱了」。
+ *
+ * 为什么是主动离场而不是等 403：站点卡读余额就能知道没钱，让路由再拿真实请求
+ * 去撞一次 403 是白撞——billingOnly 放行机制（冷却 60 秒后按价格排第一）在
+ * 「用户一直不充值」的场景里会让每一单都先吃一个来回的失败。到线把整站供给
+ * 拒之门外，充值后（采集 / 手动刷新余额 / 手填）余额回上线，下一轮读取
+ * 自动恢复，没有任何要清理的状态。
+ *
+ * 待遇与「慢速」同款：供给留在候选表里挂红标（准入拒、排序沉底），不是从
+ * 数据口删掉——离场是「不派活」，不是「看不见」；「只显示准入通过」一开就隐藏。
+ *
+ * 余额含赠金（applyBalanceResult 的 remaining 已把赠金算进去），
+ * 「本金 0 + 赠金 2」不会被误伤；余额从未读到（null）也不算探底。
+ */
+export const BALANCE_DEPLETED_BELOW = 0.01
+
+export function balanceDepleted(provider) {
+  // null/undefined 是「没读到过」，不是 0：Number(null) === 0 会把从未读余额的站误杀
+  const remaining = provider?.quotaRemaining
+  if (remaining === null || remaining === undefined) return false
+  const n = Number(remaining)
+  return Number.isFinite(n) && n <= BALANCE_DEPLETED_BELOW
+}
+
+/**
  * 真正「在役」的供给：没下线（delistedAt）、站点没暂停（paused）、模型没被忽略（ignoredModels）。
  * 这是三条过滤规则的唯一实现——比价 / 概览 / 智能决策 / 网关 / 免费池 / 探针目标都从这里取，
  * 任何一侧自己再写一遍迟早漂移（曾出过「暂停站点仍被派流量」「下线模型仍被探测白烧额度」）。
+ * 注意：余额探底不在这里过滤——那是准入门禁的事（要挂标、要能被「只显示准入」隐藏），
+ * 见 core/router.js#admissionOf；探针/复检的「不撞墙」各自显式跳过。
  * 纯函数：只读 db，不改；调用方拿到的是 db.offers 里的原对象，不要原地修改。
  */
 export function routeableOffers(db) {

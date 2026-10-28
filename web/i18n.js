@@ -760,6 +760,11 @@ Object.assign(EN, {
   '站点已添加': 'Site added',
   '网关地址已复制': 'Gateway URL copied',
   '余额已更新': 'Balance updated',
+  '读余额失败：{error}': 'Failed to read balance: {error}',
+  '点这里重新读一次余额（充值后读完，探底离场的站当场回场）':
+    'Click to re-read the balance (after topping up, a depleted site returns to the field immediately)',
+  '余额已探底：这个站的全部模型已离场（不进比价、决策、探针和网关，也不再撞 403）。充值后点卡片上的「余额」数字重读，自动恢复':
+    'Balance depleted: every model of this site is out of the field (no pricing, decisions, probes, gateway, and no more wasted 403 attempts). After topping up, click the balance number on the card to re-read — it returns automatically.',
   '分组已更新': 'Group updated',
   '已保存': 'Saved',
   '已删除这段': 'Window removed',
@@ -1011,6 +1016,8 @@ Object.assign(EN, {
   '单次预算超限': 'Request over budget',
   '上游账号冷却中': 'Upstream account cooling down',
   '该分组没有这个模型': 'Model not in this group',
+  '不支持该协议': 'Protocol not supported',
+  '临时改道': 'Detoured',
   '限流中': 'Rate limited',
   '模型不可用': 'Model unavailable',
   '失败率过高': 'Failure rate too high',

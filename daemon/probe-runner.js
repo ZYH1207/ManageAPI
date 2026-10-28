@@ -19,6 +19,12 @@ export async function runProbes({ providerId, offerId, offerIds, limit = 5 } = {
   // 探针目标与路由/比价同口径：下线、暂停、忽略的都不探（手动指定 offerId 时也拦，避免定时任务漏网）。
   // 过滤规则唯一实现见 inv.routeableOffers——此前这里漏了 delistedAt，下线模型仍被定时探测白烧额度。
   let targets = inv.routeableOffers(db)
+  // 余额探底的站不撞墙：例行/自愈探测整站跳过（探了也是 403 白撞一个来回）。
+  // 点名 offerId / providerId 是用户显式要证据，仍放行
+  if (!offerId && !providerId && !offerIds) {
+    const depletedIds = new Set(db.providers.filter(inv.balanceDepleted).map((p) => p.id))
+    targets = targets.filter((o) => !depletedIds.has(o.providerId))
+  }
   if (offerId) targets = targets.filter((o) => o.id === offerId)
   else if (Array.isArray(offerIds) && offerIds.length > 0) {
     const wanted = new Set(offerIds)

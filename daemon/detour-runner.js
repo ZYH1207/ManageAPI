@@ -116,6 +116,13 @@ export async function runDetourRechecks({ logger = console } = {}) {
       continue
     }
 
+    // 余额探底的站不撞墙：复检本身也是一次真实请求，403 只会白摳一个来回。
+    // 不结改道只跳过——余额回上线后这里自然恢复复检，改道照常自动解除
+    if (inv.balanceDepleted(provider)) {
+      results.push({ offerId: detour.offerId, ok: false, skipped: 'balance-depleted' })
+      continue
+    }
+
     const credential =
       (offer.credentialId && db.credentials.find((c) => c.id === offer.credentialId)) ||
       db.credentials.find((c) => c.providerId === provider.id && (c.group || '') === (offer.group || '')) ||

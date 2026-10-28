@@ -561,6 +561,8 @@ async function buildState({ light = false } = {}) {
         hasAdminToken: Boolean(p.adminToken),
         adminTokenTail: p.adminTokenTail ?? null,
         paused: Boolean(p.paused),
+        // 余额探底（≤ 0.01）：整站供给已离场，前端照这个画红徽章，别在前端再算一遍阈值
+        balanceDepleted: inv.balanceDepleted(p),
         // 令牌可用性：'ok' / 'invalid' / null（还没验过）
         tokenStatus: p.tokenStatus ?? null,
         tokenStatusAt: p.tokenStatusAt ?? null,
@@ -641,6 +643,7 @@ async function buildState({ light = false } = {}) {
         offers: freeOffers,
         scores: scoreMap,
         benchmarks,
+        depletedProviderIds: new Set(db.providers.filter(inv.balanceDepleted).map((p) => p.id)),
         crossPane: db.settings.freeCrossPane || 'remaining',
       }).map((row) => ({
         ...row.offer,
@@ -4273,6 +4276,7 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
         offers: split.free,
         scores,
         benchmarks,
+        depletedProviderIds: new Set(db.providers.filter(inv.balanceDepleted).map((p) => p.id)),
         crossPane: db.settings.freeCrossPane || 'remaining',
       })
     : []

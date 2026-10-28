@@ -21,7 +21,7 @@
 import { offerCost } from './pricing.js'
 import { describeUnavailable, isRealCooldown } from './failure.js'
 import { isRoutable, effectiveCost, THRESHOLDS, MIN_SAMPLES_FOR_VERDICT } from './score.js'
-import { normalizeModelKey, modelIdentityKey } from './inventory.js'
+import { normalizeModelKey, modelIdentityKey, balanceDepleted } from './inventory.js'
 import { normalizeDecisionMode, compareByBasis } from './decision-mode.js'
 
 const INFINITY_COST = Number.POSITIVE_INFINITY
@@ -83,6 +83,15 @@ export function admissionOf(row) {
       ok: false,
       kind: 'detoured',
       text: `临时改道中${to ? `：当前走 ${to}` : ''}（原站每 20 分钟复检，正常了自动切回）`,
+    }
+  }
+  // 余额探底：站点卡已经读到没钱了，不再让真实请求去撞 403。
+  // 与慢速同款待遇：留在候选表里挂红标，准入拒之门外；充值并刷新余额后自动回场
+  if (row.balanceDepleted) {
+    return {
+      ok: false,
+      kind: 'depleted',
+      text: '余额不足：整站已离场（不派活、不探测、不撞 403），充值并刷新余额后自动回场',
     }
   }
   // 慢速：这是用户自己设的线，不因「放行可疑供给」而失效
@@ -154,6 +163,8 @@ export function admissionTags(row) {
   if (row.tooSlow) tags.push('slow')
   // 临时改道：空回合守卫把它挂起了（和「坏站」是两件事，单独一个标签）
   if (row.detour) tags.push('detoured')
+  // 余额探底：整站离场但留在表里挂红标（与慢速同款，不是从数据口删掉）
+  if (row.balanceDepleted) tags.push('depleted')
   // 结果可疑：指纹不符 / 输出截断 / 用量虚报，单次即可定性（同 score.js 的 degraded）
   if (row.status === 'degraded' || faults.length > 0) tags.push('degraded')
   if (typeof availability === 'number' && availability < THRESHOLDS.availability) {
@@ -288,13 +299,15 @@ export function admissionFailure(candidates, { model = '', maxTtftMs = 0 } = {})
   }
   // 最后一句必须是「我能做什么」。只报原因不给出路，用户照样看不懂
   const kinds = new Set(candidates.map((c) => c.admission?.kind).filter(Boolean))
-  const advice = kinds.has('blocked')
-    ? '按括号里的提示处理（充值 / 等冷却 / 换分组），或到「智能决策」页换一条供给'
-    : kinds.has('degraded') || kinds.has('unstable')
-      ? '这些供给结果不可信或不稳：去「探针」页复测一次，或换一条供给'
-      : kinds.has('no-evidence')
-        ? '这些供给没有可用样本：在「探针」页手动探一次就有结论'
-        : '到「智能决策」页看全部候选和原因'
+  const advice = kinds.has('depleted')
+    ? '有站点余额探底已离场：去充值后点「刷新余额」就回来，或看剩下来的供给'
+    : kinds.has('blocked')
+      ? '按括号里的提示处理（充值 / 等冷却 / 换分组），或到「智能决策」页换一条供给'
+      : kinds.has('degraded') || kinds.has('unstable')
+        ? '这些供给结果不可信或不稳：去「探针」页复测一次，或换一条供给'
+        : kinds.has('no-evidence')
+          ? '这些供给没有可用样本：在「探针」页手动探一次就有结论'
+          : '到「智能决策」页看全部候选和原因'
   return {
     status: 400,
     type: 'no_available_supply',
@@ -369,6 +382,8 @@ export function selectCandidates({
     // 太慢的直接排除，但仍保留在候选列表里——决策日志要能看出「为什么没选它」。
     // 口径在 isTooSlow：评分过期不算慢（首字是旧证据）
     const tooSlow = isTooSlow(score, maxTtftMs)
+    // 余额探底：整站离场（准入拒、不参选、不探测），但留在表里挂红标
+    const depleted = balanceDepleted(provider)
 
     // 把「为什么不可用」拆成人话，决策页直接显示。
     // 注意口径：fingerprint/truncation/billingRate 都是「正常比例」（未截断/未虚报），
@@ -376,6 +391,8 @@ export function selectCandidates({
     const reasons = []
     // 徽章已经写着「慢速」，理由只补数字：差多少、门槛多少
     if (tooSlow) reasons.push(`首字 ${ttftMs}ms > 门槛 ${maxTtftMs}ms`)
+    // 余额探底：不是 403 冷却（那要等上游拒），是站点卡读出来的，提前离场
+    if (depleted) reasons.push(`余额不足：只剩 ${provider.quotaRemaining}，整站离场`)
     // 冷却中 / 待复测：这是「刚才上游明确说不行」，必须让人看得出为什么没派它
     if (score?.blocked) reasons.push(blockedText(score.blocked))
     else if (score?.pendingRecovery) reasons.push(blockedText(score.pendingRecovery, { pending: true }))
@@ -407,10 +424,13 @@ export function selectCandidates({
       // 名义单价（美元/百万 token）：价格档排序用，展示仍走 price（人民币）
       priceUsd,
       quality,
-      // probeOk 是探针的原始判定；routable 是「这一单会不会优先考虑它」
+      // probeOk 是探针的原始判定；routable 是「这一单会不会优先考虑它」。
+      // 余额探底同样沉底：准入已拒，routable 不该再给它「优先考虑」的资格
       probeOk: isRoutable(score),
-      routable: (allowUntrusted || isRoutable(score)) && !tooSlow,
+      routable: (allowUntrusted || isRoutable(score)) && !tooSlow && !depleted,
       tooSlow,
+      // 余额探底：admissionOf 据此硬拒并挂「余额不足」标签
+      balanceDepleted: depleted,
       // effective 是展示口径（人民币）；排序用 effectiveUsd，见上
       effective: effectiveCost(price, quality),
       effectiveUsd: effectiveCost(priceUsd, quality),

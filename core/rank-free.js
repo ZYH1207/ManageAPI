@@ -41,10 +41,12 @@ function dailyBurn(quota, now) {
 /**
  * 闸门。任一命中即排除。
  *
- * 顺序上先看「额度用超了」再看「正好用尽」：used > limit 说明账已经记爆
+ * 顺序上先看「余额探底」（整站没钱了，盖过单模型的免费额度账），
+ * 再看「额度用超了」「正好用尽」：used > limit 说明账已经记爆
  * （站点给的额度和实际允许的不一致），这时报「超出配额」比「用尽」更接近事实。
  */
-function gateOf(score, quota) {
+function gateOf(score, quota, depleted = false) {
+  if (depleted) return { code: 'depleted', label: '余额不足' }
   if (quota) {
     if (Number(quota.used) > Number(quota.limit)) {
       return { code: 'quota_capped', label: '超出配额' }
@@ -73,6 +75,8 @@ function ttftOf(score) {
  * @param {Array} options.offers 免费供给
  * @param {Map|Object|null} options.scores offerId → score
  * @param {Object} [options.benchmarks] 预留给调用方统一入参，排序本身不看价格
+ * @param {Set<string>} [options.depletedProviderIds] 余额探底的站点 id：整个闸门排除（免费模型虽不耗余额，
+ *        但站方往往连免费通道一起关，且与付费侧「探底离场」同一条线）
  * @param {'remaining'|'relay'|'platform'} [options.crossPane] 跨栏偏好
  * @param {number} [options.now]
  * @returns {Array<{offer:Object, score:Object|null, gate:null|{code:string,label:string}, daysLeft:number|null, priority:number}>}
@@ -82,6 +86,7 @@ export function rankFreePool({
   offers = [],
   scores = null,
   benchmarks = {},
+  depletedProviderIds = null,
   crossPane = 'remaining',
   now = Date.now(),
 } = {}) {
@@ -91,7 +96,7 @@ export function rankFreePool({
     const score = scoreOf(offer, scores)
     // 先用 resetIfDue 把过期的账归零，否则跨天之后整池都会被判「用尽」
     const quota = resetIfDue(normalizeQuota(offer.freeQuota), now)
-    const gate = gateOf(score, quota)
+    const gate = gateOf(score, quota, Boolean(depletedProviderIds?.has(offer.providerId)))
     const days = quota ? daysLeftOf(quota, dailyBurn(quota, now)) : null
     return {
       offer,

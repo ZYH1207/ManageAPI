@@ -140,13 +140,16 @@ export function startProbeScheduler({
     // 此前直接对全量 db.offers 取前 10 个：下线行永久留在库前部且 lastProbeAt
     // 不更新，一旦占满名额，每轮探测 0 个目标，在役供给被饿死、评分陆续过期
     const routable = inv.routeableOffers(db)
-    if (routable.length === 0) return
+    // 余额探底的站不撞墙：自愈复检也跳过（余额回上线后自然回到候选，见 router.admissionOf）
+    const depletedIds = new Set(db.providers.filter(inv.balanceDepleted).map((p) => p.id))
+    const probeable = routable.filter((o) => !depletedIds.has(o.providerId))
+    if (probeable.length === 0) return
 
     const scores = scoreOffers(db.probes, db.traffic, {
       maxAgeMs: (Number(db.settings.scoreMaxAgeHours) || 6) * 3600 * 1000,
     })
     const now = Date.now()
-    const due = routable
+    const due = probeable
       .filter((offer) => {
         const score = scores.get(offer.id)
         // 自愈模式不主动给新供给「开张」：只补冷却/待复测这几条，其余照旧不探
