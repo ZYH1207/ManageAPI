@@ -1622,6 +1622,17 @@ html[data-lang='en'] .doc[data-lang-block='en'] { display: block; }
      截断——而那正是要看的信息。允许换行，最多两行。 */
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
+/* 卡片标题里需要突出的词（如「真实花费」）：用强调色 + 淡底纹，
+   和金额的强调色呼应。底纹用 --accent-soft（双主题已适配），
+   不用 color-mix —— 项目其余地方都没有依赖它，没必要为一行标题引入 */
+.monitor-kpi .stat .k .k-em {
+  color: var(--accent);
+  font-weight: 600;
+  background: var(--accent-soft);
+  border-radius: 4px;
+  padding: 0 4px;
+  margin: 0 -1px;
+}
 .monitor-kpi .stat .sub--wrap {
   white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
   line-height: 1.5;

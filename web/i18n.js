@@ -719,6 +719,7 @@ Object.assign(EN, {
   '没有可信样本': 'No usable samples',
   '证据不足': 'Not enough evidence',
   '花费': 'Spend',
+  '真实花费': 'Actual spend',
   // 词典补漏：t() 用到但此前缺失的条目（英文界面之前会回落成中文）
   '诊断信息': 'Diagnostics',
   '下面这段可以直接全选复制，发给开发者定位问题。': 'Select the block below and send it to the developer to help pin down the issue.',

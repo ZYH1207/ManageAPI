@@ -3122,7 +3122,8 @@ function spendStat(range) {
   const hint = parts.join(' · ')
 
   return {
-    k: `${t('花费')} · ${t(label)}`,
+    // 「真实花费」标成强调色：这个数字是站点自己算的账，不是估算，值得一眼分辨
+    kHtml: `<span class="k-em">${t('真实花费')}</span> · ${t(label)}`,
     // 时间段切换单独一行：和金额挤在一行时，窄卡片会把「今天/本周/本月」
     // 压成竖排（每个字一行）
     vHtml: `${actualHtml}<span class="spend-range-row">${seg}</span>`,
@@ -3246,7 +3247,7 @@ function renderMonitor() {
     .map(
       (item) => `<div class="stat">
         <div class="stat-main">
-          <div class="k">${esc(item.k)}</div>
+          <div class="k">${item.kHtml ?? esc(item.k)}</div>
           <div class="v">${item.vHtml ?? esc(item.v)}</div>
           ${item.sub ? `<div class="sub${item.subWrap ? ' sub--wrap' : ''}">${esc(item.sub)}</div>` : ''}
         </div>
