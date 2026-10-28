@@ -64,6 +64,7 @@ import { rankFreePool } from '../core/rank-free.js'
 import * as platforms from '../core/platforms/index.js'
 import { recordUsage, usageSummary, tokensUsedByKey, resetUsage, readUsage, localMonthStart } from '../core/usage.js'
 import { buildMonitorView, markAlertsRead, markAnnouncementsRead, applySnapshot } from '../core/monitor.js'
+import { readProbeSpend, clearProbeSpend, buildProbeSpendView } from '../core/probe-spend.js'
 import { collectProviderSnapshots } from './monitor-runner.js'
 import { runProbes } from './probe-runner.js'
 import { probeProtocols } from '../core/protocol-probe.js'
@@ -2153,6 +2154,23 @@ route('POST', /^\/api\/probes\/run$/, async (ctx) => {
     throw new HttpError(400, '没有可探测的目标：需要该站至少一个 Key，并已同步模型列表')
   }
   return { ...(await buildState()), probeResults: results }
+})
+
+// 探针花费：单独一个接口，不塞进 /api/state。界面每半小时拉一次，而 /api/state
+// 是 15 秒一轮的轮询——放进去就变成每 15 秒刷一次，不是想要的口径。
+route('GET', /^\/api\/probes\/spend$/, async () => {
+  const db = await store.readDb()
+  const data = await readProbeSpend()
+  return { probeSpend: buildProbeSpendView(data, { providers: db.providers, settings: db.settings }) }
+})
+
+// 清空探针花费统计（卡片右上角的小垃圾桶）。只是把账本归零并重置统计起点，
+// 不影响 db.probes 里已经存下来的探测结果。
+route('DELETE', /^\/api\/probes\/spend$/, async () => {
+  await clearProbeSpend()
+  const db = await store.readDb()
+  const data = await readProbeSpend()
+  return { probeSpend: buildProbeSpendView(data, { providers: db.providers, settings: db.settings }) }
 })
 
 route('GET', /^\/api\/probes\/history$/, async (ctx) => {

@@ -1482,6 +1482,44 @@ a.icon-btn:hover { text-decoration: none; }
 .card-head .meta { color: var(--faint); font-size: 12px; margin-top: 2px; word-break: break-all; }
 .card-actions { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
 
+/* ------------------------------------------------ 探针花费（主动探测卡右下角） */
+/* 版面：左栏是设置/开关，右栏原先整块空着，这张卡就落在右下角 */
+.probe-body {
+  display: flex;
+  align-items: flex-end;
+  gap: 20px;
+  margin-top: 12px;
+  flex-wrap: wrap;
+}
+.probe-body-main { flex: 1; min-width: 300px; }
+.probe-settings { display: flex; align-items: center; gap: 20px; flex-wrap: wrap; }
+.ps-card {
+  width: 360px;
+  max-width: 100%;
+  padding: 13px 15px 12px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+}
+.ps-card-head { display: flex; align-items: center; gap: 8px; }
+.ps-card-title { font-size: var(--fs-4); font-weight: 500; }
+.ps-card-trash { margin-left: auto; width: 26px; height: 26px; }
+.ps-card-trash:hover { color: var(--danger); background: var(--danger-soft); }
+/* 就一个数：探针花了多少钱。放最大，一眼看到 */
+.ps-total { margin-top: 4px; font-size: 26px; font-weight: 600; line-height: 1.2; letter-spacing: -0.3px; }
+.ps-card-meta { margin-top: 3px; font-size: var(--fs-2); color: var(--faint); }
+.ps-unpriced { color: var(--warn); }
+.ps-bars { display: flex; align-items: flex-end; gap: 2px; }
+.ps-card .ps-bars { height: 34px; margin: 10px 0 9px; }
+.ps-bar { flex: 1; min-width: 3px; align-self: flex-end; border-radius: 2px 2px 0 0; background: var(--accent); opacity: 0.6; }
+.ps-bar.is-empty { background: var(--divider); opacity: 1; }
+/* 分站：站点名 + 金额，一行一个，字号跟正文一致 */
+.ps-rows { display: flex; flex-direction: column; gap: 3px; }
+.ps-row { display: flex; align-items: baseline; gap: 10px; font-size: var(--fs-3); }
+.ps-row-name { color: var(--muted); }
+.ps-row-name.dim { color: var(--faint); }
+.ps-row-money { margin-left: auto; font-weight: 600; }
+
 .badges { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 10px; }
 .badge {
   font-size: 11px;

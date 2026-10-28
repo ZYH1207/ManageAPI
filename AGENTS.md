@@ -46,7 +46,7 @@
 | `check-lang.mjs` | 需要 Chrome 远程调试端口 9222，没开就 ECONNREFUSED |
 | `check-zcode.mjs` | `bonusTokens` 汇总断言依赖当前日期 |
 
-其余 21 个 `check-*.mjs` 应全部通过。
+其余 22 个 `check-*.mjs` 应全部通过。
 
 ## 跑测试
 

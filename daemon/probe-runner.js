@@ -3,7 +3,11 @@
  */
 import * as store from '../core/store.js'
 import * as inv from '../core/inventory.js'
+import * as bench from '../core/benchmark.js'
 import { probeModel } from '../core/probe.js'
+import { offerCost } from '../core/pricing.js'
+import { usageRowCost } from '../core/monitor.js'
+import { recordProbeSpend } from '../core/probe-spend.js'
 
 /**
  * @param {{providerId?:string, offerId?:string, offerIds?:string[], limit?:number}} options
@@ -39,6 +43,34 @@ export async function runProbes({ providerId, offerId, offerIds, limit = 5 } = {
   const CONCURRENCY = 4
   const results = new Array(targets.length)
   let cursor = 0
+
+  // 探针花费记账：只按**这一轮自己发的请求**的 usage × 该供给自己的价格算，
+  // 口径和概览图的花费同一套（monitor.usageRowCost）。绝不拿站点账单差额
+  // 当探针花费——那是全站口径，会把同时段的真实流量全算到探针头上。
+  const benchmarks = await bench.readBenchmarks().catch(() => ({}))
+  const offerById = new Map(targets.map((offer) => [offer.id, offer]))
+  const recordSpendOf = async (record) => {
+    const spend = record?.spend
+    // requests=0 表示一个请求都没拿到响应（连不上 / 解密失败），没有钱可记
+    if (!spend || !(spend.requests > 0)) return
+    const offer = offerById.get(record.offerId)
+    const cny = offer ? usageRowCost(offer, db.settings, benchmarks, spend) : 0
+    // 「花了 token 但算不出钱」（没填价 / 倍率模式没基准价）要单独标记，
+    // 不能静默当成 0 混进合计——否则总花费会偏低而没人知道
+    const cost = offer ? offerCost(offer, db.settings, benchmarks) : null
+    const priced = Boolean(
+      cost &&
+        (cost.perCall
+          ? typeof cost.callPriceCny === 'number'
+          : cost.inCnyPerMtok !== null || cost.outCnyPerMtok !== null),
+    )
+    await recordProbeSpend({
+      providerId: record.providerId,
+      cny,
+      requests: spend.requests,
+      priced,
+    }).catch(() => {})
+  }
   const worker = async () => {
     while (cursor < targets.length) {
       const index = cursor
@@ -90,6 +122,7 @@ export async function runProbes({ providerId, offerId, offerIds, limit = 5 } = {
       ...clean,
       modelKey: targets.find((t) => t.id === record.offerId)?.modelKey,
     })
+    await recordSpendOf(record)
   }
   return results.filter(Boolean)
 }

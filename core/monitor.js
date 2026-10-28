@@ -444,6 +444,47 @@ export function spendFactorOf(provider, settings) {
   return siteUnitPrice(provider, settings)
 }
 
+/**
+ * 一行用量记录按这条供给的价格换算成人民币（「模型消费」口径）。
+ *
+ * 概览图的花费、探针花费统计**必须共用这一份**：口径各写一份是这项目里最
+ * 常见的一类 bug（同一个数两处算，慢慢就漂了）。行对象的形状与 usage.js
+ * 的 emptyRow 一致：input 是**净值**（缓存读写单独存），老数据用
+ * inputIncludesCached 缺省来识别。
+ *
+ * @returns {number} 人民币金额；没填价格 / 没有用量时返回 0
+ */
+export function usageRowCost(offer, settings, benchmarks, row) {
+  if (!offer || !row) return 0
+  const cost = offerCost(offer, settings, benchmarks)
+  // 按次计费：花费 = 请求数 × 每次单价（token 数不参与）
+  if (cost.perCall) {
+    return typeof cost.callPriceCny === 'number' ? (row.requests || 0) * cost.callPriceCny : 0
+  }
+  let sum = 0
+  // 缓存命中的 token 单独按缓存价算：usage 里的 input 已经包含 cached，
+  // 全按输入价算会把「97% 命中缓存」的用量高估近 10 倍。
+  // 站点没公布缓存价时退回输入价（保守，不假装有折扣）
+  const rawInput = Number(row.input) || 0
+  const cachedRaw = Number(row.cached) || 0
+  const cacheWriteRaw = Number(row.cacheCreation) || 0
+  const legacyInput = row.inputIncludesCached === undefined
+  const freshIn = legacyInput ? Math.max(0, rawInput - cachedRaw) : rawInput
+  const cacheHits = legacyInput ? Math.min(cachedRaw, rawInput) : cachedRaw
+  if (typeof cost.inCnyPerMtok === 'number') {
+    sum += (freshIn / 1e6) * cost.inCnyPerMtok
+    const cachePrice = cost.cacheReadCnyPerMtok ?? cost.inCnyPerMtok
+    sum += (cacheHits / 1e6) * cachePrice
+  }
+  // 缓存写入独立计费（站点按 cache_write 收，通常 1.25× 输入价）
+  if (cacheWriteRaw > 0) {
+    const writePrice = cost.cacheWriteCnyPerMtok ?? cost.inCnyPerMtok ?? 0
+    sum += (cacheWriteRaw / 1e6) * writePrice
+  }
+  if (typeof cost.outCnyPerMtok === 'number') sum += ((row.output || 0) / 1e6) * cost.outCnyPerMtok
+  return sum
+}
+
 /** 按天聚合花费：estimated = 站点口径估算（原逻辑不变），actual = 乘以站点单价 */
 function spendByDay(usageData, offers, settings, benchmarks, providerById) {
   const byKey = new Map()
@@ -456,37 +497,7 @@ function spendByDay(usageData, offers, settings, benchmarks, providerById) {
       const [, providerId, model] = composite.split('|')
       const offer = byKey.get(`${providerId}|${model}`)
       if (!offer) continue
-      const cost = offerCost(offer, settings, benchmarks)
-      let sum = 0
-      // 按次计费：花费 = 请求数 × 每次单价（token 数不参与）
-      if (cost.perCall) {
-        if (typeof cost.callPriceCny === 'number') sum += (row.requests || 0) * cost.callPriceCny
-      } else {
-        // 缓存命中的 token 单独按缓存价算：usage 里的 input 已经包含 cached，
-        // 全按输入价算会把「97% 命中缓存」的用量高估近 10 倍。
-        // 站点没公布缓存价时退回输入价（保守，不假装有折扣）
-        // 口径兼容：新记录 input 是**净值**（缓存读/写单独存），老记录 input 含缓存。
-        // 判据看该行有没有被新代码写过——新代码总会写 inputIncludesCached: 0，
-        // 老行没这个字段（undefined）。此前用 ===1 判断，老行会被当净值，重复计费
-        const rawInput = Number(row.input) || 0
-        const cachedRaw = Number(row.cached) || 0
-        const cacheWriteRaw = Number(row.cacheCreation) || 0
-        const legacyInput = row.inputIncludesCached === undefined
-        const freshIn = legacyInput ? Math.max(0, rawInput - cachedRaw) : rawInput
-        const cacheHits = legacyInput ? Math.min(cachedRaw, rawInput) : cachedRaw
-        if (typeof cost.inCnyPerMtok === 'number') {
-          sum += (freshIn / 1e6) * cost.inCnyPerMtok
-          const cachePrice = cost.cacheReadCnyPerMtok ?? cost.inCnyPerMtok
-          sum += (cacheHits / 1e6) * cachePrice
-        }
-        // 缓存写入独立计费（站点按 cache_write 收，通常 1.25× 输入价）
-        const cacheWrite = cacheWriteRaw
-        if (cacheWrite > 0) {
-          const writePrice = cost.cacheWriteCnyPerMtok ?? cost.inCnyPerMtok ?? 0
-          sum += (cacheWrite / 1e6) * writePrice
-        }
-        if (typeof cost.outCnyPerMtok === 'number') sum += ((row.output || 0) / 1e6) * cost.outCnyPerMtok
-      }
+      const sum = usageRowCost(offer, settings, benchmarks, row)
       if (!sum) continue
       acc.estimated += sum
       // 系数按「这条供给的标价币种」算，不是按站点余额币种

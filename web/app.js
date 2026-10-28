@@ -3354,6 +3354,8 @@ const PROBE_COLS = `<colgroup>
 function renderProbes() {
   const view = $('#view-probes')
   const providersWithOffers = state.providers.filter((p) => state.offers.some((o) => o.providerId === p.id))
+  // 探针花费按需拉、半小时刷一次（见 loadProbeSpend）。没数据时先渲染个占位。
+  void ensureProbeSpend()
 
   if (providersWithOffers.length === 0) {
     view.innerHTML = `
@@ -3417,9 +3419,11 @@ function renderProbes() {
         .join('')}
     </select>`
 
+  // 版面：上面几行是标题/筛选/设置，下面左右两栏——左栏是设置与开关，
+  // 右栏原先整块空着，探针花费卡就落在那儿（底部对齐，贴住卡片右下角）
   const intro = `
     <div class="card">
-      <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap">
+      <div style="display:flex;align-items:flex-start;gap:16px;flex-wrap:wrap">
         <div style="flex:1;min-width:240px">
           <div style="font-weight:500">${t('主动探测')}</div>
           <div class="hint" style="margin:4px 0 0">${t('每个模型发 5 个请求：指纹 + 计费、截断、缓存（连发两次）、身份自述。结果进入评分，路由据此排除可疑的站。')}</div>
@@ -3433,41 +3437,46 @@ function renderProbes() {
         ${filterSelect('model', t('全部模型'), modelOpts.map((m) => ({ v: m, label: m })), probeFilters.model)}
         <span class="hint">选站点=整站；站点+分组=该分组；只选模型=所有站里的这个模型</span>
       </div>
-      <div style="display:flex;align-items:center;gap:20px;flex-wrap:wrap;margin-top:14px;padding-top:12px;border-top:1px dashed var(--border)">
-        <label class="field-inline">自动探测
-          <select id="probe-interval">
-            ${intervalOptions.map(([v, label]) => `<option value="${v}" ${v === interval ? 'selected' : ''}>${label}</option>`).join('')}
-          </select>
-        </label>
-        <label class="field-inline">评分有效期
-          <input id="score-age" type="number" min="1" max="72" value="${maxAge}" style="width:68px" /> 小时
-        </label>
-        <div class="field-inline pause-inline" title="${esc(t('到点自动停、到点自动恢复；跨夜直接填大的那个时间'))}">
-          <span class="pause-title">定时关闭检测</span>
-          ${pauseBadge}
-          ${pauseRows}
-          <button class="ghost tiny" data-act="add-pause-window">${icon('plus')}${t('添加时段')}</button>
+      <div class="probe-body">
+        <div class="probe-body-main">
+          <div class="probe-settings">
+            <label class="field-inline">自动探测
+              <select id="probe-interval">
+                ${intervalOptions.map(([v, label]) => `<option value="${v}" ${v === interval ? 'selected' : ''}>${label}</option>`).join('')}
+              </select>
+            </label>
+            <label class="field-inline">评分有效期
+              <input id="score-age" type="number" min="1" max="72" value="${maxAge}" style="width:68px" /> 小时
+            </label>
+            <div class="field-inline pause-inline" title="${esc(t('到点自动停、到点自动恢复；跨夜直接填大的那个时间'))}">
+              <span class="pause-title">定时关闭检测</span>
+              ${pauseBadge}
+              ${pauseRows}
+              <button class="ghost tiny" data-act="add-pause-window">${icon('plus')}${t('添加时段')}</button>
+            </div>
+          </div>
+          <div class="switch-row">
+            <label class="switch">
+              <input type="checkbox" id="allow-untrusted" ${allowUntrusted ? 'checked' : ''} />
+              <span class="switch-track"><span class="switch-knob"></span></span>
+              <span class="switch-text">
+                <b>放行可疑供给</b>
+                <span>探针判定可疑（指纹不符 / 输出截断 / 用量虚报）的站，也按有效成本正常参与路由；首字门槛不受这个开关影响</span>
+              </span>
+            </label>
+            ${
+              allowUntrusted
+                ? `<div class="alert" style="margin-top:10px;background:var(--warn-soft);border-color:var(--warn-border)">
+                     <div>
+                       <div class="name">已放行：可疑的站会正常参与选站</div>
+                       <div class="desc">它们仍然按「价格 ÷ 质量」排序——质量差一半，成本就翻倍，只有便宜到足够多才会被选中。首字门槛仍然独立生效。如果你更在意输出是否可信，把这个开关关掉。</div>
+                     </div>
+                   </div>`
+                : ''
+            }
+          </div>
         </div>
-      </div>
-      <div class="switch-row">
-        <label class="switch">
-          <input type="checkbox" id="allow-untrusted" ${allowUntrusted ? 'checked' : ''} />
-          <span class="switch-track"><span class="switch-knob"></span></span>
-          <span class="switch-text">
-            <b>放行可疑供给</b>
-            <span>探针判定可疑（指纹不符 / 输出截断 / 用量虚报）的站，也按有效成本正常参与路由；首字门槛不受这个开关影响</span>
-          </span>
-        </label>
-        ${
-          allowUntrusted
-            ? `<div class="alert" style="margin-top:10px;background:var(--warn-soft);border-color:var(--warn-border)">
-                 <div>
-                   <div class="name">已放行：可疑的站会正常参与选站</div>
-                   <div class="desc">它们仍然按「价格 ÷ 质量」排序——质量差一半，成本就翻倍，只有便宜到足够多才会被选中。首字门槛仍然独立生效。如果你更在意输出是否可信，把这个开关关掉。</div>
-                 </div>
-               </div>`
-            : ''
-        }
+        ${probeSpendCardHtml()}
       </div>
     </div>`
 
@@ -3530,11 +3539,174 @@ function renderProbes() {
   }).join('')
 
   view.innerHTML = `${intro}
-    <p class="hint">
-      指纹 100% 表示每次都精确返回了要求的内容，低于这个值说明上游可能把请求转给了别的模型。
-      截断一栏是「没被截断」的比例，计费一栏是「用量正常」的比例。
-    </p>
     ${blocks}`
+}
+
+// --------------------------------------------------------------- 探针花费
+
+/**
+ * 探针花费统计。
+ *
+ * 数据来源是 core/probe-spend.js —— 只统计**探针自己发的请求**花了多少钱，
+ * 不看站点账单（那是全站口径，会把同时段的真实流量也算进来）。
+ *
+ * 刷新节奏：半小时一次。不用 15 秒的状态轮询去带这个数，否则就变成实时了。
+ */
+const PROBE_SPEND_REFRESH_MS = 30 * 60 * 1000
+let probeSpend = null
+let probeSpendAttemptAt = 0
+let probeSpendLoading = null
+let probeSpendTimer = null
+
+async function loadProbeSpend({ force = false } = {}) {
+  // 没到半小时就用缓存；失败也记时间，避免轮询把坏接口打成每秒一击
+  if (!force && probeSpendAttemptAt && Date.now() - probeSpendAttemptAt < PROBE_SPEND_REFRESH_MS) return probeSpend
+  if (probeSpendLoading) return probeSpendLoading
+  probeSpendAttemptAt = Date.now()
+  probeSpendLoading = (async () => {
+    try {
+      const res = await api('GET', '/api/probes/spend')
+      probeSpend = res.probeSpend || null
+    } catch {
+      // 读不到就先不显示，探针页其余部分照常能用；1 分钟后再试，
+      // 不把失败也锁半小时（否则接口修好了卡片还停在「读取中…」）
+      probeSpendAttemptAt = Date.now() - PROBE_SPEND_REFRESH_MS + 60000
+    } finally {
+      probeSpendLoading = null
+    }
+    return probeSpend
+  })()
+  return probeSpendLoading
+}
+
+/** 首次取到数据后重绘一次；再挂一个半小时的定时器保持新鲜。 */
+async function ensureProbeSpend() {
+  if (!probeSpend) {
+    const data = await loadProbeSpend()
+    if (data && activeTab === 'probes') {
+      renderProbes()
+      translateDom($('#view-probes') || document.body)
+    }
+  }
+  if (!probeSpendTimer) {
+    probeSpendTimer = setInterval(async () => {
+      if (document.visibilityState === 'hidden' || activeTab !== 'probes') return
+      await loadProbeSpend({ force: true })
+      if (activeTab === 'probes') {
+        renderProbes()
+        translateDom($('#view-probes') || document.body)
+      }
+    }, PROBE_SPEND_REFRESH_MS)
+  }
+}
+
+/**
+ * 钱很小（一针探针通常不到一分钱），通用 money() 会把 0.0004 显示成 0.000。
+ * 这里按量级选小数位，小到看不见就给个下限，不假装是 0。
+ */
+function probeMoneyText(cny) {
+  const v = dispPrice(cny)
+  if (v === null || !Number.isFinite(v)) return '—'
+  if (v === 0) return `${priceSym()}0`
+  if (v < 0.0001) return `${priceSym()}<0.0001`
+  if (v < 0.01) return `${priceSym()}${v.toFixed(4)}`
+  if (v < 1) return `${priceSym()}${v.toFixed(3)}`
+  return `${priceSym()}${v.toFixed(2)}`
+}
+
+function dayClockOf(ms) {
+  const d = new Date(ms)
+  const pad = (n) => String(n).padStart(2, '0')
+  return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
+}
+
+/** 最近 24 小时的半小时柱（48 个），一眼看出「什么时候在烧钱」。 */
+function probeSpendBarsHtml(buckets = []) {
+  const bucketMs = probeSpend?.bucketMs || 1800000
+  const count = 48
+  const current = Math.floor(Date.now() / bucketMs) * bucketMs
+  const byAt = new Map(buckets.map((b) => [b.at, b]))
+  const cells = []
+  let max = 0
+  for (let i = count - 1; i >= 0; i -= 1) {
+    const at = current - i * bucketMs
+    const bucket = byAt.get(at)
+    // 柱子跟总额同口径：都看钱包里真少掉的钱（站点单价折算后）
+    const value = Number(bucket?.paidCny ?? bucket?.cny ?? 0) || 0
+    if (value > max) max = value
+    cells.push({ at, value })
+  }
+  // 高度直接给像素：药水条是 flex item，百分比高度在 flex 容器里会被算成 0
+  // （实测 48 根柱子全是 0px，整排看不见）——所以在这里换算成 px
+  const MAX_H = 34
+  return `<div class="ps-bars" role="img">${cells
+    .map(({ at, value }) => {
+      const h = max > 0 && value > 0 ? Math.max(3, Math.round((value / max) * MAX_H)) : 3
+      const cls = value > 0 ? 'ps-bar' : 'ps-bar is-empty'
+      const title = `${dayClockOf(at)} · ${value > 0 ? probeMoneyText(value) : t('无花费')}`
+      return `<span class="${cls}" style="height:${h}px" title="${esc(title)}"></span>`
+    })
+    .join('')}</div>`
+}
+
+/**
+ * 探针花费：中等大小的圆角卡，放在「主动探测」卡右下角那块空地。
+ *
+ * 只显示一件事：**探针花了多少钱**。不做「模型消费 / 实际消费」双口径——
+ * 作者的原话是「我不懂模型消费、实际消费是啥意思，我只想看我探针真花了多少钱」。
+ * 所以取的是实际扣钱的那个数（按站点单价折算后的 paidCny），下面按站点列金额。
+ */
+function probeSpendCardHtml() {
+  if (!probeSpend) {
+    return `<div class="ps-card"><div class="ps-card-head"><span class="ps-card-title">探针花费</span></div><div class="ps-card-meta">读取中…</div></div>`
+  }
+  const total = probeSpend.total || {}
+  const sites = probeSpend.byProvider || []
+  // 钱包里真少掉的钱；站点没填单价时后端让 paidCny = cny
+  const money = Number.isFinite(Number(total.paidCny)) ? Number(total.paidCny) : Number(total.cny) || 0
+  const since = probeSpend.since ? dayClockOf(new Date(probeSpend.since).getTime()) : null
+
+  // 每个探过的站都列一行（按花得多到少），鼠标悬停能看这个站探了几次、最近一次什么时候
+  const siteRows = sites.length
+    ? sites
+        .map((row) => {
+          const tip = [
+            t('{n} 次探测 · {m} 个请求', { n: row.probes || 0, m: row.requests || 0 }),
+            row.lastAt ? `${t('最近一次')}：${relTime(row.lastAt)}` : null,
+          ]
+            .filter(Boolean)
+            .join(' · ')
+          return `<div class="ps-row" title="${esc(tip)}">
+            <span class="ps-row-name">${esc(row.name)}</span>
+            <b class="ps-row-money">${probeMoneyText(row.paidCny)}</b>
+          </div>`
+        })
+        .join('')
+    : `<div class="ps-row"><span class="ps-row-name dim">${t('还没有探针花费')}</span></div>`
+
+  return `
+    <div class="ps-card">
+      <div class="ps-card-head">
+        <span class="ps-card-title">探针花费</span>
+        <button class="icon-btn ps-card-trash" data-act="probe-spend-clear" title="${esc(t('清除探针花费统计'))}">${icon('trash')}</button>
+      </div>
+      <div class="ps-total">${probeMoneyText(money)}</div>
+      <div class="ps-card-meta">
+        ${since ? `${esc(t('统计自 {since} 起', { since }))} · ` : ''}${esc(t('共 {n} 次探测', { n: total.probes || 0 }))}
+      </div>
+      ${probeSpendBarsHtml(probeSpend.buckets || [])}
+      <div class="ps-rows">${siteRows}</div>
+      ${total.unpriced > 0 ? `<div class="ps-card-meta ps-unpriced">${esc(t('有 {n} 次探测算不出金额', { n: total.unpriced }))}</div>` : ''}
+    </div>`
+}
+
+/** 刚跑完探针：钱马上变了，不能等半小时，强制刷一次。 */
+async function refreshProbeSpendNow() {
+  await loadProbeSpend({ force: true })
+  if (activeTab === 'probes') {
+    renderProbes()
+    translateDom($('#view-probes') || document.body)
+  }
 }
 
 // --------------------------------------------------------------- 网关视图
@@ -6919,6 +7091,7 @@ document.addEventListener('click', async (event) => {
       const result = await api('POST', '/api/probes/run', { offerId, limit: 1 })
       state = result
       render()
+      void refreshProbeSpendNow()
       const probe = result.probeResults[0]
       if (!probe) return
       if (!probe.ok) {
@@ -6980,8 +7153,25 @@ document.addEventListener('click', async (event) => {
       const result = await api('POST', '/api/probes/run', { offerIds: targets.map((o) => o.id) })
       state = result
       render()
+      void refreshProbeSpendNow()
       const okCount = result.probeResults.filter((r) => r.ok).length
       toast(`探测 ${result.probeResults.length} 个，成功 ${okCount}`)
+    })
+    return
+  }
+
+  if (action === 'probe-spend-clear') {
+    // 不可逆，先问一句：只清账本，不动探测结果与评分
+    if (!confirm('清除探针花费统计？\n\n只会把这份花费账本归零（总金额、分站金额、半小时趋势），已经跑过的探测结果和评分不受影响。')) return
+    await withBusy(actionButton, async () => {
+      const res = await api('DELETE', '/api/probes/spend')
+      probeSpend = res.probeSpend || null
+      probeSpendAttemptAt = Date.now()
+      if (activeTab === 'probes') {
+        renderProbes()
+        translateDom($('#view-probes') || document.body)
+      }
+      toast(t('探针花费统计已清除'))
     })
     return
   }

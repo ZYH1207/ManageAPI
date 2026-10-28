@@ -496,6 +496,18 @@ const EN = {
   '计费异常': 'Billing inflated',
   '次': 'runs',
 
+  // ---- 探针花费卡片（探针页右下角）
+  '探针花费': 'Probe spend',
+  '清除探针花费统计': 'Clear probe spend',
+  '探针花费统计已清除': 'Probe spend cleared',
+  '无花费': 'no spend',
+  '还没有探针花费': 'No probe spend yet',
+  '统计自 {since} 起': 'since {since}',
+  '共 {n} 次探测': '{n} probes in total',
+  '最近一次：': 'latest: ',
+  '{n} 次探测 · {m} 个请求': '{n} probes · {m} requests',
+  '有 {n} 次探测算不出金额': '{n} probes could not be priced',
+
   // ---- 网关
   '网关地址': 'Gateway URL',
   '关闭网关': 'Turn off gateway',
