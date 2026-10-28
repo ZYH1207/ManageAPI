@@ -345,6 +345,8 @@ input:focus, select:focus {
 .gs-body { padding: 14px 20px 20px; line-height: 1.55; }
 .gs-meta { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
 .gs-meta .hint { margin: 0; font-size: 11px; }
+/* Key 弹窗顶部那组「总 / 忽略 / 可用」：和免费池的分段控件同一款式 */
+.gs-seg { margin-bottom: 10px; }
 .gs-list { display: flex; flex-direction: column; }
 .gs-row {
   display: flex;
@@ -1327,6 +1329,21 @@ button.with-icon { display: inline-flex; align-items: center; gap: 6px; white-sp
   color: var(--muted); font-size: 12px;
 }
 .keyrow .gs-count:hover { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
+/* 「模型数 总 24 忽略 12 可用 12」：三颗数字都是入口（点开看清单），
+   和上面的「N 个模型」同一套按钮样式，靠 hover 变色告诉人这能点 */
+.keyrow .key-models {
+  display: inline-flex; align-items: center; gap: 4px;
+  color: var(--muted); font-size: 12px;
+}
+.keyrow .key-models b { font-weight: 600; }
+/* 三颗数字做成小胶囊：光靠 hover 变色不够——静止时看着像一行说明文字，
+   没人会去点（项目里「还有 N 个」就踩过这个坑） */
+.keyrow .key-models .gs-count {
+  padding: 0 6px; margin: 0;
+  border: 1px solid var(--border); border-radius: 6px; background: var(--surface);
+}
+.keyrow .key-models .gs-count b { color: var(--text); }
+.keyrow .key-models .gs-count:hover b { color: var(--accent); }
 .keyrow .grow { flex: 1; }
 .keyrow input { width: 96px; padding: 3px 8px; }
 

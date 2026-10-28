@@ -1319,3 +1319,21 @@ Object.assign(EN, {
   '其中 {n} 个已忽略：不参与比价、决策、探针和网关。':
     '{n} of them are ignored: they stay out of pricing, decisions, probes and the gateway.',
 })
+
+// 密钥面板：Key 那行的「模型数 总 / 忽略 / 可用」（点数字打开同一张模型清单）
+Object.assign(EN, {
+  '模型数': 'Models',
+  '总': 'All',
+  '忽略': 'Ignored',
+  '点开看这把 Key 的模型清单': 'Open the models synced by this key',
+  '忽略的模型不参与比价、决策、探针和网关':
+    'Ignored models stay out of pricing, decisions, probes and the gateway',
+  '这把 Key 还没同步过模型。': 'This key has not synced any models yet.',
+  '点站点卡的「一键同步」，会按这把 Key 拉一次模型列表。':
+    'Hit "Sync all" on the site card to pull the model list for this key.',
+  '这把 Key 没有忽略的模型。': 'This key has no ignored models.',
+  '这把 Key 的模型都还在用，没有被忽略的。': 'Every model of this key is in use — none ignored.',
+  '这把 Key 的模型全被忽略了。': 'Every model of this key is ignored.',
+  '去「忽略模型」里取消勾选，它们就会回到可用。':
+    'Untick them under "Ignored models" and they become available again.',
+})

@@ -200,7 +200,12 @@ async function buildState({ light = false } = {}) {
   // 口径：**全量**（被忽略的也列，打标记）+ 去掉已下线。这里回答的是「站点上这个
   // 分组里有什么」，不是「哪些会参与比价」；按 routeableOffers 过滤的话，忽略过模型的
   // 用户看到的分组会几乎全空（本地真实数据里 208 条供给被忽略了 203 条）。
+  //
+  // 同一趟循环里再按 credentialId 存一份：密钥面板上 Key 那行的「总 / 忽略 / 可用」
+  // 要的是「这把 Key 同步回来哪些模型」，口径必须和分组清单一致——所以不另写一遍
+  // 价格换算和忽略判定，直接共用同一个 entry。
   const modelsByGroup = {}
+  const modelsByCredential = {}
   {
     const ignored = inv.ignoredModelSet(db)
     for (const offer of db.offers) {
@@ -223,10 +228,12 @@ async function buildState({ light = false } = {}) {
       const groupKey = offer.group || ''
       const site = (modelsByGroup[offer.providerId] ||= {})
       ;(site[groupKey] ||= []).push(entry)
+      if (offer.credentialId) (modelsByCredential[offer.credentialId] ||= []).push(entry)
     }
     for (const site of Object.values(modelsByGroup)) {
       for (const list of Object.values(site)) list.sort((a, b) => a.name.localeCompare(b.name))
     }
+    for (const list of Object.values(modelsByCredential)) list.sort((a, b) => a.name.localeCompare(b.name))
   }
 
   const { ranked, unpriced } = pricing.rankByModel(paidOffers, db.settings, benchmarks, isTrusted)
@@ -368,6 +375,9 @@ async function buildState({ light = false } = {}) {
     offers: liveOffers,
     // 分组 → 模型清单（见上面 modelsByGroup 的注释；与 offers 的区别是含被忽略的供给）
     modelsByGroup,
+    // Key → 模型清单：密钥面板那行「总 / 忽略 / 可用」点开的弹窗用它。
+    // 和 modelsByGroup 同一份 entry、同一个口径，只是换了索引键。
+    modelsByCredential,
     // 全部模型（含被忽略的）与覆盖站点数：忽略模型弹窗要用，不能从过滤后的 offers 推
     modelIndex: (() => {
       const counts = new Map()

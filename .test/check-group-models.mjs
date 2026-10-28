@@ -9,6 +9,9 @@
  *   2. 交互：点胶囊/键盘都能开抽屉，换胶囊就换内容，Esc / 点背景能关；
  *   3. 分组没同步过模型时给明确说明，而不是一片空白。
  *
+ * 同一个弹窗也给密钥面板用（Key 那行的「总 / 忽略 / 可用」），所以这里一并钉住
+ * modelsByCredential 的口径和三个筛选按钮。
+ *
  * 浏览器层用 CDP 驱动本机 Chrome（与 check-group-chips 同一套做法），
  * 自己起 daemon、自己起无头 Chrome，跑完自动清理。
  *
@@ -188,6 +191,21 @@ try {
     !state.offers.some((o) => o.upstreamName === 'model-b'),
     '对照：state.offers 里没有 model-b（被忽略过滤掉了）——所以这份清单必须单独给',
   )
+
+  // 密钥面板上的「总 / 忽略 / 可用」：口径必须和分组清单一致（含已忽略、去掉已下线），
+  // 否则卡片写「1 个模型」、点开弹窗列出 2 行，两个数对不上
+  console.log('[2b] /api/state 的 modelsByCredential')
+  const credModels = state.modelsByCredential?.[mainCred.id] || []
+  ok(
+    credModels.map((m) => m.name).join(',') === 'model-a,model-b',
+    `主力 Key 的清单只列还在的模型（得到 ${credModels.map((m) => m.name).join(',') || '空'}）`,
+  )
+  ok(credModels.filter((m) => m.ignored).length === 1, '其中 1 个被忽略 → 可用 = 总 - 忽略')
+  ok(
+    (state.modelsByCredential?.[backupCred.id] || []).length === 3,
+    '备用 Key 各自一份清单（3 个模型），不和主力 Key 混在一起',
+  )
+  ok(!state.modelsByCredential?.['no-such-key'], '没同步过的 Key 不会凭空出现在清单里')
 
   if (!chromePath) {
     console.log('  · 没找到 Chrome（可用 CHROME=/path/to/chrome 指定），跳过浏览器断言')
@@ -379,8 +397,116 @@ try {
   }
   ok(view.open && view.rows.length === 2, 'Tab 聚焦后按 Enter 能打开抽屉')
 
-  // -------------------------------------------------------- 9. 英文界面
-  console.log('[9] 切到英文再打开一次')
+  // -------------------------------------------------------- 9. 密钥面板的「总 / 忽略 / 可用」
+  console.log('[9] 密钥面板：模型数三个数字都能点开')
+  await send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 })
+  await send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 })
+  await sleep(150)
+  await ev(`document.querySelector('#monitor-sites-host [data-act="prov-panel"][data-panel="keys"]').click()`)
+
+  const keyRow = `(() => {
+    const row = document.querySelector('#prov-modal-body .keyrow[data-credential="${mainCred.id}"]')
+    if (!row) return null
+    const counts = [...row.querySelectorAll('.key-models .gs-count')].map((b) => ({
+      filter: b.dataset.filter,
+      text: b.textContent.replace(/\\s+/g, ' ').trim(),
+      title: b.getAttribute('title') || '',
+    }))
+    return { label: row.querySelector('.key-models')?.textContent.replace(/\\s+/g, ' ').trim() || '', counts }
+  })()`
+
+  let keyView = null
+  for (let i = 0; i < 40; i += 1) {
+    keyView = await ev(keyRow)
+    if (keyView) break
+    await sleep(150)
+  }
+  ok(Boolean(keyView), '密钥面板里找到了主力 Key 那一行')
+  ok(
+    keyView.counts.map((c) => c.filter).join(',') === 'all,ignored,avail',
+    `三个数字的顺序是 总 / 忽略 / 可用（实际 ${keyView.counts.map((c) => c.filter).join(',')}）`,
+  )
+  ok(
+    keyView.counts.map((c) => c.text).join(' | ') === '总 2 | 忽略 1 | 可用 1',
+    `数字对得上（实际「${keyView.counts.map((c) => c.text).join(' | ')}」）`,
+  )
+  ok(Boolean(keyView.counts[0].title), '数字带「点开看清单」的提示文案')
+
+  const clickKeyCount = (filter) => `(() => {
+    const btn = document.querySelector('#prov-modal-body .keyrow[data-credential="${mainCred.id}"] .gs-count[data-filter="${filter}"]')
+    if (!btn) return 'missing'
+    btn.click()
+    return 'ok'
+  })()`
+
+  ok((await ev(clickKeyCount('ignored'))) === 'ok', '找到了「忽略」那个数字')
+  for (let i = 0; i < 40; i += 1) {
+    view = await ev(drawer)
+    if (view.open) break
+    await sleep(100)
+  }
+  ok(view.open && view.title === '主力 Key · 主力分组', `标题是 Key 标签 + 分组（实际「${view.title}」）`)
+  ok(view.site.includes('甲站') && view.site.includes('sk-••••0001'), `副标题标出是哪把 Key（实际「${view.site}」）`)
+  ok(
+    view.rows.length === 1 && view.rows[0].name === 'model-b',
+    `点「忽略」只列被忽略的那一个（实际 ${view.rows.map((r) => r.name).join(',') || '空'}）`,
+  )
+  ok(view.rows[0].text.includes('已忽略'), '被忽略的模型在清单里也标着「已忽略」')
+
+  const clickSeg = (filter) => `(() => {
+    const btn = document.querySelector('#group-models-body .seg button[data-filter="${filter}"]')
+    if (!btn) return 'missing'
+    btn.click()
+    return 'ok'
+  })()`
+
+  ok((await ev(clickSeg('avail'))) === 'ok', '弹窗里也能切到「可用」')
+  for (let i = 0; i < 40; i += 1) {
+    view = await ev(drawer)
+    if (view.rows.length === 1 && view.rows[0].name === 'model-a') break
+    await sleep(100)
+  }
+  ok(
+    view.rows.length === 1 && view.rows[0].name === 'model-a',
+    `「可用」排除了被忽略的 model-b（实际 ${view.rows.map((r) => r.name).join(',') || '空'}）`,
+  )
+
+  await ev(clickSeg('all'))
+  for (let i = 0; i < 40; i += 1) {
+    view = await ev(drawer)
+    if (view.rows.length === 2) break
+    await sleep(100)
+  }
+  ok(view.rows.length === 2, `「总」把被忽略的也列出来（${view.rows.length} 行）`)
+
+  // 改忽略状态后（在别处改的）弹窗里的标记要跟着变
+  await ev(`document.querySelector('#group-models .modal-backdrop').click()`)
+  await ev(`fetch('/api/settings', { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ignoredModels: [] }) })`)
+  // 弹窗是 cloneNode 副本，render() 不会更新里面的数字——得重新打开一次（真实用户也是这么做的）
+  await ev(`document.querySelector('#refresh-btn').click()`)
+  await sleep(400)
+  await ev(`document.querySelector('#prov-modal .modal-backdrop').click()`)
+  await ev(`document.querySelector('#monitor-sites-host [data-act="prov-panel"][data-panel="keys"]').click()`)
+  for (let i = 0; i < 40; i += 1) {
+    keyView = await ev(keyRow)
+    if (keyView && keyView.counts[2].text === '可用 2') break
+    await sleep(150)
+  }
+  ok(keyView.counts[2].text === '可用 2', `取消忽略后可用变成 2（实际「${keyView.counts[2].text}」）`)
+  await ev(clickKeyCount('avail'))
+  for (let i = 0; i < 40; i += 1) {
+    view = await ev(drawer)
+    if (view.open && view.rows.length === 2) break
+    await sleep(100)
+  }
+  ok(view.rows.length === 2, `弹窗里也是 2 行（实际 ${view.rows.length}）`)
+  await ev(`document.querySelector('#group-models .modal-backdrop').click()`)
+  await ev(`fetch('/api/settings', { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ignoredModels: ['model-b'] }) })`)
+  await ev(`document.querySelector('#prov-modal .modal-backdrop').click()`)
+  await sleep(150)
+
+  // -------------------------------------------------------- 10. 英文界面
+  console.log('[10] 切到英文再打开一次')
   await ev(`localStorage.setItem('manageapi.lang','en')`)
   await send('Page.reload', { ignoreCache: true })
   let reloaded = false

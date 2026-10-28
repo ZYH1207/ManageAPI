@@ -1243,7 +1243,16 @@ function providersHtml({ withForm = true, panel = '', actions = '' } = {}) {
         <div data-pane="keys">
         <div class="keylist">
           ${keys.length === 0 ? '<div class="hint">还没有 Key，加一个才能拉模型。</div>' : keys.map((k) => {
+            // 「总 / 忽略 / 可用」全部取台账全量（含被忽略的），和点开弹窗看到的清单同口径。
+            // 老服务端没有 modelsByCredential 时退回在役供给数（只是「可用」，总/忽略显示不出来）。
+            const keyModels = state.modelsByCredential?.[k.id]
             const keyOffers = offers.filter((o) => o.credentialId === k.id)
+            const keyTotal = Array.isArray(keyModels) ? keyModels.length : keyOffers.length
+            const keyIgnored = Array.isArray(keyModels) ? keyModels.filter((m) => m.ignored).length : 0
+            const keyAvail = Math.max(0, keyTotal - keyIgnored)
+            const countBtn = (filter, label, n) => `<button class="gs-count" data-act="open-key-models" data-credential="${esc(k.id)}" data-filter="${filter}" title="${esc(
+              t('点开看这把 Key 的模型清单'),
+            )}">${label} <b>${n}</b></button>`
             return `
             <div class="keyrow" data-credential="${esc(k.id)}">
               <span>${esc(k.label)}</span>
@@ -1251,7 +1260,7 @@ function providersHtml({ withForm = true, panel = '', actions = '' } = {}) {
               <button class="ghost tiny group-chip ${groupChipOf(p.id, k.group)}" data-act="open-group-picker" title="${k.group ? '这把 Key 属于这个分组，点这里换' : '还没选分组，点这里选（会顺便把倍率填好）'}">
                 ${k.group ? `分组 · ${esc(k.group)}` : '选分组'}
               </button>
-              <span class="tail">${keyOffers.length} 个模型</span>
+              <span class="key-models">${t('模型数')}${countBtn('all', t('总'), keyTotal)}${countBtn('ignored', t('忽略'), keyIgnored)}${countBtn('avail', t('可用'), keyAvail)}</span>
               <span class="grow"></span>
               <button class="ghost danger" data-act="del-key">删除</button>
             </div>`
@@ -1542,29 +1551,40 @@ function reopenProvPanel(node, pane = 'keys') {
   if (card) openProvPanel(card, pane)
 }
 
-// --------------------------------------------------------- 分组模型弹窗
+// --------------------------------------------------------- 模型清单弹窗
 //
-// 站点卡上的分组胶囊（以及「分组倍率」里的「N 个模型」）点一下，中间弹出一张卡片，
-// 回答一个只有本地台账能回答的问题：这个分组里到底有哪些模型。
-//
-// 样式直接复用 .modal / .modal-panel（圆角居中），和站点卡、其它弹窗同一套语言。
+// 两个入口共用这一张居中卡片（.modal / .modal-panel，圆角居中）：
+//   · 站点卡上的分组胶囊、「分组倍率」里的「N 个模型」→ 这个分组里到底有哪些模型
+//   · 密钥面板里 Key 那行的「总 / 忽略 / 可用」→ 这把 Key 同步回来哪些模型
 //
 // 站点接口只给「分组名录」+「平台级模型表」，两者并列，谁属于哪个分组它没说——
-// 交叉相乘会编出不存在的组合。真正把模型绑到分组上的是「这个分组下的 Key 同步回来了哪些
-// 模型」，所以数据只认后端算好的 state.modelsByGroup，前端不再自己拼一份。
+// 交叉相乘会编出不存在的组合。真正把模型绑到分组/Key 上的，是「同步回来了哪些模型」，
+// 所以数据只认后端算好的 state.modelsByGroup / state.modelsByCredential，前端不再自己拼一份。
 
-/** 当前打开的弹窗：{ providerId, group }；null = 关闭 */
-let groupSheet = null
+/** 当前打开的弹窗：{ kind: 'group' | 'key', providerId, group?, credentialId?, filter? }；null = 关闭 */
+let modelsSheet = null
 
 function openGroupModels(providerId, group = '') {
+  openModelsSheet({ kind: 'group', providerId, group: group || '' })
+}
+
+/** Key 那行的「总 / 忽略 / 可用」：filter = all | ignored | avail */
+function openKeyModels(providerId, credentialId, filter = 'all') {
+  openModelsSheet({ kind: 'key', providerId, credentialId, filter })
+}
+
+function openModelsSheet(next) {
   const sheet = $('#group-models')
   if (!sheet) return
-  // 换分组就从头看：沿用上一组的滚动位置会让人以为在同一个清单里往下滑
-  const switched = !groupSheet || groupSheet.providerId !== providerId || groupSheet.group !== group
-  groupSheet = { providerId, group: group || '' }
-  paintGroupModels()
+  // 换目标 / 换筛选就从头看：沿用上一次的滚动位置会让人以为还在同一个清单里往下滑
+  modelsSheet = next
   const body = $('#group-models-body')
-  if (switched && body) body.scrollTop = 0
+  if (body) {
+    // 同一份内容也要重画一次：标题、筛选按钮的选中态会变
+    body.dataset.sig = ''
+    body.scrollTop = 0
+  }
+  paintGroupModels()
   sheet.hidden = false
   translateDom(sheet)
 }
@@ -1572,106 +1592,157 @@ function openGroupModels(providerId, group = '') {
 function closeGroupModels() {
   const sheet = $('#group-models')
   if (sheet) sheet.hidden = true
-  groupSheet = null
+  modelsSheet = null
 }
 
-/** 重画抽屉内容：自动轮询、一键同步、改倍率之后都得跟着变 */
-function paintGroupModels() {
-  if (!groupSheet) return
-  const { providerId, group } = groupSheet
-  const sheet = $('#group-models')
-  const body = $('#group-models-body')
-  if (!sheet || !body) return
-
-  const provider = (state.providers || []).find((p) => p.id === providerId)
-  const site = state.modelsByGroup?.[providerId]
-  const models = site?.[group] || []
-  const keys = (state.credentials || []).filter(
-    (c) => c.providerId === providerId && (c.group || '') === group,
-  )
-  // 分组被删掉了（卡片垃圾桶 / 分组倍率面板 / 比价页都能删）→ 抽屉没有存在意义，直接收起
-  if (!site || (!(group in site) && keys.length === 0)) {
-    closeGroupModels()
-    return
-  }
-
-  const siteEl = $('#group-models-site')
-  const titleEl = $('#group-models-title')
-  if (siteEl) siteEl.textContent = provider?.name || ''
-  if (titleEl) titleEl.textContent = group || t('未指定分组')
-
-  // 内容没变就不重写：15 秒自动轮询会重画页面，每次重建 DOM 会把用户正在选的
-  // 模型名 / 滚动的滚动位置全部打回。（语言、显示币种、汇率也算进签名，
-  // 它们一变价格文字就该跟着变。）
-  const sig = JSON.stringify([
-    getLang(),
-    showUsd(),
-    rateCny(),
-    provider?.name || '',
-    group,
-    models,
-    keys.map((k) => k.label),
-  ])
-  if (body.dataset.sig === sig) return
-  body.dataset.sig = sig
-
-  const scrollTop = body.scrollTop
-  const ignoredCount = models.filter((m) => m.ignored).length
-  const rows = models
-    .map((m) => {
-      const flags = [
-        m.free ? `<span class="badge ok">${t('免费')}</span>` : '',
-        m.perCall ? `<span class="badge">${t('按次')}</span>` : '',
-        m.ignored ? `<span class="badge">${t('已忽略')}</span>` : '',
-      ]
-        .filter(Boolean)
-        .join('')
-      const ratio =
-        m.ratio === null || m.ratio === undefined
-          ? ''
-          : `<span class="ratio-tone ${ratioToneClass(m.ratio)}">×${esc(m.ratio)}</span>`
-      // 价格用后端算好的实际价（已乘倍率）：原价 × 倍率是计费口径，显示原价会骗人
-      const price = m.perCall
-        ? m.callCny === null || m.callCny === undefined
-          ? '<span class="gs-unpriced">—</span>'
-          : `${priceText(m.callCny)}<span class="sub">/次</span>`
-        : m.inCny === null && m.outCny === null
-          ? `<span class="gs-unpriced">${t('未定价')}</span>`
-          : `${priceText(m.inCny)}<span class="gs-sep"> / </span>${priceText(m.outCny)}`
-      return `<div class="gs-row${m.ignored ? ' is-ignored' : ''}">
+/** 一行模型：名字 + 倍率/标记 + 右侧价格。分组弹窗和 Key 弹窗共用，两处口径不能分家 */
+function modelRowHtml(m) {
+  const flags = [
+    m.free ? `<span class="badge ok">${t('免费')}</span>` : '',
+    m.perCall ? `<span class="badge">${t('按次')}</span>` : '',
+    m.ignored ? `<span class="badge">${t('已忽略')}</span>` : '',
+  ]
+    .filter(Boolean)
+    .join('')
+  const ratio =
+    m.ratio === null || m.ratio === undefined
+      ? ''
+      : `<span class="ratio-tone ${ratioToneClass(m.ratio)}">×${esc(m.ratio)}</span>`
+  // 价格用后端算好的实际价（已乘倍率）：原价 × 倍率是计费口径，显示原价会骗人
+  const price = m.perCall
+    ? m.callCny === null || m.callCny === undefined
+      ? '<span class="gs-unpriced">—</span>'
+      : `${priceText(m.callCny)}<span class="sub">/次</span>`
+    : m.inCny === null && m.outCny === null
+      ? `<span class="gs-unpriced">${t('未定价')}</span>`
+      : `${priceText(m.inCny)}<span class="gs-sep"> / </span>${priceText(m.outCny)}`
+  return `<div class="gs-row${m.ignored ? ' is-ignored' : ''}">
         <span class="gs-name mono">${esc(m.name)}</span>
         ${ratio}${flags}
         <span class="grow"></span>
         <span class="gs-price">${price}</span>
       </div>`
-    })
-    .join('')
+}
 
+/** 分组视图：这个分组里有哪些模型。分组没了返回 null（弹窗自己收起） */
+function groupSheetView() {
+  const { providerId, group } = modelsSheet
+  const site = state.modelsByGroup?.[providerId]
+  const models = site?.[group] || []
+  const keys = (state.credentials || []).filter(
+    (c) => c.providerId === providerId && (c.group || '') === group,
+  )
+  // 分组被删掉了（卡片垃圾桶 / 分组倍率面板 / 比价页都能删）
+  if (!site || (!(group in site) && keys.length === 0)) return null
+  const ignoredCount = models.filter((m) => m.ignored).length
+  return {
+    title: group || t('未指定分组'),
+    meta: `${t('{n} 个模型', { n: models.length })}${
+      keys.length ? ` · ${t('{n} 把 Key 在这个分组', { n: keys.length })}` : ''
+    }`,
+    models,
+    emptyTitle: t('这个分组还没同步过模型。'),
+    emptyHint: keys.length
+      ? t('点站点卡的「一键同步」，会按这把 Key 的分组拉一次。')
+      : t('这个分组没有挂 Key（多半是比价页「＋」复制出来的），不会有模型同步进来。'),
+    foot: ignoredCount > 0 ? t('其中 {n} 个已忽略：不参与比价、决策、探针和网关。', { n: ignoredCount }) : '',
+  }
+}
+
+/** Key 视图：这把 Key 同步回来哪些模型，可按 总 / 忽略 / 可用 筛。Key 没了返回 null */
+function keySheetView() {
+  const { providerId, credentialId, filter } = modelsSheet
+  const credential = (state.credentials || []).find(
+    (c) => c.id === credentialId && c.providerId === providerId,
+  )
+  if (!credential) return null
+  const all = state.modelsByCredential?.[credentialId] || []
+  const ignored = all.filter((m) => m.ignored)
+  const avail = all.filter((m) => !m.ignored)
+  const models = filter === 'ignored' ? ignored : filter === 'avail' ? avail : all
+  const segBtn = (id, label, n) =>
+    `<button type="button" data-act="key-models-filter" data-filter="${id}" class="${
+      filter === id ? 'active' : ''
+    }">${label}<span class="seg-count">${n}</span></button>`
+  const provider = (state.providers || []).find((p) => p.id === providerId)
+  return {
+    title: credential.group ? `${credential.label} · ${credential.group}` : credential.label,
+    // 站点名后面补 Key 尾号：同一个站点常挂好几把 Key，只看标题分不清是哪一把
+    site: `${provider?.name || ''} · sk-••••${credential.tail || '????'}`,
+    seg: `<div class="seg gs-seg">${segBtn('all', t('总'), all.length)}${segBtn(
+      'ignored',
+      t('忽略'),
+      ignored.length,
+    )}${segBtn('avail', t('可用'), avail.length)}</div>`,
+    meta:
+      t('{n} 个模型', { n: models.length }) +
+      (filter === 'ignored' ? ` · ${t('忽略的模型不参与比价、决策、探针和网关')}` : ''),
+    models,
+    emptyTitle:
+      filter === 'ignored'
+        ? t('这把 Key 没有忽略的模型。')
+        : filter === 'avail'
+          ? t('这把 Key 的模型全被忽略了。')
+          : t('这把 Key 还没同步过模型。'),
+    emptyHint:
+      filter === 'all'
+        ? t('点站点卡的「一键同步」，会按这把 Key 拉一次模型列表。')
+        : filter === 'avail'
+          ? t('去「忽略模型」里取消勾选，它们就会回到可用。')
+          : t('这把 Key 的模型都还在用，没有被忽略的。'),
+    foot: '',
+  }
+}
+
+/** 重画弹窗内容：自动轮询、一键同步、改倍率、改忽略之后都得跟着变 */
+function paintGroupModels() {
+  if (!modelsSheet) return
+  const sheet = $('#group-models')
+  const body = $('#group-models-body')
+  if (!sheet || !body) return
+
+  const provider = (state.providers || []).find((p) => p.id === modelsSheet.providerId)
+  const view = modelsSheet.kind === 'key' ? keySheetView() : groupSheetView()
+  // 目标没了（分组被删 / Key 被删）→ 弹窗没有存在意义，直接收起
+  if (!view) {
+    closeGroupModels()
+    return
+  }
+
+  const siteText = view.site ?? provider?.name ?? ''
+  const siteEl = $('#group-models-site')
+  const titleEl = $('#group-models-title')
+  if (siteEl) siteEl.textContent = siteText
+  if (titleEl) titleEl.textContent = view.title
+
+  // 内容没变就不重写：15 秒自动轮询会重画页面，每次重建 DOM 会把滚动位置打回顶部。
+  // （语言、显示币种、汇率也算进签名，它们一变价格文字就该跟着变。）
+  const sig = JSON.stringify([
+    getLang(),
+    showUsd(),
+    rateCny(),
+    siteText,
+    view.title,
+    view.seg || '',
+    view.meta,
+    view.models,
+    view.foot,
+  ])
+  if (body.dataset.sig === sig) return
+  body.dataset.sig = sig
+
+  const scrollTop = body.scrollTop
+  const rows = view.models.map(modelRowHtml).join('')
   const head = `
     <div class="gs-meta">
-      <span class="hint">${t('{n} 个模型', { n: models.length })}${
-        keys.length ? ` · ${t('{n} 把 Key 在这个分组', { n: keys.length })}` : ''
-      }</span>
+      <span class="hint">${view.meta}</span>
       <span class="grow"></span>
       <span class="hint">${t('价格：输入 / 输出，每百万 token')}</span>
     </div>`
-
-  const empty = `
-    <div class="empty small">
-      <p>${t('这个分组还没同步过模型。')}</p>
-      <p class="hint">${
-        keys.length
-          ? t('点站点卡的「一键同步」，会按这把 Key 的分组拉一次。')
-          : t('这个分组没有挂 Key（多半是比价页「＋」复制出来的），不会有模型同步进来。')
-      }</p>
-    </div>`
-
-  const foot =
-    ignoredCount > 0
-      ? `<p class="hint gs-foot">${t('其中 {n} 个已忽略：不参与比价、决策、探针和网关。', { n: ignoredCount })}</p>`
-      : ''
-
-  body.innerHTML = `${models.length ? head : ''}${models.length ? `<div class="gs-list">${rows}</div>` : empty}${foot}`
+  const empty = `<div class="empty small"><p>${view.emptyTitle}</p><p class="hint">${view.emptyHint}</p></div>`
+  body.innerHTML = `${view.seg || ''}${view.models.length ? head : ''}${
+    view.models.length ? `<div class="gs-list">${rows}</div>` : empty
+  }${view.foot ? `<p class="hint gs-foot">${view.foot}</p>` : ''}`
   body.scrollTop = scrollTop
   translateDom(body)
 }
@@ -4303,6 +4374,21 @@ document.addEventListener('click', async (event) => {
     const target = actionButton.dataset.provider || providerId
     if (!target) return
     openGroupModels(target, actionButton.dataset.group || '')
+    return
+  }
+
+  if (action === 'open-key-models') {
+    // Key 那行的「总 / 忽略 / 可用」：三颗数字各带一个 filter，弹窗里也是同一组切换
+    const target = actionButton.dataset.provider || providerId
+    const credentialId = actionButton.dataset.credential
+    if (!target || !credentialId) return
+    openKeyModels(target, credentialId, actionButton.dataset.filter || 'all')
+    return
+  }
+
+  if (action === 'key-models-filter') {
+    if (!modelsSheet || modelsSheet.kind !== 'key') return
+    openKeyModels(modelsSheet.providerId, modelsSheet.credentialId, actionButton.dataset.filter || 'all')
     return
   }
 
