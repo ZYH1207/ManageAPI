@@ -375,6 +375,8 @@ const EN = {
     'Add its base URL and a key, sync the model list, and you can compare prices across sites.',
   '去添加站点': 'Add a site',
   '评分过期': 'score expired',
+  '评分已过期：超过有效期没重新探测，首字是旧证据，不作数':
+    'Score expired: not re-probed within the validity window; the TTFT is stale evidence and should not be trusted',
   '可用率低': 'low availability',
   '指纹不符': 'fingerprint mismatch',
   '输出截断': 'output truncated',
@@ -650,10 +652,14 @@ Object.assign(EN, {
   '网关已关闭': 'Gateway off',
 
   // 概览 / 决策 / 探针的状态说明
-  '默认按「有效成本 = 价格 ÷ 质量」排序。拖动任意一行都能改先后，包括暂时不会登场的那几条——位置随你定，但不会登场的站仍然不会被派活。':
-    'Sorted by effective cost (price ÷ quality). Drag any row to reorder — including ones that currently cannot be used: their position is yours to set, but they still never receive traffic.',
+  '默认按「有效成本 = 价格 ÷ 质量」排序。拖动整行（或最左边的把手）能改默认先后（没勾选时按这个派活）；点一下整行就是勾它为当前使用——顺序不动，再点一下取消勾选。勾选 > 拖的先后 > 自动排序。':
+    'Sorted by the decision focus above. Drag a row (or its handle) to set the default order used when nothing is pinned; click a row to pin it as the active supply — order is untouched, click again to unpin. Pin beats drag order beats automatic.',
+  '点击勾选这一行为当前使用（再点一下取消勾选），顺序不动': 'Click to pin this row as the active supply (click again to unpin); order is untouched',
+  '已取消勾选，回到按顺序自动选': 'Unpinned; back to automatic selection by order',
+  '「{model}」已保存手动顺序，没勾选时按这个先后派活': 'Manual order saved for {model}; used when nothing is pinned',
   '拖动调整顺序': 'Drag to reorder',
   '「{model}」已保存手动顺序': 'Manual order saved for {model}',
+  '已勾选 {name} 为当前使用': 'Picked {name} as the active supply',
   '注意：同一个模型在不同站的状态是各自独立的（A 站掉包，B 站却完全正常），所以这里按「站 × 模型」逐条评估，状态下方会写明具体原因。':
     'Note: the same model can be fine on one site and swapped on another, so each site × model is judged on its own. The reason is shown under the status.',
 
@@ -736,7 +742,7 @@ Object.assign(EN, {
   '已删除': 'Deleted',
   '已复制到剪贴板': 'Copied to clipboard',
   '已复制新 Key': 'New key copied',
-  '已恢复自动排序': 'Back to automatic order',
+  '已恢复自动排序（勾选与顺序一并清掉）': 'Back to automatic order (pin and order cleared)',
   '已拉取站方数据': 'Pulled data from the site',
   '已轮换，记得更新客户端配置': 'Rotated — update your client config',
   '权重已更新': 'Weight updated',
@@ -835,14 +841,9 @@ Object.assign(EN, {
   '慢速档位限制': 'Slow tier limit',
   '1000–20000ms 共 20 档 · 慢速即为不可用':
     '20 tiers, 1000–20000ms · slow means unavailable',
-  '已放行': 'allowed',
   '放行可疑供给': 'Allow suspicious supplies',
-  '探针判定可疑（指纹不符 / 输出截断 / 用量虚报）的站，也按有效成本正常参与路由；首字门槛不受这个开关影响':
-    'Sites the probes flagged (fingerprint mismatch, truncated output, inflated usage) also compete on effective cost; the TTFT gate is unaffected',
-  '已放行：可疑的站会正常参与选站':
-    'Enabled: suspicious sites now take part in routing',
-  '它们仍然按「价格 ÷ 质量」排序——质量差一半，成本就翻倍，只有便宜到足够多才会被选中。首字门槛仍然独立生效。如果你更在意输出是否可信，把这个开关关掉。':
-    'They still sort by price ÷ quality, so half the quality doubles the cost — only a large enough discount wins. The TTFT gate still applies separately. Turn this off if you care more about trustworthy output.',
+  '开启后，判定可疑（指纹不符 / 输出截断 / 用量虚报）的站，也可正常登场。若在意可信度，请关闭。':
+    'When on, sites flagged as suspicious (fingerprint mismatch / truncated output / inflated usage) can also take part in routing. Turn this off if you care about trustworthiness.',
   '已放行可疑供给，它们会正常参与选站': 'Suspicious supplies are now allowed to compete',
   '已恢复：可疑供给不再登场': 'Restored: suspicious supplies are no longer routed',
 })
@@ -1205,6 +1206,12 @@ Object.assign(EN, {
   '24 小时变动': 'Changes (24h)',
   '倍率 / 价格': 'rates / prices',
   '未读告警': 'Unread alerts',
+  // 余额告警条（KPI 下方那条实心红）
+  '余额告警 · {n} 个站点低于阈值': 'Balance alert · {n} site(s) below threshold',
+  '余额见底会直接断供，尽快充值': 'Once it hits zero the site stops serving — top up soon',
+  '阈值 {amount}': 'threshold {amount}',
+  '已用尽': 'depleted',
+  '看这个站的卡片': 'Jump to this site\u2019s card',
   '还没有余额数据': 'no balance yet',
   '最低：{name} {amount}': 'Lowest: {name} {amount}',
   '余额概览': 'Balance overview',

@@ -184,6 +184,17 @@ export function admissionTags(row) {
 }
 
 /**
+ * 慢速判定唯一口径（决策/网关、比价页、探针页三处共用）：门槛开着 + 有实测首字 + 超线。
+ * 评分过期（stale）时首字是旧证据，不作数——首字列都不显示它了，
+ * 准入再拿它判「慢速」就是自相矛盾；真实调用本身就是刷新证据，到时候再判。
+ */
+export function isTooSlow(score, maxTtftMs) {
+  if (!(Number(maxTtftMs) > 0)) return false
+  if (!score || score.stale) return false
+  return typeof score.ttftMs === 'number' && score.ttftMs > maxTtftMs
+}
+
+/**
  * 一条能登场的候选都没有时，该跟客户端说什么。
  *
  * 慢速和「不可用」必须分开报：前者是门槛设得太紧（或这家确实变慢了），
@@ -222,6 +233,26 @@ export function isLastResortCandidate(row) {
   if (row.admission?.kind !== 'slow') return false
   const quality = Number(row.quality)
   return Number.isFinite(quality) && quality >= LAST_RESORT_MIN_QUALITY
+}
+
+/**
+ * 人工勾选（决策页点选）某条供给：它就是「当前选」，与排序无关（页面顺序不动）。
+ *
+ * 收在一处是为了让「勾选了谁」只有一个真源——决策页的「当前选」与网关的
+ * 首选尝试吃同一份。勾选的牌只要还在候选里（没被暂停/删掉）就顶到最前，
+ * 哪怕准入没放行：这是人的明确指定，探针准入管的是自动选择，管不住人手点的；
+ * 真发出去失败了照样沿候选链往后故障转移。
+ * 返回新数组（勾选的在前），pinned 为实际生效的勾选候选（没勾/勾的不在候选里 → null）。
+ */
+export function applyPinnedChoice(candidates = [], pinnedOfferId = null) {
+  if (!pinnedOfferId) return { candidates, pinned: null }
+  const index = candidates.findIndex((c) => c.offer.id === pinnedOfferId)
+  if (index < 0) return { candidates, pinned: null }
+  const pinned = candidates[index]
+  return {
+    candidates: [pinned, ...candidates.slice(0, index), ...candidates.slice(index + 1)],
+    pinned,
+  }
 }
 
 /**
@@ -335,8 +366,9 @@ export function selectCandidates({
     const priceUsd = cost.blendedUsdPerMtok
     const price = cost.blendedCnyPerMtok
     const ttftMs = score?.ttftMs ?? null
-    // 太慢的直接排除，但仍保留在候选列表里——决策日志要能看出「为什么没选它」
-    const tooSlow = maxTtftMs > 0 && typeof ttftMs === 'number' && ttftMs > maxTtftMs
+    // 太慢的直接排除，但仍保留在候选列表里——决策日志要能看出「为什么没选它」。
+    // 口径在 isTooSlow：评分过期不算慢（首字是旧证据）
+    const tooSlow = isTooSlow(score, maxTtftMs)
 
     // 把「为什么不可用」拆成人话，决策页直接显示。
     // 注意口径：fingerprint/truncation/billingRate 都是「正常比例」（未截断/未虚报），

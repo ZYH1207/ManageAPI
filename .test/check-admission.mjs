@@ -16,7 +16,7 @@
  *
  * 用法：node .test/check-admission.mjs
  */
-import { admissionOf, admissionFailure, selectCandidates } from '../core/router.js'
+import { admissionOf, admissionFailure, selectCandidates, isTooSlow } from '../core/router.js'
 
 let failed = 0
 const ok = (cond, msg) => {
@@ -231,6 +231,22 @@ console.log('[7] 手动顺序：整张表都能拖，准入不受影响')
   // 空数组 = 恢复自动，排序回到默认规则
   const auto = run(scores, {}, [])
   ok(auto.map((r) => r.offer.id).join('>') === 'a>b>c', `恢复自动：${auto.map((r) => r.offer.id).join('>')}`)
+}
+
+console.log('[8] 慢速判定唯一口径：评分过期不算慢（首字是旧证据，不作数）')
+{
+  ok(isTooSlow({ stale: false, ttftMs: 16522 }, 8000) === true, '新鲜 + 超线 → 慢')
+  ok(isTooSlow({ stale: true, ttftMs: 16522 }, 8000) === false, '评分过期 → 不判慢，旧首字再大也不算')
+  ok(isTooSlow({ stale: false, ttftMs: 16522 }, 0) === false, '门槛 0 = 不限 → 不判慢')
+  ok(isTooSlow({ stale: false, ttftMs: null }, 8000) === false, '没有实测首字 → 不判慢')
+  ok(isTooSlow(null, 8000) === false, '没有评分 → 不判慢')
+
+  // 端到端：过期行的旧首字远超门槛，也不该被挂「慢速」或拦在门外——
+  // 否则首字列刚说完「过期不作数」，状态列又拿同一个数判慢，自相矛盾
+  const rows = run({ s: score({ stale: true, status: 'stale', ttftMs: 19300 }) })
+  ok(rows[0].tooSlow === false, 'selectCandidates：过期行 tooSlow 为 false')
+  ok(rows[0].admission.ok === true, '过期行仍然登场兑底')
+  ok(!String(rows[0].statusReason || '').includes('门槛'), '理由里不再引用过期首字超门槛')
 }
 
 console.log(failed === 0 ? '\n全部通过' : `\n${failed} 项失败`)

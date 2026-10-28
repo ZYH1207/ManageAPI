@@ -33,6 +33,13 @@
   --warn-border: #f2e2be;
   --danger-border: #f2d7d4;
   --alert-desc: #5a636e;
+  /* 余额告警条：唯一一块实心红的界面元素。只在「某个站真的要断供」时出现，
+     所以允许它比别处重——软底色那种“安静的提醒”正是它没被看见的原因 */
+  --alarm-bg: #b42318;
+  --alarm-border: #8f1b11;
+  --alarm-fg: #ffffff;
+  --alarm-fg-dim: rgba(255, 255, 255, 0.76);
+  --alarm-row-bg: rgba(255, 255, 255, 0.15);
   /* 字阶：全站只有这 5 档 */
   --fs-1: 11px;
   --fs-2: 12px;
@@ -80,6 +87,12 @@
   --warn-border: rgba(251, 191, 36, 0.28);
   --danger-border: rgba(248, 113, 113, 0.42);
   --alert-desc: rgba(255, 255, 255, 0.76);
+  /* 深色下不用实心红：亮红块在深底上会呼死眼睛，改成低亮度红底 + 亮红字 */
+  --alarm-bg: rgba(239, 68, 68, 0.14);
+  --alarm-border: rgba(239, 68, 68, 0.55);
+  --alarm-fg: #fca5a5;
+  --alarm-fg-dim: rgba(252, 165, 165, 0.72);
+  --alarm-row-bg: rgba(239, 68, 68, 0.16);
   /* 免费页配额进度条 */
   --quota-track: #222a33;
   --quota-fill: #34d399;
@@ -1663,6 +1676,7 @@ tbody tr:hover { background: var(--surface-2); }
 tbody tr.cheapest { background: var(--success-soft); }
 tbody tr.cheapest:hover { background: var(--row-cheapest-hover); }
 /* 决策页候选行拖拽：整行按住就能拖，把手只是提示（沿用站点卡的 grip 图标） */
+/* 决策页候选行：整行可拖可点（user-select 防止拖动/点选时选中文字） */
 tr.dec-row { cursor: grab; user-select: none; }
 tr.dec-row.dragging { opacity: .5; cursor: grabbing; }
 body.row-dragging { user-select: none; cursor: grabbing; }
@@ -2042,6 +2056,60 @@ html[data-lang='en'] .doc[data-lang-block='en'] { display: block; }
 .monitor-kpi .stat .sub {
   margin-top: 4px; font-size: 11px; color: var(--faint);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* 余额告警条：贴在 KPI 卡下面（负数外边距把两块拉到一起，看着像同一块信息） */
+.balance-alarm {
+  display: flex; align-items: flex-start; gap: 10px;
+  margin: -8px 0 16px;
+  padding: 11px 14px;
+  border-radius: var(--radius);
+  background: var(--alarm-bg);
+  border: 1px solid var(--alarm-border);
+  color: var(--alarm-fg);
+}
+.balance-alarm-icon { flex-shrink: 0; line-height: 0; margin-top: 2px; }
+.balance-alarm-icon svg { width: 18px; height: 18px; }
+.balance-alarm-body { flex: 1; min-width: 0; }
+.balance-alarm-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.balance-alarm-head b { font-size: 14px; font-weight: 600; letter-spacing: 0.2px; }
+.balance-alarm-hint { font-size: 12px; color: var(--alarm-fg-dim); }
+.balance-alarm-rows {
+  display: flex; flex-wrap: wrap; gap: 6px;
+  margin-top: 7px;
+}
+.balance-alarm-row {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 2px 9px 2px 3px;
+  border-radius: 999px;
+  background: var(--alarm-row-bg);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+/* 站名是按钮（点了滚到那张卡），但不能长成按钮：不许有边框和底色 */
+.balance-alarm-site {
+  border: none; background: none; color: inherit;
+  padding: 0 2px; font-weight: 600;
+  text-decoration: underline; text-decoration-style: dotted; text-underline-offset: 2px;
+}
+.balance-alarm-site:hover { background: none; opacity: 0.8; }
+.balance-alarm-row b { font-weight: 700; }
+.balance-alarm-th { color: var(--alarm-fg-dim); }
+.balance-alarm-tag {
+  padding: 0 6px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.22);
+  font-size: 11px; font-weight: 600;
+}
+/* 从告警条跳过来的站点卡：闪一下红边，否则滚过去也认不出是哪张 */
+.prov-card.is-flash {
+  border-color: var(--danger-strong);
+  box-shadow: 0 0 0 3px var(--danger-soft);
+  animation: prov-card-flash 0.8s ease-out 2;
+}
+@keyframes prov-card-flash {
+  0%, 100% { border-color: var(--danger-strong); box-shadow: 0 0 0 3px var(--danger-soft); }
+  50% { border-color: var(--border); box-shadow: 0 0 0 0 transparent; }
 }
 
 /* 左图右列表：图要宽，变动流窄一点 */

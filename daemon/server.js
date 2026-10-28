@@ -34,7 +34,9 @@ import {
   admissionFailure,
   admissionOf,
   admissionTags,
+  isTooSlow,
   candidateChain,
+  applyPinnedChoice,
 } from '../core/router.js'
 import { snapTtftMs, ttftTierTable, describeTtftLimit } from '../core/latency.js'
 import { pauseStatus, normalizeWindows, isTime, MAX_WINDOWS } from '../core/schedule.js'
@@ -386,8 +388,9 @@ async function buildState({ light = false } = {}) {
   const scores = {}
   for (const [offerId, score] of scoreMap) {
     // 比价页的状态标签和决策页同一份判定（core/router.js#admissionTags）：
-    // 慢速、可疑、不稳定可以同时成立，前端只管照着画，不在浏览器里再判一遍
-    const tooSlow = maxTtftMs > 0 && typeof score.ttftMs === 'number' && score.ttftMs > maxTtftMs
+    // 慢速、可疑、不稳定可以同时成立，前端只管照着画，不在浏览器里再判一遍。
+    // 慢速口径同样只留 isTooSlow 一份（评分过期不算慢）
+    const tooSlow = isTooSlow(score, maxTtftMs)
     // 准入判定和 selectCandidates 里那份用同一个形状：samples 是探针 + 真实流量，
     // allowUntrusted 让「放行可疑供给」在比价页也生效，否则两个页面结论会打架
     const gateRow = {
@@ -450,18 +453,28 @@ async function buildState({ light = false } = {}) {
       isFaulted,
     })
     const rankedCandidates = explain(candidates)
-    // 「当前选」= 第一张真能登场、又没被故障上报摘掉的牌。这里必须用准入而不是
-    // routable：评分过期的 routable 为 false，但它确实会被派活（见 admissionOf）。
-    // 故障转移的牌排在同类最后（selectCandidates 降级），自然不会被当成「当前选」
-    const winner = rankedCandidates.find((c) => c.admission?.ok && !c.faulted) || null
+    // 勾选 > 排序：决策页点选的那条就是「当前选」，与顺序无关（顺序不动）。
+    // 勾选的不在候选里（被暂停/删了）才回落到「第一条能登场的」。
+    // 勾选的牌哪怕准入没放行也算数——人的明确指定，探针准入管不住人手点的；
+    // 网关侧同口径（见下方 handleChatCompletions 里的 applyPinnedChoice），
+    // 真发失败了照样沿候选链故障转移。
+    const pinnedOfferId = db.pinnedOffer?.[model] || db.pinnedOffer?.[group.modelKey] || null
+    const winner =
+      (pinnedOfferId && rankedCandidates.find((c) => c.offerId === pinnedOfferId)) ||
+      rankedCandidates.find((c) => c.admission?.ok && !c.faulted) ||
+      null
     return {
       modelKey: group.modelKey,
       display: group.display || group.modelKey,
       variants: group.variants || [],
       candidates: rankedCandidates,
+      pinnedOfferId,
       chosenOfferId: winner?.offerId ?? null,
+      chosenProviderId: winner?.providerId ?? null,
       chosenProviderName: winner?.providerName ?? null,
-      manual: Boolean(order && order.length),
+      // 同一站可能有多个分组供这个模型，只报站名分不清走的是哪条线
+      chosenGroup: winner?.group || '',
+      manual: Boolean((order && order.length) || pinnedOfferId),
     }
   })
 
@@ -1796,6 +1809,13 @@ route('PUT', /^\/api\/decisions\/([^/]+)\/order$/, async (ctx) => {
   return buildState()
 })
 
+// 决策页点选：勾哪条供给为「当前使用」（传空 = 取消勾选）；顺序不动
+route('POST', /^\/api\/decisions\/([^/]+)\/pick$/, async (ctx) => {
+  const modelKey = decodeURIComponent(ctx.params[0])
+  await inv.setPinnedOffer(modelKey, ctx.body.offerId ? String(ctx.body.offerId) : '')
+  return buildState()
+})
+
 // ------------------------------------------------------------- 模型名合并
 
 /**
@@ -1891,7 +1911,7 @@ function protocolTargets(db) {
       let blocked = null
       let probeStatus = null
       if (score) {
-        const tooSlow = maxTtftMs > 0 && typeof score.ttftMs === 'number' && score.ttftMs > maxTtftMs
+        const tooSlow = isTooSlow(score, maxTtftMs)
         const gateRow = {
           ...score,
           tooSlow,
@@ -4307,6 +4327,15 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
   // 准入候选排前面，全部失败后才轮到兜底的慢速供给。
   // 用户宁可多等几秒，也不想看到报错——这是「不影响心流」的底线。
   candidates = admitted.length > 0 ? [...admitted, ...chain.lastResort] : chain.lastResort
+  // 人工勾选 > 一切自动排序：决策页点选的那条顶到尝试链最前（与决策页「当前选」
+  // 同一份口径，见 core/router.js#applyPinnedChoice）；哪怕准入没放行也算数——
+  // 这是人的明确指定，真发失败了照样沿候选链往后故障转移。
+  // 键与手动顺序同口径：身份键，老数据兜一次 normalizeModelKey 时代的键
+  const pinnedOfferId =
+    db.pinnedOffer?.[inv.modelIdentityKey(model, db.settings?.modelAliases || {})] ||
+    db.pinnedOffer?.[inv.normalizeModelKey(model)] ||
+    null
+  candidates = applyPinnedChoice(candidates, pinnedOfferId).candidates
 
   const started = Date.now()
   const failures = []

@@ -6,6 +6,8 @@
  *   4. 缺数据（没探过 = 首字 null）不冒充「最快」，排到最后
  *   5. 手动顺序仍然优先（用户显式指定优先于任何自动口径）
  *   6. 看板顶部那句有**自己的档位**（headlineMode），与路由档位互不干扰
+ *   7. 人工勾选（决策页点选）：勾了哪条哪条就是当前选；顺序不动、准入拦不住；
+ *      网关尝试链里勾选的顶到最前，真失败照样往后故障转移
  *
  * 背景：原来的「智能」只有一种价值观——有效成本最低。但便宜和好用不是一回事：
  * 一条便宜一万倍、首字却要等十几秒的供给，按有效成本永远排第一，用户根本不想用。
@@ -21,7 +23,7 @@ import {
   normalizeDecisionMode,
   tierMetricOf,
 } from '../core/decision-mode.js'
-import { selectCandidates } from '../core/router.js'
+import { selectCandidates, applyPinnedChoice } from '../core/router.js'
 import { decisionChampion, decisionHeadline } from '../core/pricing.js'
 
 let failed = 0
@@ -363,6 +365,33 @@ console.log('[9] 全场冠军行：全部模型合在一起比，只看能登场
     settings: { championMode: 'speed' },
   })
   ok(noTtft.modelKey === 'm-b' && noTtft.ttftMs === 500, `没探过针的不冒充最快：${noTtft.ttftMs}ms`)
+}
+
+console.log('[7] 人工勾选（点选）：勾了哪条哪条就是当前选，顺序不动、准入拦不住人手点的')
+{
+  const rows = run(spec, { decisionMode: 'value' })
+  ok(ids(rows) === 'b > a > c > d', `基准顺序 ${ids(rows)}`)
+
+  // 勾选排在第三的 c：页面顺序不动（applyPinnedChoice 只在网关尝试链里用，
+  // 决策页的展示顺序吃原始排序），但「当前选」= 勾选的那条
+  const pinned = applyPinnedChoice(rows, 'c')
+  ok(pinned.pinned?.offer.id === 'c', '勾选 c 生效')
+  ok(ids(rows) === 'b > a > c > d', `原始顺序不被勾选改动：${ids(rows)}`)
+  ok(ids(pinned.candidates) === 'c > b > a > d', `尝试链里勾选的顶到最前：${ids(pinned.candidates)}`)
+
+  // 勾选被准入拉黑的 d（可用率 50%）：人的明确指定压过探针准入，照样生效，
+  // 真发失败了网关沿链往后转移（b 接着接单）
+  const pinnedBlocked = applyPinnedChoice(rows, 'd')
+  ok(pinnedBlocked.pinned?.offer.id === 'd', '勾选准入拉黑的 d 也生效（人手点的压过准入）')
+  ok(ids(pinnedBlocked.candidates) === 'd > b > a > c', `d 顶到尝试链最前：${ids(pinnedBlocked.candidates)}`)
+
+  // 勾选不在候选里的（已暂停/已删除）→ 不生效，回落自动
+  const pinnedMissing = applyPinnedChoice(rows, 'nope')
+  ok(pinnedMissing.pinned === null && ids(pinnedMissing.candidates) === ids(rows), '勾选的牌不在候选里 → 不生效，顺序不变')
+
+  // 没勾选 → 原样返回
+  const none = applyPinnedChoice(rows, null)
+  ok(none.pinned === null && ids(none.candidates) === ids(rows), '没勾选 → 原样')
 }
 
 console.log(failed === 0 ? '\n全部通过' : `\n${failed} 项失败`)

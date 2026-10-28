@@ -32,8 +32,10 @@ const HEAVY_TABS = new Set(['pricing', 'decision'])
  * 这里只负责展示）。排序按每毫秒算，展示换算成「每等 1 秒首字花多少钱」——
  * 每毫秒的比值太小会显示成 0.000，把同一比值 ×1000 后单调性不变、读起来像人话。
  * 缺价或缺首字的一律 —：不知道就是不冒充，与排序口径一致。
+ * 评分过期同理：价速比是价格÷首字算出来的，首字都不作数了，它也不能拿旧数冒充。
  */
 function priceSpeedText(candidate) {
+  if (candidate?.status === 'stale') return '—'
   const price = Number(candidate?.price)
   const ttft = Number(candidate?.ttftMs)
   if (!Number.isFinite(price) || !Number.isFinite(ttft) || ttft <= 0) return '—'
@@ -3330,15 +3332,13 @@ const STATUS_TAG = {
  * 把服务端给的标签清单画成一串徽章：该标的都标，不是挑一个。
  *
  * @param {string[]} tags core/router.js#admissionTags 的返回
- * @param {{blocked?:object, released?:boolean, hide?:string[]}} options
+ * @param {{blocked?:object, hide?:string[]}} options
  *   blocked  —— 冷却/待复测的具体原因（额度不足 / 限流中…），措辞统一走 blockedLabel；
  *               待复测时传 pendingRecovery 那个对象也行（blockedLabel 只读 kind）
- *   released —— 「放行可疑供给」开着、准入放行了的可疑站，末尾补一个「已放行」，
- *               不往每一条问题上重复挂后缀
  *   hide     —— 不画的标签。比价页那种价格表里「可用」是默认状态、「兜底」是
  *               决策页的概念（谁先派活），标在价目表上只是噪声
  */
-function statusBadges(tags, { blocked = null, released = false, hide = [] } = {}) {
+function statusBadges(tags, { blocked = null, hide = [] } = {}) {
   const kinds = Array.isArray(tags) ? tags : []
   const html = kinds
     .filter((kind) => !hide.includes(kind))
@@ -3353,7 +3353,6 @@ function statusBadges(tags, { blocked = null, released = false, hide = [] } = {}
             : t(spec.label)
       return `<span class="badge${spec.cls ? ` ${spec.cls}` : ''}">${label}</span>`
     })
-  if (released) html.push(`<span class="badge warn">${t('已放行')}</span>`)
   return html.join(' ')
 }
 
@@ -3431,16 +3430,17 @@ function renderDecision() {
       }
     }
     const rows = decision.candidates.map((candidate, index) => {
+      // 评分过期：首字是旧证据，不作数——列里不给数字，给一个灰色「评分过期」，
+      // 免得人拿一个过期值当现状（准入是放行的，真实调用本身就是刷新证据）
+      const stale = candidate.status === 'stale'
       const badges = statusBadges(candidate.tags, {
         blocked: candidate.blocked || candidate.pendingRecovery,
-        // 准入放行了、探针却判它不可信：只可能是「放行可疑供给」开着，标出来
-        released: Boolean(candidate.admission?.ok) && candidate.probeOk === false,
       })
       const isChosen = candidate.offerId === decision.chosenOfferId
-      // 整行都能拖（指针事件，见下面的 rowDrag）：顺序覆盖自动排序，不分「可用」与否——
-      // 位置随用户定，但能不能被派活仍由准入门禁说话（网关只认 admission.ok）
+      // 整行可点 = 勾它为当前使用（点选逻辑见文件尾部的 pointerup 分支）：
+      // 只改勾选，顺序不动；能不能真发出去看状态列，失败了网关会往后转移
       return `
-        <tr class="dec-row${isChosen ? ' cheapest' : ''}" data-offer="${esc(candidate.offerId)}">
+        <tr class="dec-row${isChosen ? ' cheapest' : ''}" data-offer="${esc(candidate.offerId)}" title="${t('点击勾选这一行为当前使用（再点一下取消勾选），顺序不动')}">
           <td class="dec-grip-cell"><span class="dec-grip" title="${t('拖动调整顺序')}">${icon('grip')}</span></td>
           <td class="num" style="color:var(--faint)">${index + 1}</td>
           <td>${esc(candidate.providerName || '—')}${isChosen ? ' <span class="badge ok">当前</span>' : ''}${
@@ -3460,7 +3460,13 @@ function renderDecision() {
               : ''
           }</td>
           <td class="num${sortMark('value')}">${candidate.effective === null ? '—' : priceText(candidate.effective)}</td>
-          <td class="num${sortMark('speed')}">${candidate.ttftMs === null ? '—' : `${candidate.ttftMs}ms`}</td>
+          <td class="num${sortMark('speed')}">${
+            stale
+              ? `<span class="badge" title="${t('评分已过期：超过有效期没重新探测，首字是旧证据，不作数')}">${t('评分过期')}</span>`
+              : candidate.ttftMs === null
+                ? '—'
+                : `${candidate.ttftMs}ms`
+          }</td>
           <td class="num${sortMark('priceSpeed')}">${priceSpeedText(candidate)}</td>
           <td>${badges}${candidate.statusReason ? `<div class="sub">${esc(candidate.statusReason)}</div>` : ''}</td>
         </tr>`
@@ -3472,7 +3478,13 @@ function renderDecision() {
           <button class="ghost tiny" data-act="toggle-panel" data-panel="${esc(panelKey)}">${isCollapsed ? '▸' : '▾'}</button>
           <span class="model mono">${esc(shownName)}</span>
           ${variants.length > 1 ? `<span class="badge" title="${t('这些站里同一个模型有 {n} 种写法，已合并成一个模型一起排序', { n: variants.length })}：${esc(variants.join(' / '))}">${t('已合并 {n} 种写法', { n: variants.length })}</span>` : ''}
-          <span class="spread">${decision.chosenProviderName ? `当前选 ${esc(decision.chosenProviderName)}` : '没有可用供给'}</span>
+          <span class="spread">${decision.chosenProviderName
+            ? `当前选 ${esc(decision.chosenProviderName)}${
+                decision.chosenGroup
+                  ? ` <span class="badge ${groupChipOf(decision.chosenProviderId, decision.chosenGroup)}" title="${esc(decision.chosenGroup)}">${esc(decision.chosenGroup)}</span>`
+                  : ''
+              }`
+            : '没有可用供给'}</span>
           ${decision.manual ? '<button class="ghost tiny" data-act="reset-order">恢复自动</button>' : ''}
         </div>
         ${isCollapsed ? '' : `
@@ -3514,7 +3526,7 @@ function renderDecision() {
         <span class="switch-text"><b>${t('只显示可使用')}</b></span>
       </label>
     </div>
-    <p class="hint">排序按上面的「决策侧重」。拖动任意一行都能改先后，包括暂时不会登场的那几条——位置随你定，但不会登场的站仍然不会被派活。</p>
+    <p class="hint">排序按上面的「决策侧重」。拖动整行（或最左边的把手）能改默认先后（没勾选时按这个派活）；点一下整行就是勾它为当前使用——顺序不动，再点一下取消勾选。勾选 &gt; 拖的先后 &gt; 自动排序。</p>
     <p class="hint">${t('注意：<b>同一个模型在不同站的状态是各自独立的</b>（A 站健康、B 站掉包很正常），所以这里按「站 × 模型」逐条评估，状态下方会写明具体原因。')}</p>
     ${mergedHint}
     ${blocks ||
@@ -3604,15 +3616,17 @@ function autoRouteSwitch() {
 }
 
 /**
- * 慢速档位限制：这一页唯一的准入开关。
+ * 准入开关卡：慢速档位限制 + 放行可疑供给。
  *
  * 放这里的理由：智能决策就是「最后哪些模型能登场」的界面，门槛、候选、状态、
  * 排序应该在同一屏里，用户才能立刻看到「调高门槛之后还剩谁」。
- * 探针页只管取证（探什么、多久探一次），不碰准入。
+ * 探针页只管取证（探什么、多久探一次），不碰准入——可疑供给放不放行
+ * 曾经长在探针页，但它是准入开关，归这里管。
  */
 function gateCard() {
   const maxTtft = Number(state.settings.maxTtftMs) || 0
   const tiers = state.ttftTiers || []
+  const allowUntrusted = Boolean(state.settings.allowUntrusted)
   return `
     <div class="card">
       <div class="ttft-scale">
@@ -3637,6 +3651,16 @@ function gateCard() {
         <span style="flex:1"></span>
         ${autoRouteSwitch()}
         ${routeNowPill()}
+      </div>
+      <div class="switch-row">
+        <label class="switch">
+          <input type="checkbox" id="allow-untrusted" ${allowUntrusted ? 'checked' : ''} />
+          <span class="switch-track"><span class="switch-knob"></span></span>
+          <span class="switch-text">
+            <b>${t('放行可疑供给')}</b>
+            <span>${t('开启后，判定可疑（指纹不符 / 输出截断 / 用量虚报）的站，也可正常登场。若在意可信度，请关闭。')}</span>
+          </span>
+        </label>
       </div>
       </div>
     </div>`
@@ -3770,7 +3794,6 @@ function renderProbes() {
 
   const interval = Number(state.settings.probeIntervalMinutes) || 0
   const maxAge = Number(state.settings.scoreMaxAgeHours) || 6
-  const allowUntrusted = Boolean(state.settings.allowUntrusted)
   const intervalOptions = [
     [0, '关闭'],
     [30, '30 分钟'],
@@ -3856,26 +3879,6 @@ function renderProbes() {
               ${pauseRows}
               <button class="ghost tiny" data-act="add-pause-window">${icon('plus')}${t('添加时段')}</button>
             </div>
-          </div>
-          <div class="switch-row">
-            <label class="switch">
-              <input type="checkbox" id="allow-untrusted" ${allowUntrusted ? 'checked' : ''} />
-              <span class="switch-track"><span class="switch-knob"></span></span>
-              <span class="switch-text">
-                <b>放行可疑供给</b>
-                <span>探针判定可疑（指纹不符 / 输出截断 / 用量虚报）的站，也按有效成本正常参与路由；首字门槛不受这个开关影响</span>
-              </span>
-            </label>
-            ${
-              allowUntrusted
-                ? `<div class="alert" style="margin-top:10px;background:var(--warn-soft);border-color:var(--warn-border)">
-                     <div>
-                       <div class="name">已放行：可疑的站会正常参与选站</div>
-                       <div class="desc">它们仍然按「价格 ÷ 质量」排序——质量差一半，成本就翻倍，只有便宜到足够多才会被选中。首字门槛仍然独立生效。如果你更在意输出是否可信，把这个开关关掉。</div>
-                     </div>
-                   </div>`
-                : ''
-            }
           </div>
         </div>
         ${probeSpendCardHtml()}
@@ -5763,6 +5766,41 @@ function renderMonitor() {
     )
     .join('')}</div>`
 
+  // ---------------------------------------------------------- 余额告警条
+  // 余额告警此前只落在「未读告警」那个数字和下面第三屏的「告警动态」卡片里，
+  // 阈值压线时首屏什么都看不出来——站点断供往往是事后才发现的。
+  // 只要有站低于阈值，就在 KPI 正下方压一条实心红条：站名 + 剩余 + 阈值。
+  // 判定口径与站点卡徽章、后端告警一致：阈值 > 0 且余额 <= 阈值（阈值为 0 即关闭提醒）
+  // 不加 role="alert"：整页每 15 秒重渲染一次，读屏会被同一条公告反复打断
+  const lowBalanceRows = (data.balanceByProvider || []).filter(
+    (row) => typeof row.balance === 'number' && Number(row.threshold) > 0 && row.balance <= Number(row.threshold),
+  )
+  // balanceByProvider 已按余额升序，最危险的站排最前，不用再排
+  const balanceAlarmRows = lowBalanceRows
+    .map((row) => {
+      const cur = row.currency || 'CNY'
+      const depleted = row.balance <= 0
+      return `<span class="balance-alarm-row">
+        <button class="balance-alarm-site" data-balance-alarm-site="${esc(row.providerId)}" title="${t('看这个站的卡片')}">${esc(row.name)}</button>
+        <b>${esc(cur)} ${money(row.balance)}</b>
+        <span class="balance-alarm-th">${t('阈值 {amount}', { amount: money(row.threshold) })}</span>
+        ${depleted ? `<span class="balance-alarm-tag">${t('已用尽')}</span>` : ''}
+      </span>`
+    })
+    .join('')
+  const balanceAlarmHtml = lowBalanceRows.length === 0
+    ? ''
+    : `<div class="balance-alarm">
+        <span class="balance-alarm-icon">${icon('alert')}</span>
+        <div class="balance-alarm-body">
+          <div class="balance-alarm-head">
+            <b>${t('余额告警 · {n} 个站点低于阈值', { n: lowBalanceRows.length })}</b>
+            <span class="balance-alarm-hint">${t('余额见底会直接断供，尽快充值')}</span>
+          </div>
+          <div class="balance-alarm-rows">${balanceAlarmRows}</div>
+        </div>
+      </div>`
+
   // -------------------------------------------------------------- 图表
   // 只把「有余额或有花费」的站放进选择器——没数据的站点了也是空图
   const chartProviders = (data.balanceByProvider || [])
@@ -6032,6 +6070,7 @@ function renderMonitor() {
   )
   view.innerHTML = `
     ${kpiHtml}
+    ${balanceAlarmHtml}
     <div class="monitor-cols">${chartCard}${changesCard}</div>
     ${sitesCard}
     <div class="monitor-cols monitor-cols--feed">${alertsCard}${announcementsCard}</div>
@@ -6610,6 +6649,24 @@ document.addEventListener('click', async (event) => {
   const chartHit = event.target.closest?.('[data-chart-day]')
   if (chartHit) {
     showChartTip(chartHit)
+    return
+  }
+
+  // 余额告警条里的站名：滚到他那张站点卡，并闪一下边框——
+  // 告警条只给结论，具体要充值/换主站还是得看卡
+  const alarmSiteBtn = event.target.closest('[data-balance-alarm-site]')
+  if (alarmSiteBtn) {
+    const pid = alarmSiteBtn.dataset.balanceAlarmSite
+    const card = [...document.querySelectorAll('#monitor-sites-host [data-provider]')]
+      .find((el) => el.dataset.provider === pid)
+    if (card) {
+      card.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      card.classList.remove('is-flash')
+      // 强制重排，否则连续点同一张卡第二次不会重播动画
+      void card.offsetWidth
+      card.classList.add('is-flash')
+      setTimeout(() => card.classList.remove('is-flash'), 1600)
+    }
     return
   }
 
@@ -7389,7 +7446,7 @@ document.addEventListener('click', async (event) => {
     try {
       state = await api('PUT', `/api/decisions/${encodeURIComponent(modelKey)}/order`, { order: [] })
       render()
-      toast('已恢复自动排序')
+      toast('已恢复自动排序（勾选与顺序一并清掉）')
     } catch (error) {
       toast(error.message, true)
     }
@@ -8109,10 +8166,12 @@ async function persistOrder(order, dragged) {
   }
 }
 
-// --------------------------------------------------- 决策页候选行拖拽排序
-// 整行都能拖，不分「可用」与否：保存的是这一行在表里的完整顺序（含暂时不登场的），
-// 站点恢复健康后位置也还在。能不能真的被派活仍由准入门禁管（网关只认 admission.ok），
-// 所以把不会登场的行拖到前面只是「摆在前面」，不会偷偷把流量引过去。
+// --------------------------------------------------- 决策页候选行：拖拽排序 + 点选勾选
+// 两套交互独立，走同一条指针事件路径：按下后挪动超过 4px 就是拖拽（整行都能拖，
+// 把手只是视觉提示），落位后保存整表顺序（含暂时不登场的行）——这只改「没勾选时
+// 按什么先后派活」；没挪动就是点一下 = 勾它为「当前使用」，顺序完全不动，再点
+// 一下取消勾选。勾选 > 拖的顺序 > 自动排序；勾选的牌哪怕准入没放行也算数
+// （人的明确指定，探针准入管不住人手点的），真发失败了照样沿候选链故障转移。
 //
 // 刻意不用 HTML5 draggable：<tr draggable> 在部分浏览器里根本起不了拖，
 // 用户看到的就是「拖不动」（站点卡能用是因为它的把手是个 span）。这里用指针事件
@@ -8191,17 +8250,26 @@ document.addEventListener('pointerup', async (event) => {
   const drag = rowDrag
   if (!drag || event.pointerId !== drag.pointerId) return
   endRowDrag()
-  if (!drag.dragging) return
-  const visibleOrder = [...drag.tbody.querySelectorAll('tr.dec-row')].map((tr) => tr.dataset.offer)
-  if (visibleOrder.join() === drag.fromOrder.join()) return
-  // 「只显示可使用」开着时 DOM 里只有可见行：提交前把被隐藏的供给塞回它原来的
-  // 槽位，否则一次拖动就会把它们从手动顺序里挤掉（服务端是整表覆盖，见 setManualOrder）
-  const decision = state.decisions?.find((d) => d.modelKey === drag.container.dataset.model)
-  const full = decision ? decision.candidates.map((c) => c.offerId) : []
-  const visibleSet = new Set(visibleOrder)
-  const order = full.map((id) => (visibleSet.has(id) ? visibleOrder.shift() : id))
-  while (visibleOrder.length > 0) order.push(visibleOrder.shift())
-  await persistDecisionOrder(drag.container.dataset.model, order)
+  const modelKey = drag.container.dataset.model
+  const decision = state.decisions?.find((d) => d.modelKey === modelKey)
+  if (!decision) return
+  if (drag.dragging) {
+    // 拖拽落位：按拖完的 DOM 顺序保存
+    const visibleOrder = [...drag.tbody.querySelectorAll('tr.dec-row')].map((tr) => tr.dataset.offer)
+    if (visibleOrder.join() === drag.fromOrder.join()) return
+    // 「只显示可使用」开着时 DOM 里只有可见行：提交前把被隐藏的供给塞回它原来的
+    // 槽位，否则一次拖动就会把它们从手动顺序里挤掉（服务端是整表覆盖，见 setManualOrder）
+    const visibleSet = new Set(visibleOrder)
+    const full = decision.candidates.map((c) => c.offerId)
+    const order = full.map((id) => (visibleSet.has(id) ? visibleOrder.shift() : id))
+    while (visibleOrder.length > 0) order.push(visibleOrder.shift())
+    await persistDecisionOrder(modelKey, order)
+  } else {
+    // 没挪动 = 点选：勾它为「当前使用」，顺序完全不动；再点一下取消勾选
+    const picked = drag.row.dataset.offer
+    if (!picked) return
+    await pickDecision(modelKey, picked === decision.pinnedOfferId ? '' : picked)
+  }
 })
 
 // 拖到一半被打断（触摸滚动、系统手势）：把行放回服务端记着的顺序
@@ -8216,7 +8284,27 @@ document.addEventListener('keydown', (event) => {
   render()
 })
 
-/** 落位后提交整表顺序：重画会丢滚动位置，自己存一下 */
+/** 点选勾选/取消勾选：只改「当前使用」，不碰顺序；重画会丢滚动位置，自己存一下 */
+async function pickDecision(modelKey, offerId) {
+  const scroller = document.querySelector('.content')
+  const scrollTop = scroller ? scroller.scrollTop : 0
+  try {
+    state = await api('POST', `/api/decisions/${encodeURIComponent(modelKey)}/pick`, { offerId })
+    render()
+    if (scroller) scroller.scrollTop = scrollTop
+    if (!offerId) {
+      toast(t('已取消勾选，回到按顺序自动选'))
+      return
+    }
+    const c = (state.decisions || []).find((d) => d.modelKey === modelKey)?.candidates?.find((x) => x.offerId === offerId)
+    const name = c ? `${c.providerName || '—'}${c.group ? `（${c.group}）` : ''}` : modelKey
+    toast(t('已勾选 {name} 为当前使用', { name }))
+  } catch (error) {
+    toast(error.message, true)
+  }
+}
+
+/** 拖拽落位后提交整表顺序：重画会丢滚动位置，自己存一下 */
 async function persistDecisionOrder(modelKey, order) {
   const scroller = document.querySelector('.content')
   const scrollTop = scroller ? scroller.scrollTop : 0
@@ -8224,7 +8312,7 @@ async function persistDecisionOrder(modelKey, order) {
     state = await api('PUT', `/api/decisions/${encodeURIComponent(modelKey)}/order`, { order })
     render()
     if (scroller) scroller.scrollTop = scrollTop
-    toast(t('「{model}」已保存手动顺序', { model: modelKey }))
+    toast(t('「{model}」已保存手动顺序，没勾选时按这个先后派活', { model: modelKey }))
   } catch (error) {
     toast(error.message, true)
   }

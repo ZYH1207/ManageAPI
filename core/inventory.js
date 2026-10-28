@@ -1276,10 +1276,31 @@ export async function setManualOrder(modelKey, order) {
     if (!key) throw new Error('缺少模型名')
     if (!Array.isArray(order) || order.length === 0) {
       delete db.manualOrder[key]
+      // 「恢复自动」= 顺序和勾选一并清掉，回到全自动
+      if (db.pinnedOffer) delete db.pinnedOffer[key]
       return null
     }
     db.manualOrder[key] = order.map(String)
     return db.manualOrder[key]
+  })
+}
+
+/**
+ * 勾选某个模型的供给为「当前使用」：与手动顺序相互独立——勾了哪条哪条就是
+ * 当前选，页面顺序不动；传空 = 取消勾选，回到按顺序自动选。
+ * 键与手动顺序同口径（身份键），读的时候也按身份键查。
+ */
+export async function setPinnedOffer(modelKey, offerId) {
+  return mutate((db) => {
+    const key = identityKey(String(modelKey || '').trim(), db.settings?.modelAliases || {})
+    if (!key) throw new Error('缺少模型名')
+    if (!offerId) {
+      if (db.pinnedOffer) delete db.pinnedOffer[key]
+      return null
+    }
+    if (!db.pinnedOffer || typeof db.pinnedOffer !== 'object') db.pinnedOffer = {}
+    db.pinnedOffer[key] = String(offerId)
+    return db.pinnedOffer[key]
   })
 }
 
