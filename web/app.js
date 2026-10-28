@@ -2269,10 +2269,13 @@ function renderPricing() {
               : ''
           }`
       // 计费单位是站点声明、识别出来的（模型广场 billing_mode），不是每行手选的
-      // 配置项——所以只读展示。真要手动改（比如站点没开广场识别不到），去「站点」页
-      const unitBadge = `<span class="badge unit-badge" title="${t('计费单位：由站点声明的计费形式识别而来；手动修改请到「站点」页的模型行')}">${
-        perCall ? t('/次') : row.priceUnit === 'per_1k' ? t('/1k') : t('/M')
-      }</span>`
+      // 配置项——所以只读展示（unitBadge-removal）。/M 是大家都懂的默认口径，不显示，免得满屏噪音；
+      // 只有 /1k、/次 这种「和默认不一样」的才标出来。真要手动改，去「站点」页
+      const unitBadge = perCall || row.priceUnit === 'per_1k'
+        ? `<span class="badge unit-badge" title="${t('计费单位：由站点声明的计费形式识别而来；手动修改请到「站点」页的模型行')}">${
+            perCall ? t('/次') : t('/1k')
+          }</span>`
+        : ''
       const modeCell = `
         <div class="seg-mini">
           <button class="${mode === 'ratio' ? 'is-on' : ''}" data-act="offer-mode" data-mode="ratio" title="按分组倍率折算">倍率</button>
