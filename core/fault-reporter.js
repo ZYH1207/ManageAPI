@@ -2,7 +2,7 @@
  * 故障上报：把「用户真的受了影响」的故障推给自动路由，让它做故障转移。
  *
  * 对接的是自动路由那一侧的接口（见 core/failover.js 的注释）：
- *   POST {url}                      默认 http://127.0.0.1:4319/api/failover/report
+ *   POST {url}                      默认 http://127.0.0.1:<本进程端口>/api/failover/report
  *   Authorization: Bearer <token>   令牌在自动路由侧的 settings.failoverToken
  *   body: { offerId?, modelKey?, kind, message, holdMinutes }
  *
@@ -24,12 +24,36 @@ export const MAX_FAULT_EVENTS = 300
 /** 单次上报超时：宁可放弃上报也不能挂着 */
 const REPORT_TIMEOUT_MS = 5000
 
+/**
+ * 老版本写死的默认地址。
+ *
+ * 以前 defaultFaultReport().url 就是这一串，所有实例（含 4500 上的验收副本）
+ * 都往 4319 发。副本的 failoverToken 又是从真实库复制的，令牌对得上，于是
+ * 诊断上报直接写进了真实实例的故障账——一个任务在预览里点两下，真实路由换人。
+ * 现在这个值只用于兼容识别：读到它一律当「没配过」，按本进程实际端口解析。
+ */
+export const LEGACY_DEFAULT_URL = 'http://127.0.0.1:4319/api/failover/report'
+
+/** 本进程实际监听端口：由 daemon 启动时注入（端口可能因占用顺延） */
+let reportPort = Number(process.env.MANAGE_API_PORT) || 4319
+
+/** daemon 启动拿到真实端口后调用（幂等） */
+export function setReportPort(port) {
+  const n = Number(port)
+  if (Number.isInteger(n) && n > 0) reportPort = n
+}
+
+/** 默认上报地址：跟着本进程端口走，预览 / 隔离实例不会打到别人家里 */
+export function defaultReportUrl() {
+  return `http://127.0.0.1:${reportPort}/api/failover/report`
+}
+
 /** 上报配置的缺省值（store.js 的 emptyDb 引用同一口径） */
 export function defaultFaultReport() {
   return {
     enabled: true,
-    // 同机默认指向自动路由所在的 daemon；分开部署时改成对应地址
-    url: 'http://127.0.0.1:4319/api/failover/report',
+    // 空 = 自动指向本进程端口（见 defaultReportUrl）；分开部署时再手填
+    url: '',
     token: '',
     // 留空 = 用本机 db 自己的 failoverToken（同库同令牌时最省事）
     useOwnToken: true,
@@ -37,14 +61,21 @@ export function defaultFaultReport() {
 }
 
 export function normalizeFaultReport(value) {
-  const base = defaultFaultReport()
   const raw = value && typeof value === 'object' ? value : {}
+  const url = typeof raw.url === 'string' ? raw.url.trim() : ''
   return {
     enabled: raw.enabled !== false,
-    url: typeof raw.url === 'string' && raw.url ? raw.url : base.url,
+    // 空 / 老默认值 = 没显式配过 → 交给运行时按端口解析
+    url: url && url !== LEGACY_DEFAULT_URL ? url : '',
     token: typeof raw.token === 'string' ? raw.token : '',
     useOwnToken: raw.useOwnToken !== false,
   }
+}
+
+/** 实际要打向哪里（界面展示与真正发送共用这一份口径） */
+export function resolveReportUrl(db) {
+  const cfg = normalizeFaultReport(db?.settings?.faultReport)
+  return cfg.url || defaultReportUrl()
 }
 
 /** 事件账缺省形状 */
@@ -135,11 +166,12 @@ export async function postFaultReport({ offerId = null, modelKey = null, kind = 
   const token = resolveToken(db)
   if (!token) return { ok: false, skipped: '没有可用令牌（自动路由的 failoverToken 尚未生成）' }
   if (!offerId && !modelKey) return { ok: false, skipped: '没有上报目标' }
+  const target = cfg.url || defaultReportUrl()
 
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), REPORT_TIMEOUT_MS)
   try {
-    const res = await fetch(cfg.url, {
+    const res = await fetch(target, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
       body: JSON.stringify({ offerId: offerId || undefined, modelKey: modelKey || undefined, kind, message, holdMinutes }),

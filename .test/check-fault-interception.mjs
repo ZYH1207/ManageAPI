@@ -19,9 +19,12 @@ import { createServer } from 'node:net'
 import http from 'node:http'
 import { mkdtemp, readFile, writeFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, dirname } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
-const ROOT = 'D:/micro/ManageAPI/.wt/diagnosis'
+// 仓库根目录跟着这个测试文件走：之前写死 .wt/diagnosis，那个工作树被清理后
+// 这里就连启动都起不来（cwd 不存在），红得毫无信息量
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 let n = 0
 const ok = (cond, label) => {
   if (!cond) throw new Error(`✗ ${label}`)

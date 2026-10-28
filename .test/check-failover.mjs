@@ -76,6 +76,22 @@ console.log('[3] 匹配：offerId 精确；modelKey 命中同款全部供给')
   ok(match({ id: 'o-anything', modelKey: 'm-broken' }) === true, '模型级：同款全部命中')
 }
 
+console.log('[3b] 同时给 offerId + modelKey：供给级优先，不连坐同型号别家')
+{
+  const entry = { reports: [] }
+  // 现场就是这条：诊断上报总是两个都给，以前会让一条供给的故障命中同型号全部供给
+  addFaultReport(entry, { offerId: 'o-empty', modelKey: 'm-shared' })
+  ok(entry.reports[0].offerId === 'o-empty', 'offerId 保留')
+  ok(entry.reports[0].modelKey === null, 'modelKey 被丢弃（供给级）')
+  const match = faultMatcher(entry)
+  ok(match({ id: 'o-empty', modelKey: 'm-shared' }) === true, '出问题的那条命中')
+  ok(match({ id: 'o-healthy', modelKey: 'm-shared' }) === false, '同型号的健康供给不被拉黑（还能同级换站）')
+
+  const modelLevel = { reports: [] }
+  addFaultReport(modelLevel, { modelKey: 'm-shared' })
+  ok(faultMatcher(modelLevel)({ id: 'o-healthy', modelKey: 'm-shared' }) === true, '只给 modelKey 时仍是模型级')
+}
+
 // ------------------------------------------------------------ 路由与自动路由
 const provider = (id, name) => ({ id, name })
 const credential = (id, providerId) => ({ id, providerId, group: '', tail: '0000' })

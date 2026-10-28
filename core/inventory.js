@@ -1461,7 +1461,8 @@ export async function recordRoutingBatch(entries = []) {
     if (!Array.isArray(db.routing)) db.routing = []
     if (!db.errorbook || typeof db.errorbook !== 'object') db.errorbook = {}
     if (!db.offerStats || typeof db.offerStats !== 'object') db.offerStats = {}
-    const records = entries.map((entry) => ({ id: newId('g'), ts: nowIso(), ...entry }))
+    // 入队时已经盖过请求完成时刻，落盘只补没盖过的时间（老调用方）
+    const records = entries.map((entry) => ({ id: newId('g'), ...entry, ts: entry.ts || nowIso() }))
     db.routing.push(...records)
     if (db.routing.length > 500) db.routing = db.routing.slice(-500)
 

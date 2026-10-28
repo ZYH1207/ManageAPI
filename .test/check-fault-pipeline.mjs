@@ -26,7 +26,8 @@ import {
 } from '../core/fault-reporter.js'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, dirname } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { spawn } from 'node:child_process'
 
 let n = 0
@@ -130,7 +131,7 @@ const eq = (a, b, label) => {
   // 用临时数据目录，不碰真实库
   const home = await mkdtemp(join(tmpdir(), 'mapi-fault-'))
   const daemon = spawn(process.execPath, ['daemon/index.js', '--port', '4594'], {
-    cwd: 'D:/micro/ManageAPI/.wt/diagnosis',
+    cwd: join(dirname(fileURLToPath(import.meta.url)), '..'),
     env: { ...process.env, MANAGE_API_HOME: home },
     stdio: 'ignore',
   })

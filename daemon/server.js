@@ -3088,7 +3088,11 @@ route('GET', /^\/api\/faults$/, async (ctx) => {
     subscribers: faultSubscriberCount(),
     history: (db.faultSignals || []).slice(-50).reverse(),
     // ---- 上报通道（自动路由的故障转移）
-    config: faultReporter.normalizeFaultReport(db.settings?.faultReport),
+    // url 回解析后的实际地址：空表示「跟着本进程端口走」，界面要能看见它到底打哪
+    config: {
+      ...faultReporter.normalizeFaultReport(db.settings?.faultReport),
+      url: faultReporter.resolveReportUrl(db),
+    },
     // 令牌只回是否就绪，不回明文（这个页面不需要看令牌）
     tokenReady: Boolean(faultReporter.resolveToken(db)),
     autoRouteTokenPresent:
@@ -3251,7 +3255,9 @@ function flushRouting() {
 }
 
 function queueRouting(entry) {
-  routingBuffer.push(entry)
+  // 时间戳在入队时定，不在落盘时定：一批 flush 的多条请求本来不同时刻完成，
+  // 用 flush 时间会让它们看起来完全同时发生（排查时误判成并发）
+  routingBuffer.push({ ...entry, ts: entry.ts || new Date().toISOString() })
   if (routingBuffer.length >= 200) flushRouting() // 上游一直失败时别把内存堆爆
   if (!routingTimer) routingTimer = setTimeout(flushRouting, 2000)
 }
@@ -3887,7 +3893,11 @@ async function forwardToUpstream({
           usage: outcome.usage,
         })
       }
-      return outcome
+      // 已经 writeHead + end 了，这一单就算交付给客户端了。
+      // 不标 committed 的话外层会把「成功」当失败、继续推进下一个候选，
+      // 第二个候选写头时抛 Cannot write headers，客户端却早就拿到了正文——
+      // 结果就是路由日志记整单失败、供给被记假失败、还白打一整条候选链。
+      return { ...outcome, needsWrite: false, committed: true }
     }
 
     // 这次到底有没有真的吐出东西（正文 / 工具调用）。只有「什么都没吐」才允许补问：
@@ -4615,6 +4625,9 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
   queueRouting({
     model,
     pool,
+    // 整单失败也要记「被自动路由改派过」：否则排查时分不清客户端真的点名了这个模型，
+    // 还是冠军被带崩后连带全灭
+    autoRoute: autoRoutePick ? { reason: autoRoutePick.reason } : null,
     keyId: keyRecord?.id ?? null,
     keyName: keyRecord?.name ?? null,
     chosenOfferId: null,

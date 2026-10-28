@@ -57,16 +57,22 @@ export function ensureFailoverToken() {
 /**
  * 落一条故障上报（mutate 回调里用）。
  *
+ * offerId 与 modelKey 二选一：**给了 offerId 就是供给级**，modelKey 不再落盘。
+ * 只用 modelKey 才是模型级（「这个型号本身坏了，哪家接都一样」）。
+ * 为什么要强制：以前两个都存，于是一条供给的故障会命中同型号所有供给，
+ * 别家明明健康也被一起拉黑——同级换站能力白丢，自动路由被迫跳去另一个模型。
+ *
  * @returns {object} 落盘后的记录（含 id / until），调用方据此触发重选
  */
 export function addFaultReport(failover, { offerId, modelKey, kind = 'runtime', message = '', holdMs = FAULT_HOLD_MS } = {}) {
   const raw = normalizeFailover(failover)
   const hold = Number.isFinite(Number(holdMs)) ? Math.min(Math.max(Number(holdMs), 60_000), 24 * 60 * 60_000) : FAULT_HOLD_MS
+  const offer = typeof offerId === 'string' && offerId ? offerId : null
   const record = {
     id: `f_${randomUUID().replace(/-/g, '').slice(0, 16)}`,
-    // 供给级 / 模型级二选一或同时：offerId 精确到一条供给，modelKey 命中全部同款
-    offerId: typeof offerId === 'string' && offerId ? offerId : null,
-    modelKey: typeof modelKey === 'string' && modelKey ? modelKey : null,
+    // 供给级 / 模型级二选一：定位越精确越优先，宁可少拉黑不可多拉黑
+    offerId: offer,
+    modelKey: offer ? null : typeof modelKey === 'string' && modelKey ? modelKey : null,
     kind: String(kind || 'runtime'),
     message: String(message || ''),
     source: 'external-monitor',

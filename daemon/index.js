@@ -15,6 +15,7 @@ import { runProbes } from './probe-runner.js'
 import { collectProviderSnapshots } from './monitor-runner.js'
 import { runDetourRechecks } from './detour-runner.js'
 import { spawn } from 'node:child_process'
+import { setReportPort } from '../core/fault-reporter.js'
 import { mkdir } from 'node:fs/promises'
 import { existsSync, statSync } from 'node:fs'
 import { join } from 'node:path'
@@ -129,6 +130,9 @@ async function listen(port, attemptsLeft = 10) {
 }
 
 const { server, port } = await listen(preferredPort)
+// 故障上报默认打自己：端口可能因占用顺延，必须在 listen 之后注入实际值，
+// 不能写死 4319（否则预览实例的诊断会写进真实实例的库）
+setReportPort(port)
 const url = `http://${HOST}:${port}/`
 
 try {
