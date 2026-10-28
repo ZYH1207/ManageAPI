@@ -811,7 +811,7 @@ Object.assign(EN, {
   '已恢复：可疑供给不再登场': 'Restored: suspicious supplies are no longer routed',
 })
 
-// 决策侧重（性价比 / 价格 / 首字速度）
+// 决策侧重（性价比 / 价格 / 首字速度 / 价速比）
 Object.assign(EN, {
   '决策侧重': 'Decision basis',
   '只改「谁排前面」，不放开准入': 'Changes ranking only, never admission',
@@ -820,6 +820,36 @@ Object.assign(EN, {
   '价格 ÷ 质量': 'price ÷ quality',
   '名义单价': 'list price',
   '首字延迟': 'first-token latency',
+  '价速比': 'Price-pace',
+  '价格 ÷ 首字延迟': 'price ÷ TTFT',
+  '按「每毫秒首字等待花多少钱」排序：价格和速度合成一个比值，贵的、慢的一起现形，综合最优的排第一。':
+    'Ranks by price per millisecond of first-token wait: cost and latency collapse into one number, so the slow and the pricey both show up — the best combined pick lands first.',
+  '/s 首字': '/s TTFT',
+  '自动路由': 'Auto routing',
+  '一键接管': 'Take over',
+  '权限在决策侧重之上：接管后客户端要什么模型都无所谓': 'Sits above the decision basis: once taken over, whatever model the client asks for is irrelevant',
+  '自动路由功能介绍': 'About auto routing',
+  '自动路由正在把全部请求派给这个模型（当前档位下全场最优）':
+    'Auto routing is dispatching all requests to this model (best across the pool under the current basis)',
+  '故障转移': 'Failover',
+  '外部监控上报了真实故障（探针没测到也以监控为准），已故障转移；保持期过后若仍是全场第一会自动提回':
+    'The external monitor reported a real failure (monitor wins even if probes saw nothing); traffic was failed over. It re-enters automatically after the hold expires if still ranked first.',
+  '接管后，不管客户端请求哪个模型、怎么切模型，网关都只派给当前决策档位下全场最优的那一个模型——不分站点、不分分组、不分来自哪个站。若新模型只比现役好一点点（不到 15%），不切换：反复横跳对用户的干扰比那点收益大，只有明显更优或现役下线才换。免费入口不受影响。':
+    'Once taken over, whichever model the client asks for — and however it switches — the gateway dispatches only to the single best model under the current decision basis, regardless of site, group or origin. A new champion only marginally better than the incumbent (under 15%) is ignored: flapping disturbs users more than the tiny gain, so it switches only on a clear win or when the incumbent goes offline. Free-pool entries are unaffected.',
+  '开启后网关无视客户端请求的模型名，始终把请求派给当前决策档位下全场最优的模型。免费入口不受影响。':
+    'When on, the gateway ignores the requested model name and always dispatches to the best model across the whole pool under the current decision basis. Free-pool entries are unaffected.',
+  '开启后，不管客户端请求哪个模型、怎么切模型，网关都只派给当前决策档位下全场最优的那一个模型——不分站点、不分分组、不分来自哪个站。若新模型只比现役好一点点（不到 15%），不切换：反复横跳对用户的干扰比那点收益大，只有明显更优或现役下线才换。':
+    'Once on, whichever model the client asks for — and however it switches — the gateway dispatches only to the single best model under the current decision basis, regardless of site, group or origin. A new champion only marginally better than the incumbent (under 15%) is ignored: flapping disturbs users more than the tiny gain, so it switches only on a clear win or when the incumbent goes offline.',
+  '正在使用': 'Now using ',
+  '自动路由已接管：不管客户端要什么模型，都只派当前档位下全场最优的那个':
+    'Auto routing took over: whatever model the client asks for, only the best one under the current basis is dispatched',
+  '自动路由已关闭：网关恢复按客户端请求的模型派活':
+    'Auto routing off: the gateway dispatches by the requested model again',
+  '；自动路由接管中，已按新档位重选最优模型':
+    '; auto routing is active and re-picked the best model under the new basis',
+  '这一单是被自动路由改派的，不是客户端真的点名了这个模型':
+    'This request was re-routed by auto routing — the client did not actually name this model',
+  '接管': 'auto',
   '决策侧重已切到「{mode}」，下面的排序和网关选站都跟着变了':
     'Decision basis switched to "{mode}" — both the ranking below and gateway site selection follow it',
   // 看板顶部结论句：用哪个站、按哪档算的、那个档的关键数字

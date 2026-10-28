@@ -11,6 +11,7 @@ import { acquireInstanceLock } from './instance-lock.js'
 import { backupKeep, backupNow, backupRoot, startBackupScheduler } from '../core/backup.js'
 import { startProbeScheduler } from './scheduler.js'
 import { runProbes } from './probe-runner.js'
+import { ensureFailoverToken } from '../core/failover.js'
 import { collectProviderSnapshots } from './monitor-runner.js'
 import { spawn } from 'node:child_process'
 import { mkdir } from 'node:fs/promises'
@@ -96,6 +97,9 @@ try {
 }
 
 const gateway = await ensureGatewayKeys()
+// 故障转移上报令牌：给外部监控系统用的身份凭证，启动时自动生成一次（幂等）
+const failoverToken = await ensureFailoverToken()
+console.log(`  故障转移令牌 ${failoverToken}`)
 
 function openBrowser(url) {
   const cmd =

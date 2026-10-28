@@ -41,6 +41,22 @@ import {
   describeDecisionMode,
   normalizeDecisionMode,
 } from '../core/decision-mode.js'
+import {
+  pickAutoRoute,
+  normalizeAutoRoute,
+  applyAutoRoutePick,
+  defaultAutoRoute,
+} from '../core/auto-route.js'
+import {
+  ensureFailoverToken,
+  activeReports,
+  addFaultReport,
+  expireFaultReports,
+  clearFaultReports,
+  faultMatcher,
+  normalizeFailover,
+  FAULT_HOLD_MS,
+} from '../core/failover.js'
 import { splitOffers, isFreeOffer, resolvePool, FREE_PREFIX, FREE_BASE_PATH } from '../core/free.js'
 import { rankFreePool } from '../core/rank-free.js'
 import * as platforms from '../core/platforms/index.js'
@@ -350,6 +366,8 @@ async function buildState({ light = false } = {}) {
   }))
 
   // 决策预览：每个模型当前的候选排序，供「智能决策」页展示
+  // 外部监控上报的真实故障（故障转移）：降级不拉黑，准入、排序、快照共用一个判定
+  const isFaulted = faultMatcher(db.failover)
   const decisions = rankedWithCache.map((group) => {
     const order = db.manualOrder?.[group.modelKey] || null
     const candidates = selectCandidates({
@@ -361,11 +379,13 @@ async function buildState({ light = false } = {}) {
       settings: db.settings,
       model: group.modelKey,
       order,
+      isFaulted,
     })
     const rankedCandidates = explain(candidates)
-    // 「当前选」= 第一张真能登场的牌。这里必须用准入而不是 routable：
-    // 评分过期的 routable 为 false，但它确实会被派活（见 admissionOf）
-    const winner = rankedCandidates.find((c) => c.admission?.ok) || null
+    // 「当前选」= 第一张真能登场、又没被故障上报摘掉的牌。这里必须用准入而不是
+    // routable：评分过期的 routable 为 false，但它确实会被派活（见 admissionOf）。
+    // 故障转移的牌排在同类最后（selectCandidates 降级），自然不会被当成「当前选」
+    const winner = rankedCandidates.find((c) => c.admission?.ok && !c.faulted) || null
     return {
       modelKey: group.modelKey,
       candidates: rankedCandidates,
@@ -398,10 +418,25 @@ async function buildState({ light = false } = {}) {
     // 首字门槛的 20 档 + 速度等级：前端直接照着渲染，不在浏览器里另算一份
     ttftTiers: ttftTierTable(),
     ttftLimitText: describeTtftLimit(db.settings.maxTtftMs),
-    // 决策侧重：三档的标签 / 说明由服务端下发，前端只负责画和发 PATCH
+    // 决策侧重：四档的标签 / 说明由服务端下发，前端只负责画和发 PATCH
     decisionMode: normalizeDecisionMode(db.settings.decisionMode),
     decisionModes: decisionModeTable(),
     decisionModeText: describeDecisionMode(db.settings.decisionMode),
+    // 自动路由（一键接管）：决策页的开关与「正在使用」照这份显示。
+    // modelKey 之后的找补（哪个站、哪个分组、供给还活着吗）前端从
+    // decisions 里按 modelKey 自己查，服务端不重复算一遍
+    autoRoute: normalizeAutoRoute(db.settings.autoRoute),
+    // 故障转移：上报令牌（给外部监控系统的接入配置）+ 活跃上报清单。
+    // 读状态时顺手把到期记录标记成 expired（幂等，纯内存判断 + 有变化才写）
+    failover: (() => {
+      expireFaultReports(db.failover)
+      return {
+        token: db.settings.failoverToken,
+        holdMs: FAULT_HOLD_MS,
+        active: activeReports(db.failover),
+        reports: (db.failover?.reports || []).slice(-20).reverse(),
+      }
+    })(),
     // 看板结论句的档位：与 decisionMode 分开存，概览页自己那条三档条改的就是它
     headlineMode: normalizeDecisionMode(db.settings.headlineMode),
     headlineModeText: describeDecisionMode(db.settings.headlineMode),
@@ -533,7 +568,7 @@ route('GET', /^\/api\/health$/, async () => ({ ok: true, at: new Date().toISOStr
 route('GET', /^\/api\/state$/, async (ctx) => buildState({ light: ctx.query.get('light') === '1' }))
 
 route('PATCH', /^\/api\/settings$/, async (ctx) => {
-  await store.mutate((db) => {
+  await store.mutate(async (db) => {
     const { fxUsdCny, blendInputWeight } = ctx.body
     if (fxUsdCny !== undefined) {
       const v = Number(fxUsdCny)
@@ -621,6 +656,26 @@ route('PATCH', /^\/api\/settings$/, async (ctx) => {
         throw new HttpError(400, `${label}只能是 ${DECISION_MODES.map((mode) => mode.key).join(' / ')}`)
       }
       db.settings[key] = v
+      // 自动路由接管中用户切了决策档位：这是显式的意图变更，立刻按新档位
+      // 强制重选一次（不受 15% 迟滞约束），否则开关还开着、「正在使用」
+      // 却还是旧档位的最优——口径漂了，接管就名存实亡
+      if (key === 'decisionMode' && normalizeAutoRoute(db.settings.autoRoute).enabled) {
+        const pick = pickAutoRoute(db, { scores: scoresFor(db), benchmarks: await bench.readBenchmarks(), force: true })
+        if (pick) applyAutoRoutePick(db.settings, pick)
+      }
+    }
+    // 自动路由开关：开启时立刻全场挑选一次并落盘，决策页不用等第一个
+    // 请求才有「正在使用」可显示；关闭时清掉挑选记录——模型名只是接管
+    // 期间的临时状态，关了还留着会让人误以为它仍在生效
+    if (ctx.body.autoRouteEnabled !== undefined) {
+      db.settings.autoRoute = normalizeAutoRoute(db.settings.autoRoute)
+      db.settings.autoRoute.enabled = Boolean(ctx.body.autoRouteEnabled)
+      if (db.settings.autoRoute.enabled) {
+        const pick = pickAutoRoute(db, { scores: scoresFor(db), benchmarks: await bench.readBenchmarks(), force: true })
+        if (pick) applyAutoRoutePick(db.settings, pick)
+      } else {
+        db.settings.autoRoute = { ...defaultAutoRoute(), enabled: false }
+      }
     }
     if (ctx.body.focusModel !== undefined) {
       // 看板结论句里选中的模型：空 / null = 交回自动（按用量 > 手动排序 > 探过 挑）
@@ -2455,6 +2510,112 @@ route('POST', /^\/api\/gateway\/keys\/([\w-]+)\/rotate$/, async (ctx) => {
   return buildState()
 })
 
+// ---------------------------------------------------------------- 故障转移接口
+// 给未来的故障监控系统接：真实运行中探测到影响服务的故障 / 异常，就推一条过来。
+// 证据等级高于探针（探针是抽样体检，运行现场才是真病），上报即故障转移。
+
+/**
+ * 故障上报（外部监控系统 → 本网关）。
+ *
+ *   Authorization: Bearer <failoverToken>（settings.failoverToken，daemon 启动时
+ *   自动生成，UI 可查；监控系统接入时配一次即可）
+ *
+ * body：
+ *   offerId    供给级上报：某个站的某条供给出了问题（推荐，最精确）
+ *   modelKey   模型级上报：这个模型本身坏了（哪家接都一样），命中全部同款供给。
+ *              两者都给也行；都不给 = 不知道坏的是谁，拒收（400）
+ *   kind       故障类型（自由文本，如 timeout / 5xx / empty-response）
+ *   message    人话描述，决策页的故障转移徽标悬浮时看
+ *   holdMinutes 保持期（分钟，可选）：期内剔除，到期自动恢复参选。缺省 10 分钟，
+ *              上限 24 小时——监控系统有自己的重试节奏时按它的填
+ *
+ * 返回落盘后的记录；同时若自动路由开着，会立刻按新口径重选一次（含落盘）。
+ */
+route('POST', /^\/api\/failover\/report$/, async (ctx) => {
+  // 令牌只认 Authorization 头：URL 带 token 会被访问日志 / 浏览器历史留下来
+  const auth = String(ctx.req.headers.authorization || '')
+  const token = auth.startsWith('Bearer ') ? auth.slice(7).trim() : ''
+  const expected = (await store.readDb()).settings.failoverToken
+  if (!expected || token !== expected) {
+    throw new HttpError(401, '故障上报令牌无效：Authorization: Bearer <failoverToken>，令牌见智能决策页')
+  }
+  const { offerId, modelKey, kind, message, holdMinutes } = ctx.body || {}
+  if (!offerId && !modelKey) {
+    throw new HttpError(400, '故障上报必须带 offerId（供给级）或 modelKey（模型级）至少一个')
+  }
+  const holdMs = holdMinutes !== undefined ? Number(holdMinutes) * 60_000 : FAULT_HOLD_MS
+  const record = await store.mutate((db) => {
+    // 核对目标真实存在：监控打错名字时不报错不落库，返回 404 让它修配置
+    const offers = inv.routeableOffers(db)
+    if (offerId && !offers.some((o) => o.id === offerId)) {
+      throw new HttpError(404, `offerId 不存在或不在役：${offerId}`)
+    }
+    if (modelKey && !offers.some((o) => o.modelKey === modelKey)) {
+      throw new HttpError(404, `modelKey 不存在或不在役：${modelKey}`)
+    }
+    const entry = normalizeFailover(db.failover)
+    const saved = addFaultReport(entry, { offerId, modelKey, kind, message, holdMs })
+    db.failover = entry
+    return saved
+  })
+  // 上报即重选：不用等下一个请求才发现现役病了（重选含落盘）
+  const pick = await repickAfterFailoverChange()
+  return { ok: true, report: record, repick: pick }
+})
+
+/** 故障上报 / 解除后立刻重选一次自动路由（接管中才有效；失败不影响上报本身） */
+async function repickAfterFailoverChange() {
+  const db = await store.readDb()
+  if (!normalizeAutoRoute(db.settings.autoRoute).enabled) return null
+  try {
+    const scores = scoresFor(db)
+    const benchmarks = await bench.readBenchmarks()
+    const pick = pickAutoRoute(db, { scores, benchmarks })
+    if (pick?.switched) {
+      await store.mutate((latest) => {
+        applyAutoRoutePick(latest.settings, pick)
+      })
+    }
+    return pick
+  } catch (error) {
+    console.error('[failover] 上报后重选失败:', error.message)
+    return null
+  }
+}
+
+/** 活跃 + 最近上报清单（监控系统对账用） */
+route('GET', /^\/api\/failover\/reports$/, async () => {
+  const db = await store.readDb()
+  expireFaultReports(db.failover)
+  return {
+    token: db.settings.failoverToken,
+    holdMs: FAULT_HOLD_MS,
+    active: activeReports(db.failover),
+    reports: (db.failover?.reports || []).slice(-50).reverse(),
+  }
+})
+
+/** 人工解除：监控系统确认修好了（或误报），不必等保持期走完。body 带 id / offerId / modelKey 任一 */
+route('POST', /^\/api\/failover\/clear$/, async (ctx) => {
+  const auth = String(ctx.req.headers.authorization || '')
+  const token = auth.startsWith('Bearer ') ? auth.slice(7).trim() : ''
+  const expected = (await store.readDb()).settings.failoverToken
+  if (!expected || token !== expected) {
+    throw new HttpError(401, '故障上报令牌无效：Authorization: Bearer <failoverToken>，令牌见智能决策页')
+  }
+  const { id, offerId, modelKey } = ctx.body || {}
+  if (!id && !offerId && !modelKey) {
+    throw new HttpError(400, '解除必须带 id / offerId / modelKey 至少一个')
+  }
+  await store.mutate((db) => {
+    const entry = normalizeFailover(db.failover)
+    clearFaultReports(entry, { id, offerId, modelKey })
+    db.failover = entry
+  })
+  const pick = await repickAfterFailoverChange()
+  return { ok: true, repick: pick }
+})
+
 route('GET', /^\/api\/usage$/, async (ctx) => {
   const days = Math.min(Math.max(Number(ctx.query.get('days')) || 30, 1), 365)
   return { usage: await usageSummary({ days }) }
@@ -2937,7 +3098,6 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
   // 两条路都能进免费池：入口路径（/free/v1）或模型名带 free/ 前缀。
   // 前缀必须在这里判——body 是在这个函数里才读出来的，调用方看不到 model。
   const parsed = resolvePool({ pathname: '', model: rawModel })
-  const model = parsed.model
   const isFree = isFreeEntry || parsed.isFree
 
   // 月度 token 上限（可选，Key 上配置）。「本月」按用户本地时区归属——
@@ -2961,7 +3121,33 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
   // 默认两边互不回落（免费用不了就明确报错，别偷偷扣钱），
   // 只有 settings.allowPaidFallback 显式打开时才允许「免费不够用 → 付费顶上」。
   const split = splitOffers(inv.routeableOffers(db), benchmarks)
+
+  // 自动路由接管：开关开着且不是免费入口时，无视客户端要的模型，
+  // 改派当前决策档位下全场最优的那个（口径与迟滞规则见 core/auto-route.js）。
+  // 免费入口不接管：把免费请求偷偷改派到付费模型等于静默扣钱。
+  // 全场连一个能登场的模型都没有时不动（pick 为 null），按原模型走正常报错，
+  // admissionFailure 的人话文案比这里现编的准。
+  let autoRoutePick = null
+  let model = parsed.model
+  if (!isFree && normalizeAutoRoute(db.settings.autoRoute).enabled) {
+    autoRoutePick = pickAutoRoute(db, { scores, benchmarks })
+    if (autoRoutePick) {
+      model = autoRoutePick.modelKey
+      // 换了模型才落盘：热路径拿到的是共享缓存对象，不能写；
+      // mutate 失败只影响「正在使用」的显示，不能拦住这一单，所以只记日志
+      if (autoRoutePick.switched) {
+        store
+          .mutate((latest) => {
+            applyAutoRoutePick(latest.settings, autoRoutePick)
+          })
+          .catch((error) => console.error('[auto-route] 落盘失败:', error.message))
+      }
+    }
+  }
+
   const manualOrder = db.manualOrder?.[inv.normalizeModelKey(model)] || null
+  // 外部监控上报的真实故障：降级不拉黑（探针准入不受影响），但自动路由不把它当最优
+  const isFaulted = faultMatcher(db.failover)
   const pick = (offers) =>
     selectCandidates({
       offers,
@@ -2972,6 +3158,7 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
       settings: db.settings,
       model,
       order: manualOrder,
+      isFaulted,
     })
 
   // 免费池先过闸门（额度 / 指纹 / 截断 / 过期），过了才交给路由排序。
@@ -3085,6 +3272,9 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
         queueRouting({
           model,
           pool,
+          // 接管标记：路由日志里能看出这一单是被自动路由改派的，
+          // 而不是客户端真的点名了这个模型
+          autoRoute: autoRoutePick ? { reason: autoRoutePick.reason } : null,
           keyId: keyRecord?.id ?? null,
           keyName: keyRecord?.name ?? null,
           chosenOfferId: candidate.offer.id,

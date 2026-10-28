@@ -1085,6 +1085,36 @@ main { flex: 1; min-width: 0; display: flex; flex-direction: column; overflow: h
 .mode-seg.active .mode-seg-hint { color: var(--muted); }
 .mode-seg.active::before,
 .mode-seg.active + .mode-seg::before { display: none; }
+/* 自动路由接管时，档位条下方的「正在使用」一行 */
+.mode-now { font-size: 11px; color: var(--muted); }
+.mode-now .mono { color: var(--accent); font-weight: 600; }
+/* 慢速档位条右侧的自动路由小开关：比标准 switch-inline 紧凑一点，不抢刻度条的视觉。
+   右对齐由前面的 flex:1 空档负责，开关自身不再加 margin —— 位置不随胶囊伸缩 */
+.auto-route-inline { flex: none; }
+.auto-route-inline .switch-text b { font-size: 12px; }
+/* 「正在使用」胶囊：出现在开关右侧（行尾），窄窗口下自己收缩省略，不挤开关 */
+.route-now {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 3px 10px; border-radius: 999px;
+  background: var(--accent-soft); color: var(--muted);
+  font-size: 11px; white-space: nowrap;
+  flex: 0 1 auto; min-width: 0; max-width: 320px; overflow: hidden;
+}
+.route-now .mono { color: var(--accent); font-weight: 600; font-size: 11px; }
+.route-now-where { color: var(--faint); overflow: hidden; text-overflow: ellipsis; }
+/* 故障转移徽标：实心红底，和探针的黄/灰状态徽标（.badge.danger 是软底色）拉开差距——
+   这是「运行现场发病了」，不是「体检指标可疑」 */
+.badge.failover-badge { background: var(--danger); border-color: var(--danger); color: #fff; }
+.badge.failover-badge:hover { background: var(--danger-strong); }
+/* 问号小圆圈：悬浮 / 聚焦显示 title 里的功能介绍 */
+.help-dot {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 15px; height: 15px; border-radius: 50%; flex: none;
+  border: 1px solid var(--border-strong); color: var(--faint);
+  font-size: 10px; font-weight: 600; line-height: 1;
+  cursor: help; user-select: none;
+}
+.help-dot:hover { color: var(--muted); border-color: var(--muted); }
 
 /* 当前排序依据的那一列：淡淡地标出来，一眼看得出「为什么是这个顺序」 */
 td.sort-by, th.sort-by { color: var(--accent); font-weight: 500; }

@@ -1,8 +1,8 @@
 /**
- * 决策侧重（性价比 / 价格 / 首字速度）自检（纯函数，不联网）：
+ * 决策侧重（性价比 / 价格 / 首字速度 / 价速比）自检（纯函数，不联网）：
  *   1. 档位归一化：合法值原样返回，非法/空回落默认（性价比）
- *   2. 三档各自按什么排序：有效成本 / 名义单价 / 首字延迟
- *   3. 三档都只改排序，不改准入：不可登场的永远排在后面，哪怕它最快/最便宜
+ *   2. 四档各自按什么排序：有效成本 / 名义单价 / 首字延迟 / 价速比
+ *   3. 四档都只改排序，不改准入：不可登场的永远排在后面，哪怕它最快/最便宜
  *   4. 缺数据（没探过 = 首字 null）不冒充「最快」，排到最后
  *   5. 手动顺序仍然优先（用户显式指定优先于任何自动口径）
  *   6. 看板顶部那句有**自己的档位**（headlineMode），与路由档位互不干扰
@@ -19,6 +19,7 @@ import {
   decisionModeTable,
   describeDecisionMode,
   normalizeDecisionMode,
+  tierMetricOf,
 } from '../core/decision-mode.js'
 import { selectCandidates } from '../core/router.js'
 import { decisionChampion, decisionHeadline } from '../core/pricing.js'
@@ -35,15 +36,15 @@ const ok = (cond, msg) => {
 console.log('[1] 档位归一化：非法值不静默变成别的口径')
 {
   ok(DEFAULT_DECISION_MODE === 'value', `默认档 ${DEFAULT_DECISION_MODE}`)
-  ok(DECISION_MODES.length === 3, `三档：${DECISION_MODES.map((m) => m.key).join(' / ')}`)
-  for (const key of ['value', 'price', 'speed']) {
+  ok(DECISION_MODES.length === 4, `四档：${DECISION_MODES.map((m) => m.key).join(' / ')}`)
+  for (const key of ['value', 'price', 'speed', 'priceSpeed']) {
     ok(normalizeDecisionMode(key) === key, `合法值 ${key} 原样返回`)
   }
   for (const bad of ['', null, undefined, 'cheap', 'SPEED', 42, {}]) {
     ok(normalizeDecisionMode(bad) === 'value', `非法值 ${JSON.stringify(bad)} → 默认`)
   }
   ok(decisionModeOf('speed').label === '首字速度', `档位定义带标签：${decisionModeOf('speed').label}`)
-  ok(decisionModeTable().length === 3, '给前端的三档表')
+  ok(decisionModeTable().length === 4, '给前端的四档表')
   ok(describeDecisionMode('price').includes('价格'), `一句话描述：${describeDecisionMode('price')}`)
 }
 
@@ -138,6 +139,37 @@ console.log('[4] 首字速度档：完全按首字延迟')
   ok(rows.at(-1).offer.id === 'd', 'd 首字最快（100ms）但不可用，仍然排最后')
 }
 
+console.log('[4b] 价速比档：价格 ÷ 首字延迟，贵的慢的一起现形')
+{
+  // a：1 元 / 3000ms → 0.333；b：1.1 元 / 3000ms → 0.367；c：9 元 / 700ms → 12.9
+  // c 虽然最快，但每毫秒等待贵得多 → 价速比档下退居末位
+  const rows = run(spec, { decisionMode: 'priceSpeed' })
+  ok(ids(rows) === 'a > b > c > d', `顺序 ${ids(rows)}`)
+  ok(rows[0].offer.id === 'a', '综合最优的 a 排第一：又便宜、首字也不慢')
+  ok(rows.at(-1).offer.id === 'd', 'd 仍不登场：价速比档也不放开准入')
+
+  // 缺首字数据不冒充综合最优：Infinity 沉底，与 speed 档同一口径
+  const missing = run(
+    [
+      { id: 'known', cny: 5, score: { ttftMs: 4200 } },
+      { id: 'unknown', cny: 1, score: { ttftMs: null, samples: 0, status: 'unknown' } },
+    ],
+    { decisionMode: 'priceSpeed' },
+  )
+  ok(missing[0].offer.id === 'known', `没探过首字的沉底：${ids(missing)}`)
+
+  // tierMetricOf 与 compareByBasis 主键同源：同一个数，别两处各算一份
+  ok(
+    tierMetricOf({ priceUsd: 2, ttftMs: 1000 }, 'priceSpeed') === 0.002,
+    `价速比标量 = 价格/首字：${tierMetricOf({ priceUsd: 2, ttftMs: 1000 }, 'priceSpeed')}`,
+  )
+  ok(tierMetricOf({ priceUsd: 2, ttftMs: null }, 'priceSpeed') === Number.POSITIVE_INFINITY, '缺首字 → Infinity')
+  ok(tierMetricOf({ priceUsd: 2, ttftMs: 0 }, 'priceSpeed') === Number.POSITIVE_INFINITY, '首字 0 → Infinity（不除零）')
+  ok(tierMetricOf({ effectiveUsd: 3 }, 'value') === 3, 'value 档标量 = 有效成本')
+  ok(tierMetricOf({ priceUsd: 4 }, 'price') === 4, 'price 档标量 = 名义单价')
+  ok(tierMetricOf({ ttftMs: 900 }, 'speed') === 900, 'speed 档标量 = 首字延迟')
+}
+
 console.log('[5] 缺数据不冒充「最快」')
 {
   const rows = run(
@@ -230,7 +262,7 @@ console.log('[8] 看板顶部结论句：自己的档位，只在这批「能登
   const stale = decisionHeadline({ decisions: [d1, d2], settings: { focusModel: 'm-gone' } })
   ok(stale.modelKey === 'm-a', '点过的模型没价/消失了 → 回落自动，不报错')
 
-  for (const mode of ['value', 'price', 'speed']) {
+  for (const mode of ['value', 'price', 'speed', 'priceSpeed']) {
     const line = decisionHeadline({ decisions: [d1], settings: { headlineMode: mode } })
     ok(line.mode === mode, `档位透传：${mode}`)
   }

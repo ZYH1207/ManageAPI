@@ -200,12 +200,15 @@ export function admissionFailure(candidates, { model = '', maxTtftMs = 0 } = {})
 }
 
 /**
- * @param {{offers, providers, credentials, scores, benchmarks, settings, model, order?}} input
+ * @param {{offers, providers, credentials, scores, benchmarks, settings, model, order?, isFaulted?}} input
  *   order —— 用户手动调过的 offerId 顺序；整张表都参与（包括暂时不会登场的），
  *            但能不能真的登场仍由 admissionOf 判定——排在前面只是位置，不是通行证
+ *   isFaulted —— 可选谓词（core/failover.js#faultMatcher）：外部监控上报的真实故障。
+ *            降级不拉黑：故障转移不是准入判定，探针说健康就照样 admission.ok，
+ *            只是同类里靠后 + 自动路由不把它当「最优」；故障到期自动恢复
  * @returns {Array<{offer,provider,credential,price,quality,routable,effective,status,ttftMs}>}
  */
-export function selectCandidates({ offers, providers, credentials, scores, benchmarks, settings, model, order }) {
+export function selectCandidates({ offers, providers, credentials, scores, benchmarks, settings, model, order, isFaulted }) {
   const key = normalizeModelKey(model)
   const maxTtftMs = Number(settings?.maxTtftMs) || 0
   // 用户开关：探针说可疑的也让它正常参与排序（首字上限仍然独立生效）
@@ -296,6 +299,9 @@ export function selectCandidates({ offers, providers, credentials, scores, bench
       allowUntrusted,
       statusReason: reasons.join(' · ') || null,
       ttftMs,
+      // 外部监控上报的真实故障：只降级不拉黑（探针的准入判定不受影响），
+      // 排序时同类靠后；自动路由不把它当「最优」，到期自动恢复
+      faulted: typeof isFaulted === 'function' ? Boolean(isFaulted(offer)) : false,
     }
     row.admission = admissionOf(row)
     return row
@@ -323,6 +329,8 @@ export function selectCandidates({ offers, providers, credentials, scores, bench
       // 「能优先考虑的在前」这条只在自动排序里成立：手动顺序优先于一切（见上），
       // 否则把一条不可用的行拖到前面会自己弹回去，看起来像坏了。
       if (a.routable !== b.routable) return a.routable ? -1 : 1
+      // 外部故障上报的行同类靠后（降级不拉黑：准入仍然只看 admissionOf）
+      if (a.faulted !== b.faulted) return a.faulted ? 1 : -1
       return compareByBasis(a, b, decisionMode)
     })
 }
@@ -366,6 +374,9 @@ export function explain(candidates) {
     tags: admissionTags(c),
     probeOk: c.probeOk,
     tooSlow: Boolean(c.tooSlow),
+    // 外部监控上报的真实故障（故障转移标记，红色徽标）：
+    // 探针看着再健康，监控报了故障就是真故障——先用起来，证据细情看 failover 字段
+    faulted: Boolean(c.faulted),
     ttftMs: c.ttftMs,
     status: c.status,
     samples: c.samples,

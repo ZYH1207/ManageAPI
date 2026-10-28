@@ -69,10 +69,18 @@ export function emptyDb() {
       // 首字门槛（毫秒），0 = 不限。只会是 1000~20000 的整档：
       // 取档口径在 core/latency.js#snapTtftMs，写入侧（PATCH）负责归一
       maxTtftMs: 0,
-      // 决策侧重（智能决策页顶部三档）：value = 性价比（价格 ÷ 质量，默认）、
-      // price = 名义价格、speed = 首字速度。只改排序，不改准入，
-      // 口径见 core/decision-mode.js
+      // 决策侧重（智能决策页顶部四档）：value = 性价比（价格 ÷ 质量，默认）、
+      // price = 名义价格、speed = 首字速度、priceSpeed = 价速比（价格 ÷ 首字延迟）。
+      // 只改排序，不改准入，口径见 core/decision-mode.js
       decisionMode: 'value',
+      // 自动路由（一键接管）：开启后网关无视客户端请求的模型名，
+      // 始终派给当前决策档位下全场最优的模型（口径见 core/auto-route.js）。
+      // modelKey / offerId / pickedAt / reason 是最近一次挑选的落盘记录，
+      // 决策页「正在使用」照着显示；归一化与挑选逻辑只有 core/auto-route.js 一份
+      autoRoute: { enabled: false, modelKey: null, offerId: null, pickedAt: null, reason: null, failoverFrom: null },
+      // 故障转移上报令牌：外部监控系统拿它证明身份（POST /api/failover/report）。
+      // daemon 启动时自动生成一次（core/failover.js#ensureFailoverToken），这里只是形状占位
+      failoverToken: null,
       // 看板顶部结论句自己的档位：和 decisionMode 分开——路由按策略派活，
       // 看板只是换一个角度看同一批「能登场」的站，两边互不干扰
       headlineMode: 'value',
@@ -109,6 +117,8 @@ export function emptyDb() {
     credentials: [],
     offers: [],
     probes: [],
+    // 故障转移上报记录（外部监控系统的真实故障）：判定与接口见 core/failover.js
+    failover: { reports: [] },
     // 监控时序数据（余额快照 / 倍率变动 / 公告 / 告警）
     monitor: defaultMonitor(),
   }

@@ -28,6 +28,18 @@ let decisionOnlyAdmitted = localStorage.getItem(DECISION_ONLY_ADMITTED_KEY) === 
 // 这两个页签要看评分/候选明细，轮询时走完整 state；其它页只要轻量那份省带宽
 const HEAVY_TABS = new Set(['pricing', 'decision'])
 
+/**
+ * 价速比列：价格 ÷ 首字延迟，越小越优先（排序口径在 core/decision-mode.js#tierMetricOf，
+ * 这里只负责展示）。排序按每毫秒算，展示换算成「每等 1 秒首字花多少钱」——
+ * 每毫秒的比值太小会显示成 0.000，把同一比值 ×1000 后单调性不变、读起来像人话。
+ * 缺价或缺首字的一律 —：不知道就是不冒充，与排序口径一致。
+ */
+function priceSpeedText(candidate) {
+  const price = Number(candidate?.price)
+  const ttft = Number(candidate?.ttftMs)
+  if (!Number.isFinite(price) || !Number.isFinite(ttft) || ttft <= 0) return '—'
+  return `${priceText(price / ttft * 1000)}<div class="sub">/s 首字</div>`
+}
 // ------------------------------------------------------------------ 工具
 
 function esc(value) {
@@ -2805,6 +2817,8 @@ function renderDecision() {
           <td class="dec-grip-cell"><span class="dec-grip" title="${t('拖动调整顺序')}">${icon('grip')}</span></td>
           <td class="num" style="color:var(--faint)">${index + 1}</td>
           <td>${esc(candidate.providerName || '—')}${isChosen ? ' <span class="badge ok">当前</span>' : ''}${
+            candidate.faulted ? ` <span class="badge danger failover-badge" title="${t('外部监控上报了真实故障（探针没测到也以监控为准），已故障转移；保持期过后若仍是全场第一会自动提回')}">${t('故障转移')}</span>` : ''
+          }${
             candidate.upstreamName && candidate.upstreamName !== decision.modelKey
               ? `<div class="sub mono">${esc(candidate.upstreamName)}</div>`
               : ''
@@ -2818,6 +2832,7 @@ function renderDecision() {
           }</td>
           <td class="num${sortMark('value')}">${candidate.effective === null ? '—' : priceText(candidate.effective)}</td>
           <td class="num${sortMark('speed')}">${candidate.ttftMs === null ? '—' : `${candidate.ttftMs}ms`}</td>
+          <td class="num${sortMark('priceSpeed')}">${priceSpeedText(candidate)}</td>
           <td>${badges}${candidate.statusReason ? `<div class="sub">${esc(candidate.statusReason)}</div>` : ''}</td>
         </tr>`
     }).join('')
@@ -2835,7 +2850,7 @@ function renderDecision() {
           <thead><tr>
             <th style="width:30px"></th><th class="num">#</th><th>站点</th><th>分组</th>
             <th class="num${sortMark('price')}">价格</th><th class="num">质量</th>
-            <th class="num${sortMark('value')}">有效成本</th><th class="num${sortMark('speed')}">首字</th><th>状态</th>
+            <th class="num${sortMark('value')}">有效成本</th><th class="num${sortMark('speed')}">首字</th><th class="num${sortMark('priceSpeed')}">价速比</th><th>状态</th>
           </tr></thead>
           <tbody>${rows}</tbody>
         </table>`}
@@ -2870,13 +2885,15 @@ function renderDecision() {
 }
 
 /**
- * 决策侧重三档：性价比 / 价格 / 首字速度。
+ * 决策侧重四档：性价比 / 价格 / 首字速度 / 价速比。
  *
  * 形态上刻意和「慢速档位限制」那条刻度条不一样：那边是 20 格的滑轨（同一个维度上的
- * 程度），这边是三段长条（互斥的三种价值观）——档位不是程度，分段比滑轨诚实，
- * 也不会让人以为三档之间还有「半档」这种不存在的东西。
+ * 程度），这边是四段长条（互斥的四种价值观）——档位不是程度，分段比滑轨诚实，
+ * 也不会让人以为四档之间还有「半档」这种不存在的东西。
  *
  * 标签和说明由服务端 /api/state 的 decisionModes 下发，浏览器不另抄一份。
+ * 自动路由接管中，档位条旁直接显示当前被派活的模型：接管的意义就是
+ * 「这个档位选出的全场最优」，不告诉用户是哪个，开关就和黑盒没两样。
  */
 function modeCard(mode) {
   const modes = state.decisionModes?.length
@@ -2885,6 +2902,7 @@ function modeCard(mode) {
         { key: 'value', label: '性价比', hint: '价格 ÷ 质量', desc: '' },
         { key: 'price', label: '价格', hint: '名义单价', desc: '' },
         { key: 'speed', label: '首字速度', hint: '首字延迟', desc: '' },
+        { key: 'priceSpeed', label: '价速比', hint: '价格 ÷ 首字延迟', desc: '' },
       ]
   return `
     <div class="card mode-card">
@@ -2906,6 +2924,44 @@ function modeCard(mode) {
           .join('')}
       </div>
     </div>`
+}
+
+/**
+ * 「正在使用」胶囊：接管记录里的模型 + 它此刻的实际选中供给（决策快照同一份）。
+ * 放在自动路由开关旁边（慢速档位条右侧）——开关开不在开、在开什么，一眼看完。
+ * 供给在快照里找不到（刚下线 / 还没发过请求）时只报模型名，不硬编。
+ */
+function routeNowPill() {
+  if (!state.autoRoute?.enabled) return ''
+  const takeover = state.autoRoute
+  const decision = (state.decisions || []).find((d) => d.modelKey === takeover.modelKey)
+  const winner = decision ? decision.candidates.find((c) => c.offerId === decision.chosenOfferId) : null
+  const where = winner?.providerName
+    ? ` <span class="route-now-where">· ${esc(winner.providerName)}${winner.group ? ` · ${esc(winner.group)}` : ''}</span>`
+    : ''
+  return `<span class="route-now" title="${t('自动路由正在把全部请求派给这个模型（当前档位下全场最优）')}">${t('正在使用')}<b class="mono">${esc(takeover.modelKey || '—')}</b>${where}</span>`
+}
+
+/**
+ * 自动路由（一键接管）：权限在决策侧重之上的总开关。
+ *
+ * 形态是小开关，塞在慢速档位条右侧的空档里——它不是又一个档位，不值得单独
+ * 一张卡；但它是「要不要把派活权整个拿走」，所以开关旁带个问号圈，悬浮
+ * 就能看到完整介绍。接管之后档位条仍然可切（切了会立刻按新档位重选），
+ * 但客户端请求什么模型就再也不重要了。免费入口不接管：把免费请求偷偷
+ * 改派到付费模型等于静默扣钱。
+ */
+function autoRouteSwitch() {
+  const enabled = Boolean(state.autoRoute?.enabled)
+  return `
+    <label class="switch switch-inline auto-route-inline">
+      <input type="checkbox" id="auto-route-switch" ${enabled ? 'checked' : ''} />
+      <span class="switch-track"><span class="switch-knob"></span></span>
+      <span class="switch-text"><b>${t('自动路由')}</b></span>
+    </label>
+    <span class="help-dot" tabindex="0" aria-label="${t('自动路由功能介绍')}" title="${t(
+      '接管后，不管客户端请求哪个模型、怎么切模型，网关都只派给当前决策档位下全场最优的那一个模型——不分站点、不分分组、不分来自哪个站。若新模型只比现役好一点点（不到 15%），不切换：反复横跳对用户的干扰比那点收益大，只有明显更优或现役下线才换。免费入口不受影响。',
+    )}">?</span>`
 }
 
 /**
@@ -2939,7 +2995,10 @@ function gateCard() {
         </label>
         <span class="ttft-scale-now">当前 ${esc(state.ttftLimitText || '不限')}</span>
         <span class="hint" style="margin:0">1000–20000ms 共 20 档 · 慢速即为不可用</span>
-        </div>
+        <span style="flex:1"></span>
+        ${autoRouteSwitch()}
+        ${routeNowPill()}
+      </div>
       </div>
     </div>`
 }
@@ -3349,7 +3408,7 @@ function renderGateway() {
         <tr>
           <td style="color:var(--faint)">${fmtDateTime(r.ts)}</td>
           <td>${esc(r.keyName || '—')}</td>
-          <td class="mono">${esc(r.model)}</td>
+          <td class="mono">${esc(r.model)}${r.autoRoute ? ` <span class="badge" title="${t('这一单是被自动路由改派的，不是客户端真的点名了这个模型')}">${t('接管')}</span>` : ''}</td>
           <td>${r.chosenProviderName ? `${esc(r.chosenProviderName)}${r.chosenGroup ? ` <span class="badge ${r.pool === 'free' ? 'vchip-free' : groupChipOf(r.chosenProviderId, r.chosenGroup)}">${esc(r.chosenGroup)}</span>` : ''}` : '<span class="badge danger">全部失败</span>'}</td>
           <td class="num">${r.usage ? formatTokens((r.usage.prompt_tokens || 0) + (r.usage.completion_tokens || 0)) : '—'}</td>
           <td class="num">${r.attempts}</td>
@@ -5535,7 +5594,7 @@ document.addEventListener('click', async (event) => {
     return
   }
 
-  // 决策侧重：性价比 / 价格 / 首字速度。只改排序口径，准入规则不变
+  // 决策侧重：性价比 / 价格 / 首字速度 / 价速比。只改排序口径，准入规则不变
   if (action === 'set-decision-mode') {
     const mode = actionButton.dataset.mode || ''
     if (!mode || mode === (state.decisionMode || state.settings?.decisionMode)) return
@@ -5543,8 +5602,13 @@ document.addEventListener('click', async (event) => {
       state = await api('PATCH', '/api/settings', { decisionMode: mode })
       render()
       const label = (state.decisionModes || []).find((item) => item.key === mode)?.label || mode
+      // 接管中切档：服务端会立刻按新档位强制重选一次（不受迟滞约束），
+      // 「正在使用」跟着变——这事得告诉用户，不然以为切了没反应
+      const tail = state.autoRoute?.enabled
+        ? t('；自动路由接管中，已按新档位重选最优模型')
+        : ''
       toast(
-        t('决策侧重已切到「{mode}」，下面的排序和网关选站都跟着变了', { mode: t(label) }),
+        t('决策侧重已切到「{mode}」，下面的排序和网关选站都跟着变了', { mode: t(label) }) + tail,
       )
     } catch (error) {
       toast(error.message, true)
@@ -6889,6 +6953,24 @@ document.addEventListener('change', async (event) => {
       /* 隐私模式下 localStorage 可能不可用 */
     }
     renderDecision()
+    return
+  }
+
+  if (input.id === 'auto-route-switch') {
+    // 自动路由（一键接管）：服务端开关 + 开启时立刻全场挑选一次，「正在使用」
+    // 不用等第一个请求才有得显示。切档时的强制重选也由服务端做
+    try {
+      state = await api('PATCH', '/api/settings', { autoRouteEnabled: input.checked })
+      render()
+      toast(
+        input.checked
+          ? t('自动路由已接管：不管客户端要什么模型，都只派当前档位下全场最优的那个')
+          : t('自动路由已关闭：网关恢复按客户端请求的模型派活'),
+      )
+    } catch (error) {
+      input.checked = !input.checked
+      toast(error.message, true)
+    }
     return
   }
 
