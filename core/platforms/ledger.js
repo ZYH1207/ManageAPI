@@ -8,8 +8,8 @@
 import { newId, nowIso, readFreeDb, mutateFree } from './store.js'
 // quota.js 零依赖、不回头 import 本目录，不会形成循环；周期重置逻辑与中转站侧共用一份
 import { resetIfDue } from '../quota.js'
-
-const KINDS = new Set(['consume', 'checkin', 'refresh', 'manual'])
+// 本地日期键全后端唯一实现（签到与用量必须同一口径）
+import { localDayKey } from '../dates.js'
 
 // 账本只留最近这么多条：free.json 每次写入都要整份序列化，
 // 明细无限增长会让签到这种高频小操作越来越慢。汇总靠 quota 字段，不靠账本。
@@ -17,19 +17,6 @@ const LEDGER_MAX = 5000
 
 // 「还能撑几天」的观测窗口
 const RATE_WINDOW_DAYS = 7
-
-/**
- * 本地日期键（YYYY-MM-DD）。
- *
- * 刻意不用 toISOString：签到是按「用户本地的一天」算的。
- * 东八区早上 7 点用 UTC 会落到前一天，用户会发现「今天签过了」。
- */
-export function localDayKey(value = new Date()) {
-  const d = value instanceof Date ? value : new Date(value)
-  if (Number.isNaN(d.getTime())) return ''
-  const pad = (n) => String(n).padStart(2, '0')
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
-}
 
 function pushLedger(db, { accountId, kind, amount, unit, note }) {
   const entry = {
@@ -44,16 +31,6 @@ function pushLedger(db, { accountId, kind, amount, unit, note }) {
   db.ledger.push(entry)
   if (db.ledger.length > LEDGER_MAX) db.ledger = db.ledger.slice(-LEDGER_MAX)
   return entry
-}
-
-export async function appendLedger({ accountId, kind = 'manual', amount = 0, unit = 'credit', note = '' } = {}) {
-  if (!accountId) throw new Error('缺少 accountId')
-  if (!KINDS.has(kind)) throw new Error(`未知的账本类型：${kind}`)
-
-  return mutateFree((db) => {
-    if (!db.accounts.some((a) => a.id === accountId)) throw new Error(`账号不存在：${accountId}`)
-    return pushLedger(db, { accountId, kind, amount, unit, note })
-  })
 }
 
 /** 按时间倒序；不传 accountId 就是全平台的流水。 */

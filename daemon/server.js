@@ -21,7 +21,7 @@ import { selectCandidates, listPublicModels, explain } from '../core/router.js'
 import { splitOffers, resolvePool, FREE_PREFIX, FREE_BASE_PATH } from '../core/free.js'
 import { rankFreePool } from '../core/rank-free.js'
 import * as platforms from '../core/platforms/index.js'
-import { recordUsage, usageSummary, tokensUsedByKey, resetUsage, readUsage, localMonthStart } from '../core/usage.js'
+import { recordUsage, usageSummary, tokensUsedByKey, readUsage, localMonthStart } from '../core/usage.js'
 import { buildMonitorView, markAlertsRead, markAnnouncementsRead, applySnapshot } from '../core/monitor.js'
 import { collectProviderSnapshots } from './monitor-runner.js'
 import { runProbes } from './probe-runner.js'
@@ -72,6 +72,17 @@ function nonNegative(value, field) {
 
 /** 文件系统层的 errno：出现这些说明是服务端自己的问题，应当回 500 而不是 400 */
 const IO_ERROR_CODES = new Set(['EPERM', 'EACCES', 'EBUSY', 'ENOENT', 'ENOSPC', 'EIO', 'EMFILE', 'ENFILE'])
+
+/** 数值参数收敛到 [min, max]；空值/非法值用 fallback（与旧写法 `Number(x) || d` 同语义） */
+function clampInt(value, min, max, fallback) {
+  const n = Number(value) || fallback
+  return Math.min(Math.max(n, min), max)
+}
+
+// 站点网络请求的超时（毫秒）：默认值与上限集中定义，别再散落字面量
+const SYNC_TIMEOUT_DEFAULT_MS = 15000
+const SYNC_TIMEOUT_MAX_MS = 20000
+const TOKEN_LIST_TIMEOUT_MS = 20000
 
 function json(res, status, payload) {
   const body = JSON.stringify(payload)
@@ -152,6 +163,146 @@ async function freePlatformState() {
   }
 }
 
+/** 站点排名：长期表现（探针 + 真实流量，按时间衰减加权）按站聚合。 */
+function buildSiteRanking(providers, paidOffers, longTerm) {
+  return providers
+    .map((provider) => {
+      const stats = paidOffers
+        .filter((o) => o.providerId === provider.id)
+        .map((o) => longTerm.get(o.id))
+        .filter(Boolean)
+      if (stats.length === 0) return null
+      const avg = (pick) => {
+        const values = stats.map(pick).filter((v) => typeof v === 'number')
+        return values.length ? values.reduce((a, b) => a + b, 0) / values.length : null
+      }
+      return {
+        providerId: provider.id,
+        providerName: provider.name,
+        score: Math.round(avg((s) => s.score) ?? 0),
+        uptime: avg((s) => s.uptime),
+        avgQuality: avg((s) => s.avgQuality),
+        avgTtft: Math.round(avg((s) => s.avgTtft) ?? 0) || null,
+        modelCount: stats.length,
+        probes: stats.reduce((sum, s) => sum + s.total, 0),
+        weightedSamples: Math.round(stats.reduce((sum, s) => sum + (s.weightedSamples || 0), 0) * 10) / 10,
+        lastAt: stats.map((s) => s.lastAt).sort().pop(),
+      }
+    })
+    .filter(Boolean)
+    .sort((a, b) => b.score - a.score)
+}
+
+/** 前端站点卡视图：排序 + 脱敏字段 + 免费模型标记。 */
+function buildProviderViews(db, freeOffers) {
+  // 令牌与余额挂在站点上：它们是「一个后台账号一套」，跟下面挂几个 Key 无关
+  // 顺序按 sortOrder（站点卡上的上移/下移），没设过的按创建时间兜底
+  return [...db.providers]
+    .sort(
+      (a, b) =>
+        (Number(a.sortOrder) || 0) - (Number(b.sortOrder) || 0) ||
+        String(a.createdAt || '').localeCompare(String(b.createdAt || '')),
+    )
+    .map((p) => ({
+      ...p,
+      hasAdminToken: Boolean(p.adminToken),
+      adminTokenTail: p.adminTokenTail ?? null,
+      paused: Boolean(p.paused),
+      // 令牌可用性：'ok' / 'invalid' / null（还没验过）
+      tokenStatus: p.tokenStatus ?? null,
+      tokenStatusAt: p.tokenStatusAt ?? null,
+      quotaRemaining: typeof p.quotaRemaining === 'number' ? p.quotaRemaining : null,
+      currency: p.currency || 'CNY',
+      quotaUpdatedAt: p.quotaUpdatedAt ?? null,
+      // 免费池里这个站有哪几个模型（卡片上标「免费 N」）
+      freeModels: freeOffers
+        .filter((o) => o.providerId === p.id)
+        .map((o) => o.upstreamName || o.modelKey || '')
+        .filter(Boolean),
+    }))
+}
+
+/** 全量模型索引（含被忽略的）与覆盖站点数：忽略模型弹窗要用，不能从过滤后的 offers 推。 */
+function buildModelIndex(offers) {
+  const counts = new Map()
+  for (const offer of offers) {
+    if (offer.delistedAt) continue
+    const key = offer.modelKey || offer.upstreamName || ''
+    if (!key) continue
+    counts.set(key, (counts.get(key) || 0) + 1)
+  }
+  return [...counts.entries()]
+    .map(([name, sites]) => ({ name, sites }))
+    .sort((a, b) => a.name.localeCompare(b.name))
+}
+
+/**
+ * 免费池：与付费侧完全隔离。两栏数据分开给，前端不用自己筛。
+ * relay 已经由 rankFreePool 排好序并带上 gate / daysLeft——
+ * 服务端和前端共用同一份判定，避免两套阈值漂移。
+ */
+async function buildFreePoolSection(freeOffers, scoreMap, benchmarks, settings) {
+  return {
+    relay: rankFreePool({
+      offers: freeOffers,
+      scores: scoreMap,
+      benchmarks,
+      crossPane: settings.freeCrossPane || 'remaining',
+    }).map((row) => ({
+      ...row.offer,
+      score: row.score,
+      gate: row.gate,
+      daysLeft: row.daysLeft,
+    })),
+    // 平台侧数据来自 core/platforms（独立文件 free.json）
+    ...(await freePlatformState()),
+    crossPane: settings.freeCrossPane || 'remaining',
+    allowPaidFallback: Boolean(settings.allowPaidFallback),
+  }
+}
+
+/** 网关面板视图。 */
+function buildGatewaySection(settings) {
+  return {
+    enabled: Boolean(settings.gateway?.enabled),
+    keys: (settings.gateway?.keys || []).map((k) => ({
+      id: k.id,
+      name: k.name,
+      key: k.key,
+      enabled: k.enabled,
+      monthlyTokenLimit: k.monthlyTokenLimit ?? null,
+      note: k.note || '',
+      createdAt: k.createdAt,
+    })),
+  }
+}
+
+/** 决策预览：每个模型当前的候选排序，供「智能决策」页展示。 */
+function buildDecisions(rankedWithCache, { paidOffers, providers, credentials, scores, benchmarks, settings, manualOrder }) {
+  return rankedWithCache.map((group) => {
+    const order = manualOrder?.[group.modelKey] || null
+    const candidates = selectCandidates({
+      offers: paidOffers,
+      providers,
+      credentials,
+      scores,
+      benchmarks,
+      settings,
+      model: group.modelKey,
+      order,
+    })
+    const rankedCandidates = explain(candidates)
+    const winner = rankedCandidates.find((c) => c.routable) || null
+    return {
+      modelKey: group.modelKey,
+      candidates: rankedCandidates,
+      chosenOfferId: winner?.offerId ?? null,
+      chosenProviderName: winner?.providerName ?? null,
+      manual: Boolean(order && order.length),
+    }
+  })
+}
+
 /** 组装前端需要的全量视图。 */
 async function buildState({ light = false } = {}) {
   // 只读视图走 mtime 缓存（网关热路径同一份）：buildState 被 40 个写接口和
@@ -203,32 +354,7 @@ async function buildState({ light = false } = {}) {
 
   // 长期表现：探针 + 真实流量，按时间衰减加权，供概览页排名
   const longTerm = longTermScores(db.probes, db.traffic)
-  const siteRanking = db.providers
-    .map((provider) => {
-      const stats = paidOffers
-        .filter((o) => o.providerId === provider.id)
-        .map((o) => longTerm.get(o.id))
-        .filter(Boolean)
-      if (stats.length === 0) return null
-      const avg = (pick) => {
-        const values = stats.map(pick).filter((v) => typeof v === 'number')
-        return values.length ? values.reduce((a, b) => a + b, 0) / values.length : null
-      }
-      return {
-        providerId: provider.id,
-        providerName: provider.name,
-        score: Math.round(avg((s) => s.score) ?? 0),
-        uptime: avg((s) => s.uptime),
-        avgQuality: avg((s) => s.avgQuality),
-        avgTtft: Math.round(avg((s) => s.avgTtft) ?? 0) || null,
-        modelCount: stats.length,
-        probes: stats.reduce((sum, s) => sum + s.total, 0),
-        weightedSamples: Math.round(stats.reduce((sum, s) => sum + (s.weightedSamples || 0), 0) * 10) / 10,
-        lastAt: stats.map((s) => s.lastAt).sort().pop(),
-      }
-    })
-    .filter(Boolean)
-    .sort((a, b) => b.score - a.score)
+  const siteRanking = buildSiteRanking(db.providers, paidOffers, longTerm)
 
   const scores = {}
   for (const [offerId, score] of scoreMap) {
@@ -256,57 +382,20 @@ async function buildState({ light = false } = {}) {
   }))
 
   // 决策预览：每个模型当前的候选排序，供「智能决策」页展示
-  const decisions = rankedWithCache.map((group) => {
-    const order = db.manualOrder?.[group.modelKey] || null
-    const candidates = selectCandidates({
-      offers: paidOffers,
-      providers: db.providers,
-      credentials: db.credentials,
-      scores: scoreMap,
-      benchmarks,
-      settings: db.settings,
-      model: group.modelKey,
-      order,
-    })
-    const rankedCandidates = explain(candidates)
-    const winner = rankedCandidates.find((c) => c.routable) || null
-    return {
-      modelKey: group.modelKey,
-      candidates: rankedCandidates,
-      chosenOfferId: winner?.offerId ?? null,
-      chosenProviderName: winner?.providerName ?? null,
-      manual: Boolean(order && order.length),
-    }
+  const decisions = buildDecisions(rankedWithCache, {
+    paidOffers,
+    providers: db.providers,
+    credentials: db.credentials,
+    scores: scoreMap,
+    benchmarks,
+    settings: db.settings,
+    manualOrder: db.manualOrder,
   })
 
   const result = {
     settings: db.settings,
     dataDir: store.dataDir(),
-    // 令牌与余额挂在站点上：它们是「一个后台账号一套」，跟下面挂几个 Key 无关
-    // 顺序按 sortOrder（站点卡上的上移/下移），没设过的按创建时间兜底
-    providers: [...db.providers]
-      .sort(
-        (a, b) =>
-          (Number(a.sortOrder) || 0) - (Number(b.sortOrder) || 0) ||
-          String(a.createdAt || '').localeCompare(String(b.createdAt || '')),
-      )
-      .map((p) => ({
-        ...p,
-        hasAdminToken: Boolean(p.adminToken),
-        adminTokenTail: p.adminTokenTail ?? null,
-        paused: Boolean(p.paused),
-        // 令牌可用性：'ok' / 'invalid' / null（还没验过）
-        tokenStatus: p.tokenStatus ?? null,
-        tokenStatusAt: p.tokenStatusAt ?? null,
-        quotaRemaining: typeof p.quotaRemaining === 'number' ? p.quotaRemaining : null,
-        currency: p.currency || 'CNY',
-        quotaUpdatedAt: p.quotaUpdatedAt ?? null,
-        // 免费池里这个站有哪几个模型（卡片上标「免费 N」）
-        freeModels: freeOffers
-          .filter((o) => o.providerId === p.id)
-          .map((o) => o.upstreamName || o.modelKey || '')
-          .filter(Boolean),
-      })),
+    providers: buildProviderViews(db, freeOffers),
     credentials: db.credentials.map((c) => ({
       id: c.id,
       providerId: c.providerId,
@@ -316,39 +405,9 @@ async function buildState({ light = false } = {}) {
       expiresAt: c.expiresAt,
     })),
     offers: liveOffers,
-    // 全部模型（含被忽略的）与覆盖站点数：忽略模型弹窗要用，不能从过滤后的 offers 推
-    modelIndex: (() => {
-      const counts = new Map()
-      for (const offer of db.offers) {
-        if (offer.delistedAt) continue
-        const key = offer.modelKey || offer.upstreamName || ''
-        if (!key) continue
-        counts.set(key, (counts.get(key) || 0) + 1)
-      }
-      return [...counts.entries()]
-        .map(([name, sites]) => ({ name, sites }))
-        .sort((a, b) => a.name.localeCompare(b.name))
-    })(),
+    modelIndex: buildModelIndex(db.offers),
     // 免费池：与付费侧完全隔离。两栏数据分开给，前端不用自己筛。
-    // relay 已经由 rankFreePool 排好序并带上 gate / daysLeft——
-    // 服务端和前端共用同一份判定，避免两套阈值漂移。
-    freePool: {
-      relay: rankFreePool({
-        offers: freeOffers,
-        scores: scoreMap,
-        benchmarks,
-        crossPane: db.settings.freeCrossPane || 'remaining',
-      }).map((row) => ({
-        ...row.offer,
-        score: row.score,
-        gate: row.gate,
-        daysLeft: row.daysLeft,
-      })),
-      // 平台侧数据来自 core/platforms（独立文件 free.json）
-      ...(await freePlatformState()),
-      crossPane: db.settings.freeCrossPane || 'remaining',
-      allowPaidFallback: Boolean(db.settings.allowPaidFallback),
-    },
+    freePool: await buildFreePoolSection(freeOffers, scoreMap, benchmarks, db.settings),
     benchmarks,
     reference: { asOf: REFERENCE_AS_OF, list: listReference() },
     // 预置目录：只是「省打字」的辅助，不参与逻辑
@@ -361,27 +420,15 @@ async function buildState({ light = false } = {}) {
     siteRanking,
     scores,
     probeTotal: db.probes.length,
-    gateway: {
-      enabled: Boolean(db.settings.gateway?.enabled),
-      keys: (db.settings.gateway?.keys || []).map((k) => ({
-        id: k.id,
-        name: k.name,
-        key: k.key,
-        enabled: k.enabled,
-        monthlyTokenLimit: k.monthlyTokenLimit ?? null,
-        note: k.note || '',
-        createdAt: k.createdAt,
-      })),
-    },
+    gateway: buildGatewaySection(db.settings),
     usage,
     routing: (db.routing || []).slice(-40).reverse(),
   }
-  // 轻量版：自动刷新轮询用，砍掉最大的两块（scores 73KB / decisions 20KB），
-  // 前端把这两项沿用旧值——比价/决策页轮询时仍走完整版
+  // 轻量版：自动刷新轮询用，只裁 decisions（每模型候选表，最大的一块）。
+  // scores 必须保留：概览 / 探针 / 网关页和通知中心都从它派生健康状态，
+  // 裁掉的话停在这些页时 15 秒轮询永远不更新评分，界面上「可疑/过期」的标记
+  // 一挂就是一整个会话。
   if (light) {
-    // 只裁 decisions（每模型候选表，最大的一块）。scores 要保留：概览 / 探针 /
-    // 网关页和通知中心都从它派生健康状态，裁掉的话停在这些页时 15 秒轮询
-    // 永远不更新评分，界面上「可疑/过期」的标记一挂就是一整个会话。
     delete result.decisions
   }
   return result
@@ -397,111 +444,133 @@ function route(method, pattern, handler) {
 route('GET', /^\/api\/health$/, async () => ({ ok: true, at: new Date().toISOString() }))
 route('GET', /^\/api\/state$/, async (ctx) => buildState({ light: ctx.query.get('light') === '1' }))
 
+/** 汇率与加权：手工汇率=手动模式；fxAuto 恢复自动；权重 0~1。 */
+function applyFxSettings(db, body) {
+  const { fxUsdCny, blendInputWeight } = body
+  if (fxUsdCny !== undefined) {
+    const v = Number(fxUsdCny)
+    if (!Number.isFinite(v) || v <= 0) throw new HttpError(400, '汇率必须是正数')
+    // 手工填汇率 = 手动模式，自动任务不再覆盖
+    db.settings.fx = { ...fxLib.ensureFx(db.settings), rates: { ...fxLib.ensureFx(db.settings).rates, CNY: v }, manual: true, source: 'manual', updatedAt: new Date().toISOString() }
+    db.settings.fxUsdCny = v
+  }
+  // fxAuto: true → 恢复自动拉取
+  if (body.fxAuto === true) {
+    const fx = fxLib.ensureFx(db.settings)
+    fx.manual = false
+    db.settings.fx = fx
+    db.settings.fxUsdCny = fx.rates.CNY
+  }
+  if (blendInputWeight !== undefined) {
+    const v = Number(blendInputWeight)
+    if (!Number.isFinite(v) || v < 0 || v > 1) throw new HttpError(400, '输入权重必须在 0~1 之间')
+    db.settings.blendInputWeight = v
+  }
+}
+
+/** 探针节奏与首字上限（含「间隔不能超过有效期一半」的自洽校验）。 */
+function applyProbeSettings(db, body) {
+  if (body.probeIntervalMinutes !== undefined) {
+    const v = Number(body.probeIntervalMinutes)
+    if (!Number.isFinite(v) || v < 0) throw new HttpError(400, '探测间隔不能为负')
+    db.settings.probeIntervalMinutes = v
+  }
+  if (body.scoreMaxAgeHours !== undefined) {
+    const v = Number(body.scoreMaxAgeHours)
+    if (!Number.isFinite(v) || v <= 0) throw new HttpError(400, '评分有效期必须大于 0')
+    db.settings.scoreMaxAgeHours = v
+  }
+  // 两个时钟必须自洽：有效期是「允许错过几轮探测」，间隔比有效期还长的话，
+  // 每条供给都会在两次探测之间整段过期（之前踩过：间隔和有效期都是 6 小时，
+  // 一到点就集体掉出路由池）。这里直接挡住，别让配置自己打自己。
+  // 只在本次真的改了这两项时校验——否则旧配置会卡住其它无关设置
+  if (body.probeIntervalMinutes !== undefined || body.scoreMaxAgeHours !== undefined) {
+    if (db.settings.probeIntervalMinutes > 0) {
+      const maxAgeMinutes = (Number(db.settings.scoreMaxAgeHours) || 6) * 60
+      if (db.settings.probeIntervalMinutes > maxAgeMinutes / 2) {
+        throw new HttpError(
+          400,
+          `探测间隔（${db.settings.probeIntervalMinutes} 分钟）不能超过评分有效期（${maxAgeMinutes} 分钟）的一半，否则每条供给都会在两轮探测之间过期`,
+        )
+      }
+    }
+  }
+  if (body.maxTtftMs !== undefined) {
+    const v = Number(body.maxTtftMs)
+    if (!Number.isFinite(v) || v < 0) throw new HttpError(400, '首字延迟上限不能为负')
+    db.settings.maxTtftMs = v
+  }
+}
+
+/** 展示与监控类设置：站点单价、免费池偏好、监控节奏、显示币种、余额阈值。 */
+function applyDisplaySettings(db, body) {
+  // 全局默认站点单价：所有站口径一致时只填一次（如「全部 1:1 充值」填 1）
+  if (body.defaultUnitPrice !== undefined) {
+    if (body.defaultUnitPrice === null || body.defaultUnitPrice === '') {
+      db.settings.defaultUnitPrice = null
+    } else {
+      const v = Number(body.defaultUnitPrice)
+      if (!Number.isFinite(v) || v <= 0) throw new HttpError(400, '默认站点单价必须是正数')
+      db.settings.defaultUnitPrice = v
+    }
+  }
+  if (body.allowUntrusted !== undefined) {
+    db.settings.allowUntrusted = Boolean(body.allowUntrusted)
+  }
+  if (body.freeCrossPane !== undefined) {
+    const v = String(body.freeCrossPane)
+    if (!['platform', 'relay', 'remaining'].includes(v)) {
+      throw new HttpError(400, '免费池跨栏偏好只能是 platform / relay / remaining')
+    }
+    db.settings.freeCrossPane = v
+  }
+  if (body.allowPaidFallback !== undefined) {
+    db.settings.allowPaidFallback = Boolean(body.allowPaidFallback)
+  }
+  if (body.monitorIntervalMinutes !== undefined) {
+    const v = Number(body.monitorIntervalMinutes)
+    if (!Number.isFinite(v) || v < 0) throw new HttpError(400, '监控采集间隔不能为负')
+    db.settings.monitorIntervalMinutes = v
+  }
+  if (body.displayCurrency !== undefined) {
+    const v = String(body.displayCurrency).toUpperCase()
+    if (v !== 'CNY' && v !== 'USD') throw new HttpError(400, '显示币种只能是 CNY 或 USD')
+    db.settings.displayCurrency = v
+  }
+  if (body.balanceWarnUsd !== undefined || body.balanceWarnCny !== undefined) {
+    // 阈值口径是美元；兼容老前端仍传人民币，按汇率折一次
+    const rawUsd = body.balanceWarnUsd
+    const rawCny = body.balanceWarnCny
+    // 汇率真源在 fx 模块；settings.fxUsdCny 只是兼容镜像
+    const fx = Number(fxLib.ensureFx(db.settings).rates.CNY) || 7.2
+    const v = rawUsd !== undefined ? Number(rawUsd) : Number(rawCny) / fx
+    if (!Number.isFinite(v) || v < 0) throw new HttpError(400, '余额告警阈值不能为负')
+    db.settings.balanceWarnUsd = Math.round(v * 100) / 100
+  }
+}
+
+/** 全局忽略的模型（归一化后去重）。 */
+function applyIgnoredModels(db, body) {
+  if (body.ignoredModels === undefined) return
+  if (!Array.isArray(body.ignoredModels)) throw new HttpError(400, '忽略的模型必须是数组')
+  // 归一化后去重：free/glm-5.3 与 glm-5.3 视为同一个模型，忽略一次两边都不再参与
+  const list = body.ignoredModels
+    .map((name) => (typeof name === 'string' ? inv.normalizeModelKey(name) : ''))
+    .filter(Boolean)
+  if (list.length > 500) throw new HttpError(400, '最多忽略 500 个模型')
+  db.settings.ignoredModels = [...new Set(list)]
+}
+
+/** 应用设置补丁：分组顺序与原实现一致，逐字段校验与报错文案保持不变。 */
+function applySettingsPatch(db, body) {
+  applyFxSettings(db, body)
+  applyProbeSettings(db, body)
+  applyDisplaySettings(db, body)
+  applyIgnoredModels(db, body)
+}
+
 route('PATCH', /^\/api\/settings$/, async (ctx) => {
-  await store.mutate((db) => {
-    const { fxUsdCny, blendInputWeight } = ctx.body
-    if (fxUsdCny !== undefined) {
-      const v = Number(fxUsdCny)
-      if (!Number.isFinite(v) || v <= 0) throw new HttpError(400, '汇率必须是正数')
-      // 手工填汇率 = 手动模式，自动任务不再覆盖
-      db.settings.fx = { ...fxLib.ensureFx(db.settings), rates: { ...fxLib.ensureFx(db.settings).rates, CNY: v }, manual: true, source: 'manual', updatedAt: new Date().toISOString() }
-      db.settings.fxUsdCny = v
-    }
-    // fxAuto: true → 恢复自动拉取
-    if (ctx.body.fxAuto === true) {
-      const fx = fxLib.ensureFx(db.settings)
-      fx.manual = false
-      db.settings.fx = fx
-      db.settings.fxUsdCny = fx.rates.CNY
-    }
-    if (blendInputWeight !== undefined) {
-      const v = Number(blendInputWeight)
-      if (!Number.isFinite(v) || v < 0 || v > 1) throw new HttpError(400, '输入权重必须在 0~1 之间')
-      db.settings.blendInputWeight = v
-    }
-    if (ctx.body.probeIntervalMinutes !== undefined) {
-      const v = Number(ctx.body.probeIntervalMinutes)
-      if (!Number.isFinite(v) || v < 0) throw new HttpError(400, '探测间隔不能为负')
-      db.settings.probeIntervalMinutes = v
-    }
-    if (ctx.body.scoreMaxAgeHours !== undefined) {
-      const v = Number(ctx.body.scoreMaxAgeHours)
-      if (!Number.isFinite(v) || v <= 0) throw new HttpError(400, '评分有效期必须大于 0')
-      db.settings.scoreMaxAgeHours = v
-    }
-    // 两个时钟必须自洽：有效期是「允许错过几轮探测」，间隔比有效期还长的话，
-    // 每条供给都会在两次探测之间整段过期（之前踩过：间隔和有效期都是 6 小时，
-    // 一到点就集体掉出路由池）。这里直接挡住，别让配置自己打自己。
-    // 只在本次真的改了这两项时校验——否则旧配置会卡住其它无关设置
-    if (ctx.body.probeIntervalMinutes !== undefined || ctx.body.scoreMaxAgeHours !== undefined) {
-      if (db.settings.probeIntervalMinutes > 0) {
-        const maxAgeMinutes = (Number(db.settings.scoreMaxAgeHours) || 6) * 60
-        if (db.settings.probeIntervalMinutes > maxAgeMinutes / 2) {
-          throw new HttpError(
-            400,
-            `探测间隔（${db.settings.probeIntervalMinutes} 分钟）不能超过评分有效期（${maxAgeMinutes} 分钟）的一半，否则每条供给都会在两轮探测之间过期`,
-          )
-        }
-      }
-    }
-    if (ctx.body.maxTtftMs !== undefined) {
-      const v = Number(ctx.body.maxTtftMs)
-      if (!Number.isFinite(v) || v < 0) throw new HttpError(400, '首字延迟上限不能为负')
-      db.settings.maxTtftMs = v
-    }
-    // 全局默认站点单价：所有站口径一致时只填一次（如「全部 1:1 充值」填 1）
-    if (ctx.body.defaultUnitPrice !== undefined) {
-      if (ctx.body.defaultUnitPrice === null || ctx.body.defaultUnitPrice === '') {
-        db.settings.defaultUnitPrice = null
-      } else {
-        const v = Number(ctx.body.defaultUnitPrice)
-        if (!Number.isFinite(v) || v <= 0) throw new HttpError(400, '默认站点单价必须是正数')
-        db.settings.defaultUnitPrice = v
-      }
-    }
-    if (ctx.body.allowUntrusted !== undefined) {
-      db.settings.allowUntrusted = Boolean(ctx.body.allowUntrusted)
-    }
-    if (ctx.body.freeCrossPane !== undefined) {
-      const v = String(ctx.body.freeCrossPane)
-      if (!['platform', 'relay', 'remaining'].includes(v)) {
-        throw new HttpError(400, '免费池跨栏偏好只能是 platform / relay / remaining')
-      }
-      db.settings.freeCrossPane = v
-    }
-    if (ctx.body.allowPaidFallback !== undefined) {
-      db.settings.allowPaidFallback = Boolean(ctx.body.allowPaidFallback)
-    }
-    if (ctx.body.monitorIntervalMinutes !== undefined) {
-      const v = Number(ctx.body.monitorIntervalMinutes)
-      if (!Number.isFinite(v) || v < 0) throw new HttpError(400, '监控采集间隔不能为负')
-      db.settings.monitorIntervalMinutes = v
-    }
-    if (ctx.body.displayCurrency !== undefined) {
-      const v = String(ctx.body.displayCurrency).toUpperCase()
-      if (v !== 'CNY' && v !== 'USD') throw new HttpError(400, '显示币种只能是 CNY 或 USD')
-      db.settings.displayCurrency = v
-    }
-    if (ctx.body.balanceWarnUsd !== undefined || ctx.body.balanceWarnCny !== undefined) {
-      // 阈值口径是美元；兼容老前端仍传人民币，按汇率折一次
-      const rawUsd = ctx.body.balanceWarnUsd
-      const rawCny = ctx.body.balanceWarnCny
-      // 汇率真源在 fx 模块；settings.fxUsdCny 只是兼容镜像
-      const fx = Number(fxLib.ensureFx(db.settings).rates.CNY) || 7.2
-      const v = rawUsd !== undefined ? Number(rawUsd) : Number(rawCny) / fx
-      if (!Number.isFinite(v) || v < 0) throw new HttpError(400, '余额告警阈值不能为负')
-      db.settings.balanceWarnUsd = Math.round(v * 100) / 100
-    }
-    if (ctx.body.ignoredModels !== undefined) {
-      if (!Array.isArray(ctx.body.ignoredModels)) throw new HttpError(400, '忽略的模型必须是数组')
-      // 归一化后去重：free/glm-5.3 与 glm-5.3 视为同一个模型，忽略一次两边都不再参与
-      const list = ctx.body.ignoredModels
-        .map((name) => (typeof name === 'string' ? inv.normalizeModelKey(name) : ''))
-        .filter(Boolean)
-      if (list.length > 500) throw new HttpError(400, '最多忽略 500 个模型')
-      db.settings.ignoredModels = [...new Set(list)]
-    }
-  })
+  await store.mutate((db) => applySettingsPatch(db, ctx.body))
   return buildState()
 })
 
@@ -519,8 +588,11 @@ route('POST', /^\/api\/providers\/([\w-]+)\/login$/, async (ctx) => {
     })
     invalidatePricing(ctx.params[0])
     // 令牌刚恢复可用：顺手跑一轮该站采集（余额 / 公告 / 分组倍率），
-    // 不用等 30 分钟调度——用户看到登录成功时，数据也应该跟着回来
-    collectProviderSnapshots({ providerId: ctx.params[0] }).catch(() => {})
+    // 不用等 30 分钟调度——用户看到登录成功时，数据也应该跟着回来。
+    // 后台任务不阻断登录结果，但失败要留痕，不能静默
+    collectProviderSnapshots({ providerId: ctx.params[0] }).catch((error) => {
+      console.error('[登录后采集] 失败：', error)
+    })
     return {
       ...(await buildState()),
       loginResult: { ok: true, kind: result.kind, via: result.via },
@@ -613,11 +685,6 @@ route('POST', /^\/api\/credentials$/, async (ctx) => {
   return buildState()
 })
 
-route('PATCH', /^\/api\/credentials\/([\w-]+)$/, async (ctx) => {
-  await inv.updateCredential(ctx.params[0], ctx.body)
-  return buildState()
-})
-
 route('DELETE', /^\/api\/credentials\/([\w-]+)$/, async (ctx) => {
   await inv.deleteCredential(ctx.params[0])
   return buildState()
@@ -647,7 +714,7 @@ route('POST', /^\/api\/providers\/([\w-]+)\/sync$/, async (ctx) => {
   // 拉取并行、写盘串行：串行拉取时最坏情况是「N 把 Key × 超时」，
   // 两把就能等一分半；而 mutate 是读-改-写，并发写会互相覆盖。
   const startedAt = Date.now()
-  const syncTimeoutMs = Math.min(Number(db.settings.probeTimeoutMs) || 15000, 20000)
+  const syncTimeoutMs = Math.min(Number(db.settings.probeTimeoutMs) || SYNC_TIMEOUT_DEFAULT_MS, SYNC_TIMEOUT_MAX_MS)
   const fetched = await Promise.all(
     targets.map(async (credential) => {
       const apiKey = await inv.revealSecret(credential.id)
@@ -782,7 +849,6 @@ async function loadProviderPricing(providerId, { fresh = false } = {}) {
       pricing = await providers.fetchProviderPricing({
         baseUrl: provider.baseUrl,
         adminToken,
-        kind: provider.kind,
       })
       pricingCache.set(providerId, { at: Date.now(), data: pricing })
     } catch (error) {
@@ -797,7 +863,6 @@ async function loadProviderPricing(providerId, { fresh = false } = {}) {
           const retried = await providers.fetchProviderPricing({
             baseUrl: provider.baseUrl,
             adminToken: relogin.token,
-            kind: provider.kind,
           })
           pricingCache.set(providerId, { at: Date.now(), data: retried })
           pricing = retried
@@ -908,6 +973,29 @@ route('GET', /^\/api\/providers\/([\w-]+)\/groups$/, async (ctx) => {
  *
  * 写完之后全站的价格、比价、决策、路由会一起变——因为它们都读同一份 offers。
  */
+/**
+ * 两条落价路径（apply-group / detect-groups）共用的单行落价：
+ * 取站点价 → 套三分支 → 写分组与时间戳。此前两处各写一遍循环骨架，已经漂移过一次。
+ * requireHit=true 时匹配不到返回 { unmatched }（apply-group 的语义）；
+ * detect-groups 用 false——它没匹配到也要先把分组记下来。
+ */
+function applyPricingRow(offer, { match, group, rate, byGroupModel, benchTable, requireHit = true }) {
+  const key = offer.benchmarkKey || offer.modelKey || offer.upstreamName
+  const hit = match(offer, group)
+  if (!hit && requireHit) return { unmatched: true }
+  const via = inv.applySitePricing(offer, {
+    exact: byGroupModel.get(`${group}::${offer.modelKey}`) || null,
+    rate,
+    sitePrice: hit,
+    hasBench: Boolean(benchTable[key]),
+  })
+  // 必须归一化：站点令牌列表里的分组名常带尾随空格，直接写进去会和
+  // syncOffers 里归一化过的去重键永远对不上，每同步一轮多插一整套行
+  if (group) offer.group = inv.normalizeGroup(group)
+  offer.updatedAt = new Date().toISOString()
+  return { via, key }
+}
+
 route('POST', /^\/api\/providers\/([\w-]+)\/apply-group$/, async (ctx) => {
   const providerId = ctx.params[0]
   const group = inv.normalizeGroup(ctx.body.group)
@@ -922,12 +1010,11 @@ route('POST', /^\/api\/providers\/([\w-]+)\/apply-group$/, async (ctx) => {
   // 分组名两侧可能有空白差异（实测 Key 存的「国模-0045 p哥」与站点公布的
   // 「国模-0045 p哥 」差一个尾随空格），归一化后再匹配，否则倍率解析成 null，
   // 落价会退回「原价手填」，价格直接放大约 10 倍
-  const normGroup = (value) => String(value ?? '').trim()
-  const rateOfGroup = new Map(pricing.groups.map((g) => [normGroup(g.name), g.rate]))
+  const rateOfGroup = new Map(pricing.groups.map((g) => [inv.normalizeGroup(g.name), g.rate]))
   const rates = pricing.groups.map((g) => g.rate).filter((r) => typeof r === 'number')
   const uniformRate = rates.length > 0 && rates.every((r) => r === rates[0]) ? rates[0] : null
   // 分组没给（或这个站只有一个分组）时，能确定倍率就用，确定不了就按原价算
-  const rate = group && rateOfGroup.has(normGroup(group)) ? rateOfGroup.get(normGroup(group)) : uniformRate
+  const rate = group && rateOfGroup.has(group) ? rateOfGroup.get(group) : uniformRate
 
   // 记下这把 Key 属于哪个分组，下次打开就不用再选
   const prevGroup = inv.normalizeGroup(target.group)
@@ -954,28 +1041,17 @@ route('POST', /^\/api\/providers\/([\w-]+)\/apply-group$/, async (ctx) => {
         continue
       }
 
-      const hit = match(offer, group)
-      if (!hit) {
+      // 落价三分支（免费优先 / 倍率模式 / 广场价×倍率）与 detect-groups 共用
+      // applyPricingRow → inv.applySitePricing——exact 只认本分组精确命中，
+      // 全站回落价用它判免费会误伤
+      const applied = applyPricingRow(offer, { match, group, rate, byGroupModel, benchTable })
+      if (applied.unmatched) {
         unmatched.push(offer.upstreamName)
         continue
       }
-
-      const key = offer.benchmarkKey || offer.modelKey || offer.upstreamName
-      // 落价三分支（免费优先 / 倍率模式 / 广场价×倍率）与 detect-groups 共用
-      // inv.applySitePricing——exact 只认本分组精确命中，全站回落价用它判免费会误伤
-      const via = inv.applySitePricing(offer, {
-        exact: byGroupModel.get(`${group}::${offer.modelKey}`) || null,
-        rate,
-        sitePrice: hit,
-        hasBench: Boolean(benchTable[key]),
-      })
-      if (via === 'ratio') viaRatio += 1
-      if (via === 'percall') viaPercall += 1
-      if (via === 'manual' && !benchTable[key]) missingBench.push(offer.upstreamName)
-
-      // 行上标出它属于哪个分组，页面就不用再显示「默认分组」了
-      if (group) offer.group = inv.normalizeGroup(group)
-      offer.updatedAt = new Date().toISOString()
+      if (applied.via === 'ratio') viaRatio += 1
+      if (applied.via === 'percall') viaPercall += 1
+      if (applied.via === 'manual' && !benchTable[applied.key]) missingBench.push(offer.upstreamName)
       updated += 1
     }
   })
@@ -1025,7 +1101,7 @@ route('POST', /^\/api\/providers\/([\w-]+)\/detect-groups$/, async (ctx) => {
     const fetched = await providers.fetchTokenList({
       baseUrl: provider.baseUrl,
       adminToken,
-      timeoutMs: 20000,
+      timeoutMs: TOKEN_LIST_TIMEOUT_MS,
     })
     items = fetched.items
     source = fetched.source
@@ -1054,8 +1130,7 @@ route('POST', /^\/api\/providers\/([\w-]+)\/detect-groups$/, async (ctx) => {
     pricingError = error.message || String(error)
     benchTable = await bench.readBenchmarks()
   }
-  const normGroupName = (value) => String(value ?? '').trim()
-  const rateOfGroup = new Map(pricing.groups.map((g) => [normGroupName(g.name), g.rate]))
+  const rateOfGroup = new Map(pricing.groups.map((g) => [inv.normalizeGroup(g.name), g.rate]))
 
   const results = []
   for (const credential of credentials) {
@@ -1076,7 +1151,7 @@ route('POST', /^\/api\/providers\/([\w-]+)\/detect-groups$/, async (ctx) => {
     const manualPinned = credential.groupSource === 'manual'
     if (!manualPinned) await inv.updateCredential(credential.id, { group, groupSource: 'auto' })
     // 令牌里直接带了倍率就用它（Sub2API），否则查价格表
-    const rate = typeof hit.rate === 'number' ? hit.rate : (rateOfGroup.get(normGroupName(group)) ?? null)
+    const rate = typeof hit.rate === 'number' ? hit.rate : (rateOfGroup.get(inv.normalizeGroup(group)) ?? null)
     results.push({
       credentialId: credential.id,
       label: credential.label,
@@ -1103,26 +1178,21 @@ route('POST', /^\/api\/providers\/([\w-]+)\/detect-groups$/, async (ctx) => {
         if (offer.providerId !== provider.id) continue
         if (offer.credentialId !== row.credentialId) continue
 
-        const key = offer.benchmarkKey || offer.modelKey || offer.upstreamName
-        const hit = match(offer, row.group)
         // 分组名先写上——这一步不依赖价格表，读不到广场也该记住「你属于哪个分组」。
-        // 必须归一化：站点令牌列表里的分组名常带尾随空格，直接写进去会和
-        // syncOffers 里归一化过的去重键永远对不上，每同步一轮多插一整套行
-        offer.group = inv.normalizeGroup(row.group)
-
-        const via = inv.applySitePricing(offer, {
-          exact: byGroupModel.get(`${row.group}::${offer.modelKey}`) || null,
+        // applyPricingRow 内部会归一化写入；没匹配到价也照样落分组（requireHit=false）
+        const applied = applyPricingRow(offer, {
+          match,
+          group: row.group,
           rate: row.rate,
-          sitePrice: hit,
-          hasBench: Boolean(benchTable[key]),
+          byGroupModel,
+          benchTable,
+          requireHit: false,
         })
-        if (via === 'skip') {
+        if (applied.via === 'skip') {
           // 既没有基准价、也没有广场价：只记分组，价格留给用户自己填
-          offer.updatedAt = new Date().toISOString()
           row.unpriced = (row.unpriced || 0) + 1
           continue
         }
-        offer.updatedAt = new Date().toISOString()
         row.updated += 1
       }
     }
@@ -1156,8 +1226,7 @@ route('POST', /^\/api\/providers\/([\w-]+)\/usage-check$/, async (ctx) => {
   const db = await store.readDb()
   const provider = db.providers.find((p) => p.id === ctx.params[0])
   if (!provider) throw new HttpError(404, '站点不存在')
-  const credential = db.credentials.find((c) => c.providerId === provider.id)
-  if (!credential) throw new HttpError(400, '该站还没有 Key')
+  if (!db.credentials.some((c) => c.providerId === provider.id)) throw new HttpError(400, '该站还没有 Key')
   const adminToken = await inv.revealAdminToken(provider.id)
   if (!adminToken) {
     throw new HttpError(400, '需要先在站点卡片上点「令牌」，填一个站点后台的登录令牌')
@@ -1321,11 +1390,6 @@ async function monitorView(days = 7) {
   return buildMonitorView(db, { usageData: await readUsage(), benchmarks, days })
 }
 
-route('GET', /^\/api\/fx$/, async () => {
-  const fx = await fxLib.readFx()
-  return { ...fx, stale: fxLib.isStale(fx), refreshMs: fxLib.FX_REFRESH_MS }
-})
-
 route('POST', /^\/api\/fx\/refresh$/, async () => {
   const result = await fxLib.refreshFx({ logger: console })
   if (!result.ok) {
@@ -1337,14 +1401,14 @@ route('POST', /^\/api\/fx\/refresh$/, async () => {
 })
 
 route('GET', /^\/api\/monitor$/, async (ctx) => {
-  const days = Math.min(Math.max(Number(ctx.query.get('days')) || 7, 1), 90)
+  const days = clampInt(ctx.query.get('days'), 1, 90, 7)
   return monitorView(days)
 })
 
 route('POST', /^\/api\/monitor\/collect$/, async (ctx) => {
   const providerId = ctx.body?.providerId || null
   const results = await collectProviderSnapshots({ providerId })
-  const days = Math.min(Math.max(Number(ctx.body?.days) || 7, 1), 90)
+  const days = clampInt(ctx.body?.days, 1, 90, 7)
   return { ...(await monitorView(days)), results }
 })
 
@@ -1383,13 +1447,6 @@ route('POST', /^\/api\/probes\/run$/, async (ctx) => {
   return { ...(await buildState()), probeResults: results }
 })
 
-route('GET', /^\/api\/probes\/history$/, async (ctx) => {
-  const db = await store.readDb()
-  const offerId = ctx.query.get('offerId')
-  const list = offerId ? db.probes.filter((r) => r.offerId === offerId) : db.probes
-  return { probes: list.slice(-200).reverse() }
-})
-
 // ------------------------------------------------------------------- offers
 
 route('PATCH', /^\/api\/offers\/([\w-]+)$/, async (ctx) => {
@@ -1419,14 +1476,14 @@ route('PATCH', /^\/api\/offers\/([\w-]+)$/, async (ctx) => {
     }
     if (b.group !== undefined) {
       const name = inv.normalizeGroup(b.group)
-      const clash = db.offers.some(
-        (o) =>
-          o.id !== offer.id &&
-          o.providerId === offer.providerId &&
-          inv.normalizeGroup(o.group) === name &&
-          o.upstreamName === offer.upstreamName,
-      )
-      if (clash) throw new HttpError(400, `该站「${name || '默认'}」分组下已经有同名模型了`)
+      if (inv.hasDuplicateOffer(db, {
+        providerId: offer.providerId,
+        group: name,
+        upstreamName: offer.upstreamName,
+        excludeId: offer.id,
+      })) {
+        throw new HttpError(400, `该站「${name || '默认'}」分组下已经有同名模型了`)
+      }
       offer.group = name
     }
     // 从「倍率」切到「价格」时，把当前算出来的价格种进手填字段：
@@ -1448,11 +1505,6 @@ route('PATCH', /^\/api\/offers\/([\w-]+)$/, async (ctx) => {
 
 route('POST', /^\/api\/offers\/([\w-]+)\/duplicate$/, async (ctx) => {
   await inv.duplicateOffer(ctx.params[0], { group: ctx.body.group })
-  return buildState()
-})
-
-route('DELETE', /^\/api\/offers\/([\w-]+)$/, async (ctx) => {
-  await inv.deleteOffer(ctx.params[0])
   return buildState()
 })
 
@@ -1490,11 +1542,6 @@ route('POST', /^\/api\/free\/accounts$/, async (ctx) => {
   const account = await platforms.addAccount(ctx.body || {})
   const state = await buildState()
   return { ...state, accountResult: account }
-})
-
-route('PATCH', /^\/api\/free\/accounts\/([\w-]+)$/, async (ctx) => {
-  await platforms.updateAccount(ctx.params[0], ctx.body || {})
-  return buildState()
 })
 
 route('DELETE', /^\/api\/free\/accounts\/([\w-]+)$/, async (ctx) => {
@@ -1636,7 +1683,7 @@ route('POST', /^\/api\/free\/platforms\/([\w-]+)\/connect\/poll$/, async (ctx) =
     const target = created || existing.find((a) => a.id === accountId)
     if (target) {
       try {
-        await refreshAccountQuota(connector, created || target)
+        await refreshAccountQuota(connector, target)
       } catch (error) {
         warnings.push(`额度还没读到（${error?.message || error}），点「刷新」再试一次`)
       }
@@ -1668,11 +1715,6 @@ route('POST', /^\/api\/free\/platforms\/([\w-]+)\/refresh$/, async (ctx) => {
   const state = await buildState()
   const quota = results.find((row) => row.ok)?.quota || null
   return { ...state, refreshResult: { ok: results.some((row) => row.ok), quota, results } }
-})
-
-route('GET', /^\/api\/free\/ledger$/, async (ctx) => {
-  const accountId = ctx.query?.get('accountId') || null
-  return { ledger: await platforms.listLedger({ accountId, limit: 100 }) }
 })
 
 /** 把疑似凭据的字段打码，诊断信息要能直接贴给人看 */
@@ -1813,13 +1855,8 @@ route('POST', /^\/api\/gateway\/keys\/([\w-]+)\/rotate$/, async (ctx) => {
 })
 
 route('GET', /^\/api\/usage$/, async (ctx) => {
-  const days = Math.min(Math.max(Number(ctx.query.get('days')) || 30, 1), 365)
+  const days = clampInt(ctx.query.get('days'), 1, 365, 30)
   return { usage: await usageSummary({ days }) }
-})
-
-route('POST', /^\/api\/usage\/reset$/, async () => {
-  await resetUsage()
-  return buildState()
 })
 
 route('PATCH', /^\/api\/gateway$/, async (ctx) => {
@@ -1828,23 +1865,11 @@ route('PATCH', /^\/api\/gateway$/, async (ctx) => {
 })
 
 route('GET', /^\/api\/gateway\/routing$/, async (ctx) => {
-  const limit = Math.min(Number(ctx.query.get('limit')) || 50, 200)
+  const limit = clampInt(ctx.query.get('limit'), 1, 200, 50)
   return { routing: await inv.listRouting(limit) }
 })
 
 // ------------------------------------------------------------------ 导出
-
-route('GET', /^\/api\/export\/backup$/, async () => {
-  const db = await store.readDb()
-  return {
-    exportedAt: new Date().toISOString(),
-    note: '凭据为密文，需同一份 master.key 才能还原',
-    db: {
-      ...db,
-      credentials: db.credentials.map((c) => ({ ...c, secret: '[encrypted]' })),
-    },
-  }
-})
 
 route('GET', /^\/api\/export\/config$/, async (ctx) => {
   const providerId = ctx.query.get('providerId')
@@ -1889,10 +1914,11 @@ function flushRouting() {
   if (!routingBuffer.length) return Promise.resolve()
   const batch = routingBuffer.splice(0, routingBuffer.length)
   return inv.recordRoutingBatch(batch).catch((error) => {
-    // 写失败把本批塞回队头，下个 2 秒周期重试——决策日志是排查依据，
+    // 写失败把本批塞回队头，并重挂定时器——决策日志是排查依据，
     // 静默丢弃等于让「为什么选了它」永远查不到
     console.error('[网关] 决策日志写盘失败，已回队重试：', error)
     routingBuffer.unshift(...batch)
+    if (!routingTimer && routingBuffer.length > 0) routingTimer = setTimeout(flushRouting, 2000)
   })
 }
 
@@ -2421,14 +2447,17 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
               reportedPrompt: Number(result.usage.prompt_tokens) || null,
               reportedCached: Number(result.usage?.prompt_tokens_details?.cached_tokens) || 0,
             })
-            .catch(() => {})
+            .catch((error) => console.warn('[计费样本] 记录失败：', error))
         }
         // 免费池的额度必须跟着真实调用扣：以前只有手动填的接口能改 freeQuota，
         // 于是「额度用尽」永远判不出来，网关会一直往一个已经空了的池子里发请求。
         if (pool === 'free') {
           const tokens =
             (Number(result.usage?.prompt_tokens) || 0) + (Number(result.usage?.completion_tokens) || 0)
-          await inv.consumeFreeQuota(candidate.offer.id, { tokens, requests: 1 }).catch(() => {})
+          await inv.consumeFreeQuota(candidate.offer.id, { tokens, requests: 1 }).catch((error) => {
+            // 扣减失败不阻断请求，但必须留痕：额度账不平会让免费池超额发放
+            console.warn('[免费池] 额度扣减失败：', error)
+          })
         }
         return
       }

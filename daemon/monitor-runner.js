@@ -12,6 +12,7 @@ import * as store from '../core/store.js'
 import * as inv from '../core/inventory.js'
 import * as providers from '../core/providers.js'
 import { applySnapshot, recordRun } from '../core/monitor.js'
+import { localDayKey } from '../core/dates.js'
 
 /**
  * @param {{providerId?:string|null, logger?:Console}} options
@@ -64,20 +65,18 @@ export async function collectProviderSnapshots({ providerId = null, logger = con
       // 今天每次采集都覆盖（当天累计值在增长）；最近 6 天只在缺记录时回填，
       // 否则「本周/本月」永远只有今天一个数
       const known = db.monitor?.siteSpend?.[provider.id] || {}
-      const pad = (n) => String(n).padStart(2, '0')
-      const dayKey = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
       const today = new Date()
       const wanted = [0]
       for (let i = 1; i <= 6; i += 1) {
         const d = new Date(today)
         d.setDate(d.getDate() - i)
-        if (!known[dayKey(d)]) wanted.push(i)
+        if (!known[localDayKey(d)]) wanted.push(i)
       }
       // 并发拉：逐天串行时 7 天要 7 个往返，慢站会把整轮采集拖超时
       const dayList = wanted.map((offset) => {
         const d = new Date(today)
         d.setDate(d.getDate() - offset)
-        return { offset, day: dayKey(d) }
+        return { offset, day: localDayKey(d) }
       })
       const settled = await Promise.all(
         dayList.map(async ({ day }) => {

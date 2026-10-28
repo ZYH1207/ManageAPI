@@ -160,7 +160,3 @@ export function listPresetSites() {
 export function listPresetPlatforms() {
   return PRESET_PLATFORMS
 }
-
-export function findPresetPlatform(id) {
-  return PRESET_PLATFORMS.find((p) => p.id === id) || null
-}

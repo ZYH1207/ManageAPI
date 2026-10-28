@@ -18,12 +18,14 @@ const UNIT_MULTIPLIER = {
 /** priceUnit 的合法值域（per_call 走独立的按次分支，不吃倍率换算） */
 export const PRICE_UNITS = ['per_mtok', 'per_1k', 'per_call']
 
-/** 人民币展示用的默认汇率；只在「把美元显示成人民币」时用到，不参与排序 */
+/** 人民币展示用的默认汇率；只在「把美元显示成人民币」时用到，不参与排序。
+ *  必须是字面量而不是 import fx.js 的 FX_DEFAULT_CNY：fx→store→monitor→pricing
+ *  存在循环，顶层取 fx 的绑定会撞 TDZ（实测 check-fx 直接 ReferenceError）。 */
 export const DISPLAY_FX_DEFAULT = 7.2
 
 /**
  * 把一条供给解析成「原始计价」，供后续换算。
- * @returns {{inPrice:number|null, outPrice:number|null, currency:string, source:string}|null}
+ * @returns {{inPrice:number|null, outPrice:number|null, currency:string, source:string}}
  */
 export function resolveOfferPrice(offer, benchmarks = {}) {
   // 定价模式是谁，就用谁：pricingMode 是权威，
@@ -73,17 +75,6 @@ export function offerCost(offer, settings = {}, benchmarks = {}) {
   const mult = UNIT_MULTIPLIER[offer.priceUnit] ?? 1
 
   const resolved = resolveOfferPrice(offer, benchmarks)
-  if (!resolved) {
-    return {
-      inUsdPerMtok: null,
-      outUsdPerMtok: null,
-      blendedUsdPerMtok: null,
-      inCnyPerMtok: null,
-      outCnyPerMtok: null,
-      blendedCnyPerMtok: null,
-      complete: false,
-    }
-  }
 
   // ---- 按次计费：inPrice 即「每次请求的价格」，outPrice 不适用。
   // 与按 token 的供给量纲不同，token 口径字段全空——比价排序自然落到组尾，
@@ -150,19 +141,15 @@ export function offerCost(offer, settings = {}, benchmarks = {}) {
 
   const toCny = (usd) => (usd === null ? null : usd * fx)
 
-  // 缓存读价：命中缓存的部分按它计费，通常远低于输入价。站点没给就退回输入价
-  // （保守，不假装有折扣），但要把「是不是真的给了」标出来，界面上能区分
-  const cacheReadRaw = offer.cacheReadPrice
-  const cacheReadCny =
-    cacheReadRaw === null || cacheReadRaw === undefined || !Number.isFinite(Number(cacheReadRaw))
-      ? null
-      : Number(cacheReadRaw) * mult
-  // 缓存写价同理：站点按它收「写入缓存」的钱（通常 1.25× 输入价）
-  const cacheWriteRaw = offer.cacheWritePrice
-  const cacheWriteCny =
-    cacheWriteRaw === null || cacheWriteRaw === undefined || !Number.isFinite(Number(cacheWriteRaw))
-      ? null
-      : Number(cacheWriteRaw) * mult
+  // 缓存读/写价：与 in/out 价出自同一张价目表、同一币种，必须走同样的
+  // currency 折算——此前一律当人民币，美元标价站的缓存价会差一个汇率的平方
+  const toCnyPrice = (raw) => {
+    if (raw === null || raw === undefined || !Number.isFinite(Number(raw))) return null
+    const perM = Number(raw) * mult
+    return resolved.currency === 'CNY' ? perM : perM * fx
+  }
+  const cacheReadCny = toCnyPrice(offer.cacheReadPrice)
+  const cacheWriteCny = toCnyPrice(offer.cacheWritePrice)
 
   return {
     inUsdPerMtok,

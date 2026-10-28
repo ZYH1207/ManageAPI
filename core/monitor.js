@@ -11,11 +11,12 @@
  */
 
 import { offerCost } from './pricing.js'
-import { ensureFx } from './fx.js'
+import { ensureFx, FX_DEFAULT_CNY } from './fx.js'
 // localDayKey 与 usage.js 同一份（usage 不回头 import 本文件，无循环）：
 // 花费曲线要拿这里的日键去 join usage 的天桶，两边必须同一口径——
 // 此前这里用 UTC 键，东八区每天凌晨 8 小时的用量对不上号
-import { localDayKey, localMonthStart } from './usage.js'
+import { localDayKey, localMonthStart, parseUsageComposite } from './usage.js'
+import { localWeekStart } from './dates.js'
 
 /** 各类时序数据的保留上限。按「每站每小时一个点」算，4000 点≈5 个站 1 个月。 */
 const KEEP = {
@@ -32,7 +33,8 @@ const ALERT_COOLDOWN_MS = 6 * 3600 * 1000
 let seq = 0
 function nextId(prefix) {
   seq += 1
-  return `${prefix}_${Date.now().toString(36)}${seq.toString(36)}`
+  // 加一段随机后缀：Date.now()+seq 在进程重启后 seq 归零，同毫秒内可能撞 id
+  return `${prefix}_${Date.now().toString(36)}${seq.toString(36)}${Math.random().toString(36).slice(2, 6)}`
 }
 
 export function defaultMonitor() {
@@ -94,7 +96,7 @@ function lowBalanceThreshold(settings, currency) {
   if (thresholdUsd === 0) return null
   if (String(currency || 'USD').toUpperCase() === 'CNY') {
     // 汇率真源在 fx 模块，别读兼容镜像
-    const fx = Number(ensureFx(settings).rates.CNY) || 7.2
+    const fx = Number(ensureFx(settings).rates.CNY) || FX_DEFAULT_CNY
     return thresholdUsd * fx
   }
   return thresholdUsd
@@ -128,16 +130,9 @@ function pushAlert(m, { providerId, code, level = 'warn', title, detail = '', at
  *          models?:Array, announcements?:Array, error?:string}} snap
  * @returns {{changes:Array, newAnnouncements:Array, alerts:Array}}
  */
-export function applySnapshot(db, snap) {
-  const m = ensureMonitor(db)
-  const settings = db.settings || {}
-  const at = snap.at || new Date().toISOString()
-  const providerId = snap.providerId
-  const changes = []
-  const addedAlerts = []
-
-  // ---------------------------------------------------------------- 余额
-  const balance = snap.balance
+/** 余额快照 + 低余额/读取失败告警；返回本次新增的告警。 */
+function applyBalanceSnapshot(m, { providerId, at, balance, settings }) {
+  const added = []
   if (balance && balance.ok && Number.isFinite(balance.remaining)) {
     m.balance.push({
       providerId,
@@ -161,7 +156,7 @@ export function applySnapshot(db, snap) {
         at,
         cooldownMs: 12 * 3600 * 1000,
       })
-      if (alert) addedAlerts.push(alert)
+      if (alert) added.push(alert)
     }
   } else if (balance && !balance.ok && balance.reason) {
     const alert = pushAlert(m, {
@@ -173,41 +168,46 @@ export function applySnapshot(db, snap) {
       at,
       cooldownMs: 24 * 3600 * 1000,
     })
-    if (alert) addedAlerts.push(alert)
+    if (alert) added.push(alert)
   }
+  return added
+}
 
-  // ------------------------------------------------------------ 站点账单
-  // 站点自己按天算的账。「实际消费」只认这个——网关侧的 token 估算缺 26%、
-  // 上游 cached_tokens 也不可靠，拿它算钱必然对不上。
-  // 一次采集可能带回多天（今天覆盖 + 历史回填）
+/**
+ * 站点按天账单合并。
+ * 站点自己按天算的账。「实际消费」只认这个——网关侧的 token 估算缺 26%、
+ * 上游 cached_tokens 也不可靠，拿它算钱必然对不上。
+ * 一次采集可能带回多天（今天覆盖 + 历史回填），只留最近 45 天。
+ */
+function applySiteSpendDays(m, providerId, snap, at) {
   const spendDays = snap.siteSpendDays
     || (snap.siteSpend && snap.siteSpend.date ? { [String(snap.siteSpend.date).slice(0, 10)]: snap.siteSpend } : null)
-  if (spendDays && Object.keys(spendDays).length > 0) {
-    if (!m.siteSpend || typeof m.siteSpend !== 'object') m.siteSpend = {}
-    if (!m.siteSpend[providerId] || typeof m.siteSpend[providerId] !== 'object') {
-      m.siteSpend[providerId] = {}
-    }
-    for (const [day, spend] of Object.entries(spendDays)) {
-      m.siteSpend[providerId][String(day).slice(0, 10)] = {
-        actualCost: Number(spend.actualCost) || 0,
-        totalCost: Number(spend.totalCost) || 0,
-        requests: Number(spend.requests) || 0,
-        at,
-      }
-    }
-    // 只留最近 45 天，避免无限增长
-    const keys = Object.keys(m.siteSpend[providerId]).sort()
-    if (keys.length > 45) {
-      for (const old of keys.slice(0, keys.length - 45)) delete m.siteSpend[providerId][old]
+  if (!spendDays || Object.keys(spendDays).length === 0) return
+  if (!m.siteSpend || typeof m.siteSpend !== 'object') m.siteSpend = {}
+  if (!m.siteSpend[providerId] || typeof m.siteSpend[providerId] !== 'object') {
+    m.siteSpend[providerId] = {}
+  }
+  for (const [day, spend] of Object.entries(spendDays)) {
+    m.siteSpend[providerId][String(day).slice(0, 10)] = {
+      actualCost: Number(spend.actualCost) || 0,
+      totalCost: Number(spend.totalCost) || 0,
+      requests: Number(spend.requests) || 0,
+      at,
     }
   }
+  const keys = Object.keys(m.siteSpend[providerId]).sort()
+  if (keys.length > 45) {
+    for (const old of keys.slice(0, keys.length - 45)) delete m.siteSpend[providerId][old]
+  }
+}
 
-  // ------------------------------------------------------------ 倍率 / 价格
+/** 倍率/价格 diff：首次采集只记基线不产生变动；返回本次变动列表。 */
+function diffRatesAndPrices(m, { providerId, at, snap }) {
   const prev = m.snapshot[providerId]
   const firstTime = !prev || !prev.at
   const nextGroups = toMap(snap.groups, (g) => (g && typeof g.rate === 'number' ? g.name : null))
   const nextModels = toMap(snap.models, (mo) => (mo && mo.name ? mo.name : null))
-
+  const changes = []
   const record = (kind, key, from, to) => {
     changes.push({ providerId, kind, key, at, from, to })
   }
@@ -247,7 +247,51 @@ export function applySnapshot(db, snap) {
       modelCount: Object.keys(nextModels).length,
     }
   }
+  return changes
+}
 
+/** 公告入库：按 sourceKey 幂等；返回新增行。 */
+function applyAnnouncementRows(m, { providerId, at, announcements }) {
+  const added = []
+  if (!Array.isArray(announcements) || announcements.length === 0) return added
+  const seen = new Set(
+    m.announcements.filter((a) => a.providerId === providerId).map((a) => a.sourceKey),
+  )
+  for (const item of announcements) {
+    if (!item || !item.sourceKey || seen.has(item.sourceKey)) continue
+    seen.add(item.sourceKey)
+    const row = {
+      id: nextId('ann'),
+      providerId,
+      sourceKey: item.sourceKey,
+      title: item.title || '未命名公告',
+      content: item.content || '',
+      publishedAt: item.publishedAt || at,
+      seenAt: at,
+      readAt: null,
+    }
+    m.announcements.push(row)
+    added.push(row)
+  }
+  trim(m.announcements, KEEP.announcements)
+  return added
+}
+
+export function applySnapshot(db, snap) {
+  const m = ensureMonitor(db)
+  const settings = db.settings || {}
+  const at = snap.at || new Date().toISOString()
+  const providerId = snap.providerId
+  const addedAlerts = []
+
+  // 余额
+  addedAlerts.push(...applyBalanceSnapshot(m, { providerId, at, balance: snap.balance, settings }))
+
+  // 站点账单
+  applySiteSpendDays(m, providerId, snap, at)
+
+  // 倍率 / 价格
+  const changes = diffRatesAndPrices(m, { providerId, at, snap })
   if (changes.length > 0) {
     m.rates.push(...changes)
     trim(m.rates, KEEP.rates)
@@ -266,32 +310,10 @@ export function applySnapshot(db, snap) {
     if (alert) addedAlerts.push(alert)
   }
 
-  // ---------------------------------------------------------------- 公告
-  const newAnnouncements = []
-  if (Array.isArray(snap.announcements) && snap.announcements.length > 0) {
-    const seen = new Set(
-      m.announcements.filter((a) => a.providerId === providerId).map((a) => a.sourceKey),
-    )
-    for (const item of snap.announcements) {
-      if (!item || !item.sourceKey || seen.has(item.sourceKey)) continue
-      seen.add(item.sourceKey)
-      const row = {
-        id: nextId('ann'),
-        providerId,
-        sourceKey: item.sourceKey,
-        title: item.title || '未命名公告',
-        content: item.content || '',
-        publishedAt: item.publishedAt || at,
-        seenAt: at,
-        readAt: null,
-      }
-      m.announcements.push(row)
-      newAnnouncements.push(row)
-    }
-    trim(m.announcements, KEEP.announcements)
-  }
+  // 公告
+  const newAnnouncements = applyAnnouncementRows(m, { providerId, at, announcements: snap.announcements })
 
-  // ---------------------------------------------------------------- 采集失败
+  // 采集失败
   if (snap.error) {
     const alert = pushAlert(m, {
       providerId,
@@ -442,7 +464,7 @@ export function spendFactorOf(provider, settings) {
   const site = siteUnitPrice(provider, settings)
   if (site === null) return 1
   const fx = Number(ensureFx(settings).rates.CNY)
-  const market = Number.isFinite(fx) && fx > 0 ? fx : 7.2
+  const market = Number.isFinite(fx) && fx > 0 ? fx : FX_DEFAULT_CNY
   return site / market
 }
 
@@ -455,7 +477,7 @@ function spendByDay(usageData, offers, settings, benchmarks, providerById) {
   for (const [day, bucket] of Object.entries(usageData?.days || {})) {
     const acc = dayMap.get(day) || { estimated: 0, actual: 0, byProvider: {} }
     for (const [composite, row] of Object.entries(bucket || {})) {
-      const [, providerId, model] = composite.split('|')
+      const { providerId, model } = parseUsageComposite(composite)
       const offer = byKey.get(`${providerId}|${model}`)
       if (!offer) continue
       const cost = offerCost(offer, settings, benchmarks)
@@ -516,13 +538,7 @@ function buildSpendSeries(dayMap, days) {
   })
 }
 
-/** 本地周一的日期键（周一为一周开始） */
-function localWeekStart(date = new Date()) {
-  const d = new Date(date)
-  const offset = (d.getDay() + 6) % 7 // 周一=0、周日=6
-  d.setDate(d.getDate() - offset)
-  return localDayKey(d)
-}
+/** 本地周一的日期键（周一为一周开始）——实现收敛在 core/dates.js */
 
 /**
  * 今日 / 本周 / 本月花费合计，两种口径并列：
@@ -540,14 +556,12 @@ function localWeekStart(date = new Date()) {
  * 「本周/本月」按天累加——跨天的记录各自归属自己的那一天。
  */
 function buildSiteSpendSummary(m, settings) {
-  const fx = Number(ensureFx(settings).rates.CNY) || 7.2
+  const fx = Number(ensureFx(settings).rates.CNY) || FX_DEFAULT_CNY
   const now = new Date()
-  const pad = (n) => String(n).padStart(2, '0')
-  const todayKey = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`
-  const monthStart = `${todayKey.slice(0, 7)}-01`
-  const weekStartDate = new Date(now)
-  weekStartDate.setDate(weekStartDate.getDate() - ((weekStartDate.getDay() + 6) % 7))
-  const weekStart = `${weekStartDate.getFullYear()}-${pad(weekStartDate.getMonth() + 1)}-${pad(weekStartDate.getDate())}`
+  // 与 buildSpendSummary 共用同一份日期工具（此前这里手写了一套，两处口径已开始漂移）
+  const todayKey = localDayKey(now)
+  const monthStart = localMonthStart(now)
+  const weekStart = localWeekStart(now)
 
   const byProvider = {}
   const totals = {

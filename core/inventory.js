@@ -18,10 +18,6 @@ export function nowIso() {
 }
 
 /**
- * 归一化模型名，用于跨站比对同一个模型。
- * 处理：大小写、空白、`provider/` 前缀、`:free` / `-free` 后缀。
- */
-/**
  * 规范化分组名：去首尾空白 + 内部连续空白收敛成一个空格。
  *
  * **所有写入/比较 offer.group 的地方都必须走这个函数。** 站点在令牌列表里
@@ -33,6 +29,10 @@ export function normalizeGroup(name) {
   return String(name ?? '').trim().replace(/\s+/g, ' ')
 }
 
+/**
+ * 归一化模型名，用于跨站比对同一个模型。
+ * 处理：大小写、空白、`provider/` 前缀、`:free` / `-free` 后缀。
+ */
 export function normalizeModelKey(name) {
   return String(name ?? '')
     .trim()
@@ -54,11 +54,6 @@ export function normalizeBaseUrl(input) {
 }
 
 // ---------------------------------------------------------------- providers
-
-export async function listProviders() {
-  const db = await readDb()
-  return db.providers
-}
 
 export async function createProvider({ name, baseUrl, kind = 'unknown', note = '' }) {
   if (!name || !String(name).trim()) throw new Error('站点名称不能为空')
@@ -263,8 +258,6 @@ export async function updateCredential(id, patch) {
         credential.group = next
         credential.groupSource = source
       }
-    } else if (patch.groupSource !== undefined) {
-      credential.groupSource = patch.groupSource === 'auto' ? 'auto' : 'manual'
     }
     if (patch.expiresAt !== undefined) credential.expiresAt = patch.expiresAt
     return credential
@@ -304,66 +297,6 @@ export async function revealSecret(credentialId) {
 }
 
 // ------------------------------------------------------------------- offers
-
-/**
- * 一次性数据迁移：把历史遗留的分组名归一化，并合并因此产生的重复行。
- *
- * 为什么需要：修复前「同步时 trim 去重、写回时用原始值」会让带尾随空格的
- * 分组名每轮同步多插一整套行。代码修好后不会再增长，但已经落库的脏数据
- * 还在——归一化后会出现「同一分组同一模型两行」，其中一行是死的。
- *
- * 合并规则：同一 (站点, 归一化分组, 模型) 只保留**最早那行**（价格/Key 通常
- * 在它上面），后面的如果字段完全一致就直接删；有差异则保留但标记下线，
- * 不静默丢用户填过的价格。
- *
- * @returns {{normalized:number, merged:number, kept:number}}
- */
-export async function migrateGroupNames() {
-  return mutate((db) => {
-    let normalized = 0
-    for (const offer of db.offers) {
-      const fixed = normalizeGroup(offer.group)
-      if ((offer.group || '') !== fixed) {
-        offer.group = fixed
-        normalized += 1
-      }
-    }
-    for (const credential of db.credentials || []) {
-      const fixed = normalizeGroup(credential.group)
-      if ((credential.group || '') !== fixed) credential.group = fixed
-    }
-
-    // 合并重复：按 (providerId, group, upstreamName) 分组，保留最早一条
-    const buckets = new Map()
-    for (const offer of db.offers) {
-      const key = `${offer.providerId}|${normalizeGroup(offer.group)}|${offer.upstreamName}`
-      if (!buckets.has(key)) buckets.set(key, [])
-      buckets.get(key).push(offer)
-    }
-    const drop = new Set()
-    let merged = 0
-    for (const list of buckets.values()) {
-      if (list.length < 2) continue
-      // 最早的一行做「主行」
-      const sorted = [...list].sort((a, b) => String(a.listedAt || '').localeCompare(String(b.listedAt || '')))
-      const keeper = sorted[0]
-      for (const other of sorted.slice(1)) {
-        const samePrice =
-          other.inPrice === keeper.inPrice &&
-          other.outPrice === keeper.outPrice &&
-          (other.ratio ?? null) === (keeper.ratio ?? null) &&
-          (other.currency || '') === (keeper.currency || '') &&
-          (other.priceUnit || '') === (keeper.priceUnit || '')
-        // 字段完全一致 → 纯重复，删掉；有差异 → 保留但下线，交回用户判断
-        if (samePrice) drop.add(other.id)
-        else if (!other.delistedAt) other.delistedAt = nowIso()
-        merged += 1
-      }
-    }
-    if (drop.size > 0) db.offers = db.offers.filter((o) => !drop.has(o.id))
-    return { normalized, merged, kept: drop.size }
-  })
-}
 
 /**
  * 真正「在役」的供给：没下线（delistedAt）、站点没暂停（paused）、模型没被忽略（ignoredModels）。
@@ -459,13 +392,9 @@ export async function duplicateOffer(id, { group }) {
     if (!source) throw new Error(`模型记录不存在：${id}`)
     const name = normalizeGroup(group)
     if (!name) throw new Error('分组名不能为空')
-    const exists = db.offers.some(
-      (o) =>
-        o.providerId === source.providerId &&
-        normalizeGroup(o.group) === name &&
-        o.upstreamName === source.upstreamName,
-    )
-    if (exists) throw new Error(`该站「${name}」分组下已经有同名模型了`)
+    if (hasDuplicateOffer(db, { providerId: source.providerId, group: name, upstreamName: source.upstreamName })) {
+      throw new Error(`该站「${name}」分组下已经有同名模型了`)
+    }
     // 分组是 Key 的属性：复制到新分组时改挂该组的 Key（没有就留空，
     // 路由会按「同分组 Key」回落到该站的任意 Key）——不能让新行继续
     // 挂着别的分组的 Key，否则分组归属和实际鉴权就脱节了
@@ -485,36 +414,21 @@ export async function duplicateOffer(id, { group }) {
   })
 }
 
-export async function updateOfferPrice(
-  id,
-  { inPrice, outPrice, currency, priceUnit, ratio, benchmarkKey, pricingMode, group },
-) {
-  return mutate((db) => {
-    const offer = db.offers.find((o) => o.id === id)
-    if (!offer) throw new Error(`模型记录不存在：${id}`)
-    const num = (v) => (v === null || v === undefined || v === '' ? null : Number(v))
-    if (inPrice !== undefined) offer.inPrice = num(inPrice)
-    if (outPrice !== undefined) offer.outPrice = num(outPrice)
-    if (ratio !== undefined) offer.ratio = num(ratio)
-    if (benchmarkKey !== undefined) offer.benchmarkKey = benchmarkKey || null
-    if (pricingMode !== undefined) offer.pricingMode = pricingMode === 'ratio' ? 'ratio' : 'manual'
-    if (currency) offer.currency = currency
-    if (priceUnit) offer.priceUnit = priceUnit
-    if (group !== undefined) {
-      const name = normalizeGroup(group)
-      const clash = db.offers.some(
-        (o) =>
-          o.id !== id &&
-          o.providerId === offer.providerId &&
-          normalizeGroup(o.group) === name &&
-          o.upstreamName === offer.upstreamName,
-      )
-      if (clash) throw new Error(`该站「${name || '默认'}」分组下已经有同名模型了`)
-      offer.group = name
-    }
-    offer.updatedAt = nowIso()
-    return offer
-  })
+/**
+ * 同站同分组下是否已有同名模型。
+ *
+ * duplicateOffer 用默认的 excludeId=null（要求目标分组里完全没有这个模型）；
+ * PATCH 路由传当前行 id（允许改自己、只防撞别人）。
+ */
+export function hasDuplicateOffer(db, { providerId, group, upstreamName, excludeId = null }) {
+  const name = normalizeGroup(group)
+  return db.offers.some(
+    (o) =>
+      o.id !== excludeId &&
+      o.providerId === providerId &&
+      normalizeGroup(o.group) === name &&
+      o.upstreamName === upstreamName,
+  )
 }
 
 export async function deleteOffer(id) {
@@ -661,12 +575,6 @@ export async function setGatewayEnabled(enabled) {
   })
 }
 
-/** 按明文 key 找记录，鉴权用。 */
-export async function findGatewayKey(value) {
-  const db = await readDb()
-  return db.settings.gateway?.keys?.find((k) => k.key === value) || null
-}
-
 // ------------------------------------------------------------------- probes
 
 /** 探针记录的保留窗口：长期评分用 14 天半衰期，留 30 天足够，再老的数据只是占体积 */
@@ -694,23 +602,6 @@ export async function recordProbe(record) {
   })
 }
 
-export async function listProbes(limit = 100) {
-  const db = await readDb()
-  return db.probes.slice(-limit).reverse()
-}
-
-/**
- * 给某个站的一个分组统一设置倍率。
- *
- * 中转站的倍率是「按分组」定的，不是按模型——所以填一次就该覆盖该分组下所有模型。
- * 单条记录仍可单独改（改完这里会显示「混合」）。
- */
-/**
- * 手动改某个分组的倍率。
- *
- * 和「导入倍率」的区别只在于标记：这里写的是 ratioSource = 'custom'，
- * 站点原始值仍然留在 siteRatio 里，随时可以「恢复」。
- */
 /**
  * 按站点给的分组价格信息给一条供给落价。apply-group（用户选分组）与
  * detect-groups（后台识别分组）共用——此前两处各写一遍三分支，已经漂移过一次。
@@ -937,11 +828,6 @@ export async function setFreeQuota(offerId, rawQuota) {
   })
 }
 
-/** 清掉配额，回到「不限量」。 */
-export async function clearFreeQuota(offerId) {
-  return setFreeQuota(offerId, null)
-}
-
 /**
  * 真实调用后扣减免费额度。
  *
@@ -980,11 +866,6 @@ export async function setManualOrder(modelKey, order) {
     db.manualOrder[key] = order.map(String)
     return db.manualOrder[key]
   })
-}
-
-export async function getManualOrder(modelKey) {
-  const db = await readDb()
-  return db.manualOrder?.[modelKey] || null
 }
 
 // ----------------------------------------------------------- 真实流量计数
@@ -1049,13 +930,13 @@ export async function addTraffic(entries, windowMs = TRAFFIC_WINDOW_MS) {
   return mutate((db) => {
     if (!db.traffic || typeof db.traffic !== 'object') db.traffic = {}
     const now = Date.now()
-    const nowIso = new Date(now).toISOString()
+    const atIso = new Date(now).toISOString()
     for (const [offerId, delta] of entries) {
-      const row = db.traffic[offerId] || { ok: 0, fail: 0, since: nowIso, kinds: {}, quality: { samples: 0, bad: 0 } }
+      const row = db.traffic[offerId] || { ok: 0, fail: 0, since: atIso, kinds: {}, quality: { samples: 0, bad: 0 } }
       if (now - new Date(row.since).getTime() > windowMs) {
         row.ok = 0
         row.fail = 0
-        row.since = nowIso
+        row.since = atIso
         row.kinds = {}
         row.lastOkAt = null
         row.lastFailAt = null
@@ -1063,8 +944,8 @@ export async function addTraffic(entries, windowMs = TRAFFIC_WINDOW_MS) {
       }
       row.ok += delta.ok || 0
       row.fail += delta.fail || 0
-      if (delta.ok) row.lastOkAt = nowIso
-      if (delta.fail) row.lastFailAt = nowIso
+      if (delta.ok) row.lastOkAt = atIso
+      if (delta.fail) row.lastFailAt = atIso
       // 真实响应的质量信号（空回答 / 计费虚报）：探针之外的第二类完整性证据
       if (delta.quality) {
         if (!row.quality || typeof row.quality !== 'object') row.quality = { samples: 0, bad: 0 }
@@ -1077,7 +958,7 @@ export async function addTraffic(entries, windowMs = TRAFFIC_WINDOW_MS) {
           if (!count) continue
           const current = row.kinds[kind] || { n: 0, lastAt: null }
           current.n += count
-          current.lastAt = nowIso
+          current.lastAt = atIso
           row.kinds[kind] = current
         }
       }
@@ -1088,10 +969,6 @@ export async function addTraffic(entries, windowMs = TRAFFIC_WINDOW_MS) {
 }
 
 // ------------------------------------------------------------ 路由决策日志
-
-export async function recordRouting(entry) {
-  return recordRoutingBatch([entry])
-}
 
 /**
  * 批量写决策日志。
@@ -1113,30 +990,6 @@ export async function recordRoutingBatch(entries = []) {
 export async function listRouting(limit = 50) {
   const db = await readDb()
   return (db.routing || []).slice(-limit).reverse()
-}
-
-// --------------------------------------------------------------- public view
-
-/** 给前端的视图：去掉密文，只留可识别信息。 */
-export async function publicState() {
-  const db = await readDb()
-  return {
-    settings: db.settings,
-    providers: db.providers,
-    credentials: db.credentials.map((c) => ({
-      id: c.id,
-      providerId: c.providerId,
-      label: c.label,
-      tail: c.tail,
-      quotaRemaining: c.quotaRemaining,
-      currency: c.currency,
-      quotaUpdatedAt: c.quotaUpdatedAt,
-      expiresAt: c.expiresAt,
-      createdAt: c.createdAt,
-    })),
-    offers: db.offers,
-    probeCount: db.probes.length,
-  }
 }
 
 // ------------------------------------------------------------------ 登录态
@@ -1278,29 +1131,21 @@ export async function autoRelogin(providerId) {
     return { ok: true, token: result.token }
   } catch (error) {
     const message = error.message || String(error)
-    await mutate((db) => {
-      const p = db.providers.find((x) => x.id === providerId)
-      if (p) {
-        p.tokenStatus = 'invalid'
-        p.tokenStatusAt = nowIso()
-        p.tokenStatusMessage = message
-        p.updatedAt = nowIso()
-      }
-    })
+    // 只有「凭据/鉴权本身有问题」才把令牌标成失效；网络超时、loginCred 解密失败、
+    // 响应解析失败都不算令牌的错——与 setTokenStatus 的口径一致（null 表示没结论），
+    // 否则一次网络抖动就会把站点卡标红，误导用户去重新登录。
+    const authProblem = /HTTP (401|403)|登录被拒绝|密码|账号|人机验证|验证码|2fa|totp/i.test(message)
+    if (authProblem) {
+      await mutate((db) => {
+        const p = db.providers.find((x) => x.id === providerId)
+        if (p) {
+          p.tokenStatus = 'invalid'
+          p.tokenStatusAt = nowIso()
+          p.tokenStatusMessage = message
+          p.updatedAt = nowIso()
+        }
+      })
+    }
     return { ok: false, reason: message }
-  }
-}
-
-/**
- * 揭开登录凭据（仅供「重新登录」的编排使用）；没有返回 null。
- */
-export async function revealLoginCred(providerId) {
-  const db = await readDb()
-  const provider = db.providers.find((p) => p.id === providerId)
-  if (!provider?.loginCred) return null
-  try {
-    return JSON.parse(await decryptSecret(provider.loginCred))
-  } catch {
-    return null
   }
 }

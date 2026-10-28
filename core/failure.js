@@ -23,14 +23,6 @@ export const UNAVAILABLE_COOLDOWN_MS = {
   'model-missing': 60 * 60 * 1000,
 }
 
-/** 冷却原因的中文说明，决策页直接展示 */
-export const UNAVAILABLE_LABEL = {
-  quota: '额度不足',
-  budget: '单次预算超限',
-  'rate-limit': '限流中',
-  'model-missing': '模型不可用',
-}
-
 const RULES = [
   {
     // 单次请求的预算/上限被拒（REQUEST_BUDGET_EXCEEDED）：这一次请求太大，

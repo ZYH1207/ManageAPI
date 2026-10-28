@@ -290,22 +290,3 @@ export async function getActiveAccount(platformId) {
   if (!accountId) return null
   return db.accounts.find((a) => a.id === accountId) || null
 }
-
-/** 传 null / undefined 表示取消活跃账号。 */
-export async function setActiveAccount(platformId, accountId) {
-  return mutateFree((db) => {
-    if (!db.platforms.some((p) => p.id === platformId)) {
-      throw new Error(`平台不存在：${platformId}`)
-    }
-    if (accountId === null || accountId === undefined) {
-      delete db.activeAccount[platformId]
-      return null
-    }
-    const account = db.accounts.find((a) => a.id === accountId)
-    if (!account) throw new Error(`账号不存在：${accountId}`)
-    // 跨平台设活跃账号几乎一定是调用方传错了 id，直接报错比默默写坏数据好
-    if (account.platformId !== platformId) throw new Error('该账号不属于这个平台')
-    db.activeAccount[platformId] = account.id
-    return account
-  })
-}

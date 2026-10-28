@@ -9,7 +9,7 @@
  */
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import { mkdir, readFile, writeFile, chmod, access } from 'node:fs/promises'
+import { mkdir, readFile, writeFile, chmod, access, stat } from 'node:fs/promises'
 import { constants } from 'node:fs'
 import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto'
 import { defaultMonitor, ensureMonitor } from './monitor.js'

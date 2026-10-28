@@ -10,6 +10,9 @@ import { join } from 'node:path'
 import { readFile, mkdir } from 'node:fs/promises'
 import { dataDir } from './store.js'
 import { writeJsonAtomic } from './fsx.js'
+// 本地日期键的唯一实现在 dates.js；这里 re-export 供既有调用方（monitor.js 等）继续使用
+import { localDayKey, localMonthStart } from './dates.js'
+export { localDayKey, localMonthStart }
 
 let cache = null
 let writeChain = Promise.resolve()
@@ -55,20 +58,13 @@ async function flush() {
 }
 
 /**
- * 本地日期键（YYYY-MM-DD）。「今天/本月」按用户所在时区算，与签到账本
- * (platforms/ledger.js 的 localDayKey) 同一口径；此前用 UTC 日，东八区用户
- * 每天早上 8 点前的用量都记在「昨天」、月底 8 小时记错月。旧数据里的 UTC
- * 键不迁移，自然老化——只是图表边界略歪，聚合数字不变。
+ * 解析用量复合键 `keyId|providerId|model`。
+ * model 排最后且模型名本身可能含 `|`——前两段是内部生成的 id（不含 |），
+ * 剩余段重新 join 才能还原。usage 汇总、监控花费、用量核对三处共用这一份。
  */
-export function localDayKey(date = new Date()) {
-  const d = date instanceof Date ? date : new Date(date)
-  const pad = (n) => String(n).padStart(2, '0')
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
-}
-
-/** 本地月份月初的日期键（月度 Key 限额用，同样按本地时区归属月份）。 */
-export function localMonthStart(date = new Date()) {
-  return `${localDayKey(date).slice(0, 7)}-01`
+export function parseUsageComposite(composite) {
+  const [keyId, providerId, ...modelParts] = String(composite).split('|')
+  return { keyId, providerId, model: modelParts.join('|') }
 }
 
 function todayKey(iso) {
@@ -131,6 +127,9 @@ function addRow(target, row) {
   target.input += row.input
   target.output += row.output
   target.cached += row.cached
+  // 缓存写入此前漏加：byModel/byDay 等汇总行的 cacheCreation 恒 0，
+  // 一旦有展示方读汇总（而不是原始 days）就会少算一笔缓存写费用
+  target.cacheCreation += row.cacheCreation || 0
   target.latencySum += row.latencySum
   target.latencyCount += row.latencyCount
   target.ttftSum += row.ttftSum
@@ -163,10 +162,8 @@ export async function usageSummary({ days = 30 } = {}) {
     if (!rangeSet.has(day)) continue
     const dayTotal = byDay[day] || emptyRow()
     for (const [composite, row] of Object.entries(bucket)) {
-      // 复合键是 keyId|providerId|model，model 排最后——模型名里含 | 时
-      // 剩余段重新 join 才能还原（前两段是内部生成的 id，不会含 |）
-      const [keyId, providerId, ...modelParts] = composite.split('|')
-      const model = modelParts.join('|')
+      // 复合键 keyId|providerId|model，model 可能含 |——统一走 parseUsageComposite
+      const { keyId, providerId, model } = parseUsageComposite(composite)
       addRow(totals, row)
       addRow(dayTotal, row)
       if (!byKey[keyId]) byKey[keyId] = emptyRow()
@@ -206,11 +203,4 @@ export async function tokensUsedByKey(keyId, sinceDay) {
     }
   }
   return total
-}
-
-/** 清空统计（界面上的「重置用量」）。 */
-export async function resetUsage() {
-  cache = { version: 1, days: {} }
-  writeChain = writeChain.then(flush).catch(() => {})
-  return writeChain
 }

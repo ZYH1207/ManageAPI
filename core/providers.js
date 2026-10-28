@@ -63,9 +63,27 @@ function originOf(baseUrl, { stripApiPrefix = false } = {}) {
 }
 
 /** 同一站点可能有 api. 前缀，两种主机都值得试一次（去重、保持顺序） */
-function originCandidates(baseUrl, { stripApiPrefix = true } = {}) {
-  const list = [originOf(baseUrl), stripApiPrefix ? originOf(baseUrl, { stripApiPrefix: true }) : '']
+function originCandidates(baseUrl) {
+  const list = [originOf(baseUrl), originOf(baseUrl, { stripApiPrefix: true })]
   return [...new Set(list.filter(Boolean))]
+}
+
+/** one-api 系的 quota 是内部计费单位（1/500000 美元），换算成美元展示 */
+const QUOTA_PER_USD = 500000
+function quotaToUsd(quota) {
+  return Math.round((quota / QUOTA_PER_USD) * 100) / 100
+}
+
+/** 各调用场景的默认超时（毫秒）：集中定义，站点协议差异一眼可见 */
+const TIMEOUTS = {
+  listModels: 15000,
+  detectKind: 5000,
+  balance: 10000,
+  announcements: 8000,
+  siteSpend: 20000,
+  siteUsage: 15000,
+  tokenList: 15000,
+  login: 12000,
 }
 
 /** 兼容几种常见返回形态，抽出模型 id 列表。 */function extractModelIds(payload) {
@@ -85,7 +103,7 @@ function originCandidates(baseUrl, { stripApiPrefix = true } = {}) {
  * 拉取模型列表。成功即代表这条 Key 到该站是通的。
  * @returns {{models:string[], raw:number, elapsedMs:number}}
  */
-export async function listModels({ baseUrl, apiKey, timeoutMs = 15000 }) {
+export async function listModels({ baseUrl, apiKey, timeoutMs = TIMEOUTS.listModels }) {
   const url = `${String(baseUrl).replace(/\/+$/, '')}/models`
   const started = Date.now()
   const payload = await requestJson(url, { apiKey, timeoutMs })
@@ -107,16 +125,13 @@ export async function listModels({ baseUrl, apiKey, timeoutMs = 15000 }) {
  *
  * @returns {Promise<{kind:'one-api'|'new-api'|'sub2api'|'unknown', evidence:string}>}
  */
-export async function detectProviderKind({ baseUrl, timeoutMs = 5000, adminToken = '' } = {}) {
+export async function detectProviderKind({ baseUrl, timeoutMs = TIMEOUTS.detectKind, adminToken = '' } = {}) {
   const origins = originCandidates(baseUrl)
   let sawStatus = false
   let statusHint = ''
 
   // 识别请求带上 adminToken / API Key：部分站的系别特征接口需要登录才可达
   // （匿名探测返回 401/403 时带令牌重试往往就通了），不带就只能靠匿名可达的特征
-  const authHeaders = {}
-  if (adminToken) authHeaders.Authorization = `Bearer ${adminToken}`
-
   for (const origin of origins) {
     // ---- one-api / new-api 系：/api/status 是公共接口
     try {
@@ -172,7 +187,7 @@ export async function detectProviderKind({ baseUrl, timeoutMs = 5000, adminToken
  *
  * @returns {{ok:boolean, remaining?:number, currency?:string, reason?:string}}
  */
-export async function tryBalance({ baseUrl, apiKey, adminToken, kind, timeoutMs = 10000 }) {
+export async function tryBalance({ baseUrl, apiKey, adminToken, kind, timeoutMs = TIMEOUTS.balance }) {
   // 模型厂商有专用余额接口，先试它——这类接口不认 one-api 的 /api/user/self
   const vendor = await readVendorBalance({ baseUrl, apiKey, timeoutMs, requestJson })
   if (vendor) return vendor
@@ -181,9 +196,8 @@ export async function tryBalance({ baseUrl, apiKey, adminToken, kind, timeoutMs 
 
   // 有管理令牌时优先走账户接口：Sub2API 用 /api/v1/user/profile，one-api 系用 /api/user/self
   if (adminToken) {
-    let lastError = null
     // 单独记鉴权失败：多 origin 轮询时「A 域名 401 + B 域名 404」的最后错误是 404，
-    // 只看 lastError 会把令牌失效漏掉——令牌永远不标红
+    // 只记最后错误会把令牌失效漏掉——令牌永远不标红
     let authError = null
     // 系别已知的站只走自己的路径（/api/v1/user/profile 是 Sub2API 专用，
     // /api/user/self 是 one-api/new-api 系）；unknown 保留双路径盲试探
@@ -214,7 +228,7 @@ export async function tryBalance({ baseUrl, apiKey, adminToken, kind, timeoutMs 
           if (typeof quota === 'number') {
             return {
               ok: true,
-              remaining: Math.round((quota / 500000) * 100) / 100,
+              remaining: quotaToUsd(quota),
               currency: 'USD',
               via: 'admin-token-quota',
             }
@@ -235,6 +249,8 @@ export async function tryBalance({ baseUrl, apiKey, adminToken, kind, timeoutMs 
   }
 
   // 回落到 sk- key 的老路
+  // 注意：这里只剥 /v1 尾巴、保留用户填的子路径（与 originOf 的「只留协议+主机」不同——
+  // 挂在反代子路径下的站要带上那段路径才能命中接口）
   const origin = String(baseUrl).replace(/\/v\d+\/?$/i, '').replace(/\/+$/, '')
   const candidates = [`${origin}/api/user/self`, `${origin}/api/user/dashboard`]
   let lastError = null
@@ -249,7 +265,7 @@ export async function tryBalance({ baseUrl, apiKey, adminToken, kind, timeoutMs 
         const isQuota = data?.quota !== undefined
         return {
           ok: true,
-          remaining: isQuota ? Math.round((remaining / 500000) * 100) / 100 : remaining,
+          remaining: isQuota ? quotaToUsd(remaining) : remaining,
           // 裸 balance 字段多半是美元余额；只有站点显式声明 CNY 才算人民币
           currency: isQuota || String(data?.currency || '').toUpperCase() !== 'CNY' ? 'USD' : 'CNY',
         }
@@ -368,7 +384,7 @@ export async function fetchAvailableChannels({ baseUrl, adminToken, timeoutMs = 
  *
  * @returns {Promise<Array<{sourceKey:string, title:string, content:string, publishedAt:string|null}>>}
  */
-export async function fetchAnnouncements({ baseUrl, apiKey, adminToken, kind, timeoutMs = 8000 }) {
+export async function fetchAnnouncements({ baseUrl, apiKey, adminToken, kind, timeoutMs = TIMEOUTS.announcements }) {
   const origins = originCandidates(baseUrl)
   const token = adminToken || apiKey
   const out = []
@@ -441,7 +457,7 @@ export async function fetchAnnouncements({ baseUrl, apiKey, adminToken, kind, ti
  * @returns {Promise<{actualCost:number, totalCost:number, requests:number,
  *                    inputTokens:number, cacheReadTokens:number, outputTokens:number}>}
  */
-export async function fetchSiteDailySpend({ baseUrl, adminToken, date, timeoutMs = 20000 }) {
+export async function fetchSiteDailySpend({ baseUrl, adminToken, date, timeoutMs = TIMEOUTS.siteSpend }) {
   const origin = originOf(baseUrl, { stripApiPrefix: true })
   if (!origin) throw new Error(`站点地址无法解析：${baseUrl}`)
   const day = String(date || '').slice(0, 10)
@@ -474,7 +490,7 @@ export async function fetchSiteDailySpend({ baseUrl, adminToken, date, timeoutMs
   }
 }
 
-export async function fetchSiteUsage({ baseUrl, adminToken, timeoutMs = 15000 }) {
+export async function fetchSiteUsage({ baseUrl, adminToken, timeoutMs = TIMEOUTS.siteUsage }) {
   const origin = originOf(baseUrl, { stripApiPrefix: true })
   if (!origin) throw new Error(`站点地址无法解析：${baseUrl}`)
   const paths = ['/api/v1/usage/summary', '/api/v1/usage/stats', '/api/v1/user/profile']
@@ -502,7 +518,7 @@ export async function fetchSiteUsage({ baseUrl, adminToken, timeoutMs = 15000 })
  *
  * @returns {Promise<{items:Array<{name,key,group,rate}>, raw:any, source:string}>}
  */
-export async function fetchTokenList({ baseUrl, adminToken, timeoutMs = 15000 }) {
+export async function fetchTokenList({ baseUrl, adminToken, timeoutMs = TIMEOUTS.tokenList }) {
   const origins = originCandidates(baseUrl)
 
   const attempts = [
@@ -607,7 +623,7 @@ export function matchTokenBySecret(items, secret) {
  *
  * @returns {Promise<{groups:Array<{name,rate}>, models:Array, byGroup:Array, source:string}>}
  */
-export async function fetchProviderPricing({ baseUrl, adminToken, kind }) {
+export async function fetchProviderPricing({ baseUrl, adminToken }) {
   let channelError = null
 
   // channels 对所有系别都试（混合站可能同时有 status 公告与 channels 倍率）；
@@ -680,7 +696,7 @@ export async function fetchProviderPricing({ baseUrl, adminToken, kind }) {
 //                      → data.{access_token, refresh_token, expires_in}（Bearer）
 //   one-api / new-api  POST /api/user/login {username, password}
 //                      → data.{token, id}（new-api 请求还要带 New-Api-User: <id> 头）
-// 两种协议的产物统一为 { token, userId, refreshToken }——编排层（inventory）
+// 两种协议的产物统一为 { token, refreshToken }——编排层（inventory）
 // 负责写回 adminToken / refreshTokenEnc 与失效重试。
 //
 // 红线：站点开启验证码（Turnstile/腾讯/2FA）时明确报错，不做打码绕过。
@@ -689,9 +705,9 @@ const LOGIN_HINTS = /captcha|turnstile|验证码|2fa|totp/i
 
 /**
  * 账号密码登录。kind 已知走对应端点，unknown 按 sub2api → one-api 顺序都试。
- * @returns {Promise<{token:string, userId:string|null, refreshToken:string|null, kind:string}>}
+ * @returns {Promise<{token:string, refreshToken:string|null, kind:string}>}
  */
-export async function loginProvider({ baseUrl, kind, user, password, timeoutMs = 12000 }) {
+export async function loginProvider({ baseUrl, kind, user, password, timeoutMs = TIMEOUTS.login }) {
   const name = String(user || '').trim()
   if (!name || !password) throw new Error('账号和密码都不能为空')
 
@@ -718,7 +734,6 @@ export async function loginProvider({ baseUrl, kind, user, password, timeoutMs =
         if (!token) throw new Error(`登录响应里没有 access_token：${JSON.stringify(d).slice(0, 120)}`)
         return {
           token,
-          userId: String(d?.user?.id ?? '') || null,
           refreshToken: d?.refresh_token || null,
           kind: 'sub2api',
         }
@@ -739,7 +754,6 @@ export async function loginProvider({ baseUrl, kind, user, password, timeoutMs =
       if (!token) throw new Error(`登录响应里没有 token：${JSON.stringify(d).slice(0, 120)}`)
       return {
         token,
-        userId: d?.id !== undefined && d?.id !== null ? String(d.id) : null,
         refreshToken: null,
         kind: 'new-api',
       }

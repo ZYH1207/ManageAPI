@@ -24,14 +24,6 @@ export function getConnector(id) {
   return registry.get(String(id ?? '')) || null
 }
 
-export function listConnectors() {
-  return [...registry.values()]
-}
-
-export function hasConnector(id) {
-  return registry.has(String(id ?? ''))
-}
-
 /**
  * 安全调用。
  *

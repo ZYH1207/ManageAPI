@@ -246,7 +246,6 @@ const EN = {
   '概览': 'Overview',
   '状态与排名': 'Status & ranking',
   '站点': 'Sites',
-  '中转站与 Key': 'Relays & keys',
   '比价': 'Pricing',
   '同一模型对比': 'Same model, side by side',
   '智能决策': 'Routing',
@@ -262,9 +261,6 @@ const EN = {
   '使用说明': 'Docs',
   '联系我们': 'Contact',
   '汇率 USD→CNY': 'FX USD→CNY',
-  '收起侧边栏': 'Collapse sidebar',
-  '展开侧边栏': 'Expand sidebar',
-  '切换深色模式': 'Toggle dark mode',
   '切换语言': 'Switch language',
   '个人专属API网关': 'Your personal API gateway',
   '这个工具怎么用、为什么这么设计': 'How to use it, and why it works this way',
@@ -272,12 +268,10 @@ const EN = {
   // ---- 顶栏 / 通知
   '通知': 'Notifications',
   '全部已读': 'Mark all read',
-  '暂无通知': 'Nothing to notify',
   '条未读': 'unread',
 
   // ---- 页面副标题
   '当前状态一眼看完': 'Everything at a glance',
-  '中转站、Key 与分组倍率': 'Relays, keys and group ratios',
   '同一模型跨站对比': 'Cross-site comparison',
   '候选排序与手动调整': 'Candidates and manual order',
   '指纹 / 截断 / 计费 / 缓存': 'Fingerprint / truncation / billing / cache',
@@ -322,8 +316,6 @@ const EN = {
   '状态': 'Status',
   '来源': 'Source',
   '显示名': 'Display name',
-  '模型key': 'Model key',
-  '模型 key': 'Model key',
   '上游模型名': 'Upstream model',
   '模式': 'Mode',
   '输入价': 'Input',
@@ -357,7 +349,6 @@ const EN = {
   '从添加一个中转站开始': 'Start by adding a relay',
   '填上地址和一个 Key，同步模型列表，就能看到跨站比价。':
     'Add its base URL and a key, sync the model list, and you can compare prices across sites.',
-  '去添加站点': 'Add a site',
   '评分过期': 'score expired',
   '可用率低': 'low availability',
   '指纹不符': 'fingerprint mismatch',
@@ -389,7 +380,6 @@ const EN = {
   '读余额': 'Read balance',
   '导出配置': 'Export config',
   '令牌': 'Token',
-  '令牌 ✓': 'Token ✓',
   '选分组': 'Pick group',
   '分组倍率': 'Group ratios',
   '全部恢复为站点值': 'Restore all to site values',
@@ -398,7 +388,6 @@ const EN = {
   '余额未录入': 'Balance not set',
   '从站点读分组，选你买的那个，倍率自动填到下面所有模型': 'Read groups from the site, pick yours, ratios fill in below',
   '用管理令牌拉站方用量，和我们的估算对比': 'Pull the site\u2019s own usage and compare with our estimate',
-  '填后台登录令牌后，可自动读余额': 'Fill in a login token to read the balance automatically',
   '这把 Key 属于这个分组，点这里换': 'This key belongs to this group — click to change',
   '还没选分组，点这里选（会顺便把倍率填好）': 'No group yet — click to pick one (ratios fill in too)',
   '这把 Key 属于站点的哪个分组，同步模型时会自动带上': 'Which group this key belongs to; carried into model sync',
@@ -406,9 +395,6 @@ const EN = {
   '恢复成站点公布的倍率': 'Restore the ratio published by the site',
   '把这个站所有自定义倍率改回站点公布的值': 'Reset every custom ratio on this site',
   '扣费核对': 'Billing check',
-  '我们的估算：': 'Our estimate:',
-  '下面是站方返回的原始数据，差异大说明倍率有水分或计费口径不同。':
-    'Raw data from the site below. A big gap means the ratio is inflated or billing differs.',
 
   // ---- 分组弹窗
   '选择分组': 'Pick a group',
@@ -469,18 +455,15 @@ const EN = {
   '实际返回': 'Actual response',
   '延迟': 'Latency',
   '指纹通过': 'Fingerprint OK',
-  '指纹失败': 'Fingerprint failed',
   '未截断': 'Not truncated',
   '已截断': 'Truncated',
   '计费正常': 'Billing normal',
-  '计费异常': 'Billing inflated',
   '次': 'runs',
 
   // ---- 网关
   '网关地址': 'Gateway URL',
   '关闭网关': 'Turn off gateway',
   '开启网关': 'Turn on gateway',
-  '新建Key': 'New key',
   '新建 Key': 'New key',
   '月 token 限额（可空）': 'Monthly token limit (optional)',
   '最近请求': 'Recent requests',
@@ -516,7 +499,6 @@ const EN = {
     'Benchmarks are what ratios convert against. Three sources: import official prices from a site, use a site\u2019s own prices, or load the built-in list.',
   '条官方价': 'prices',
   '优先用令牌读「可用渠道」，没有则用模型广场': 'Read available channels with a token, falling back to the model plaza',
-  '从站点读取分组倍率和模型价格': 'Read group ratios and model prices from the site',
 
   // ---- 联系我们
   '源码与更新': 'Source & updates',
@@ -534,7 +516,6 @@ const EN = {
   '复制到剪贴板': 'Copy to clipboard',
 
   // ---- 通知中心
-  '站点不健康': 'Site unhealthy',
   '网关已关闭': 'Gateway is off',
   '余额不足': 'Low balance',
 }
@@ -554,18 +535,13 @@ Object.assign(EN, {
   '30 天 token': '30-day tokens',
   '默认 Key': 'Default key',
   '运行中': 'running',
-  '网关运行中': 'Gateway running',
   '网关已关闭': 'Gateway off',
 
   // 概览 / 决策 / 探针的状态说明
   '默认按「有效成本 = 价格 ÷ 质量」排序，用 ↑↓ 手动调整「可用」那几条的先后——不可信的站不会因为你拖它而排到前面。':
     'Sorted by effective cost (price ÷ quality). Use ↑↓ to reorder the available ones — an untrusted site will not move up just because you drag it.',
-  '注意：同一个模型在不同站的状态是各自独立的（A 站掉包，B 站却完全正常），所以这里按「站 × 模型」逐条评估，状态下方会写明具体原因。':
-    'Note: the same model can be fine on one site and swapped on another, so each site × model is judged on its own. The reason is shown under the status.',
 
   // 比价
-  '价格直接改，失焦即保存。「¥/百万 token」是综合成本：输入按 25%、输出按 75% 加权（权重可在左下角汇率旁调）。':
-    'Edit prices inline; saved on blur. ¥/Mtok is a blended cost: 25% input, 75% output (weight sits next to the FX box).',
   '价格直接改，失焦即保存。「{sym}/百万 token」是综合成本：输入按 25%、输出按 75% 加权。人民币标价的站按「基准价」页里的汇率折算成美元比较。':
     'Edit prices inline; saved on blur. {sym}/Mtok is a blended cost: 25% input, 75% output. CNY-priced sites convert at the rate on the Benchmarks page.',
   '{sym}/百万 token': '{sym}/Mtok',
@@ -580,8 +556,6 @@ Object.assign(EN, {
 
   // 网关
   '网关入口': 'Gateway endpoint',
-  '给每个客户端单独建一把 Key，用量才能分开统计；哪一把泄露了，单独轮换即可。':
-    'One key per client so usage stays attributable; a leaked key can be rotated on its own.',
   '路由决策': 'Routing decisions',
 
   // 用量
@@ -590,14 +564,10 @@ Object.assign(EN, {
   // 基准价（<b>标题</b> 后面的片段）
   '：优先用「令牌」读该站的「可用渠道」（数据最全，不要求开广场），读不到再回落「模型广场」。只补空缺、不覆盖你已有的条目。':
     ': reads the site\u2019s available channels with a token (richest data, no plaza needed), falling back to the model plaza. Only fills gaps, never overwrites.',
-  '：把某个站已经填好的实际价整体设为基准，适合你确信它没虚标的情况。':
-    ': takes one site\u2019s existing prices as the baseline — use it when you trust that site.',
   '：用工具内置的一份官方价（截至 ': ': uses the built-in official price list (as of ',
   '），价格常变，务必核对。': '). Prices change often — verify before relying on it.',
 
   // 站点页的令牌说明（整段走 t()，带 <code> 标记）
-  '「令牌」是站点后台的登录凭证，只用来读余额、不参与对话。获取：登录后台 → F12 → Network → 点任意 <code>/api/v1/</code> 请求 → 复制 Request Headers 里的 <code>Authorization</code>（去掉 <code>Bearer </code> 前缀）。令牌会过期，失效后重新复制。':
-    'The token is your site login credential — used only to read balance and usage, never for chat. To get it: log in → F12 → Network → click any <code>/api/v1/</code> request → copy <code>Authorization</code> from Request Headers (drop the <code>Bearer </code> prefix). Tokens expire in 7–30 days; copy a fresh one when they do.',
 
   // 概览的一句话结论（带 <strong>）
   '同样用 {model}，现在选「{provider}」最划算：{price}/百万 token，比最贵的站省 {pct}%。':
@@ -654,10 +624,7 @@ Object.assign(EN, {
   '站点已添加': 'Site added',
   '网关地址已复制': 'Gateway URL copied',
   '配置已复制到剪贴板': 'Config copied to clipboard',
-  '余额已更新': 'Balance updated',
-  '分组已更新': 'Group updated',
   '已保存': 'Saved',
-  '正在应用中…': 'Applying…',
 })
 
 // 带变量的提示：整句用正则，避免在模板里塞 t()
@@ -680,8 +647,6 @@ Object.assign(EN, {
   '浅色模式': 'Light mode',
   '收起': 'Collapse',
   '展开': 'Expand',
-  '只影响按美元标价的站点；人民币标价的站不受影响。':
-    'Only affects sites priced in USD; CNY-priced sites are unaffected.',
   '暂时没有通知': 'Nothing to notify',
   '{name} 余额偏低': '{name} balance is low',
   '剩余 {amount} {currency}，该充值了': '{amount} {currency} left — time to top up',
@@ -698,8 +663,6 @@ Object.assign(EN, {
 })
 
 Object.assign(EN, {
-  '价格直接改，失焦即保存。「¥/百万 token」是综合成本：输入按 25%、输出按 75% 加权。美元标价的站按「基准价」页里的汇率换算。':
-    'Edit prices inline; saved on blur. ¥/Mtok is a blended cost: 25% input, 75% output. USD-priced sites convert at the rate on the Benchmarks page.',
 })
 
 // 放行可疑供给（开关）
@@ -741,24 +704,10 @@ Object.assign(EN, {
   '状态': 'Status',
 
   '还没有免费模型': 'No free models yet',
-  '去「站点」页点「导入倍率」，实际价为 0 的模型会自动出现在这里。':
-    'Open Sites and click "Import ratios" — models priced at 0 will show up here automatically.',
   '去站点导入': 'Import from sites',
-  '免费模型是探针最有价值的场景：没人会白送，最常见的偷工方式是拿小模型冒充大模型。 指纹低于 100% 的那几行值得点开看看。':
-    'Free models are where probing matters most: nobody gives things away for free, and the usual trick is serving a smaller model. Rows below 100% fingerprint are worth a look.',
 
   '还没有连接平台': 'No platform connected',
-  '平台积分可以来自 WorkBuddy、Trae 等 Agent 平台。连接后能自动读模型目录、剩余积分与重置时间。':
-    'Platform credits can come from agents like WorkBuddy or Trae. Once connected, the model catalogue, remaining credits and reset time are read automatically.',
-  '连接功能开发中': 'Connector in progress',
 
-  '免费额度有两个来源': 'Free quota comes from two places',
-  '① 中转站的免费模型': '1) Free models on relay sites',
-  '② 平台的免费积分': '2) Free credits on agent platforms',
-  '去「站点」页点「导入倍率」，实际价为 0 的模型会自动出现在这里':
-    'Open Sites and click "Import ratios" — models priced at 0 appear here automatically',
-  '连接 WorkBuddy、Trae 等平台，或手动填一个额度':
-    'Connect WorkBuddy, Trae and similar platforms, or enter a quota manually',
 })
 
 // 免费页 · 闸门原因与平台卡片（web/free-relay.js、web/free-platform.js、core/rank-free.js）
@@ -770,6 +719,17 @@ Object.assign(EN, {
   '没有可信样本': 'No usable samples',
   '证据不足': 'Not enough evidence',
   '花费': 'Spend',
+  // 词典补漏：t() 用到但此前缺失的条目（英文界面之前会回落成中文）
+  '诊断信息': 'Diagnostics',
+  '下面这段可以直接全选复制，发给开发者定位问题。': 'Select the block below and send it to the developer to help pin down the issue.',
+  '还没有读到分组倍率。点「导入倍率」从站点读一次，或在下面手动填。': 'No group rates yet. Click "Import rates" to read them from the site, or fill them in manually below.',
+  '/次': '/call',
+  '已忽略 {n}': '{n} ignored',
+  '没有匹配的模型。': 'No matching models.',
+  '{n} 个账号': '{n} account(s)',
+  '已打开授权页。在浏览器里登录，如果弹出「打开 WorkBuddy」，先点取消、留在网页上，直到页面显示授权成功。': 'Authorization page opened. Log in within the browser; if an "Open WorkBuddy" prompt appears, dismiss it and stay on the page until it shows success.',
+  '「令牌」在站点卡片上（不在 Key 上）——它是站点后台的登录凭证，一个后台账号填一次，整站通用。获取：登录后台 → F12 → Network → 点任意 <code>/api/v1/</code> 请求 → 复制 Request Headers 里的 <code>Authorization</code>（去掉 <code>Bearer </code> 前缀）。令牌会过期，失效后重新复制。填了令牌后会自动识别这个站是哪一系。':
+    'The "token" lives on the site card (not on a key) — it is the site dashboard login credential: one per dashboard account, shared by the whole site. To get it: log in → F12 → Network → click any <code>/api/v1/</code> request → copy <code>Authorization</code> from Request Headers (drop the <code>Bearer </code> prefix). Tokens expire; copy a fresh one when they do. Saving it also auto-detects which relay family the site is.',
   '余额合计': 'Total balance',
   '读不到账单': 'No bill',
   '{n} 个站点账单': 'Bills from {n} sites',
@@ -783,7 +743,6 @@ Object.assign(EN, {
   '各站花费（堆叠）': 'Spend by site (stacked)',
   '该站每日花费': 'Daily spend for this site',
   '充值汇率': 'Top-up rate',
-  '默认站单价': 'Default site unit price',
   '令牌尾号': 'Token tail',
   '「令牌」是站点后台的登录凭证，一次填好整站通用，用来读余额、公告和分组': 'The token is the site login credential — fill it once per site for balance, announcements and groups',
   '未填站点令牌': 'No site token',
@@ -794,7 +753,6 @@ Object.assign(EN, {
   '模型消费 / 实际消费': 'Model spend / actual spend',
   '模型消费': 'Model spend',
   '实际消费': 'Actual spend',
-  '实际按充值汇率折算': 'actual converts with your top-up rate',
   '置信度高': 'high confidence',
   '置信度中': 'medium confidence',
   '置信度低（样本少）': 'low confidence (few samples)',
@@ -859,16 +817,12 @@ Object.assign(EN, {
   '签到成功，+{n}': 'Checked in, +{n}',
   '签到失败': 'Check-in failed',
   '已刷新': 'Refreshed',
-  '账号池与自动连接还在做，先用「手动添加」': 'Account pool and auto-connect are still in progress — use manual entry for now',
 })
 
 // 免费页 · 平台侧「手动添加」表单
 Object.assign(EN, {
-  '平台积分可以来自 WorkBuddy、Trae 等 Agent 平台。自动连接还在做，现在可以先手动记一个额度。':
-    'Platform credits can come from agents like WorkBuddy or Trae. Auto-connect is still in progress — you can record a quota manually for now.',
   '手动添加': 'Add manually',
   '连接平台': 'Connect platform',
-  'WorkBuddy / Trae 自动连接开发中': 'WorkBuddy / Trae auto-connect is in progress',
   '添加一个平台': 'Add a platform',
   '只记额度也能用：能算「还能撑几天」、到期前提醒你。自动读取模型目录要等连接器。':
     'Recording just the quota is still useful: it estimates days left and warns you before it runs out. Reading the catalogue automatically needs a connector.',
@@ -879,7 +833,6 @@ Object.assign(EN, {
   '窗口': 'Window',
   '每天': 'Daily',
   '每月': 'Monthly',
-  '先填一个平台名': 'Enter a platform name first',
   '已添加「{name}」': 'Added "{name}"',
 })
 
@@ -902,7 +855,6 @@ Object.assign(EN, {
   '已打开授权页，完成后会自动回来': 'Authorisation page opened — this will update automatically',
   '已连接': 'Connected',
   '授权超时，重新点一次「连接」': 'Authorisation timed out — click Connect again',
-  '账号池还在做，先一个账号够用': 'Account pool is still in progress — one account is enough for now',
 })
 
 Object.assign(EN, {
@@ -914,20 +866,15 @@ Object.assign(EN, {
 // 站点级令牌与余额
 Object.assign(EN, {
   '站点余额': 'Site balance',
-  '一个后台账号一套，整站通用': 'One per backend account — shared by the whole site',
   '「令牌」在站点卡片上（不在 Key 上）——它是站点后台的登录凭证，一个后台账号填一次，整站通用。获取：登录后台 → F12 → Network → 点任意 <code>/api/v1/</code> 请求 → 复制 Request Headers 里的 <code>Authorization</code>（去掉 <code>Bearer </code> 前缀）。令牌会过期，失效后重新复制。':
     'The token lives on the site card, not on individual keys — it is the backend login credential, entered once per backend account and shared by the whole site. To get it: log in → F12 → Network → click any <code>/api/v1/</code> request → copy <code>Authorization</code> from Request Headers (drop the <code>Bearer </code> prefix). Tokens expire; copy a fresh one when they do.',
 })
 
 Object.assign(EN, {
   '识别分组': 'Detect groups',
-  '从站点后台的令牌列表读出每把 Key 属于哪个分组，自动按各自的分组应用倍率':
-    'Reads each key\u2019s group from the site\u2019s token list and applies that group\u2019s rate',
 })
 
 Object.assign(EN, {
-  '需要先填「令牌」。从站点后台的令牌列表读出每把 Key 属于哪个分组，按各自的分组自动应用倍率':
-    'Needs a site token first. Reads each key\u2019s group from the site token list and applies that group\u2019s rate.',
 })
 
 Object.assign(EN, {
@@ -964,7 +911,6 @@ Object.assign(EN, {
 
 Object.assign(EN, {
   '等待授权… 已 {s} 秒': 'Waiting for authorisation… {s}s',
-  '已打开授权页，完成后这里会自动更新。': 'Authorisation page opened — this updates automatically when you finish.',
   '最近状态：': 'Latest status: ',
   '重新打开授权页': 'Reopen authorisation page',
   '已重新打开授权页': 'Authorisation page reopened',
@@ -976,7 +922,6 @@ Object.assign(EN, {
   '把平台接口的原始返回复制出来，字段对不上时用':
     'Copies the raw platform responses so field mismatches can be diagnosed',
   '诊断信息已复制，发给开发者就能定位': 'Diagnostics copied — send it over to get this fixed',
-  '复制失败，诊断信息已打印到控制台': 'Copy failed — diagnostics printed to the console',
 })
 
 Object.assign(EN, {
@@ -986,18 +931,11 @@ Object.assign(EN, {
 // 监控页
 Object.assign(EN, {
   '监控': 'Monitor',
-  '余额与变动': 'Balance & changes',
-  '余额趋势、倍率变动与上游公告': 'Balance trend, rate changes and upstream notices',
   '正在读取监控数据…': 'Loading monitor data…',
   '第一次打开会现采一轮，稍等一下。': 'The first open runs one collection round — give it a moment.',
   '还没有中转站': 'No upstream sites yet',
-  '监控会定时读每个站的余额、倍率与公告。先去「站点」页添加一个。':
-    'Monitoring periodically reads each site\u2019s balance, rates and notices. Add one on the Sites page first.',
-  '去添加站点': 'Add a site',
   '有余额数据': 'with balance data',
   '总余额': 'Total balance',
-  '今日花费': 'Spend today',
-  '按当前价估算': 'estimated at current prices',
   '24 小时变动': 'Changes (24h)',
   '倍率 / 价格': 'rates / prices',
   '未读告警': 'Unread alerts',
@@ -1009,21 +947,17 @@ Object.assign(EN, {
   // 图例符号是动态的（显示币种），用 {sym} 占位符；旧的整串 key 已对不上当前文案
   '总余额（{sym}，其他币种按汇率折算）': 'Total balance ({sym}; other currencies converted at the current rate)',
   '≈ ¥{cny}（按汇率折算）': '≈ ¥{cny} at the current rate',
-  '余额币种，读余额时按站点接口自动判断，可手动纠正': 'Balance currency — auto-detected from the site API, override if wrong',
   '显示币种': 'Display currency',
   '只影响价格显示，不影响比较口径（比较一律按美元）': 'Display only — comparisons always use USD',
   '只影响人民币标价/展示的折算': 'Only used to convert CNY prices for display',
   '显示币种已切换': 'Display currency switched',
-  '每日花费（估）': 'Daily spend (est.)',
   '余额与花费趋势': 'Balance and spend trend',
-  '只同步这个站': 'Collect this site only',
   '只采这个站': 'Collect this site',
   '无数据': 'no data',
   '最近倍率变动': 'Recent rate changes',
   '还没有变动。第一次同步只记基线，之后才开始比较。':
     'No changes yet — the first collection only records a baseline.',
   '低于阈值 {amount}': 'below threshold {amount}',
-  '还没读到模型价': 'prices not read yet',
   '{n} 个模型有官方价': '{n} models with published prices',
   '还没读到分组倍率': 'No group rates yet',
   '站点余额与分组': 'Site balances & groups',
@@ -1037,8 +971,6 @@ Object.assign(EN, {
     'No notices yet — most sites expose them publicly, so they arrive once a site is added.',
   '同步设置': 'Collection settings',
   '立即同步': 'Sync now',
-  '同步间隔（分钟，0 = 关闭）': 'Sync interval (minutes, 0 = off)',
-  '余额告警阈值（¥，0 = 不告警）': 'Low-balance threshold (¥, 0 = off)',
   '同步只读站点公开/后台数据，不打真实对话请求，所以可以比探针勤。 余额要走站点后台接口，需要先在「站点」页填「令牌」。':
     'Collection only reads public or backend data and never sends a real chat request, so it can run more often than probes. Balances come from the site backend API — fill in the site token first.',
   '耗时': 'Took',
@@ -1056,8 +988,6 @@ Object.assign(EN, {
   '免费模型：{list}': 'Free models: {list}',
   '忽略模型': 'Ignored models',
   '忽略后不再参与比价、智能决策、探针和网关': 'Ignored models are excluded from pricing, routing, probes and the gateway',
-  '勾上的模型不再参与比价、智能决策、探针和网关；随时可以取消勾选恢复。':
-    'Checked models are excluded from pricing, routing, probes and the gateway. Uncheck anytime to restore.',
   '{n} / {total} 个模型': '{n} / {total} models',
   '{n} 个站': '{n} sites',
   '已不在榜单里': 'no longer ranked',
@@ -1099,7 +1029,6 @@ Object.assign(EN, {
   '同步完成，{n} 个站有问题：{error}': 'Synced — {n} sites had problems: {error}',
   '已全部标记为已读': 'Marked all as read',
   '全部站点': 'All sites',
-  '还没有记录': 'Nothing yet',
   // 免费池 · 平台账号与删除
   '删掉这张卡和它的账号记录': 'Remove this card and its accounts',
   '本周期还剩 {n} {unit}': '{n} {unit} left this cycle',
@@ -1151,7 +1080,6 @@ Object.assign(EN, {
   '同步模型 + 读余额 + 识别分组，一次跑完': 'Sync models + read balance + detect groups, in one go',
   '从站点读分组，选你买的那个，倍率自动填到下面所有模型': 'Read groups from the site, pick the one you bought, ratios fill in automatically',
   '用管理令牌拉站方用量，和我们的估算对比': 'Pull site-side usage with the admin token and compare with our estimate',
-  '站点后台的登录令牌，一次填好整站通用，用来读余额和用量': 'Admin token for the site backend — one per account, used for balance and usage',
   '拖动这张卡片调整顺序': 'Drag to reorder this site',
   '暂停这个站点：不进比价、决策、探针和同步': 'Pause this site: excluded from pricing, decisions, probes and sync',
   '恢复这个站点': 'Resume this site',
@@ -1160,7 +1088,6 @@ Object.assign(EN, {
   '还没选分组，点这里选（会顺便把倍率填好）': 'No group yet — click to pick one (ratios fill in too)',
   '改这里就是自定义倍率，不影响站点原始值': 'Editing here makes it a custom ratio; the site value stays untouched',
   '恢复成站点公布的倍率': 'Restore the ratio published by the site',
-  '按这个模型再建一个分组': 'Duplicate this row into a new group for the same model',
   '忽略后不再参与比价、智能决策、探针和网关': 'Once ignored: excluded from pricing, decisions, probes and the gateway',
   '当前按倍率算，切到「价格」才能填': 'Priced by ratio now — switch to "Price" to edit',
   '当前按手填单价算，切到「倍率」才能填': 'Priced by manual unit price — switch to "Ratio" to edit',
@@ -1181,7 +1108,6 @@ Object.assign(EN, {
   '上移': 'Up',
   '下移': 'Down',
   '刷新': 'Refresh',
-  '只同步这个站': 'Sync this site only',
   '只采这个站': 'Collect this site only',
   '切换语言': 'Language',
   '通知': 'Notifications',

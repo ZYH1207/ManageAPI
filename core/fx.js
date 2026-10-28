@@ -13,7 +13,6 @@ import { readDb, mutate } from './store.js'
 
 export const FX_BASE = 'USD'
 export const FX_REFRESH_MS = 12 * 3600 * 1000
-export const FX_WARN_MS = 7 * 24 * 3600 * 1000
 export const FX_DEFAULT_CNY = 7.2
 
 /** 只留我们可能用到的币种：接口会返回 170 多种，全存进 db.json 只是让 state 变胖 */
@@ -33,10 +32,6 @@ const SOURCES = [
     pick: (json) => (json && json.result === 'success' ? json.rates : null),
   },
 ]
-
-export function defaultFx() {
-  return { base: FX_BASE, rates: { CNY: FX_DEFAULT_CNY }, updatedAt: null, source: 'default', manual: false }
-}
 
 /** 把 db 里可能缺失/半残的 fx 补成完整形状（纯函数，不写盘） */
 export function ensureFx(settings = {}) {
