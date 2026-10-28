@@ -3671,6 +3671,9 @@ async function streamAttempt({
 
   const headers = {
     'X-ManageAPI-Provider': encodeURIComponent(candidate.provider.name),
+    // 实际服务的上游模型名（自动路由接管时客户端发的是 AutoThink，
+    // 真实模型只能从这里和路由日志看）
+    'X-ManageAPI-Model': encodeURIComponent(candidate.offer.upstreamName),
     'X-ManageAPI-Attempts': String(attemptIndex + 1),
     'X-ManageAPI-Quality': candidate.quality === null ? 'unknown' : candidate.quality.toFixed(2),
     // 这次到底是免费池、付费池，还是免费池不够用后回落到的付费池——
@@ -3923,6 +3926,7 @@ async function forwardToUpstream({
       res.writeHead(200, {
         'Content-Type': 'application/json; charset=utf-8',
         'X-ManageAPI-Provider': encodeURIComponent(current.provider.name),
+        'X-ManageAPI-Model': encodeURIComponent(current.offer.upstreamName),
         'X-ManageAPI-Attempts': String(attemptIndex + 1),
         'X-ManageAPI-Pool': pool || 'paid',
       })
@@ -4750,6 +4754,27 @@ async function handleProxy(req, res, url) {
       return json(res, 200, {
         object: 'list',
         data: models.map((m) => shape(m, 'manage-api-free')),
+      })
+    }
+
+    // 自动路由接管付费入口时，清单只出一个虚拟模型 AutoThink：客户端拉到的
+    // 就这一个、请求也只发它，网关背后照常改派全场最优。真实落点在
+    // X-ManageAPI-Model 响应头和路由日志里，上游响应体的 model 字段原样透传。
+    // 免费入口不接管（把免费请求改派到付费模型等于静默扣钱），/free/v1/models 照旧。
+    if (normalizeAutoRoute(db.settings.autoRoute).enabled) {
+      const all = listPublicModels({ offers: split.paid, scores, settings: db.settings })
+      return json(res, 200, {
+        object: 'list',
+        data: [
+          {
+            id: 'AutoThink',
+            object: 'model',
+            created: Math.floor(Date.now() / 1000),
+            owned_by: 'manage-api',
+            providers: all.reduce((n, m) => n + m.providers, 0),
+            healthy: all.reduce((n, m) => n + m.healthy, 0),
+          },
+        ],
       })
     }
 

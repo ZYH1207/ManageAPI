@@ -6,7 +6,7 @@
  *   MODE=fail      PORT=5103 node .test/mock-upstream.mjs   # 便宜但会挂（chat 一律 503）
  *   MANAGE_API_HOME=<临时目录> node daemon/index.js --port 4399
  */
-const BASE = 'http://127.0.0.1:4399'
+const BASE = process.env.GW_BASE || 'http://127.0.0.1:4399'
 
 async function api(method, path, body) {
   const res = await fetch(BASE + path, {
@@ -125,6 +125,49 @@ console.log('\n=== 6. 路由决策日志 ===')
         `有效=${c.effective?.toFixed(2)} 可路由=${c.routable}`,
       )
     }
-    for (const f of r.failures || []) console.log(`    ✗ ${f.providerName}: ${f.error.slice(0, 80)}`)
+    for (const f of r.failures || []) console.log(`    ✗ ${f.providerName}: ${(f.error || '(无错误信息)').slice(0, 80)}`)
   }
+}
+
+console.log('\n=== 7. 自动路由接管：清单只出 AutoThink ===')
+{
+  await api('PATCH', '/api/settings', { autoRouteEnabled: true })
+
+  const res = await fetch(`${BASE}/v1/models`, { headers: auth })
+  const data = await res.json()
+  const ids = data.data.map((m) => m.id)
+  if (ids.length !== 1 || ids[0] !== 'AutoThink') throw new Error(`清单应只有 AutoThink，实际 ${JSON.stringify(ids)}`)
+  console.log('模型清单', JSON.stringify(ids), 'providers', data.data[0].providers, 'healthy', data.data[0].healthy)
+
+  // 非流式：model 随便写都行，响应头应带真实上游模型
+  const plain = await fetch(`${BASE}/v1/chat/completions`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...auth },
+    body: JSON.stringify({ model: 'AutoThink', messages: [{ role: 'user', content: 'hi' }] }),
+  })
+  if (!plain.ok) throw new Error(`AutoThink 非流式应 200，实际 ${plain.status}`)
+  const served = decodeURIComponent(plain.headers.get('x-manageapi-model') || '')
+  if (!served) throw new Error('非流式响应缺 X-ManageAPI-Model 头')
+  console.log('非流式 200，X-ManageAPI-Model =', served, '响应体 model =', (await plain.json()).model)
+
+  // 流式：同样要带真实模型头
+  const stream = await fetch(`${BASE}/v1/chat/completions`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...auth },
+    body: JSON.stringify({ model: 'AutoThink', messages: [{ role: 'user', content: 'hi' }], stream: true }),
+  })
+  if (!stream.ok) throw new Error(`AutoThink 流式应 200，实际 ${stream.status}`)
+  const streamServed = decodeURIComponent(stream.headers.get('x-manageapi-model') || '')
+  if (!streamServed) throw new Error('流式响应缺 X-ManageAPI-Model 头')
+  const text = await stream.text()
+  if (!text.includes('[DONE]')) throw new Error('流式没走到 [DONE]')
+  console.log('流式 200，X-ManageAPI-Model =', streamServed)
+
+  // 关掉后清单恢复全量
+  await api('PATCH', '/api/settings', { autoRouteEnabled: false })
+  const restored = (await (await fetch(`${BASE}/v1/models`, { headers: auth })).json()).data.map((m) => m.id)
+  if (restored.length < 2 || restored.includes('AutoThink')) {
+    throw new Error(`关闭后应恢复全量且无 AutoThink，实际 ${JSON.stringify(restored)}`)
+  }
+  console.log('关闭后恢复', JSON.stringify(restored))
 }
