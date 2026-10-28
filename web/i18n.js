@@ -877,6 +877,15 @@ Object.assign(EN, {
     'Ranks by price per millisecond of first-token wait: cost and latency collapse into one number, so the slow and the pricey both show up — the best combined pick lands first.',
   '/s 首字': '/s TTFT',
   '自动路由': 'Auto routing',
+  '轮巡中 {n} 条…': 'Patrol running · {n} supplies…',
+  '轮巡待命': 'Patrol idle',
+  '轮巡 {m} 分钟前 · {ok}/{n}': 'Patrol {m}m ago · {ok}/{n}',
+  '轮巡正在进行：按节奏探测「现役模型 + 可能接替它的几个」的供给':
+    'Patrol in progress: probes the serving model plus the few that could replace it',
+  '轮巡待命：自动路由在等真实流量，第一条请求进来几秒后自动开跑':
+    'Patrol idle: auto routing waits for real traffic; the first request starts a pass within seconds',
+  '上一轮轮巡 {m} 分钟前完成：成功 {ok} / 共 {n} 条。下一轮按节奏自动开始':
+    'Last patrol finished {m}m ago: {ok} of {n} succeeded. The next pass starts on schedule',
   '实时分样本 {n}/5': 'Real-score samples {n}/5',
   '真实价速比每 10 分钟一窗，窗口内至少 5 单才开始判漂移；探针开工全量 + 每小时 Lite 负责基础分':
     'Real price-per-speed is windowed every 10 minutes; drift needs at least 5 live requests. Probes set the baseline: one full pass at kickoff, then hourly lite rounds.',

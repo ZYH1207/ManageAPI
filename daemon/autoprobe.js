@@ -145,6 +145,12 @@ export function createAutoRouteProber({ runProbes, logger = console }) {
   let lastPassAt = 0
   let running = false
   let kickoffTimer = null
+  // 轮巡进度：跑一轮 60 秒起步，期间界面上必须看得见「在跑」，否则像没启动
+  let passStartedAt = 0
+  let passTargets = 0
+  let lastDoneAt = 0
+  let lastDoneOk = 0
+  let lastDoneTotal = 0
 
   const isActive = (now = Date.now()) => lastActivityAt > 0 && now - lastActivityAt <= activityWindowMs
 
@@ -159,8 +165,13 @@ export function createAutoRouteProber({ runProbes, logger = console }) {
       const targets = patrolTargets(db, record)
       if (targets.length === 0) return
       lastPassAt = Date.now()
+      passStartedAt = Date.now()
+      passTargets = targets.length
       const results = await runProbes({ offerIds: targets.map((o) => o.id), lite: !full, cache: 'auto' })
       const okCount = results.filter((r) => r.ok).length
+      lastDoneAt = Date.now()
+      lastDoneTotal = results.length
+      lastDoneOk = okCount
       logger.info?.(
         `[自动路由探针] ${reason}：${results.length} 个模型，成功 ${okCount}（${full ? '开工全量' : 'Lite'}）`,
       )
@@ -213,5 +224,20 @@ export function createAutoRouteProber({ runProbes, logger = console }) {
     lastPassAt = Date.now()
   }
 
-  return { tick, isActive, noteActivity, markPass }
+  /** 轮巡进度快照（UI 用）：进行中显示条数，否则显示上一轮的时间与成败 */
+  function snapshot() {
+    return {
+      running,
+      passStartedAt: passStartedAt || null,
+      passTargets,
+      lastDoneAt: lastDoneAt || null,
+      lastDoneTotal,
+      lastDoneOk,
+      lastPassAt: lastPassAt || null,
+      activityWindowMs,
+      passIntervalMs,
+    }
+  }
+
+  return { tick, isActive, noteActivity, markPass, snapshot }
 }

@@ -1128,6 +1128,21 @@ main { flex: 1; min-width: 0; display: flex; flex-direction: column; overflow: h
 .ttft-scale { display: flex; flex-direction: column; gap: 8px; align-items: flex-start; }
 .ttft-scale-label { font-size: 12px; font-weight: 500; color: var(--text); white-space: nowrap; }
 .ttft-scale-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+/*
+ * 自动路由这一组（开关 + 正在使用 + 轮巡进度）必须整体换行：
+ * 此前它们是三个独立 flex 项，最后一个「正在使用」胶囊被挤到第二行最左边，
+ * 和开关隔着半屏，看着像两个不相干的东西。整组用 margin-left:auto 靠右，
+ * 内部自己换行，行内仍然粘在一起。
+ */
+.auto-route-side {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  max-width: 100%;
+}
 .ttft-scale-now { font-size: 12px; color: var(--muted); min-width: 108px; }
 .ttft-field input { text-align: right; }
 .ttft-ticks { display: inline-flex; align-items: center; gap: 2px; }

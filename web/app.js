@@ -3784,6 +3784,25 @@ function driftStatusLine() {
  * 但客户端请求什么模型就再也不重要了。免费入口不接管：把免费请求偷偷
  * 改派到付费模型等于静默扣钱。
  */
+/**
+ * 轮巡进度：自动路由开着时，探测由轮巡接管，一轮 60 秒起步。
+ * 不做这个指示，用户在探针页看到的是一片静止，会以为「没在跑」。
+ */
+function patrolBadge() {
+  const p = state.probePatrol
+  if (!state.autoRoute?.enabled) return ''
+  if (!p) return ''
+  const minAgo = (ts) => Math.max(0, Math.round((Date.now() - ts) / 60000))
+  if (p.running) {
+    return `<span class="badge" title="${esc(t('轮巡正在进行：按节奏探测「现役模型 + 可能接替它的几个」的供给'))}">${t('轮巡中 {n} 条…', { n: p.passTargets || 0 })}</span>`
+  }
+  if (p.lastDoneAt) {
+    const st = p.lastDoneTotal > 0 ? `${p.lastDoneOk}/${p.lastDoneTotal}` : '—'
+    return `<span class="badge ok" title="${esc(t('上一轮轮巡 {m} 分钟前完成：成功 {ok} / 共 {n} 条。下一轮按节奏自动开始', { m: minAgo(p.lastDoneAt), ok: st, n: p.lastDoneTotal }))}">${t('轮巡 {m} 分钟前 · {ok}/{n}', { m: minAgo(p.lastDoneAt), ok: st, n: p.lastDoneTotal })}</span>`
+  }
+  return `<span class="badge" title="${esc(t('轮巡待命：自动路由在等真实流量，第一条请求进来几秒后自动开跑'))}">${t('轮巡待命')}</span>`
+}
+
 function autoRouteSwitch() {
   const enabled = Boolean(state.autoRoute?.enabled)
   const scope = Array.isArray(state.autoRoute?.scope) ? state.autoRoute.scope : []
@@ -3837,9 +3856,11 @@ function gateCard() {
         </label>
         <span class="ttft-scale-now">当前 ${esc(state.ttftLimitText || '不限')}</span>
         <span class="hint" style="margin:0">1000–20000ms 共 20 档 · 慢速即为不可用</span>
-        <span style="flex:1"></span>
-        ${autoRouteSwitch()}
-        ${routeNowPill()}
+        <span class="auto-route-side">
+          ${autoRouteSwitch()}
+          ${routeNowPill()}
+          ${patrolBadge()}
+        </span>
       </div>
       <div class="switch-row">
         <label class="switch">
