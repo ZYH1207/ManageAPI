@@ -123,41 +123,46 @@ function ratioToneClass(rate) {
 }
 
 /**
- * 分组胶囊的厂商色（聚合判定）：组内全部免费 → 免费紫（与「免费 N」徽章同款）；
+ * 「站点 × 分组」→ 胶囊色（聚合判定）：组内全部免费 → 免费紫（与「免费 N」徽章同款）；
  * 忽略识别不出前缀的模型后，全国产 → 国产蓝、恰好一家海外 → 该厂色；
  * 混合厂商 → 中性灰。识别不出的模型不参与判断（不把整组拖成灰色）。
- * 免费判定是展示层近似（倍率 0 或手填双零价），权威判定在服务端 isFreeOffer。
+ * **同一分组在所有页面必须同色**，所以只看聚合、不看单行模型——站点卡、Key 行、
+ * 比价未定价块、智能决策、路由日志都调这一份。
+ *
+ * 证据来自 modelsByGroup（全量台账：含被忽略的模型，去掉已下线），不是 state.offers。
+ * state.offers 只含「会参与路由」的供给（inv.routeableOffers）：一个分组的模型全被
+ * 忽略时它会变成空数组，胶囊就掉回中性灰，看着像这个分组坏了。分组身份是「谁家的」，
+ * 不该因为忽略模型而变——和 modelsByGroup 自己的注释是同一条道理。
+ *
+ * 免费判定用服务端 isFreeOffer 的结果（modelsByGroup 里的 free），前端不另算一份：
+ * 以前按「倍率 0 或手填双零价」近似，和「免费 N」徽章、免费池的口径会对不上。
  */
-function groupChipClass(groupOffers) {
-  if (!Array.isArray(groupOffers) || groupOffers.length === 0) return ''
-  const isFree = (o) =>
-    o.pricingMode === 'manual'
-      ? Number(o.inPrice) === 0 && Number(o.outPrice) === 0
-      : Number(o.ratio) === 0
-  if (groupOffers.every(isFree)) return 'vchip-free'
+function groupChipOf(providerId, groupName) {
+  const g = String(groupName || '')
+  const models = state.modelsByGroup?.[providerId]?.[g]
+  // 旧后端没有 modelsByGroup 时退回在役供给：口径窄，但不至于整片灰
+  const rows = Array.isArray(models) && models.length
+    ? models
+    : (state.offers || [])
+        .filter((o) => o.providerId === providerId && (o.group || '') === g)
+        .map((o) => ({
+          name: o.modelKey || o.upstreamName,
+          free:
+            o.pricingMode === 'manual'
+              ? Number(o.inPrice) === 0 && Number(o.outPrice) === 0
+              : Number(o.ratio) === 0,
+        }))
+  if (rows.length === 0) return ''
+  if (rows.every((r) => r.free)) return 'vchip-free'
   const chips = new Set()
-  for (const o of groupOffers) {
-    const cls = vendorChipClass(o.modelKey || o.upstreamName)
+  for (const r of rows) {
+    const cls = vendorChipClass(r.name)
     if (cls) chips.add(cls)
   }
   if (chips.size === 0) return ''
   if ([...chips].every((c) => c === 'vchip-cn')) return 'vchip-cn'
   if (chips.size === 1) return [...chips][0]
   return ''
-}
-
-/**
- * 「站点 × 分组」→ 胶囊色。**同一分组在所有页面必须同色**，所以判定只看
- * 该站该分组下全部供给的聚合，不看单行模型——站点卡、Key 行、比价未定价块、
- * 智能决策、路由日志都调这一份。此前决策页按单行模型取色、站点卡按聚合，
- * 同一分组两页两个颜色，就是这个函数要修的。
- */
-function groupChipOf(providerId, groupName) {
-  const g = String(groupName || '')
-  const groupOffers = (state.offers || []).filter(
-    (o) => o.providerId === providerId && (o.group || '') === g,
-  )
-  return groupChipClass(groupOffers)
 }
 
 /**
@@ -1151,7 +1156,7 @@ function providersHtml({ withForm = true, panel = '', actions = '' } = {}) {
         mixed: ratioValues.size > 1,
         siteRatio: siteRatios.size === 1 ? [...siteRatios][0] : '',
         custom: groupOffers.some((o) => o.ratioSource === 'custom'),
-        chipClass: groupChipClass(groupOffers),
+        chipClass: groupChipOf(p.id, groupName),
       }]
     }))
     // 分组胶囊一屏只放前 GROUP_CHIP_LIMIT 个：分组动辄十几个，全铺开会把站点卡撑到两屏高。
