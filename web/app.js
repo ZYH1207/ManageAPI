@@ -3821,7 +3821,7 @@ function renderProbes() {
         .join('')}
     </select>`
 
-  // 版面：上面几行是标题/筛选/设置，下面左右两栏——左栏是设置与开关，
+  // 版面：上面几行是标题，下面左右两栏——左栏从上到下是筛选/设置与开关，
   // 右栏原先整块空着，探针花费卡就落在那儿（底部对齐，贴住卡片右下角）
   const intro = `
     <div class="card">
@@ -3832,15 +3832,15 @@ function renderProbes() {
         </div>
         <button class="primary" data-act="probe-all" ${probeTargets.length === 0 ? 'disabled' : ''}>${esc(probeBtn)}</button>
       </div>
-      <div class="probe-filter-row">
-        <span class="hint" style="white-space:nowrap">筛选（可叠加，取交集）：</span>
-        ${filterSelect('providerId', t('全部站点'), providersWithOffers.map((p) => ({ v: p.id, label: p.name })), probeFilters.providerId)}
-        ${filterSelect('group', t('全部分组'), groupOpts.map((g) => ({ v: g, label: g })), probeFilters.group)}
-        ${filterSelect('model', t('全部模型'), modelOpts.map((m) => ({ v: m, label: m })), probeFilters.model)}
-        <span class="hint">选站点=整站；站点+分组=该分组；只选模型=所有站里的这个模型</span>
-      </div>
       <div class="probe-body">
         <div class="probe-body-main">
+          <div class="probe-filter-row">
+            <span class="hint" style="white-space:nowrap">筛选（可叠加，取交集）：</span>
+            ${filterSelect('providerId', t('全部站点'), providersWithOffers.map((p) => ({ v: p.id, label: p.name })), probeFilters.providerId)}
+            ${filterSelect('group', t('全部分组'), groupOpts.map((g) => ({ v: g, label: g })), probeFilters.group)}
+            ${filterSelect('model', t('全部模型'), modelOpts.map((m) => ({ v: m, label: m })), probeFilters.model)}
+            <span class="hint">选站点=整站；站点+分组=该分组；只选模型=所有站里的这个模型</span>
+          </div>
           <div class="probe-settings">
             <label class="field-inline">自动探测
               <select id="probe-interval">

@@ -1021,8 +1021,9 @@ main { flex: 1; min-width: 0; display: flex; flex-direction: column; overflow: h
 .field-inline { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); white-space: nowrap; }
 .field-inline select, .field-inline input { width: auto; padding: 4px 8px; font-size: 12px; }
 
-/* 探针页「探测」的筛选行：站点 / 分组 / 模型三个下拉，可叠加取交集 */
-.probe-filter-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 12px; padding-top: 10px; border-top: 1px dashed var(--border); }
+/* 探针页「探测」的筛选行：站点 / 分组 / 模型三个下拉，可叠加取交集。
+   挪进 probe-body 左栏顶部，横线改在下方，把筛选和自动探测隔开 */
+.probe-filter-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; padding-bottom: 10px; border-bottom: 1px dashed var(--border); }
 .probe-filter-row select { width: auto; padding: 4px 8px; font-size: 12px; max-width: 220px; }
 
 /* ------------------------------------------------ 定时关闭检测（探针页）
