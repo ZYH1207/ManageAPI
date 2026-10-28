@@ -1642,7 +1642,20 @@ route('PATCH', /^\/api\/offers\/([\w-]+)$/, async (ctx) => {
     if (b.benchmarkKey !== undefined) offer.benchmarkKey = b.benchmarkKey || null
     if (b.inPrice !== undefined) offer.inPrice = nonNegative(b.inPrice, '输入单价')
     if (b.outPrice !== undefined) offer.outPrice = nonNegative(b.outPrice, '输出单价')
-    if (b.currency !== undefined) offer.currency = b.currency === 'CNY' ? 'CNY' : 'USD'
+    // 币种：用户改了才记成手选（currencySource='custom'），同步就不会再覆盖它。
+    // 值没变不算表态——界面点一下下拉又选回原值不该把这一行冻住。
+    if (b.currency !== undefined) {
+      const next = b.currency === 'CNY' ? 'CNY' : 'USD'
+      if (next !== offer.currency) {
+        offer.currency = next
+        offer.currencySource = 'custom'
+      }
+    }
+    // 想重新跟随站点：清掉手选标记，下次同步按站方声明落价
+    if (b.currencySource !== undefined) {
+      if (b.currencySource === 'custom') offer.currencySource = 'custom'
+      else delete offer.currencySource
+    }
     if (b.priceUnit !== undefined) {
       offer.priceUnit = pricing.PRICE_UNITS.includes(b.priceUnit) ? b.priceUnit : 'per_mtok'
     }

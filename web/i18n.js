@@ -1409,3 +1409,12 @@ Object.assign(EN, {
   '去「忽略模型」里取消勾选，它们就会回到可用。':
     'Untick them under "Ignored models" and they become available again.',
 })
+
+// 模型行的币种「手选」标记：币种决定要不要折汇率，用户选过就不能被同步覆盖
+Object.assign(EN, {
+  '手选': 'Custom',
+  '币种是你手选的，同步不会改它。点一下恢复跟随站点声明':
+    'You picked this currency, so sync leaves it alone. Click to follow the site again.',
+  '已恢复跟随站点：下次同步按站方声明的币种落价':
+    'Following the site again — the next sync applies the currency the site declares.',
+})

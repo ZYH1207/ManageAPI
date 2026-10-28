@@ -4,7 +4,12 @@
  * 开了广场的站点会把「分组 + 倍率 + 每个模型的实际价格 + 官方价」全部公开，
  * 这是唯一能自动拿到价格的途径——API Key 本身查不到这些。
  *
- * 价格单位是「每 token 的元」，×1e6 换算成我们用的「每百万 token」。
+ * 价格单位是「每 token」，×1e6 换算成我们用的「每百万 token」。
+ *
+ * 币种别假定：这个接口**不带币种字段**，而实测这些中转站报的是美元——
+ * 绿萝广场里 gpt-4o 报 2.5/10、gpt-4o-mini 报 0.15/0.6、gemini-2.5-flash 报
+ * 0.3/2.5，正好是官方美元价。所以广场价格不要标 CNY，币种由 offer 上用户选的值决定
+ * （见 inventory.js 的 currencyOf）。
  */
 import { normalizeModelKey } from './inventory.js'
 
@@ -139,7 +144,6 @@ export function flattenPlaza(groups) {
         // 官方价（站方声明，可能不准，仅供参考）
         officialIn: perMtok(off.input_price),
         officialOut: perMtok(off.output_price),
-        currency: 'CNY',
       }
       if (!buckets.has(key)) buckets.set(key, [])
       buckets.get(key).push(entry)

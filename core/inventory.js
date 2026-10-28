@@ -479,7 +479,11 @@ export async function updateOfferPrice(
     if (ratio !== undefined) offer.ratio = num(ratio)
     if (benchmarkKey !== undefined) offer.benchmarkKey = benchmarkKey || null
     if (pricingMode !== undefined) offer.pricingMode = pricingMode === 'ratio' ? 'ratio' : 'manual'
-    if (currency) offer.currency = currency
+    // 只有「真的改了」才算用户手选：值没变不算表态
+    if (currency && currency !== offer.currency) {
+      offer.currency = currency === 'USD' ? 'USD' : 'CNY'
+      offer.currencySource = 'custom'
+    }
     if (priceUnit) offer.priceUnit = priceUnit
     if (group !== undefined) {
       const name = normalizeGroup(group)
@@ -716,6 +720,29 @@ export async function listProbes(limit = 100) {
  * 必然对不上——这时倍率不是「站点没公布」，而是「我们手里的名字过期了」，
  * 必须按 skip 处理（见下面第 4 步）。
  */
+/**
+ * 这一行的价格该标什么币种——落价的唯一口径，别在别处再判一次。
+ *
+ * 规则只有两条：
+ *   1. 用户手选过（currencySource === 'custom'）→ 听用户的，同步不许改；
+ *   2. 没选过 → 美元。
+ *
+ * 为什么默认美元而不是人民币：实测这些中转站的报价就是美元——绿萝的广场接口
+ * 报 gpt-4o 2.5/10、gpt-4o-mini 0.15/0.6、gemini-2.5-flash 0.3/2.5，正好是官方
+ * 美元价；站点余额也是美元（provider.currency = USD）。而广场/渠道接口都
+ * **不带币种字段**，所以「按站方声明」这条路根本不存在。
+ *
+ * 以前这里无条件写 'CNY'，等于把美元价当人民币，offerCost 再除以汇率——
+ * 比价里便宜 6.68 倍、花费估算也少算 6.68 倍，页面照常渲染不报错。
+ * 真遇到按人民币报价的站，用户把币种改成 CNY 就冻住了（规则 1）。
+ */
+function currencyOf(offer) {
+  if (offer.currencySource === 'custom') {
+    return String(offer.currency || '').toUpperCase() === 'CNY' ? 'CNY' : 'USD'
+  }
+  return 'USD'
+}
+
 export function applySitePricing(offer, { exact, rate, sitePrice, hasBench, groupKnown = true }) {
   const siteRatio = typeof rate === 'number' ? rate : null
 
@@ -743,7 +770,7 @@ export function applySitePricing(offer, { exact, rate, sitePrice, hasBench, grou
     offer.priceUnit = 'per_call'
     offer.inPrice = Math.round(call * 1000) / 1000
     offer.outPrice = null
-    offer.currency = 'CNY'
+    offer.currency = currencyOf(offer)
     offer.pricingMode = 'manual'
     offer.ratio = null
     offer.siteRatio = siteRatio
@@ -760,7 +787,7 @@ export function applySitePricing(offer, { exact, rate, sitePrice, hasBench, grou
     offer.ratio = null
     offer.inPrice = 0
     offer.outPrice = 0
-    offer.currency = 'CNY'
+    offer.currency = currencyOf(offer)
     offer.siteRatio = siteRatio
     offer.ratioSource = 'site'
     return 'free'
@@ -798,7 +825,10 @@ export function applySitePricing(offer, { exact, rate, sitePrice, hasBench, grou
         offer.outPrice = fill(sitePrice.outPrice)
       }
       // 站点价格单位是元（渠道/广场都是），原价跟着标 CNY
-      if (offer.inPrice !== null || offer.outPrice !== null) offer.currency = 'CNY'
+      // 站点价格单位实测是美元（广场报价就是官方美元价），币种按行上的选择落
+      if (offer.inPrice !== null || offer.outPrice !== null) {
+        offer.currency = currencyOf(offer)
+      }
     }
     return 'ratio'
   }
@@ -811,7 +841,7 @@ export function applySitePricing(offer, { exact, rate, sitePrice, hasBench, grou
     if (sitePrice.outPrice !== null && sitePrice.outPrice !== undefined) {
       offer.outPrice = Math.round(sitePrice.outPrice * mult * 1000) / 1000
     }
-    offer.currency = 'CNY'
+    offer.currency = currencyOf(offer)
     offer.pricingMode = 'manual'
     offer.ratio = null
     offer.siteRatio = siteRatio

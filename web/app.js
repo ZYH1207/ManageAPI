@@ -158,6 +158,25 @@ function groupChipOf(providerId, groupName) {
 }
 
 /**
+ * 模型行的币种下拉 + 手选标记。
+ *
+ * 币种不是纯展示：core/pricing.js 的 offerCost 按它决定要不要折汇率
+ * （标 USD 就原样当美元）。所以一旦用户自己选过，同步就不能再改——
+ * 否则数字不动、标签变了，比价直接差一个汇率。标记点一下能重新跟随站点。
+ */
+function currencyCell(offer, width = 70) {
+  const custom = offer.currencySource === 'custom'
+  return `
+    <select data-field="currency" style="width:${width}px">
+      <option value="USD" ${offer.currency === 'USD' ? 'selected' : ''}>USD</option>
+      <option value="CNY" ${offer.currency === 'CNY' ? 'selected' : ''}>CNY</option>
+    </select>
+    ${custom
+      ? `<button class="badge currency-custom" data-act="reset-currency" data-offer="${esc(offer.id)}" title="${t('币种是你手选的，同步不会改它。点一下恢复跟随站点声明')}">${t('手选')}</button>`
+      : ''}`
+}
+
+/**
  * 比价页分组列里哪些分组该给删除键：只给「没挂任何 Key 的分组」。
  * 这种分组只可能是比价页「＋」复制出来的（duplicateOffer 建组时刻意不挂 Key，
  * 见 core/inventory.js），除了这一行没有别的删除入口；挂了 Key 的分组去「站点」页删，
@@ -2065,10 +2084,7 @@ function renderPricing() {
                   <option value="per_1k" ${offer.priceUnit === 'per_1k' ? 'selected' : ''}>/1k</option>
                   <option value="per_call" ${offer.priceUnit === 'per_call' ? 'selected' : ''}>/次</option>
                 </select>
-                <select data-field="currency" style="width:64px">
-                  <option value="USD" ${offer.currency === 'USD' ? 'selected' : ''}>USD</option>
-                  <option value="CNY" ${offer.currency === 'CNY' ? 'selected' : ''}>CNY</option>
-                </select>
+                ${currencyCell(offer, 64)}
               </td>
               <td><button class="ghost tiny" data-act="mark-free" data-offer="${esc(offer.id)}" title="把输入/输出价都设为 0，这条就进免费池（不进比价和自动选站）">标为免费</button></td>
             </tr>`
@@ -2153,10 +2169,7 @@ function renderPricing() {
         <td class="num"><input type="number" step="0.001" placeholder="—" value="${perCall ? '' : row.outPrice ?? ''}" data-field="outPrice" ${perCall ? 'disabled title="按次计费不区分输入/输出"' : mode === 'ratio' ? 'title="原价。实际价 = 这个值 × 倍率"' : ''} /></td>
         <td>
           <div class="unit-cell">
-            <select data-field="currency" style="width:70px">
-              <option value="USD" ${row.currency === 'USD' ? 'selected' : ''}>USD</option>
-              <option value="CNY" ${row.currency === 'CNY' ? 'selected' : ''}>CNY</option>
-            </select>
+            ${currencyCell(row)}
             ${unitBadge}
           </div>
         </td>
@@ -5616,6 +5629,19 @@ document.addEventListener('click', async (event) => {
 
   if (action === 'ignored-models') {
     openIgnoredModels()
+    return
+  }
+
+  if (action === 'reset-currency') {
+    const offerId = actionButton.dataset.offer
+    try {
+      // 清掉手选标记：之后同步按站方声明的币种落价（广场/渠道报的是人民币）
+      state = await api('PATCH', `/api/offers/${offerId}`, { currencySource: 'site' })
+      render()
+      toast('已恢复跟随站点：下次同步按站方声明的币种落价')
+    } catch (error) {
+      toast(error.message, true)
+    }
     return
   }
 

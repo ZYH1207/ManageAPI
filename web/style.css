@@ -1709,6 +1709,15 @@ button.group-chip:hover { color: var(--accent); }
 .pricing-table .unit-cell { display: inline-flex; flex-direction: column; gap: 4px; align-items: flex-start; }
 .pricing-table .unit-badge { font-variant-numeric: tabular-nums; }
 
+/* 「手选」标记：这行的币种是用户自己选的，同步不会再覆盖它。
+   虚线边框和分组胶囊区分开，点一下恢复跟随站点声明 */
+.badge.currency-custom {
+  cursor: pointer; margin-left: 4px; font-weight: 600;
+  background: transparent; color: var(--muted);
+  border: 1px dashed var(--border-strong);
+}
+.badge.currency-custom:hover { color: var(--text); background: var(--hover); }
+
 /* 模型名与分组超长时省略号：分组列曾把整张表撑到 270px+，
    把右侧的成本/价差直接挤出可视区。全名放在 title 里，悬停可见 */
 .pricing-table td.mono, .pricing-table td.mono .badge {
