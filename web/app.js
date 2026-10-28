@@ -1182,6 +1182,15 @@ function providersHtml({ withForm = true, panel = '', actions = '' } = {}) {
         <div class="prov-detail" hidden>
         <div data-pane="keys">
         <div class="keylist">
+          <form class="keyrow" data-form="provider-endpoint-inline" style="border-bottom:1px solid var(--border);padding-bottom:8px;margin-bottom:2px;gap:8px">
+            <span style="color:var(--muted);font-size:12px;min-width:64px">${t('API 端点')}</span>
+            <input name="baseUrl" value="${esc(p.baseUrl || '')}" placeholder="https://api.example.com/v1"
+              style="flex:1;min-width:220px" title="${t('程序真正请求的地址，整站共用一份；没写 /v1 会自动补')}" />
+            <button type="submit" class="ghost tiny">${t('保存')}</button>
+          </form>
+          <div class="hint" style="margin:0 0 6px">
+            ${t('整站填一次即可，所有 Key 共用。站点地址（卡片上「打开站点」用的那个）在「地址」里改。')}
+          </div>
           ${keys.length === 0 ? '<div class="hint">还没有 Key，加一个才能拉模型。</div>' : keys.map((k) => {
             const keyOffers = offers.filter((o) => o.credentialId === k.id)
             return `
@@ -1200,8 +1209,6 @@ function providersHtml({ withForm = true, panel = '', actions = '' } = {}) {
             <input name="label" placeholder="标签" />
             <input name="secret" placeholder="sk-... 粘贴完整 Key" autocomplete="off" required />
             <input name="group" placeholder="分组（可选）" style="width:118px" title="这把 Key 属于站点的哪个分组，同步模型时会自动带上" />
-            <input name="apiBase" placeholder="API 端点，如 https://api.example.com/v1" style="width:260px"
-              value="${esc(p.baseUrl || '')}" title="${t('程序真正请求的地址。留空则沿用这个站已保存的端点；没写 /v1 会自动补')}" />
             <button type="submit">添加 Key</button>
           </form>
           ${
@@ -5054,6 +5061,28 @@ if (endpointForm) {
   return
 }
 
+// 密钥面板顶部的 API 端点：站点级字段，整站填一次，所有 Key 共用
+const endpointInline = event.target.closest('[data-form="provider-endpoint-inline"]')
+if (endpointInline) {
+  event.preventDefault()
+  const providerId = endpointInline.closest('[data-provider]')?.dataset.provider
+  if (!providerId) return
+  const value = String(new FormData(endpointInline).get('baseUrl') || '').trim()
+  const btn = endpointInline.querySelector('button[type="submit"]')
+  if (btn?.disabled) return
+  if (btn) btn.disabled = true
+  try {
+    state = await api('PATCH', `/api/providers/${providerId}`, { baseUrl: value })
+    render()
+    reopenProvPanel(endpointInline, 'keys')
+    toast('API 端点已保存')
+  } catch (error) {
+    toast(error.message, true)
+    if (btn) btn.disabled = false
+  }
+  return
+}
+
 const form = event.target.closest('[data-form="add-key"]')
   if (!form) return
   event.preventDefault()
@@ -5062,19 +5091,12 @@ const form = event.target.closest('[data-form="add-key"]')
   if (keySubmitBtn) keySubmitBtn.disabled = true
   const providerId = form.closest('[data-provider]').dataset.provider
   const data = Object.fromEntries(new FormData(form))
-  // API 端点和 Key 一起填：新建站点时只要求填网站地址，端点在真正要请求时才需要。
-  // 只在这个字段有值时写回 provider，留空表示沿用已保存的端点
-  const apiBase = String(data.apiBase || '').trim()
-  delete data.apiBase
   try {
     const inModal = Boolean(form.closest('#prov-modal-body'))
-    if (apiBase) {
-      state = await api('PATCH', `/api/providers/${providerId}`, { baseUrl: apiBase })
-    }
     state = await api('POST', '/api/credentials', { ...data, providerId })
     render()
     if (inModal) reopenProvPanel(form, 'keys')
-    toast(apiBase ? 'Key 已加密保存，API 端点已更新' : 'Key 已加密保存')
+    toast('Key 已加密保存')
   } catch (error) {
     toast(error.message, true)
     if (keySubmitBtn) keySubmitBtn.disabled = false
