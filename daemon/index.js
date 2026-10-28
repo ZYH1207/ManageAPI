@@ -13,6 +13,8 @@ import { runProbes } from './probe-runner.js'
 import { collectProviderSnapshots } from './monitor-runner.js'
 import { spawn } from 'node:child_process'
 import { mkdir } from 'node:fs/promises'
+import { existsSync, statSync } from 'node:fs'
+import { join } from 'node:path'
 
 const args = process.argv.slice(2)
 function flag(name, fallback) {
@@ -25,6 +27,45 @@ function flag(name, fallback) {
 const preferredPort = Number(flag('port', process.env.PORT || 4319))
 const shouldOpen = Boolean(flag('open', false))
 const HOST = '127.0.0.1'
+const REAL_PORT = 4319
+
+/**
+ * 是不是 git 工作树（git worktree add 出来的目录）。
+ * 主仓的 `.git` 是目录，工作树的 `.git` 是一个指向主仓的文本文件——不用起 git 就能分辨。
+ */
+function isLinkedWorktree() {
+  try {
+    return statSync(join(process.cwd(), '.git')).isFile()
+  } catch {
+    return false
+  }
+}
+
+/**
+ * 工作树里禁止占用真实实例的位置。
+ *
+ * 以前验收要挤 4319 + ~/.manage-api：两个任务同时验收时，后起的要么撞锁要么
+ * 把前一个顶掉，更糟的是有人杀掉用户的日常实例。光靠文档挡不住（agent 不一定读到），
+ * 所以直接在启动处拒绝，并给出唯一正确的做法。
+ * 真正要占 4319 的只有 start-hidden.vbs 拉起的日常实例，它可以用
+ * MANAGE_API_REAL_INSTANCE=1 显式放行。
+ */
+if (isLinkedWorktree() && !process.env.MANAGE_API_REAL_INSTANCE) {
+  if (preferredPort === REAL_PORT) {
+    console.error('')
+    console.error(`  工作树里不能用 ${REAL_PORT}：那是用户的日常真实实例。`)
+    console.error('  验收请用：node ~/manage-api-previews/preview.mjs up --name <任务名>')
+    console.error('')
+    process.exit(1)
+  }
+  if (!process.env.MANAGE_API_HOME) {
+    console.error('')
+    console.error('  工作树里没有设 MANAGE_API_HOME，会直接读写真实的 ~/.manage-api。')
+    console.error('  开发用：npm run dev:iso    验收用：node ~/manage-api-previews/preview.mjs up')
+    console.error('')
+    process.exit(1)
+  }
+}
 
 await mkdir(dataDir(), { recursive: true })
 
