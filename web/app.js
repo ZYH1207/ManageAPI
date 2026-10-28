@@ -3087,11 +3087,11 @@ const SPEND_RANGES = [
 ]
 
 /**
- * 花费 KPI 卡：模型消费 / 实际消费双值 + 时间段切换。
+ * 花费 KPI 卡：站点账单 / 时间段切换。
  *
- * 「模型消费」是站点口径的估算（和余额概览的每日花费柱同一份数）；
- * 「实际消费」乘站点单价，回答「我的钱包到底少了多少钱」——两者在
- * 1:1 充值的站会差好几倍，所以必须并列显示，不能只留一个。
+ * 只显示一个数字——站点自己的账单。「模型消费」（token × 单价估算）不再展示：
+ * 网关侧缺 26% 的 token、上游 cached 字段也不可靠，拿它乘单价得不到能和钱包
+ * 对上的数，摆出来只会误导。
  */
 function spendStat(range) {
   const estimate = monitorData?.spendSummary?.[range] || { estimated: 0, actual: 0 }
@@ -3125,10 +3125,10 @@ function spendStat(range) {
     k: `${t('花费')} · ${t(label)}`,
     // 时间段切换单独一行：和金额挤在一行时，窄卡片会把「今天/本周/本月」
     // 压成竖排（每个字一行）
-    vHtml: `<span class="spend-pair">
-        <span class="spend-item"><span class="spend-tag spend-tag--actual">${t('实际消费')}</span>${actualHtml}</span>
-      </span><span class="spend-range-row">${seg}</span>`,
+    vHtml: `${actualHtml}<span class="spend-range-row">${seg}</span>`,
     sub: hint,
+    // 「N 个站点账单 · 截至 HH:mm」比其它卡的副文案长，单行会被截断在「截至」前
+    subWrap: true,
     ic: 'receipt',
     tint: 'tint-warn',
   }
@@ -3248,7 +3248,7 @@ function renderMonitor() {
         <div class="stat-main">
           <div class="k">${esc(item.k)}</div>
           <div class="v">${item.vHtml ?? esc(item.v)}</div>
-          ${item.sub ? `<div class="sub">${esc(item.sub)}</div>` : ''}
+          ${item.sub ? `<div class="sub${item.subWrap ? ' sub--wrap' : ''}">${esc(item.sub)}</div>` : ''}
         </div>
         <div class="stat-icon ${item.tint}">${icon(item.ic)}</div>
       </div>`,
