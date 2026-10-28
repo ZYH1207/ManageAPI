@@ -32,6 +32,9 @@ export const UNAVAILABLE_LABEL = {
   'rate-limit': '限流中',
   'model-missing': '模型不可用',
   'protocol-unsupported': '不支持该协议',
+  // 不是「暂时不可用」而是「目前不稳」：真实流量失败率过高，短时间避一避。
+  // 单独一类是因为它不来自上游报错文案，而是网关自己算出来的比率（core/score.js）
+  'error-rate': '失败率过高',
 }
 
 const RULES = [

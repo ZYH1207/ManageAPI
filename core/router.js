@@ -189,6 +189,50 @@ export function admissionTags(row) {
  *
  * @returns {{status:number, type:string, message:string, detail:string}}
  */
+/**
+ * 绝境兜底：准入没过、但「能用」的候选。
+ *
+ * 为什么需要：准入误判的代价自相矛盾——把慢站当真坏站挡在门外，看上去很安全，
+ * 实际上会让整条供给链变成单点。2026-10-28 实测：某模型 7 条供给只剩 1 条
+ * 准入（其余全被「慢速/不稳定/指纹不符」挡死），那一条一挂就整单失败。
+ * 用户宁可多等 10 秒，也不想看到报错。
+ *
+ * 资格条件刻意严：
+ *   只收 kind='slow'   —— 慢是「体验差」，不是「不能用」；降智/指纹不符/不稳定
+ *                       是「不能用」，一律不兜底（给错结果比不给更糟）
+ *   quality ≥ 0.8      —— 真实成功率得过得去（可用率×完整性）
+ *   不在冷却/不待恢复  —— 刚被上游明确拒过的，再试只是白等一个来回
+ *   不在改道/不故障   —— 那是守卫和外部上报已经认定「先别用」的
+ *
+ * 兜底候选只追加在准入候选**后面**：前面的都失败了才会轮到它。
+ */
+export const LAST_RESORT_MIN_QUALITY = 0.8
+
+export function isLastResortCandidate(row) {
+  if (!row) return false
+  if (row.detour || row.faulted) return false
+  if (row.blocked || row.pendingRecovery) return false
+  if (row.admission?.ok) return false
+  if (row.admission?.kind !== 'slow') return false
+  const quality = Number(row.quality)
+  return Number.isFinite(quality) && quality >= LAST_RESORT_MIN_QUALITY
+}
+
+/**
+ * 一次请求的候选链：准入的在前，绝境兜底的在后。
+ *
+ * 收在一处是为了让「谁会被试到、按什么顺序」只有一个真源——网关与诊断
+ * 解释「为什么派给了这个站」时用的是同一份顺序。
+ */
+export function candidateChain(candidates = []) {
+  const admitted = candidates.filter((c) => c.admission?.ok)
+  const lastResort = candidates.filter(isLastResortCandidate)
+  return {
+    admitted,
+    lastResort: lastResort.map((c) => ({ ...c, lastResort: true })),
+  }
+}
+
 export function admissionFailure(candidates, { model = '', maxTtftMs = 0 } = {}) {
   const detail = candidates
     .map(

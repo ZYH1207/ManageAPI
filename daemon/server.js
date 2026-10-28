@@ -34,6 +34,7 @@ import {
   admissionFailure,
   admissionOf,
   admissionTags,
+  candidateChain,
 } from '../core/router.js'
 import { snapTtftMs, ttftTierTable, describeTtftLimit } from '../core/latency.js'
 import { pauseStatus, normalizeWindows, isTime, MAX_WINDOWS } from '../core/schedule.js'
@@ -4268,8 +4269,12 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
   // 这里必须用 admissionOf 而不是 routable：两套口径分别长会直接导致
   // 「决策页说没有可用供给，网关却偷偷拿最差的去试」
   const allCandidates = candidates
-  const admitted = candidates.filter((c) => c.admission?.ok)
-  if (admitted.length === 0) {
+  // 候选链 = 准入的在前 + 绝境兜底的在后（见 core/router.js#candidateChain）。
+  // 兜底只收「慢速但真实成功率过得去」的：给错结果比不给更糟，
+  // 所以降智/指纹不符/不稳定一律不兜底。
+  const chain = candidateChain(candidates)
+  const admitted = chain.admitted
+  if (admitted.length === 0 && chain.lastResort.length === 0) {
     // 报错文案在 core/router.js：决策页要能显示同一句话，两处各写一遍必然漂移
     const failure = admissionFailure(candidates, {
       model,
@@ -4281,7 +4286,9 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
     }
     return openaiError(res, failure.status, failure.message, failure.type)
   }
-  candidates = admitted
+  // 准入候选排前面，全部失败后才轮到兜底的慢速供给。
+  // 用户宁可多等几秒，也不想看到报错——这是「不影响心流」的底线。
+  candidates = admitted.length > 0 ? [...admitted, ...chain.lastResort] : chain.lastResort
 
   const started = Date.now()
   const failures = []
@@ -4500,6 +4507,9 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
           chosenProviderName: candidate.provider.name,
           upstreamModel: candidate.offer.upstreamName,
           chosenGroup: candidate.offer.group || '',
+          // 这一单是不是走了「绝境兜底」（准入没过但慢速可用）。
+          // 排查时能区分「正常选站」与「实在没人了才用慢站」。
+          lastResort: Boolean(candidate.lastResort),
           attempts: index + 1,
           outcome: result.streamError ? 'stream-broken' : 'ok',
           latencyMs,

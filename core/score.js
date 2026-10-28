@@ -36,6 +36,25 @@ export const THRESHOLDS = {
 export const MIN_SAMPLES_FOR_VERDICT = 3
 
 /**
+ * 失败率冷却：真实流量里失败率高到一定程度，就不再看「最后一次成功有多新」。
+ *
+ * 为什么光有「最后一次失败晚于最后一次成功」不够：那条规则只能抓住
+ * 「一路失败」的站。现实中更坑的是**间歇性失败**——一次 403、两次成功、
+ * 又一次 403……lastOkAt 永远比 lastFailAt 新，于是永远进不了冷却，
+ * 探针看着健康、网关使劲派。2026-10-28 实测：某站 23 分钟内 42 次 403，
+ * 夹在几百次成功中间，全程都没进冷却。
+ *
+ * 所以补一条「比率」判定：窗口内失败占比超过阀值就强制进冷却。
+ * 门槛刻意不低（15% 且至少 5 次失败）——正常站也有偶发的 5xx，
+ * 不能用一两次失败就把好站拉黑。
+ */
+export const FAIL_RATE_MIN_SAMPLES = 20
+export const FAIL_RATE_MIN_FAILS = 5
+export const FAIL_RATE_THRESHOLD = 0.15
+/** 比率型冷却的时长：比额度型短——它证明的是「现在不稳」，不是「没余额了」 */
+export const FAIL_RATE_COOLDOWN_MS = 10 * 60_000
+
+/**
  * 证据量分级：多少个样本才算「结论站得住」。
  * 注意这只是**置信度标注**，不是放行条件——1 个成功样本仍然算健康（能连上就是
  * 能连上），但界面必须能看出「这个 healthy 只有 1 个样本」。
@@ -204,21 +223,43 @@ export function scoreOffers(probes, traffic = {}, options = {}) {
     const totalSamples = probeOk + probeOutage + trafficOk + trafficFail
     const availability = totalSamples === 0 ? null : (probeOk + trafficOk) / totalSamples
 
+    // ---- 失败率冷却（比率型）
+    // 「最后一次失败晚于最后一次成功」只能抓住一路失败的站；间歇性失败
+    // （失败夹在成功中间）永远满足不了它，于是永远不进冷却。见文件头常量注释。
+    const rateSamples = trafficOk + trafficFail
+    const failRate = rateSamples > 0 ? trafficFail / rateSamples : null
+    const failRateBlocked =
+      failRate !== null &&
+      trafficFail >= FAIL_RATE_MIN_FAILS &&
+      rateSamples >= FAIL_RATE_MIN_SAMPLES &&
+      failRate >= FAIL_RATE_THRESHOLD
+
     // 冷却期内不放行，但不当成「坏站」：额度充上、限流过去就自动恢复，
     // 判断依据是「最后一次不可用失败」晚于「最后一次成功」
     const blockedUntil =
       unavailableKind && unavailableAt > successAt ? cooldownUntil(unavailableKind, unavailableAt) : 0
-    const blocked = blockedUntil > now ? { kind: unavailableKind, until: blockedUntil } : null
+    // 两条路取先到的那一条：时间型冷却优先，其次是比率型
+    const blocked =
+      blockedUntil > now
+        ? { kind: unavailableKind, until: blockedUntil }
+        : failRateBlocked
+          ? { kind: 'error-rate', until: (tsOf(trafficRow?.lastFailAt) || now) + FAIL_RATE_COOLDOWN_MS }
+          : null
 
     // 冷却到期不等于恢复。冷却只回答「这段时间别去试」，恢复要**证据**：
     // 最近一次证据仍是额度/限流/模型不可用（晚于最后一次成功），说明它还没被证明
     // 能用了。此时放行只会再撞一次同样的墙——典型现场：一个模型 4 条供给，3 条
     // 慢速被首字门槛挡住，剩下 1 条限流，网关就反复拿这条去试，时间全耗在必然失败的请求上。
     // 解除条件只有一个：之后有一次成功（探针或真实流量）把 successAt 推到失败之后。
+    //
+    // 比率型同理：失败率没跌下来之前不能因为「冷却到期了」就放行，
+    // 否则刚好在时间边界上又撞一次（真实流量还是那批失败样本）。
     const pendingRecovery =
       unavailableKind && unavailableAt > successAt
         ? { kind: unavailableKind, since: unavailableAt }
-        : null
+        : failRateBlocked
+          ? { kind: 'error-rate', since: tsOf(trafficRow?.lastFailAt) || now }
+          : null
 
     const quality =
       availability === null || integrity === null ? availability ?? integrity : availability * integrity
@@ -297,6 +338,10 @@ export function scoreOffers(probes, traffic = {}, options = {}) {
       blocked,
       // 冷却已到、但还没被证明恢复（最近一次证据是额度/限流/模型不可用）
       pendingRecovery,
+      // 真实流量的失败率（窗口内 fail/(ok+fail)）：界面与诊断要能解释
+      // 「为什么它突然被冷却了」，不再只能看到一个 error-rate 标签
+      failRate,
+      failRateSamples: rateSamples,
       availability,
       fingerprintRate,
       truncationRate,
