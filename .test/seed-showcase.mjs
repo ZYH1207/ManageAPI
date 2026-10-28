@@ -145,7 +145,6 @@ for (const offer of offers) {
       promptTokens: 138,
       completionTokens: truncated ? 612 : 318,
       finishReason: truncated ? 'length' : 'stop',
-      identityClaim: null,
       error: null,
     })
   }

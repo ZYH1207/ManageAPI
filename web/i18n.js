@@ -495,6 +495,7 @@ const EN = {
     'Stops and resumes automatically; for an overnight window enter the later time first',
   '首字上限': 'TTFT limit',
   '小时': 'hours',
+  '分钟': 'min',
   '指纹': 'Fingerprint',
   '截断': 'Truncation',
   '计费': 'Billing',
@@ -681,8 +682,8 @@ Object.assign(EN, {
 
   // 探针
   '主动探测': 'Active probing',
-  '每个模型发 5 个请求：指纹 + 计费、截断、缓存（连发两次）、身份自述。结果进入评分，路由据此排除可疑的站。':
-    'Five requests per model: fingerprint + billing, truncation, cache (twice), self-identification. The results feed the score that routing uses to exclude suspicious sites.',
+  '每个模型最多发 4 个请求：指纹 + 计费、截断、缓存（连发两次）。结果进入评分，路由据此排除可疑的站。缓存数字超过 2 小时过期，过期后的下一次定时/轮巡探测自动升级全量补测；手动探测每次都全量。自动路由开着时定时探针由轮巡接管。':
+    'Up to four requests per model: fingerprint + billing, truncation, cache (twice). The results feed the score that routing uses to exclude suspicious sites. Cache numbers go stale after two hours; the next scheduled or patrol probe after that runs the full set. Manual probes always run all four. While auto-route is on, the patrol takes over probing.',
   '探测全部（最多 5 个）': 'Probe all (max 5)',
   '探测全部（{n} 个）': 'Probe all ({n})',
   '探测所选（{n} 个）': 'Probe selected ({n})',
@@ -876,6 +877,23 @@ Object.assign(EN, {
     'Ranks by price per millisecond of first-token wait: cost and latency collapse into one number, so the slow and the pricey both show up — the best combined pick lands first.',
   '/s 首字': '/s TTFT',
   '自动路由': 'Auto routing',
+  '实时分样本 {n}/5': 'Real-score samples {n}/5',
+  '真实价速比每 10 分钟一窗，窗口内至少 5 单才开始判漂移；探针开工全量 + 每小时 Lite 负责基础分':
+    'Real price-per-speed is windowed every 10 minutes; drift needs at least 5 live requests. Probes set the baseline: one full pass at kickoff, then hourly lite rounds.',
+  '真实价速比比 {n} 小时基线贵/便宜的幅度；差出 30% 自动改派':
+    'How much the real price-per-ms deviates from the {n}-hour baseline; at 30% traffic is re-dispatched automatically.',
+  '综合价速比（成本 ÷ 总耗时）比 {n} 小时基线的漂移；差出 30% 自动改派':
+    'Composite price-per-speed (cost ÷ total wall time) vs the {n}-hour baseline; at 30% traffic is re-dispatched automatically.',
+  '真实总耗时（首字+吐字）比 {n} 小时基线的漂移；慢出 30% 自动改派':
+    'Real total wall time (TTFT + generation) vs the {n}-hour baseline; at 30% slower, traffic is re-dispatched automatically.',
+  '吐字': 'Tokens/s',
+  '漂移 {n}': 'Drift {n}',
+  '实时 {n}': 'Realtime {n}',
+  '，降级 {n} 条': ', {n} demoted',
+  '已由自动路由接管': 'Taken over by auto routing',
+  '自动路由开着时定时探针不跑：轮巡每 30 分钟接替探测，关掉自动路由后这里自动恢复生效':
+    'While auto-route is on the scheduled probe stands down — the patrol probes every 30 minutes. This resumes when you turn auto routing off.',
+  '探测间隔不能是负数': 'Probe interval cannot be negative',
   '一键接管': 'Take over',
   '权限在决策侧重之上：接管后客户端要什么模型都无所谓': 'Sits above the decision basis: once taken over, whatever model the client asks for is irrelevant',
   '自动路由功能介绍': 'About auto routing',
@@ -895,6 +913,20 @@ Object.assign(EN, {
     'Auto routing took over: whatever model the client asks for, only the best one under the current basis is dispatched',
   '自动路由已关闭：网关恢复按客户端请求的模型派活':
     'Auto routing off: the gateway dispatches by the requested model again',
+  '加入自动路由：勾选后自动路由只在勾选的模型里挑；一个都不勾 = 全场都参选':
+    'Add to auto routing: when checked, auto routing picks only among checked models; none checked = all models compete',
+  '已加入自动路由：自动路由只在勾选的模型里挑。点击移出':
+    'In auto routing scope: only checked models compete. Click to remove',
+  '已加入自动路由：只在勾选的 {n} 个模型里挑':
+    'Added: auto routing now picks only among {n} checked model(s)',
+  '已移出，还在勾选的 {n} 个模型里挑':
+    'Removed; still picking among {n} checked model(s)',
+  '已移出：没有勾选的模型 = 全场都参选':
+    'Removed: no models checked = all models compete again',
+  '接管范围：{n} 个勾选模型，其余不参选':
+    'Takeover scope: {n} checked model(s), the rest are excluded',
+  '没有勾选的模型 = 回到全场。去智能决策页每个模型组上的加号增减':
+    'No checked models = full pool again. Use the plus button on each model group in the decision page',
   '；自动路由接管中，已按新档位重选最优模型':
     '; auto routing is active and re-picked the best model under the new basis',
   '这一单是被自动路由改派的，不是客户端真的点名了这个模型':
@@ -1235,6 +1267,16 @@ Object.assign(EN, {
   '≈ ¥{cny}（按汇率折算）': '≈ ¥{cny} at the current rate',
   '余额币种，读余额时按站点接口自动判断，可手动纠正': 'Balance currency — auto-detected from the site API, override if wrong',
   '显示币种': 'Display currency',
+  '价格单位': 'Price unit',
+  '价格单位已切换': 'Price unit switched',
+  '因中转站模板原因，美元人民币实际 1:1。特设 R dollar（R$）为真实美元，方便填写国外模型价格：币种选 R.Dollar 填官方美元价，系统按汇率折成站内价计费。':
+    'Relay templates bill US$ and ¥ 1:1. R$ (R.Dollar) means real US dollars for foreign model prices: pick R.Dollar, enter the official USD price, and the gateway converts it at the exchange rate.',
+  '站内 $ 与人民币 1:1；R$（真实美元）按汇率折算，切过去所有价格变小（除以汇率）':
+    'In-site $ is 1:1 with ¥; R$ (real USD) is converted at the exchange rate — switching to R$ divides every price by the rate.',
+  '拖动调整分组顺序（改价格不会改变分组顺序）':
+    'Drag to reorder model groups — price edits never change the group order',
+  '分组顺序已保存（改价格不会再打乱它）':
+    'Group order saved — price edits will no longer shuffle it',
   '只影响价格显示，不影响比较口径（比较一律按美元）': 'Display only — comparisons always use USD',
   '只影响人民币标价/展示的折算': 'Only used to convert CNY prices for display',
   '显示币种已切换': 'Display currency switched',
@@ -1287,6 +1329,19 @@ Object.assign(EN, {
   '已不在榜单里': 'no longer ranked',
   '已忽略 {name}': 'Ignored {name}',
   '已恢复 {name}': 'Restored {name}',
+  '已显示 {name}': 'Shown {name}',
+  '已显示': 'Shown',
+  '点左边的模型组，在右边逐个开关：灰「已忽略」不参与比价、决策、探针和网关；橙黄「已显示」在用。':
+    'Pick a model group on the left, toggle models on the right: grey Ignored is excluded from pricing, decisions, probes and the gateway; orange Shown is in use.',
+  '点一个模型组，看里面的模型。': 'Pick a model group to see its models.',
+  '整组忽略': 'Ignore all in group',
+  '全部显示': 'Show all',
+  '{n} 个模型 · 已忽略 {m}': '{n} models · {m} ignored',
+  '已显示': 'Shown',
+  '点击忽略：不参与比价、决策、探针和网关':
+    'Click to ignore: excluded from pricing, decisions, probes and the gateway',
+  '点击显示：恢复参与比价、决策、探针和网关':
+    'Click to show: back into pricing, decisions, probes and the gateway',
   '刷新': 'Refresh',
   '已刷新': 'Refreshed',
   '自动刷新': 'Auto refresh',
@@ -1518,7 +1573,6 @@ Object.assign(EN, {
   '还没有基准价': 'No benchmark prices yet',
   '新增站点': 'Add site',
   '指纹不符': 'fingerprint mismatch',
-  '身份自述': 'self-claimed identity',
   '首字节之前失败': 'failed before first byte',
   '首字节之后失败': 'failed after first byte',
   '采集失败': 'collect failed',
@@ -1769,6 +1823,9 @@ Object.assign(EN, {
   '证据不足': 'Inconclusive',
   '冷却中': 'Cooling down',
   '余额不足 · 请充值': 'Out of balance — top up',
+  '余额不足': 'Out of balance',
+  '余额告警': 'Low balance',
+  '空回复': 'Empty replies',
   '额度不足': 'Out of quota',
   '单次请求超限': 'Request too large',
   '单次预算超限': 'Per-call budget exceeded',

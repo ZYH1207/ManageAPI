@@ -2216,12 +2216,24 @@ function closeGroupModels() {
   modelsSheet = null
 }
 
-/** 一行模型：名字 + 倍率/标记 + 右侧价格。分组弹窗和 Key 弹窗共用，两处口径不能分家 */
+/**
+ * 一行模型：名字 + 倍率/标记 + 右侧价格。分组弹窗和 Key 弹窗共用，两处口径不能分家。
+ *
+ * 忽略状态是一个可点的开关徽章（分组页和 Key 页都能用）：
+ *   已忽略 = 灰色，不参与比价、决策、探针和网关；已显示 = 橙黄。
+ * 点一下只切这**一个**模型（精确名，走 modelOverrides 单行例外），
+ * 不动同类写法；「整类忽略」在「忽略模型」管理面板（身份键名单）。判定规则在服务端。
+ */
 function modelRowHtml(m) {
   const flags = [
     m.free ? `<span class="badge ok">${t('免费')}</span>` : '',
     m.perCall ? `<span class="badge">${t('按次')}</span>` : '',
-    m.ignored ? `<span class="badge">${t('已忽略')}</span>` : '',
+    m.name
+      ? `<button type="button" class="badge ig-chip${m.ignored ? ' ig-on' : ' ig-off'}"
+          data-act="toggle-sheet-ignore" data-name="${esc(m.name)}" aria-pressed="${Boolean(m.ignored)}"
+          title="${m.ignored ? esc(t('点击显示：恢复参与比价、决策、探针和网关')) : esc(t('点击忽略：不参与比价、决策、探针和网关'))}"
+        >${m.ignored ? t('已忽略') : t('已显示')}</button>`
+      : '',
   ]
     .filter(Boolean)
     .join('')
@@ -2841,8 +2853,10 @@ async function refreshState({ silent = false } = {}) {
   const focused = document.activeElement
   if (focused && /^(INPUT|TEXTAREA|SELECT)$/.test(focused.tagName)) return
   // 改价暂存中：轮询拿回的是没含暂存改动的服务端状态，会把正在编辑的值冲掉；
-  // 停手 2 秒后 flushPriceEdits 自己会拉新状态并重排
+  // 停手 2 秒后 flushPriceEdits 自己会拉新状态并重排。
+  // 价格单位切换的 2 秒暂存同理：服务端还是旧单位，拉回来会把刚选的冲掉
   if (pendingPriceEdits.size > 0) return
+  if (pendingDisplayCurrency !== null) return
   const scroller = $('.content')
   const scrollTop = scroller ? scroller.scrollTop : 0
   const light = !HEAVY_TABS.has(activeTab)
@@ -2884,10 +2898,10 @@ document.addEventListener('visibilitychange', () => {
 // --------------------------------------------------------------- 忽略模型
 
 let ignoredQuery = ''
-// 分组名 → 该组下的模型名（渲染时登记，供「整组勾选」用）
+// 分组名 → 该组下的模型身份键（渲染时登记，供「整组忽略 / 全部显示」用）
 let igGroupNames = new Map()
-// 折叠起来的厂牌（记住，重开弹窗仍是折叠的）
-const igCollapsed = new Set()
+// 左栏当前选中的模型组（重画面板后保持选中）
+let igSelected = null
 
 // 厂牌前缀表与 vendorOf / vendorLabel 移到了 free-relay.js（胶囊配色与这里共用一份）
 
@@ -2952,21 +2966,16 @@ function groupModels(rows) {
     .sort((a, b) => b.items.length - a.items.length || a.label.localeCompare(b.label))
 }
 
-/** 组头和组内勾选状态对齐（全选 / 半选 / 未选） */
-function syncIgGroups() {
-  for (const [key, names] of igGroupNames) {
-    const head = document.querySelector(`[data-ig-group="${CSS.escape(key)}"]`)
-    if (!head) continue
-    const boxes = names
-      .map((name) => document.querySelector(`[data-ig="${CSS.escape(name)}"]`))
-      .filter(Boolean)
-    if (boxes.length === 0) continue
-    const checked = boxes.filter((box) => box.checked).length
-    head.checked = checked === boxes.length
-    head.indeterminate = checked > 0 && checked < boxes.length
-  }
-}
-
+/**
+ * 忽略模型面板：左右两栏（2026-10-29 重做，旧的复选框树太臃肿）。
+ *
+ *   左栏：厂牌模型组，一张张圆角卡，默认不展开任何一组；
+ *   右栏：点中组里的模型逐行开关——灰「已忽略」/ 橙黄「已显示」，
+ *          与分组/Key 弹窗的开关徽章同款；另有「整组忽略 / 全部显示」。
+ *
+ * 这里的开关仍是**身份键口径**（整类）：面板管的是「一类模型」的全局忽略，
+ * 变体一起消失；要「这一行就是这一行」的单行例外，去分组弹窗（modelOverrides）。
+ */
 function openIgnoredModels() {
   const modal = $('#prov-modal')
   const title = $('#prov-modal-title')
@@ -2985,64 +2994,84 @@ function openIgnoredModels() {
   )
   const groups = groupModels(shown)
   igGroupNames = new Map(groups.map((g) => [g.key, g.items.map((row) => row.id)]))
+  // 搜索后选中的组可能被滤掉：滤没了就回落到未选中（右侧给提示）
+  const selected = groups.find((g) => g.key === igSelected) || null
   title.textContent = t('忽略模型')
+  const chipOf = (row) => {
+    const on = ignored.has(row.id)
+    return `<button type="button" class="badge ig-chip${on ? ' ig-on' : ' ig-off'}"
+      data-act="toggle-ig-model" data-id="${esc(row.id)}" aria-pressed="${on}"
+      title="${on ? esc(t('点击显示：恢复参与比价、决策、探针和网关')) : esc(t('点击忽略：不参与比价、决策、探针和网关'))}"
+    >${on ? t('已忽略') : t('已显示')}</button>`
+  }
   body.innerHTML = `
     <p class="hint" style="margin:0 0 10px">
-      ${t('勾上的模型不再参与比价、智能决策、探针和网关；点厂牌可整组勾选，随时取消。')}
+      ${t('点左边的模型组，在右边逐个开关：灰「已忽略」不参与比价、决策、探针和网关；橙黄「已显示」在用。')}
     </p>
     <div class="toolbar" style="margin-bottom:8px">
       <input id="ig-search" class="search" type="search" placeholder="${t('搜索模型名…')}" value="${esc(ignoredQuery)}" />
       <span class="hint" style="margin:0">${t('{n} / {total} 个模型', { n: shown.length, total: rows.length })}</span>
     </div>
-    <div class="ig-list">
-      ${shown.length
-        ? groups
-            .map((group) => {
-              const folded = igCollapsed.has(group.key)
-              return `
-        <div class="ig-group">
-          <div class="ig-row ig-group-head">
-            <button class="ig-caret${folded ? ' is-collapsed' : ''}" type="button" data-ig-fold="${esc(group.key)}" title="${t('收起 / 展开')}">${icon('chevron-down')}</button>
-            <input type="checkbox" data-ig-group="${esc(group.key)}" ${group.ignoredCount === group.items.length ? 'checked' : ''} />
+    <div class="ig-split">
+      <div class="ig-pane-left">
+        ${groups
+          .map(
+            (group) => `
+          <button type="button" class="ig-vendor-row${group.key === igSelected ? ' active' : ''}"
+            data-ig-pick="${esc(group.key)}">
             <span class="ig-vendor">${esc(group.label)}</span>
             <span class="hint">${t('{n} 个模型', { n: group.items.length })}${
               group.ignoredCount ? ` · ${t('已忽略 {n}', { n: group.ignoredCount })}` : ''
             }</span>
+          </button>`,
+          )
+          .join('')}
+      </div>
+      <div class="ig-pane-right">
+        ${!selected
+          ? `<p class="hint" style="margin:10px 4px">${t('点一个模型组，看里面的模型。')}</p>`
+          : `
+          <div class="ig-detail-head">
+            <b>${esc(selected.label)}</b>
+            <span class="hint">${t('{n} 个模型 · 已忽略 {m}', { n: selected.items.length, m: selected.ignoredCount })}</span>
+            <span class="grow"></span>
+            <button class="ghost tiny" data-ig-bulk="ignore" data-group="${esc(selected.key)}">${t('整组忽略')}</button>
+            <button class="ghost tiny" data-ig-bulk="show" data-group="${esc(selected.key)}">${t('全部显示')}</button>
           </div>
-          <div class="ig-children" data-ig-children="${esc(group.key)}" ${folded ? 'hidden' : ''}>
-          ${group.items
+          ${selected.items
             .map(
               (row) => `
-            <label class="ig-row ig-child" title="${esc(row.names.join(' / '))}">
-              <input type="checkbox" data-ig="${esc(row.id)}" ${ignored.has(row.id) ? 'checked' : ''} />
+            <div class="ig-model-row" title="${esc(row.names.join(' / '))}">
               <span class="mono">${esc(row.display)}${
                 row.names.length > 1
-                  ? `<span class="badge" style="margin-left:6px">${t('合并 {n} 种写法', { n: row.names.length })}</span>`
+                  ? ` <span class="badge">${t('合并 {n} 种写法', { n: row.names.length })}</span>`
                   : ''
               }</span>
               <span class="hint">${row.sites ? t('{n} 个站', { n: row.sites }) : t('已不在榜单里')}</span>
-            </label>`,
+              <span class="grow"></span>
+              ${chipOf(row)}
+            </div>`,
             )
-            .join('')}
-          </div>
-        </div>`
-            })
-            .join('')
-        : `<p class="hint">${t('没有匹配的模型。')}</p>`}
+            .join('')}`}
+      </div>
     </div>`
   modal.hidden = false
-  syncIgGroups()
 }
 
-/** 把当前所有勾选状态一次性提交（整组勾选也走这里） */
-async function saveIgnoredFromModal() {
-  const names = [...document.querySelectorAll('[data-ig]')]
-    .filter((box) => box.checked)
-    .map((box) => box.dataset.ig)
+/** 整组忽略 / 全部显示：一次 PATCH，不打断在输入框里的搜索词 */
+async function bulkIgnoreGroup(key, ignore) {
+  const ids = igGroupNames.get(key) || []
+  const current = new Set((state.settings?.ignoredModels || []).map(identityOf))
+  for (const id of ids) (ignore ? current.add : current.delete).call(current, id)
   try {
-    state = await api('PATCH', '/api/settings', { ignoredModels: names })
+    state = await api('PATCH', '/api/settings', { ignoredModels: [...current] })
     render()
-    syncIgGroups()
+    openIgnoredModels()
+    toast(
+      ignore
+        ? t('已忽略「{name}」全部模型', { name: vendorLabel(key) })
+        : t('已恢复「{name}」全部模型', { name: vendorLabel(key) }),
+    )
   } catch (error) {
     toast(String(error), true)
   }
@@ -3056,23 +3085,11 @@ async function toggleIgnoredModel(name, checked) {
   try {
     state = await api('PATCH', '/api/settings', { ignoredModels: [...current] })
     render()
-    // 不重画弹窗：勾选状态是浏览器自己维护的，重画会把列表滚回顶部
-    syncIgGroups()
     const label = displayModel(name)
-    toast(checked ? t('已忽略 {name}', { name: label }) : t('已恢复 {name}', { name: label }))
+    toast(checked ? t('已忽略 {name}', { name: label }) : t('已显示 {name}', { name: label }))
   } catch (error) {
     toast(String(error), true)
   }
-}
-
-async function toggleVendorGroup(key, checked) {
-  const names = igGroupNames.get(key) || []
-  const boxes = names
-    .map((name) => document.querySelector(`[data-ig="${CSS.escape(name)}"]`))
-    .filter(Boolean)
-  for (const box of boxes) box.checked = checked
-  await saveIgnoredFromModal()
-  toast(checked ? t('已忽略「{name}」全部模型', { name: vendorLabel(key) }) : t('已恢复「{name}」全部模型', { name: vendorLabel(key) }))
 }
 
 // --------------------------------------------------------------- 同模型合并
@@ -3233,6 +3250,12 @@ const STATUS_TAG = {
   billing: { label: '余额不足 · 请充值', cls: 'danger' },
   'awaiting-recovery': { label: '等确认恢复', cls: 'warn' },
   fallback: { label: '兜底', cls: '' },
+  // 余额：来自站点余额读数（持久化数据），欠费红、预警黄；欠费已挡准入
+  'balance-empty': { label: '余额不足', cls: 'danger' },
+  'balance-warn': { label: '余额告警', cls: 'warn' },
+  // 空回复：近 1 小时发生过空回合（含补全救回来的）。只是给人看的提醒，
+  // 本地补全还在正常给出结果，不因此改道
+  'empty-reply': { label: '空回复', cls: 'warn' },
   ok: { label: '可用', cls: 'ok' },
 }
 
@@ -3415,6 +3438,7 @@ function renderDecision() {
               }`
             : '没有可用供给'}</span>
           ${officialChipHtml(decision.official)}
+          ${autorouteScopeButton(decision)}
           ${decision.manual ? '<button class="ghost tiny" data-act="reset-order">恢复自动</button>' : ''}
         </div>
         ${isCollapsed ? '' : `
@@ -3531,6 +3555,54 @@ function routeNowPill() {
 }
 
 /**
+ * 决策页分组头上的自动路由范围按钮（加号）。
+ *
+ * 默认（一个都不勾）自动路由在**全场所有模型**里挑最优；点加号勾上这个模型后，
+ * 自动路由只在勾选的那几个里挑。再点一次移出。勾选的是分组键（身份键口径），
+ * 服务端按身份键匹配——站点把同一模型写成别的名字也能勾得住。
+ */
+function autorouteScopeButton(decision) {
+  const scope = Array.isArray(state.autoRoute?.scope) ? state.autoRoute.scope : []
+  const enrolled = scope.includes(decision.modelKey)
+  const title = enrolled
+    ? t('已加入自动路由：自动路由只在勾选的模型里挑。点击移出')
+    : t('加入自动路由：勾选后自动路由只在勾选的模型里挑；一个都不勾 = 全场都参选')
+  return `
+    <button class="ghost tiny ar-scope${enrolled ? ' active' : ''}" data-act="toggle-autoroute"
+      data-model="${esc(decision.modelKey)}" title="${esc(title)}"
+      aria-pressed="${enrolled}">${icon('plus')}</button>
+    ${enrolled ? `<span class="badge ok" title="${esc(title)}">${t('自动路由')}</span>` : ''}`
+}
+
+/**
+ * 漂移监视器状态行：真实价速比现值 vs 基线的漂移幅度，供作者直接看到
+ * 「后台实打实的分」和探针基础分的关系。数据来自 daemon/drift-watcher.js
+ * 的快照（tick 每分钟算一次，这里纯展示）。
+ */
+function driftStatusLine() {
+  const snap = state.drift
+  if (!snap?.evaluation) return ''
+  const e = snap.evaluation
+  const pct = (v) => (Number.isFinite(v) ? `${v >= 0 ? '+' : ''}${Math.round(v * 100)}%` : '')
+  if (e.verdict === 'insufficient') {
+    return `<span class="sub" title="${esc(t('真实价速比每 10 分钟一窗，窗口内至少 5 单才开始判漂移；探针开工全量 + 每小时 Lite 负责基础分'))}">${t('实时分样本 {n}/5', { n: e.samples })}</span>`
+  }
+  // 分项定位：综合漂移里首字和吐字各贡献多少（解耦型劣化一眼看出烂在哪半边）
+  const parts = []
+  if (Number.isFinite(e.ttftDrift)) parts.push(`${t('首字')} ${pct(e.ttftDrift)}`)
+  if (Number.isFinite(e.tpsDrift)) parts.push(`${t('吐字')} ${pct(e.tpsDrift)}`)
+  const tip = esc(
+    t('真实总耗时（首字+吐字）比 {n} 小时基线的漂移；慢出 30% 自动改派', { n: 6 }) +
+      (parts.length > 0 ? ` · ${parts.join(' / ')}` : ''),
+  )
+  if (e.verdict === 'drifted') {
+    const demotedNote = (snap.demoted || []).length > 0 ? t('，降级 {n} 条', { n: snap.demoted.length }) : ''
+    return `<span class="sub"><span class="badge warn" title="${tip}">${t('漂移 {n}', { n: pct(e.drift) })}</span>${esc(demotedNote)}</span>`
+  }
+  return `<span class="sub"><span class="badge ok" title="${tip}">${t('实时 {n}', { n: pct(e.drift) })}</span></span>`
+}
+
+/**
  * 自动路由（一键接管）：权限在决策侧重之上的总开关。
  *
  * 形态是小开关，塞在慢速档位条右侧的空档里——它不是又一个档位，不值得单独
@@ -3541,12 +3613,19 @@ function routeNowPill() {
  */
 function autoRouteSwitch() {
   const enabled = Boolean(state.autoRoute?.enabled)
+  const scope = Array.isArray(state.autoRoute?.scope) ? state.autoRoute.scope : []
+  const scopeHint =
+    scope.length > 0
+      ? `<span class="sub" title="${t('没有勾选的模型 = 回到全场。去智能决策页每个模型组上的加号增减')}">${t('接管范围：{n} 个勾选模型，其余不参选', { n: scope.length })}</span>`
+      : ''
   return `
     <label class="switch switch-inline auto-route-inline">
       <input type="checkbox" id="auto-route-switch" ${enabled ? 'checked' : ''} />
       <span class="switch-track"><span class="switch-knob"></span></span>
       <span class="switch-text"><b>${t('自动路由')}</b></span>
     </label>
+    ${scopeHint}
+    ${driftStatusLine()}
     <span class="help-dot" tabindex="0" aria-label="${t('自动路由功能介绍')}" title="${t(
       '接管后，不管客户端请求哪个模型、怎么切模型，网关都只派给当前决策档位下全场最优的那一个模型——不分站点、不分分组、不分来自哪个站。若新模型只比现役好一点点（不到 15%），不切换：反复横跳对用户的干扰比那点收益大，只有明显更优或现役下线才换。免费入口不受影响。',
     )}">?</span>`
@@ -3678,7 +3757,6 @@ function probeDetailHtml(score) {
         ${p.fingerprintRaw ? `<div class="detail-line mono dim">实际返回：${esc(p.fingerprintRaw)}</div>` : ''}
         ${p.truncationDetail ? `<div class="detail-line mono dim">${esc(p.truncationDetail)}</div>` : ''}
         ${p.cacheDetail ? `<div class="detail-line mono dim">缓存：${esc(p.cacheDetail)}</div>` : ''}
-        ${p.identityClaim ? `<div class="detail-line dim">模型自述：<b>${esc(p.identityClaim)}</b>（仅供参考——模型经常认错自己，不能当作掉包证据）</div>` : ''}
         ${p.error ? `<div class="detail-line danger">错误：${esc(p.error)}</div>` : ''}
       </div>
     </div>`
@@ -3730,19 +3808,23 @@ function renderProbes() {
   }
 
   const interval = Number(state.settings.probeIntervalMinutes) || 0
+  // 连锁机制：自动路由开着时，定时探针由轮巡接管——下拉禁用 + 徽章说明，
+  // 改了也不会跑（调度器侧有同一个门），不如不让人改
+  const autoRouteOn = Boolean(state.autoRoute?.enabled)
   const maxAge = Number(state.settings.scoreMaxAgeHours) || 6
-  const intervalOptions = [
-    [0, '关闭'],
-    [30, '30 分钟'],
-    [60, '1 小时'],
-    [180, '3 小时'],
-    [360, '6 小时'],
-  ]
+  const allowUntrusted = Boolean(state.settings.allowUntrusted)
 
-  // 定时关闭检测：暂停状态由服务端算（state.probePause），这里只管显示，
-  // 跨夜 / 多段重叠的判断不在浏览器里再写一遍。控件和「自动探测 / 评分有效期」同一行，
-  // 这三个本来就是一套东西：什么时候探、证据活多久、什么时候不探。
+  // 定时显示：整小时数用「小时」档，其余用「分钟」档；0 = 关闭
+  const intervalUnit = interval > 0 && interval % 60 === 0 ? 60 : 1
+  const intervalValue = intervalUnit === 60 ? interval / 60 : interval
+  const intervalLock = autoRouteOn
+    ? `disabled title="${esc(t('自动路由开着时定时探针不跑：轮巡每 30 分钟接替探测，关掉自动路由后这里自动恢复生效'))}"`
+    : ''
   const pause = state.probePause || { paused: false, until: null, next: null, count: 0 }
+  // 暂停状态由服务端算（state.probePause），这里只管显示，跨夜 / 多段重叠的判断
+  // 不在浏览器里再写一遍。控件和「自动探测 / 评分有效期」同一行：什么时候探、
+  // 证据活多久、什么时候不探
+
   const pauseWindows = Array.isArray(state.settings.probePauseWindows) ? state.settings.probePauseWindows : []
   const pauseBadge = pause.paused
     ? `<span class="badge warn">暂停中</span><span class="pause-note">${
@@ -3788,7 +3870,7 @@ function renderProbes() {
       <div style="display:flex;align-items:flex-start;gap:16px;flex-wrap:wrap">
         <div style="flex:1;min-width:240px">
           <div style="font-weight:500">${t('主动探测')}</div>
-          <div class="hint" style="margin:4px 0 0">${t('每个模型发 5 个请求：指纹 + 计费、截断、缓存（连发两次）、身份自述。结果进入评分，路由据此排除可疑的站。')}</div>
+          <div class="hint" style="margin:4px 0 0">${t('每个模型最多发 4 个请求：指纹 + 计费、截断、缓存（连发两次）。结果进入评分，路由据此排除可疑的站。缓存数字超过 2 小时过期，过期后的下一次定时/轮巡探测自动升级全量补测；手动探测每次都全量。自动路由开着时定时探针由轮巡接管。')}</div>
         </div>
         <button class="primary" data-act="probe-all" ${probeTargets.length === 0 ? 'disabled' : ''}>${esc(probeBtn)}</button>
       </div>
@@ -3803,8 +3885,11 @@ function renderProbes() {
           </div>
           <div class="probe-settings">
             <label class="field-inline">自动探测
-              <select id="probe-interval">
-                ${intervalOptions.map(([v, label]) => `<option value="${v}" ${v === interval ? 'selected' : ''}>${label}</option>`).join('')}
+              ${autoRouteOn ? '<span class="badge">已由自动路由接管</span>' : ''}
+              <input id="probe-interval-num" type="number" min="0" step="1" value="${intervalValue}" style="width:64px" ${intervalLock} />
+              <select id="probe-interval-unit" ${intervalLock}>
+                <option value="1" ${intervalUnit === 1 ? 'selected' : ''}>${t('分钟')}</option>
+                <option value="60" ${intervalUnit === 60 ? 'selected' : ''}>${t('小时')}</option>
               </select>
             </label>
             <label class="field-inline">评分有效期
@@ -7095,6 +7180,72 @@ document.addEventListener('click', async (event) => {
     return
   }
 
+  if (action === 'toggle-autoroute') {
+    // 自动路由范围：勾上后只在勾选的模型里挑，全移出 = 回到全场
+    const modelKey = actionButton.dataset.model
+    if (!modelKey) return
+    const scope = Array.isArray(state.autoRoute?.scope) ? state.autoRoute.scope : []
+    const enrolled = !scope.includes(modelKey)
+    try {
+      state = await api('POST', '/api/auto-route/scope', { modelKey, enrolled })
+      render()
+      const next = Array.isArray(state.autoRoute?.scope) ? state.autoRoute.scope : []
+      toast(
+        enrolled
+          ? t('已加入自动路由：只在勾选的 {n} 个模型里挑', { n: next.length })
+          : next.length > 0
+            ? t('已移出，还在勾选的 {n} 个模型里挑', { n: next.length })
+            : t('已移出：没有勾选的模型 = 全场都参选'),
+      )
+    } catch (error) {
+      toast(error.message, true)
+    }
+    return
+  }
+
+  if (action === 'toggle-ig-model') {
+    // 忽略模型面板右栏的单行开关：身份键口径（整类），与旧复选框同一语义，
+    // 只是换成了弹窗徽章的样子。重画面板并保持两栏滚动位置
+    const id = actionButton.dataset.id
+    if (!id) return
+    const ignored = new Set((state.settings?.ignoredModels || []).map(identityOf))
+    const left = $('.ig-pane-left')
+    const right = $('.ig-pane-right')
+    const leftTop = left ? left.scrollTop : 0
+    const rightTop = right ? right.scrollTop : 0
+    await toggleIgnoredModel(id, !ignored.has(identityOf(id)))
+    openIgnoredModels()
+    const freshLeft = $('.ig-pane-left')
+    const freshRight = $('.ig-pane-right')
+    if (freshLeft) freshLeft.scrollTop = leftTop
+    if (freshRight) freshRight.scrollTop = rightTop
+    return
+  }
+
+  if (action === 'toggle-sheet-ignore') {
+    // 分组/Key 弹窗里的「已忽略 / 已显示」开关徽章：切这**一个**模型（精确名），
+    // 不动同类写法。绝对语义交给服务端算（可能是删例外也可能是设例外），
+    // 当前状态直接读徽章自己的样式，前端不复制忽略判定规则。
+    // 整类忽略（「忽略模型」管理面板）不在这里。
+    const name = actionButton.dataset.name
+    if (!name) return
+    const makeShown = actionButton.classList.contains('ig-on')
+    // 重画弹窗会把滚动位置打回顶部：先记住，切完再放回去
+    const sheetBody = $('#group-models-body')
+    const scrollTop = sheetBody ? sheetBody.scrollTop : 0
+    try {
+      state = await api('POST', '/api/model-visibility', { name, shown: makeShown })
+      const label = displayModel(name)
+      toast(makeShown ? t('已显示 {name}', { name: label }) : t('已忽略 {name}', { name: label }))
+    } catch (error) {
+      toast(String(error), true)
+    }
+    paintGroupModels()
+    const fresh = $('#group-models-body')
+    if (fresh) fresh.scrollTop = scrollTop
+    return
+  }
+
   if (action === 'reset-order') {
     const container = actionButton.closest('[data-model]')
     const modelKey = container?.dataset.model
@@ -7809,6 +7960,70 @@ document.addEventListener('dragend', () => {
   clearDropMarks()
 })
 
+// ------------------------------------------------ 比价分组拖拽排序
+// 把手在组头左边的 grip：拖动调整分组（模型）之间的顺序，落库 db.pricingGroupOrder。
+// 改价格永远不影响分组顺序——拖拽是唯一改变分组顺序的方式（见 core/pricing.js）
+let dragGroupKey = null
+
+document.addEventListener('dragstart', (event) => {
+  const grip = event.target.closest?.('.pricing-grip')
+  if (!grip) return
+  dragGroupKey = grip.dataset.model
+  grip.closest('.table-wrap')?.classList.add('dragging')
+  event.dataTransfer.effectAllowed = 'move'
+  event.dataTransfer.setData('text/plain', dragGroupKey)
+})
+
+document.addEventListener('dragover', (event) => {
+  if (!dragGroupKey) return
+  const wrap = event.target.closest?.('#view-pricing .table-wrap')
+  if (!wrap) return
+  event.preventDefault()
+  event.dataTransfer.dropEffect = 'move'
+  const head = wrap.querySelector('.group-head')
+  if (!head) return
+  const rect = head.getBoundingClientRect()
+  const after = event.clientY > rect.top + rect.height / 2
+  document.querySelectorAll('.table-wrap.drop-before, .table-wrap.drop-after, .table-wrap.dragging').forEach((n) =>
+    n.classList.remove('drop-before', 'drop-after', 'dragging'),
+  )
+  wrap.querySelector('.pricing-grip')?.closest('.table-wrap').classList.add('dragging')
+  wrap.classList.add(after ? 'drop-after' : 'drop-before')
+})
+
+document.addEventListener('drop', async (event) => {
+  const wrap = event.target.closest?.('#view-pricing .table-wrap')
+  if (!dragGroupKey || !wrap) return
+  event.preventDefault()
+  const targetKey = wrap.querySelector('.pricing-grip')?.dataset.model
+  const after = wrap.classList.contains('drop-after')
+  document.querySelectorAll('.table-wrap.drop-before, .table-wrap.drop-after, .table-wrap.dragging').forEach((n) =>
+    n.classList.remove('drop-before', 'drop-after', 'dragging'),
+  )
+  const dragged = dragGroupKey
+  dragGroupKey = null
+  if (!targetKey || targetKey === dragged) return
+  // 顺序以 state.ranked 全集为准（含收起/被搜索滤掉的组）：拖到谁旁边就插到谁前面/后面
+  const order = (state.ranked || []).map((g) => g.modelKey).filter((key) => key !== dragged)
+  const at = order.indexOf(targetKey)
+  if (at === -1) return
+  order.splice(after ? at + 1 : at, 0, dragged)
+  try {
+    state = await api('PUT', '/api/pricing/order', { order })
+    render()
+    toast(t('分组顺序已保存（改价格不会再打乱它）'))
+  } catch (error) {
+    toast(error.message, true)
+  }
+})
+
+document.addEventListener('dragend', () => {
+  dragGroupKey = null
+  document.querySelectorAll('.table-wrap.drop-before, .table-wrap.drop-after, .table-wrap.dragging').forEach((n) =>
+    n.classList.remove('drop-before', 'drop-after', 'dragging'),
+  )
+})
+
 /** 落位后统一提交顺序：只在对话框/序列结束后调一次接口，避免中间态 */
 async function persistOrder(order, dragged) {
   try {
@@ -7976,16 +8191,18 @@ async function persistDecisionOrder(modelKey, order) {
 }
 
 document.addEventListener('click', (event) => {
-  const fold = event.target.closest?.('[data-ig-fold]')
-  if (!fold) return
-  const key = fold.dataset.igFold
-  const children = document.querySelector(`[data-ig-children="${CSS.escape(key)}"]`)
-  if (!children) return
-  const folded = !children.hidden
-  children.hidden = folded
-  fold.classList.toggle('is-collapsed', folded)
-  if (folded) igCollapsed.add(key)
-  else igCollapsed.delete(key)
+  // 忽略模型面板：左栏选组（重画两栏，选中态高亮）
+  const pick = event.target.closest?.('[data-ig-pick]')
+  if (pick) {
+    igSelected = igSelected === pick.dataset.igPick ? null : pick.dataset.igPick
+    openIgnoredModels()
+    return
+  }
+  // 右栏的整组批量：一次 PATCH，重画后保持选中
+  const bulk = event.target.closest?.('[data-ig-bulk]')
+  if (bulk) {
+    void bulkIgnoreGroup(bulk.dataset.group, bulk.dataset.igBulk === 'ignore')
+  }
 }, true)
 
 document.addEventListener('change', async (event) => {
@@ -8012,11 +8229,6 @@ document.addEventListener('change', async (event) => {
   if (event.target.matches?.('input[name="pick-group"]')) {
     groupPicker.selected = event.target.value
     markSelectedGroup()
-    return
-  }
-  const group = event.target.closest?.('[data-ig-group]')
-  if (group) {
-    await toggleVendorGroup(group.dataset.igGroup, group.checked)
     return
   }
   const box = event.target.closest?.('[data-ig]')
@@ -8121,8 +8333,15 @@ document.addEventListener('change', async (event) => {
     return
   }
 
-  if (input.id === 'probe-interval') {
-    const minutes = Number(input.value)
+  if (input.id === 'probe-interval-num' || input.id === 'probe-interval-unit') {
+    const rawNum = $('#probe-interval-num')?.value
+    if (rawNum === '' || rawNum === null) return // 清空中间态不落库，等填完再算
+    const unit = Number($('#probe-interval-unit')?.value || 1)
+    const minutes = Math.round(Number(rawNum) * unit)
+    if (!Number.isFinite(minutes) || minutes < 0) {
+      toast('探测间隔不能是负数', true)
+      return
+    }
     try {
       state = await api('PATCH', '/api/settings', { probeIntervalMinutes: minutes })
       render()
@@ -8278,6 +8497,13 @@ document.addEventListener('change', async (event) => {
     const offerId = offerRow.dataset.offer
     const value = input.value === '' ? null : input.value
     stagePriceEdit(offerId, field, value)
+    // 下拉是「一下选完」的离散动作，没有「停手 2 秒」可言：立即提交并交回焦点。
+    // 不这样做的话，焦点留在表格里，重排被防打字保护一直扣着——
+    // 用户改完币种盯着综合成本看，它就是不刷（2026-10-29 实测真凶）
+    if (input.tagName === 'SELECT') {
+      input.blur()
+      void flushPriceEdits(offerId)
+    }
     return
   }
 
@@ -8334,16 +8560,56 @@ document.addEventListener('change', async (event) => {
 })
 
 // 汇率输入框在「基准价」页里动态渲染，所以用事件委托而不是直接绑定
+
+/**
+ * 价格单位切换：与改价同一套脾气——本地先选上，停手 2 秒才提交并重排，
+ * 免得「歘一下」整页窜走。提交后 render 会重建 DOM，滚动位置先记后放。
+ */
+const DISPLAY_CURRENCY_DEBOUNCE_MS = 1000
+let pendingDisplayCurrency = null
+let displayCurrencyTimer = null
+
+async function flushDisplayCurrency() {
+  if (pendingDisplayCurrency === null) return
+  pendingDisplayCurrency = null
+  clearTimeout(displayCurrencyTimer)
+  displayCurrencyTimer = null
+  try {
+    state = await api('PATCH', '/api/settings', { displayCurrency: state.settings.displayCurrency })
+  } catch (error) {
+    toast(error.message, true)
+  }
+  const scroller = $('.content')
+  const top = scroller ? scroller.scrollTop : 0
+  render()
+  if (scroller) scroller.scrollTop = top
+  toast(t('价格单位已切换'))
+}
+
+window.addEventListener('beforeunload', () => {
+  // 兼底：停手 2 秒内关页，用 keepalive 把选好的单位补发（与改价暂存同一套）
+  if (pendingDisplayCurrency === null) return
+  clearTimeout(displayCurrencyTimer)
+  try {
+    fetch('/api/settings', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ displayCurrency: pendingDisplayCurrency }),
+      keepalive: true,
+    })
+  } catch {
+    /* 尽力而为 */
+  }
+})
+
 document.addEventListener('change', async (event) => {
   const currency = event.target.closest('[data-act="display-currency"]')
   if (currency) {
-    try {
-      state = await api('PATCH', '/api/settings', { displayCurrency: currency.value })
-      render()
-      toast(t('显示币种已切换'))
-    } catch (error) {
-      toast(error.message, true)
-    }
+    // 本地先生效（不重排）：任何原因触发重绘都用新单位渲染
+    state.settings.displayCurrency = currency.value
+    pendingDisplayCurrency = currency.value
+    clearTimeout(displayCurrencyTimer)
+    displayCurrencyTimer = setTimeout(() => void flushDisplayCurrency(), DISPLAY_CURRENCY_DEBOUNCE_MS)
     return
   }
   const input = event.target.closest('[data-act="fx"]')

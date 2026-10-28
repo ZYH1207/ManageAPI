@@ -435,6 +435,10 @@ export async function revealSecret(credentialId) {
  * 是一个模型，忽略一次必须整组消失，否则用户会看到「忽略了但还在比价里」。
  * 调用方拿模型名来比对时也要走同一个归一（见 modelIdentityKey），
  * 两边口径不一致就会一半生效一半不生效。
+ *
+ * 注意：身份键也把日期尾巴的变体（deepseek-v4-pro / deepseek-v4-pro-0813）
+ * 归成同一个模型——整类忽略时它们会一起消失。要「这一行就是这一行」的
+ * 单独开关，用 modelOverrides（见 ignoreChecker），别在这里另写一份。
  */
 export function ignoredModelSet(db) {
   const aliases = db.settings?.modelAliases || {}
@@ -443,6 +447,7 @@ export function ignoredModelSet(db) {
   )
 }
 
+/**
 /**
  * 余额探底线（站内额度单位）：余额 ≤ 0.01 视为「没钱了」，不是「快没钱了」。
  *
@@ -469,6 +474,34 @@ export function balanceDepleted(provider) {
 }
 
 /**
+ * 单个模型的显式开关（settings.modelOverrides）：精确存储键 → 'shown' | 'ignored'。
+ *
+ * 为什么要有它：身份键把变体归成一类，但用户要的是分组弹窗里**这一行**单独
+ * 开关——包括「整类被忽略时，把其中一个捞回来」。两层各管各的：
+ *   ignoredModels（身份键）＝ 整类忽略，「忽略模型」管理面板在用；
+ *   modelOverrides（精确名）＝ 单行例外，分组/Key 弹窗的开关徽章在用。
+ * 判定优先级：单行例外 > 整类名单。判定唯一实现在 ignoreChecker。
+ */
+export function ignoreChecker(db) {
+  const aliases = db.settings?.modelAliases || {}
+  const identities = ignoredModelSet(db)
+  const overrides = db.settings?.modelOverrides || {}
+  return (name) => {
+    const exact = normalizeModelKey(name)
+    const override = exact ? overrides[exact] : undefined
+    if (override === 'shown') return false
+    if (override === 'ignored') return true
+    const id = identityKey(String(name), aliases)
+    return Boolean(id) && identities.has(id)
+  }
+}
+
+/** 单个模型名现在的忽略状态（每次调用重建判定器；循环里请用 ignoreChecker） */
+export function modelIgnored(db, name) {
+  return ignoreChecker(db)(name)
+}
+
+/**
  * 真正「在役」的供给：没下线（delistedAt）、站点没暂停（paused）、模型没被忽略（ignoredModels）。
  * 这是三条过滤规则的唯一实现——比价 / 概览 / 智能决策 / 网关 / 免费池 / 探针目标都从这里取，
  * 任何一侧自己再写一遍迟早漂移（曾出过「暂停站点仍被派流量」「下线模型仍被探测白烧额度」）。
@@ -478,16 +511,12 @@ export function balanceDepleted(provider) {
  */
 export function routeableOffers(db) {
   const pausedIds = new Set(db.providers.filter((p) => p.paused).map((p) => p.id))
-  // 忽略列表按身份键比对（口径唯一实现在 ignoredModelSet，别在这里再拼一份）
-  const aliases = db.settings?.modelAliases || {}
-  const ignored = ignoredModelSet(db)
+  // 忽略判定（整类名单 + 单行例外）唯一实现在 ignoreChecker，别在这里再拼一份
+  const isIgnored = ignoreChecker(db)
   return db.offers.filter((offer) => {
     if (offer.delistedAt) return false
     if (pausedIds.has(offer.providerId)) return false
-    if (ignored.size) {
-      const key = identityKey(offer.modelKey || offer.upstreamName || '', aliases)
-      if (key && ignored.has(key)) return false
-    }
+    if (isIgnored(offer.modelKey || offer.upstreamName || '')) return false
     return true
   })
 }

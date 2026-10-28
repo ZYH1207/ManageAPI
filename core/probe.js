@@ -19,15 +19,6 @@ const TRUNCATION_PROMPT =
   'Count from 1 to 120. Output only the numbers separated by commas, nothing else.'
 
 /**
- * 身份自述。**仅供参考，不能作为判据**。
- *
- * 模型被问「你是什么模型」时，回答来自训练数据里的自我认知，经常是错的：
- * DeepSeek 说自己是 ChatGPT、Claude 说自己是 GPT-4 都很常见。
- * 所以这里只记录、不评分，让人自己看。
- */
-const IDENTITY_PROMPT = 'What model are you? Reply with only the model name, nothing else.'
-
-/**
  * 缓存检测用的长前缀。多数上游的 prompt cache 有最小长度门槛（常见 1024 token），
  * 所以这里凑到 1200+ token，确保能触发。
  */
@@ -222,10 +213,15 @@ export async function probeCache({ baseUrl, apiKey, model, timeoutMs = 45000, sp
 
 /**
  * 完整探测一个「站 × 分组 × 模型」。
- * 发五个请求：指纹与计费、截断、缓存（两次）、身份自述。
+ * 发四个请求：指纹与计费、截断、缓存（两次）。
+ * withCache=false 时只发两个，缓存命中率保持上次的结果。
  * 每个请求的 usage 都会被累加进 result.spend，供探针花费账本记账。
+ *
+ * lite=true 只发两个请求（指纹与计费、截断），跳过缓存×2：
+ * 自动路由活跃期的全量轮巡（daemon/autoprobe.js）每 30 分钟把所有模型过一遍，
+ * 四连发太贵；指纹和截断才是「结果可不可信」的核心证据，缓存命中率慢点更新无所谓。
  */
-export async function probeModel({ baseUrl, apiKey, model, timeoutMs = 45000 }) {
+export async function probeModel({ baseUrl, apiKey, model, timeoutMs = 45000, lite = false, withCache = true }) {
   const result = {
     ok: false,
     model,
@@ -240,7 +236,6 @@ export async function probeModel({ baseUrl, apiKey, model, timeoutMs = 45000 }) 
     cacheSupported: null,
     cacheHitRate: null,
     cacheDetail: null,
-    identityClaim: null,
     promptTokens: null,
     requestTokens: null,
     completionTokens: null,
@@ -338,29 +333,16 @@ export async function probeModel({ baseUrl, apiKey, model, timeoutMs = 45000 }) 
   }
 
   // ---- 缓存：连发两次相同长前缀，看第二次命中多少
-  try {
-    const cache = await probeCache({ baseUrl, apiKey, model, timeoutMs, spend })
-    result.cacheSupported = cache.supported
-    result.cacheHitRate = cache.hitRate
-    result.cacheDetail = cache.detail
-  } catch (error) {
-    result.cacheDetail = `缓存检测失败：${error?.message || error}`
-  }
-
-  // ---- 身份自述：只记录，不参与评分（模型自述经常不准）
-  try {
-    const identity = await chat({
-      baseUrl,
-      apiKey,
-      model,
-      prompt: IDENTITY_PROMPT,
-      maxTokens: 40,
-      timeoutMs,
-    })
-    const text = String(identity.text || '').trim().replace(/\s+/g, ' ')
-    result.identityClaim = text ? text.slice(0, 80) : null
-  } catch {
-    result.identityClaim = null
+  // lite 模式跳过；withCache=false 跳过（定时探测隔轮补测，见 daemon/probe-runner.js）
+  if (!lite && withCache) {
+    try {
+      const cache = await probeCache({ baseUrl, apiKey, model, timeoutMs, spend })
+      result.cacheSupported = cache.supported
+      result.cacheHitRate = cache.hitRate
+      result.cacheDetail = cache.detail
+    } catch (error) {
+      result.cacheDetail = `缓存检测失败：${error?.message || error}`
+    }
   }
 
   return result

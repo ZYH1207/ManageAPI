@@ -418,10 +418,15 @@ export function rankByModel(offers, settings = {}, benchmarks = {}, isTrusted = 
     }
   })
 
-  ranked.sort((a, b) => {
-    if (b.spreadPct !== null && a.spreadPct !== null) return b.spreadPct - a.spreadPct
-    return (b.rows.length || 0) - (a.rows.length || 0)
-  })
+  // 分组顺序（2026-10-29 作者要求）：不再随价差跑——改价格只重排组内的行，
+  // 分组之间的顺序保持稳定，按展示名字典序；手动拖拽的顺序在 server 层套用
+  // （db.pricingGroupOrder，见 daemon/server.js）。以前按价差降序排，
+  // 改一个价整页分组乱跳，用户刚看的那组找不着了
+  ranked.sort(
+    (a, b) =>
+      (a.display || a.modelKey).localeCompare(b.display || b.modelKey) ||
+      a.modelKey.localeCompare(b.modelKey),
+  )
 
   return { ranked, unpriced: unpriced.map((r) => r.offer) }
 }

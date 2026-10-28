@@ -23,7 +23,7 @@ const COMPLETION_TOKENS = 100
 const IN_PRICE = 2 // CNY / 百万 token
 const OUT_PRICE = 8
 const PER_REQUEST_CNY = (PROMPT_TOKENS / 1e6) * IN_PRICE + (COMPLETION_TOKENS / 1e6) * OUT_PRICE
-const PROBE_REQUESTS = 5
+const PROBE_REQUESTS = 4
 const PER_PROBE_CNY = PER_REQUEST_CNY * PROBE_REQUESTS
 
 const upstream = createServer(async (req, res) => {
@@ -176,7 +176,7 @@ try {
     check('半小时桶为空', (probeSpend.buckets || []).length === 0)
   }
 
-  console.log('\n[2] 探一次：只按探针自己的 5 个请求算钱')
+  console.log('\n[2] 探一次：只按探针自己的 4 个请求算钱')
   const siteA = await addSite('甲站')
   const offerA = siteA.offers[0]
   await call('POST', '/api/probes/run', { offerId: offerA.id, limit: 1 })
@@ -185,7 +185,7 @@ try {
   check('探测次数 1', spend.total.probes === 1, `probes=${spend.total.probes}`)
   check(`请求数 ${PROBE_REQUESTS}`, spend.total.requests === PROBE_REQUESTS, `requests=${spend.total.requests}`)
   check(
-    `金额 = 5×(${PROMPT_TOKENS}×输入价 + ${COMPLETION_TOKENS}×输出价) = ${PER_PROBE_CNY}`,
+    `金额 = 4×(${PROMPT_TOKENS}×输入价 + ${COMPLETION_TOKENS}×输出价) = ${PER_PROBE_CNY}`,
     near(spend.total.cny, PER_PROBE_CNY, 1e-9),
     `实际 ${spend.total.cny}`,
   )

@@ -186,3 +186,109 @@ export function pruneOfferStats(stats, now = Date.now(), maxAgeDays = OFFER_STAT
   }
   return removed
 }
+
+// ------------------------------------------------------------ 长期评价聚合
+
+/**
+ * 长期评价：把小时桶聚合成「站点 / 模型 / 分组」三个维度的长期表现。
+ *
+ * 数据源就是 offerStats 本身（保留 30 天），没有额外请求——网关每单顺路记的
+ * 账在这里升维汇总。分组维度用的是「站点 × 分组」（一条供给的归属），
+ * 站点维度把一个站下所有分组并起来，模型维度跨站并。
+ *
+ * @param {Object} offerStats db.offerStats
+ * @param {Map} offerMeta offerId → {label, modelKey, providerId, providerName, group}
+ * @returns {{byProvider:Array, byModel:Array, byGroup:Array}}
+ *   每条：{key, label, requests, ok, broken, failed, okRate, avgTtftMs, avgLatencyMs,
+ *          tps, cacheHitPct, estCostCny, avgCostCny, hours, firstHour, lastHour}
+ */
+export function aggregateLongTerm(offerStats = {}, offerMeta = new Map()) {
+  const dims = { byProvider: new Map(), byModel: new Map(), byGroup: new Map() }
+  const ensure = (map, key, label) => {
+    let rec = map.get(key)
+    if (!rec) {
+      rec = {
+        key,
+        label,
+        requests: 0,
+        ok: 0,
+        broken: 0,
+        failed: 0,
+        ttftSum: 0,
+        ttftCount: 0,
+        latencySum: 0,
+        latencyCount: 0,
+        genOutSum: 0,
+        genTimeSum: 0,
+        cachedTokens: 0,
+        inputTokens: 0,
+        estCostSum: 0,
+        estCostCount: 0,
+        errors: 0,
+        hours: new Set(),
+        firstHour: null,
+        lastHour: null,
+      }
+      map.set(key, rec)
+    }
+    return rec
+  }
+  for (const [statsKey, b] of Object.entries(offerStats || {})) {
+    const offerId = String(statsKey).split('|')[0]
+    const meta = offerMeta.get(offerId)
+    if (!meta || !b) continue
+    const hour = String(b.hour || '')
+    const targets = [
+      [dims.byProvider, meta.providerId, meta.providerName || meta.providerId || '?'],
+      [dims.byModel, meta.modelKey, meta.modelKey || '?'],
+      [dims.byGroup, `${meta.providerId}|${meta.group || ''}`, `${meta.providerName || '?'} · ${meta.group || '默认'}`],
+    ]
+    for (const [map, key, label] of targets) {
+      if (key === null || key === undefined) continue
+      const rec = ensure(map, String(key), label)
+      rec.requests += Number(b.requests) || 0
+      rec.ok += Number(b.ok) || 0
+      rec.broken += Number(b.broken) || 0
+      rec.failed += Number(b.failed) || 0
+      rec.ttftSum += Number(b.ttftSum) || 0
+      rec.ttftCount += Number(b.ttftCount) || 0
+      rec.latencySum += Number(b.latencySum) || 0
+      rec.latencyCount += Number(b.latencyCount) || 0
+      rec.genOutSum += Number(b.genOutSum) || 0
+      rec.genTimeSum += Number(b.genTimeSum) || 0
+      rec.cachedTokens += Number(b.cachedTokens) || 0
+      rec.inputTokens += Number(b.inputTokens) || 0
+      rec.estCostSum += Number(b.estCostSum) || 0
+      rec.estCostCount += Number(b.estCostCount) || 0
+      rec.errors += Object.values(b.errors || {}).reduce((a, c) => a + (Number(c) || 0), 0)
+      if (hour) {
+        rec.hours.add(hour)
+        if (rec.firstHour === null || hour < rec.firstHour) rec.firstHour = hour
+        if (rec.lastHour === null || hour > rec.lastHour) rec.lastHour = hour
+      }
+    }
+  }
+  const finalize = (map) =>
+    [...map.values()]
+      .map((r) => ({
+        key: r.key,
+        label: r.label,
+        requests: r.requests,
+        ok: r.ok,
+        broken: r.broken,
+        failed: r.failed,
+        okRate: r.requests > 0 ? r.ok / r.requests : null,
+        avgTtftMs: r.ttftCount > 0 ? r.ttftSum / r.ttftCount : null,
+        avgLatencyMs: r.latencyCount > 0 ? r.latencySum / r.latencyCount : null,
+        tps: r.genTimeSum > 0 ? r.genOutSum / r.genTimeSum : null,
+        cacheHitPct: r.inputTokens > 0 ? r.cachedTokens / r.inputTokens : null,
+        estCostCny: r.estCostSum,
+        avgCostCny: r.estCostCount > 0 ? r.estCostSum / r.estCostCount : null,
+        errors: r.errors,
+        hours: r.hours.size,
+        firstHour: r.firstHour,
+        lastHour: r.lastHour,
+      }))
+      .sort((a, b) => b.requests - a.requests)
+  return { byProvider: finalize(dims.byProvider), byModel: finalize(dims.byModel), byGroup: finalize(dims.byGroup) }
+}

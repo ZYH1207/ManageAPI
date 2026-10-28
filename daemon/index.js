@@ -3,7 +3,7 @@
  * daemon 启动入口。
  * 用法：node daemon/index.js [--port 4319] [--open]
  */
-import { createAppServer, flushGatewayBuffers } from './server.js'
+import { createAppServer, flushGatewayBuffers, setAutoProbe, setDriftWatcher } from './server.js'
 import { dataDir, readDb } from '../core/store.js'
 import { ensureGatewayKeys } from '../core/inventory.js'
 import { seedReferenceBenchmarks } from '../core/benchmark.js'
@@ -12,6 +12,8 @@ import { acquireInstanceLock } from './instance-lock.js'
 import { backupKeep, backupNow, backupRoot, startBackupScheduler } from '../core/backup.js'
 import { startProbeScheduler } from './scheduler.js'
 import { runProbes } from './probe-runner.js'
+import { createAutoRouteProber } from './autoprobe.js'
+import { createDriftWatcher } from './drift-watcher.js'
 import { collectProviderSnapshots } from './monitor-runner.js'
 import { runDetourRechecks } from './detour-runner.js'
 import { spawn } from 'node:child_process'
@@ -99,6 +101,26 @@ try {
 }
 
 const gateway = await ensureGatewayKeys()
+
+/**
+ * 自动路由活跃期的探针轮巡：网关（server.js）在自动路由接单时记活跃，
+ * 探针调度器每分钟看一眼要不要续拍。两端共用同一个实例。
+ * 必须在 listen 之前建好：服务一开监听就可能接到请求。
+ */
+const autoRouteProber = createAutoRouteProber({ runProbes, logger: console })
+setAutoProbe(autoRouteProber)
+
+/**
+ * 真实价速比漂移监视器：网关每单记样本（server.js 注入），调度器每分钟判漂移、
+ * 执行转移。两端共用同一个实例（同一份快窗口与降级名单）。
+ */
+const driftWatcher = createDriftWatcher({
+  runProbes,
+  // 逃生舱踢完探针拨 autoprobe 的轮巡表：下一轮从现在起算满一小时
+  onProbesRan: () => autoRouteProber.markPass(),
+  logger: console,
+})
+setDriftWatcher(driftWatcher)
 
 function openBrowser(url) {
   const cmd =
@@ -199,6 +221,8 @@ startProbeScheduler({
   runProbes,
   collectMonitor: collectProviderSnapshots,
   recheckDetours: runDetourRechecks,
+  autoProbe: autoRouteProber,
+  driftWatcher,
   logger: console,
 })
 

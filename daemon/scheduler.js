@@ -15,12 +15,18 @@
  * 否则关掉定时探测之后，它们永远拿不到新证据，也就永远不放行（见下面 selfHealOnly）。
  *
  * 暂停时段（core/schedule.js）优先于上面一切：窗口内一个请求都不发，到点自动恢复。
+ *
+ * 连锁机制：自动路由开着时，定时探针整体让位——实时性由轮巡保证（autoprobe），
+ * 固定定时探针纯属重复花钱。这个门只看自动路由的**开关状态**：轮巡因流量安静
+ * 自动停下时，定时探针也不恢复（自动路由模式还在，下波流量轮巡接着接管）；
+ * 只有手动关掉自动路由，探测职责才交还给定时探针。
  */
 import * as store from '../core/store.js'
 import * as inv from '../core/inventory.js'
 import * as fxLib from '../core/fx.js'
 import { pauseStatus } from '../core/schedule.js'
 import { scoreOffers } from '../core/score.js'
+import { normalizeAutoRoute } from '../core/auto-route.js'
 
 const MAX_PER_TICK = 10
 const CHECK_INTERVAL_MS = 60000
@@ -33,6 +39,12 @@ export function startProbeScheduler({
   runProbes,
   collectMonitor = null,
   recheckDetours = null,
+  // 自动路由活跃期的探针轮巡（daemon/autoprobe.js）：放在间隔/暂停时段检查之前，
+  // 它是被真实流量驱动的，不受定时探针的开关与暂停时段约束
+  autoProbe = null,
+  // 真实价速比漂移监视器（daemon/drift-watcher.js）：每分钟判一次漂移、执行转移，
+  // 也放在间隔/暂停检查之前——它同样只由自动路由开关与真实流量驱动
+  driftWatcher = null,
   logger = console,
   // 测试用：e2e 要把「60 秒一轮」压到亚秒级才验得出「到点关、到点开」
   tickMs = Number(process.env.MANAGE_API_PROBE_TICK_MS) || CHECK_INTERVAL_MS,
@@ -111,6 +123,30 @@ export function startProbeScheduler({
       }
     }
 
+    // ------------------------------------------------- 漂移监视（自动路由转移）
+    if (driftWatcher) {
+      try {
+        await driftWatcher.tick()
+      } catch (error) {
+        logger.warn?.(`[漂移转移] 判定失败：${error.message}`)
+      }
+    }
+
+    // ------------------------------------------------------- 自动路由轮巡
+    // 也放在「探测间隔 <= 0 就直接返回」之前：用户可能关掉了定时探针，
+    // 但自动路由在接真实流量时评分必须新鲜，这是它自己的事
+    if (autoProbe && !running) {
+      try {
+        await autoProbe.tick()
+      } catch (error) {
+        logger.warn?.(`[自动路由探针] 轮巡失败：${error.message}`)
+      }
+    }
+
+    // 连锁机制：自动路由开着 → 定时探针不跑（放在间隔/暂停检查之前，
+    // 置于 autoProbe.tick 之后：轮巡自己不受这个门影响，该探照探）
+    if (normalizeAutoRoute(db.settings.autoRoute).enabled) return
+
     const intervalMinutes = Number(db.settings.probeIntervalMinutes) || 0
 
     // --------------------------------------------------------------- 暂停时段
@@ -179,7 +215,7 @@ export function startProbeScheduler({
     running = true
     try {
       logger.info?.(`[定时探测] ${due.length} 个目标到期，开始探测`)
-      const results = await runProbes({ offerIds: due.map((o) => o.id), limit: MAX_PER_TICK })
+      const results = await runProbes({ offerIds: due.map((o) => o.id), limit: MAX_PER_TICK, cache: 'auto' })
       const okCount = results.filter((r) => r.ok).length
       logger.info?.(`[定时探测] 完成 ${results.length} 个，成功 ${okCount}`)
     } catch (error) {

@@ -411,7 +411,6 @@ export function scoreOffers(probes, traffic = {}, options = {}) {
             promptTokens: last.promptTokens ?? null,
             cacheHitRate: last.cacheHitRate ?? null,
             cacheDetail: last.cacheDetail ?? null,
-            identityClaim: last.identityClaim ?? null,
             ttftMs: last.ttftMs ?? null,
           }
         : null,

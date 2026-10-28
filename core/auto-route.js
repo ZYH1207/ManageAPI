@@ -27,7 +27,7 @@
  * 「下游只读不改」），切换结果由调用方决定要不要经 store.mutate 落盘。
  */
 import { selectCandidates } from './router.js'
-import { normalizeModelKey, routeableOffers } from './inventory.js'
+import { normalizeModelKey, modelIdentityKey, routeableOffers } from './inventory.js'
 import { normalizeDecisionMode, tierMetricOf } from './decision-mode.js'
 import { splitOffers } from './free.js'
 import { faultMatcher } from './failover.js'
@@ -37,7 +37,7 @@ export const AUTO_ROUTE_SWITCH_GAIN = 0.15
 
 /** settings.autoRoute 的缺省形状（store.js 的 settings 默认值也引用这一份口径） */
 export function defaultAutoRoute() {
-  return { enabled: false, modelKey: null, offerId: null, pickedAt: null, reason: null, failoverFrom: null }
+  return { enabled: false, modelKey: null, offerId: null, pickedAt: null, reason: null, failoverFrom: null, scope: [] }
 }
 
 /** 任意输入 → 完整形状；字段缺失补默认，多出来的字段丢弃 */
@@ -51,6 +51,11 @@ export function normalizeAutoRoute(value) {
     reason: typeof raw.reason === 'string' && raw.reason ? raw.reason : null,
     // 因故障转移让位的模型：故障到期且重回全场第一时提回来（见 pickAutoRoute）
     failoverFrom: typeof raw.failoverFrom === 'string' && raw.failoverFrom ? raw.failoverFrom : null,
+    // 接管范围（决策页分组上的加号勾选）：空数组 = 全场所有模型都参选；
+    // 非空 = 只在勾选的模型里挑。存的是比价分组键（身份键口径）
+    scope: Array.isArray(raw.scope)
+      ? [...new Set(raw.scope.filter((key) => typeof key === 'string' && key.trim()))]
+      : [],
   }
 }
 
@@ -66,7 +71,7 @@ export function normalizeAutoRoute(value) {
  *   整个池子连一个能登场的模型都没有时返回 null——调用方按原模型走正常
  *   报错流程（admissionFailure 的人话文案比这里能编的都准）。
  */
-export function pickAutoRoute(db, { scores, benchmarks, force = false } = {}) {
+export function pickAutoRoute(db, { scores, benchmarks, force = false, driftDemoted = null } = {}) {
   const settings = db.settings || {}
   const record = normalizeAutoRoute(settings.autoRoute)
   const mode = normalizeDecisionMode(settings.decisionMode)
@@ -74,12 +79,23 @@ export function pickAutoRoute(db, { scores, benchmarks, force = false } = {}) {
   // 外部监控上报的真实故障：命中即失去「最优」资格（探针的准入判定不受影响）
   const isFaulted = faultMatcher(db.failover)
 
+  // 接管范围：空 = 全场；非空 = 只在勾选的模型里挑（决策页分组上的加号）。
+  // 勾选存的是决策页的分组键（身份键口径），byModel 的键是存储键口径，
+  // 两边都过一遍 modelIdentityKey 再比——不然用户勾了「deepseek-4.1-flash」
+  // 却勾不住站点写成「deepseek-v4.1-flash」的供给
+  const scopeIds = record.scope.length
+    ? new Set(record.scope.map((key) => modelIdentityKey(key, settings.modelAliases) || key))
+    : null
+  const inScope = (key) =>
+    !scopeIds || scopeIds.has(modelIdentityKey(key, settings.modelAliases) || key)
+
   // 同一个模型的供给只在该模型自己的分片里过一遍 selectCandidates：
   // 每条供给全程只被扫一次，总量 O(供给数)，不会随模型数量平方膨胀
   const byModel = new Map()
   for (const offer of paid) {
     const key = offer.modelKey || normalizeModelKey(offer.upstreamName)
     if (!key) continue
+    if (!inScope(key)) continue
     if (!byModel.has(key)) byModel.set(key, [])
     byModel.get(key).push(offer)
   }
@@ -101,8 +117,15 @@ export function pickAutoRoute(db, { scores, benchmarks, force = false } = {}) {
       order: db.manualOrder?.[modelKey] || null,
       isFaulted,
     })
-    // 「最优」必须同时过准入和无故障：故障转移的供给哪怕探针说健康也不参选
-    const winner = rows.find((row) => row.admission?.ok && !row.faulted)
+    // 「最优」必须同时过准入和无故障：故障转移的供给哪怕探针说健康也不参选。
+    // 漂移转移（daemon/drift-watcher.js）降级的供给同理——真实负载下比自己的
+    // 基线差出阈值的站，探针分再好也不当「最优」，但准入不受影响（绝境兜底仍可用）
+    const winner = rows.find(
+      (row) =>
+        row.admission?.ok &&
+        !row.faulted &&
+        !(driftDemoted && driftDemoted.has(row.offer.id)),
+    )
     if (modelKey === record.modelKey) {
       current = winner ? { modelKey, row: winner, metric: tierMetricOf(winner, mode) } : null
       // 有供给、能登场，但全被故障上报摘了 → 是「故障转移」，不是「下线」
@@ -142,12 +165,16 @@ export function pickAutoRoute(db, { scores, benchmarks, force = false } = {}) {
   // 现役还在但新冠军好出迟滞阈值 → 正常择优。
   // switched 的判定永远以 modelKey 是否变化为准，reason 只是给人看的注脚
   const switched = best.modelKey !== record.modelKey
+  // 现役供给被漂移降级（同模型换供给或换模型都算转移）：Watcher 会把 reason
+  // 覆写成 drift-failover，这里只负责把「现役没了是因为降级」从 unavailable 区分开
+  const currentDemoted = Boolean(driftDemoted && record.offerId && driftDemoted.has(record.offerId))
   let reason = 'keep'
   if (recoveredBack && switched) reason = 'fault-recovery'
   else if (switched) {
     if (!record.modelKey) reason = 'initial'
     else if (force) reason = 'mode-change'
     else if (currentFaulted) reason = 'failover'
+    else if (!current && currentDemoted) reason = 'drift-failover'
     else if (!current) reason = 'unavailable'
     else reason = 'gain'
   }

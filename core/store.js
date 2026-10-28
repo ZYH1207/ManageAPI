@@ -127,6 +127,10 @@ export function emptyDb() {
       emptyGuard: { enabled: false, mode: 'same' },
     // 全局忽略的模型（归一化后的 key）：不参与比价、决策、探针、网关
     ignoredModels: [],
+    // 单个模型的显式开关（精确存储键 → 'shown' | 'ignored'）：分组弹窗里的
+    // 「已忽略 / 已显示」开关徽章在用，整类忽略里捞一个、单押一个都走这份。
+    // 判定优先级与唯一实现见 core/inventory.js#ignoreChecker
+    modelOverrides: {},
     /**
      * 模型名别名表：modelBaseKey → 目标键。
      * 自动归一（4-5 ↔ 4.5 / v 前缀 / 日期尾巴）不需要写这里；

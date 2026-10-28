@@ -98,6 +98,12 @@ export function admissionOf(row) {
   if (row.tooSlow) {
     return { ok: false, kind: 'slow', text: `慢速：首字 ${row.ttftMs}ms 超过门槛` }
   }
+  // 欠费：站内余额 ≤ 0，请求必然被拒。证据来自站点余额读数（持久化数据），
+  // 探针测都不用测；不受「放行可疑供给」影响——那个开关是「结果可疑也愿意试」，
+  // 欠费是「一定不行」。充值后自动恢复（每次请求都重新读阈值，没有冷却账要清）
+  if (row.balanceDepleted) {
+    return { ok: false, kind: 'depleted', text: '余额不足：站点已欠费，充值后自动恢复' }
+  }
   // 冷却中 / 待复测：同样不受「放行可疑供给」影响。那个开关是「我认了结果可疑
   // 也愿意试」，而这里是「刚被上游明确拒过」，试了只会白等一个来回。
   if (row.blocked) {
@@ -188,6 +194,12 @@ export function admissionTags(row) {
   else if (row.pendingRecovery) {
     tags.push(row.pendingRecovery.kind === 'quota' ? 'billing' : 'awaiting-recovery')
   }
+  // 余额（持久化读数）：欠费挡准入，预警只提醒。两条互斥，欠费优先
+  if (row.balanceDepleted) tags.push('balance-empty')
+  else if (row.balanceWarn) tags.push('balance-warn')
+  // 空回复：近 1 小时发生过空回合（含补全救回来的）。只给人看，不影响准入——
+  // 救得回来是「烦」，不是「不可用」；真正触发改道的门槛在 empty-guard.js
+  if (Number(row.emptyRecent) > 0) tags.push('empty-reply')
   // 没有任何毛病时才谈「靠什么撑着」——否则「兜底」会盖住真正的问题
   if (tags.length === 0 && (row.status === 'stale' || row.status === 'unknown')) tags.push('fallback')
   if (tags.length === 0) tags.push('ok')
@@ -323,6 +335,8 @@ export function admissionFailure(candidates, { model = '', maxTtftMs = 0 } = {})
  *   isFaulted —— 可选谓词（core/failover.js#faultMatcher）：外部监控上报的真实故障。
  *            降级不拉黑：故障转移不是准入判定，探针说健康就照样 admission.ok，
  *            只是同类里靠后 + 自动路由不把它当「最优」；故障到期自动恢复
+ *   emptyRecent —— 可选 Map<offerId, n>：近 1 小时空回合次数。只供展示徽章（空回复），
+ *            不参与准入与路由
  * @returns {Array<{offer,provider,credential,price,quality,routable,effective,status,ttftMs}>}
  */
 export function selectCandidates({
@@ -340,6 +354,8 @@ export function selectCandidates({
   // 和 isFaulted 是两件事——那是「别的进程报上来的故障」，这是「这套网关自己
   // 抓到的、并且已经动手改过道的」。两个都要认，见下面 row 的注释
   detours,
+  // 「空回复」展示徽章的数据（近 1 小时空回合次数）：只画徽章，不参与判定
+  emptyRecent = null,
 }) {
   const key = normalizeModelKey(model)
   // 身份键：deepseek-4.1-flash 与 deepseek-v4.1-flash 是同一个模型。
@@ -372,6 +388,22 @@ export function selectCandidates({
     const cost = offerCost(offer, settings, benchmarks)
     const score = getScore(scores, offer.id)
     const quality = score?.quality ?? null
+    // 站点余额（持久化数据，不需要探针）：quotaRemaining 是站内额度单位，
+    // 与 balanceWarnUsd 阈值（0=关闭）直接比。欠费是「一定会拒单」的事实，
+    // 探针测都不用测，余额读数自己会说话；预警只提醒不拦人。
+    // null/空串是「没填」，绝不能当 0——Number(null)===0 会把所有没读过余额
+    // 的站误判成欠费
+    const rawQuota = provider.quotaRemaining
+    const quotaRemaining =
+      rawQuota === null || rawQuota === undefined || rawQuota === '' ? null : Number(rawQuota)
+    const hasBalanceReading = quotaRemaining !== null && Number.isFinite(quotaRemaining)
+    const warnThreshold = Number(settings?.balanceWarnUsd)
+    // 注意别用 balanceDepleted 当变量名：它是 inventory.js 导进来的函数
+    // （main 线的「余额探底整站离场」要在下面调用），同名会把函数遮蔽掉
+    const depleted = balanceDepleted(provider)
+    const balanceDepletedFlag = hasBalanceReading && quotaRemaining <= 0
+    const balanceWarn =
+      hasBalanceReading && !balanceDepletedFlag && warnThreshold > 0 && quotaRemaining <= warnThreshold
     // 两个价格口径，分工写在定价模块里：比较一律按美元（pricing.js 的声明），
     // 所以排序和有效成本用 priceUsd；price 字段是给前端展示的人民币值，
     // 由前端 priceText 按显示币种换算——此前排序直接拿 CNY 值，排序结果虽
@@ -383,7 +415,6 @@ export function selectCandidates({
     // 口径在 isTooSlow：评分过期不算慢（首字是旧证据）
     const tooSlow = isTooSlow(score, maxTtftMs)
     // 余额探底：整站离场（准入拒、不参选、不探测），但留在表里挂红标
-    const depleted = balanceDepleted(provider)
 
     // 把「为什么不可用」拆成人话，决策页直接显示。
     // 注意口径：fingerprint/truncation/billingRate 都是「正常比例」（未截断/未虚报），
@@ -396,6 +427,9 @@ export function selectCandidates({
     // 冷却中 / 待复测：这是「刚才上游明确说不行」，必须让人看得出为什么没派它
     if (score?.blocked) reasons.push(blockedText(score.blocked))
     else if (score?.pendingRecovery) reasons.push(blockedText(score.pendingRecovery, { pending: true }))
+    // 余额（持久化读数）：欠费挡准入，预警只提醒
+    if (balanceDepletedFlag) reasons.push(`余额不足：剩 ${quotaRemaining}`)
+    else if (balanceWarn) reasons.push(`余额告警：剩 ${quotaRemaining}，低于预警阈值 ${warnThreshold}`)
     // 评分过期不挡路（真实调用本身就是证据），但要说清楚它现在是靠不住的
     if (score?.stale) reasons.push('评分过期：没有新鲜证据，先拿真实调用打探')
     // 探针全被额度/限流挡住时，可用率没有分母（null）——这不是「能用」，
@@ -453,6 +487,13 @@ export function selectCandidates({
       // 外部监控上报的真实故障：只降级不拉黑（探针的准入判定不受影响），
       // 排序时同类靠后；自动路由不把它当「最优」，到期自动恢复
       faulted: typeof isFaulted === 'function' ? Boolean(isFaulted(offer)) : false,
+      // 余额（持久化读数）：欠费挡准入，预警只标黄。
+      // 注意这里必须写显式值——合并时曾写成简写 `balanceDepleted,`，
+      // 结果字段绑到了 import 进来的函数本身，准入一律判「整站离场」
+      balanceDepleted: depleted,
+      balanceWarn: Boolean(balanceWarn),
+      // 近 1 小时空回合次数：只画「空回复」徽章，不参与判定
+      emptyRecent: Number(emptyRecent?.get?.(offer.id)) || 0,
     }
     row.admission = admissionOf(row)
     return row

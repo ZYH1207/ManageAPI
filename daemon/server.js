@@ -100,10 +100,12 @@ import {
   activeDetours,
   recordDetour,
   resolveDetour,
-  recentEmptyHits,
+  emptyWastedMs,
   pickClosestCandidate,
   DETOUR_RECHECK_MS,
-  STALE_HITS,
+  EMPTY_DETOUR_WINDOW_MS,
+  EMPTY_DETOUR_WASTED_MS,
+  EMPTY_REPLY_BADGE_WINDOW_MS,
   RETRY_TIERS,
 } from '../core/empty-guard.js'
 import { repairToolCalls, buildRepairChunks } from '../core/tool-repair.js'
@@ -301,9 +303,9 @@ async function buildState({ light = false } = {}) {
   const modelsByGroup = {}
   const modelsByCredential = {}
   {
-    const ignored = inv.ignoredModelSet(db)
-    // ignoredModelSet 是按**身份键**建的集合，比对也必须用身份键。
-    // 拿存储键去 has() 永远查不到，表现为「忽略了但台账里不标已忽略」且不报错
+    // 单行开关徽章的 ignored 标记必须用完整规则（整类名单 + 单行例外）：
+    // 整类被忽略时捞出来的那个要显示「已显示」，不能只查身份键名单
+    const isIgnored = inv.ignoreChecker(db)
     const aliases = db.settings?.modelAliases || {}
     for (const offer of db.offers) {
       if (offer.delistedAt) continue
@@ -316,7 +318,7 @@ async function buildState({ light = false } = {}) {
         name,
         ratio: offer.ratio === null || offer.ratio === undefined ? null : Number(offer.ratio),
         free: isFreeOffer(offer, benchmarks),
-        ignored: Boolean(key) && ignored.has(key),
+        ignored: isIgnored(name),
         perCall: Boolean(cost.perCall),
         inCny: cost.inCnyPerMtok,
         outCny: cost.outCnyPerMtok,
@@ -431,6 +433,18 @@ async function buildState({ light = false } = {}) {
     }),
   }))
 
+  // 比价分组的手动拖拽顺序（比价页组头把手拖拽）：排过就是用户定的，
+  // 没排过的键跟在后面按默认顺序（ranked 已是字典序，稳定）。改价格
+  // 永远不影响分组之间的顺序——它只重排组内的行
+  if (Array.isArray(db.pricingGroupOrder) && db.pricingGroupOrder.length > 0) {
+    const idx = new Map(db.pricingGroupOrder.map((key, i) => [key, i]))
+    rankedWithCache.sort(
+      (a, b) =>
+        (idx.has(a.modelKey) ? idx.get(a.modelKey) : Infinity) -
+        (idx.has(b.modelKey) ? idx.get(b.modelKey) : Infinity),
+    )
+  }
+
   // 决策预览：每个模型当前的候选排序，供「智能决策」页展示。
   // 比价分组的键现在可能是多个站点写法的合并体（claude-opus-4-5 + claude-opus-4.5），
   // 不能直接拿分组键当「请求模型名」丢给 selectCandidates——它按名字匹配供给，
@@ -438,6 +452,18 @@ async function buildState({ light = false } = {}) {
   // 内部再按身份键展开成整组）。
   // 外部监控上报的真实故障（故障转移）：降级不拉黑，准入、排序、快照共用一个判定
   const isFaulted = faultMatcher(db.failover)
+  // 「空回复」展示徽章：近 1 小时发生过空回合（含补全救回来的）的供给。
+  // 只是给人看的，不影响准入与路由；网关路径不传这份，天然不参与派活
+  const emptyRecent = new Map()
+  {
+    const since = Date.now() - EMPTY_REPLY_BADGE_WINDOW_MS
+    for (const event of db.emptyTurns || []) {
+      if (!event.offerId) continue
+      const ts = Date.parse(event.ts || '')
+      if (!Number.isFinite(ts) || ts < since) continue
+      emptyRecent.set(event.offerId, (emptyRecent.get(event.offerId) || 0) + 1)
+    }
+  }
   const decisions = rankedWithCache.map((group) => {
     const model = group.rows[0]?.upstreamName || group.modelKey
     const order = db.manualOrder?.[model] || db.manualOrder?.[group.modelKey] || null
@@ -453,6 +479,7 @@ async function buildState({ light = false } = {}) {
       model,
       order,
       isFaulted,
+      emptyRecent,
     })
     const rankedCandidates = explain(candidates).map((c) => {
       // 比价页已并入决策页：候选行上的「官方 xx%」要和比价页同口径，
@@ -531,6 +558,10 @@ async function buildState({ light = false } = {}) {
     // modelKey 之后的找补（哪个站、哪个分组、供给还活着吗）前端从
     // decisions 里按 modelKey 自己查，服务端不重复算一遍
     autoRoute: normalizeAutoRoute(db.settings.autoRoute),
+    // 漂移监视器快照（真实速度/基线/降级名单/最近转移）+ 轮巡状态：诊断页展示。
+    // 纯读缓存（tick 每分钟算一次），这里不重算
+    drift: driftWatcherHook?.snapshot?.() ?? null,
+    probePatrol: autoProbeHook?.snapshot?.() ?? null,
     // 故障转移：上报令牌（给外部监控系统的接入配置）+ 活跃上报清单。
     // 读状态时顺手把到期记录标记成 expired（幂等，纯内存判断 + 有变化才写）
     failover: (() => {
@@ -734,6 +765,24 @@ route('PATCH', /^\/api\/settings$/, async (ctx) => {
       const v = Number(ctx.body.probeIntervalMinutes)
       if (!Number.isFinite(v) || v < 0) throw new HttpError(400, '探测间隔不能为负')
       db.settings.probeIntervalMinutes = v
+    }
+    // 漂移监视器（daemon/drift-watcher.js）的可调参数：总开关 / 漂移阈值 /
+    // 冷却期 / 试跑窗样本数。只在自动路由开着时工作，这个开关是独立闸门
+    if (ctx.body.driftEnabled !== undefined) db.settings.driftEnabled = Boolean(ctx.body.driftEnabled)
+    if (ctx.body.driftThresholdPct !== undefined) {
+      const v = Number(ctx.body.driftThresholdPct)
+      if (!Number.isFinite(v) || v < 5 || v > 90) throw new HttpError(400, '漂移阈值必须在 5–90 之间（%）')
+      db.settings.driftThresholdPct = v
+    }
+    if (ctx.body.driftCooldownMinutes !== undefined) {
+      const v = Number(ctx.body.driftCooldownMinutes)
+      if (!Number.isFinite(v) || v < 1 || v > 120) throw new HttpError(400, '冷却期必须在 1–120 分钟之间')
+      db.settings.driftCooldownMinutes = v
+    }
+    if (ctx.body.driftTrialSamples !== undefined) {
+      const v = Number(ctx.body.driftTrialSamples)
+      if (!Number.isFinite(v) || v < 1 || v > 100) throw new HttpError(400, '试跑窗样本数必须在 1–100 之间')
+      db.settings.driftTrialSamples = v
     }
     if (ctx.body.scoreMaxAgeHours !== undefined) {
       const v = Number(ctx.body.scoreMaxAgeHours)
@@ -1856,6 +1905,72 @@ route('POST', /^\/api\/monitor\/announcements\/read$/, async (ctx) => {
 
 // ------------------------------------------------------------------- 决策排序
 
+/**
+ * 自动路由接管范围：决策页分组头上的加号。
+ * 不勾 = 默认，全场所有模型都参选；勾选后只在勾选的模型里挑。
+ * 开着自动路由时改范围要立刻强制重选一次（不受迟滞约束），
+ * 否则「正在使用」可能停在已出局的模型上——与切档位同一套处理。
+ */
+route('POST', /^\/api\/auto-route\/scope$/, async (ctx) => {
+  const modelKey = String(ctx.body?.modelKey || '').trim()
+  if (!modelKey) throw new HttpError(400, 'modelKey 必填')
+  const enrolled = Boolean(ctx.body?.enrolled)
+  await store.mutate(async (db) => {
+    const record = normalizeAutoRoute(db.settings.autoRoute)
+    const scope = new Set(record.scope)
+    if (enrolled) scope.add(modelKey)
+    else scope.delete(modelKey)
+    record.scope = [...scope]
+    db.settings.autoRoute = record
+    if (record.enabled) {
+      const pick = pickAutoRoute(db, {
+        scores: scoresFor(db),
+        benchmarks: await bench.readBenchmarks(),
+        force: true,
+      })
+      if (pick) applyAutoRoutePick(db.settings, pick)
+    }
+  })
+  return buildState()
+})
+
+/**
+ * 单个模型的显式开关（分组/Key 弹窗里的「已忽略 / 已显示」徽章）。
+ *
+ * 绝对语义（shown=true 让它显示 / false 让它忽略），不是 toggle：
+ * 「显示」可能是删掉单行忽略例外，也可能是新增单行显示例外（整类被忽略时
+ * 捞一个出来），由服务端按现状算，前端不用复制判定规则。
+ * 整类忽略（身份键名单）不走这里——那是「忽略模型」管理面板的事。
+ */
+route('POST', /^\/api\/model-visibility$/, async (ctx) => {
+  const name = String(ctx.body?.name || '').trim()
+  if (!name) throw new HttpError(400, 'name 必填')
+  const shown = Boolean(ctx.body?.shown)
+  await store.mutate((db) => {
+    if (!db.settings.modelOverrides || typeof db.settings.modelOverrides !== 'object') {
+      db.settings.modelOverrides = {}
+    }
+    const overrides = db.settings.modelOverrides
+    const exact = inv.normalizeModelKey(name)
+    if (!exact) throw new HttpError(400, '模型名无效')
+    const currentlyIgnored = inv.ignoreChecker(db)(exact)
+    if (shown) {
+      if (!currentlyIgnored) throw new HttpError(400, `${name} 本来就是显示状态`)
+      // 现在是「单行被忽略」→ 删例外即可；否则（整类被忽略）→ 设「显示」例外
+      if (overrides[exact] === 'ignored') delete overrides[exact]
+      else overrides[exact] = 'shown'
+    } else {
+      if (currentlyIgnored) throw new HttpError(400, `${name} 本来就是忽略状态`)
+      // 现在是「单行显示例外」→ 删例外回到整类忽略；否则设「忽略」例外
+      if (overrides[exact] === 'shown') delete overrides[exact]
+      else overrides[exact] = 'ignored'
+    }
+    // 空了就删掉键，别让 {} 一直躺在 settings 里
+    if (Object.keys(db.settings.modelOverrides).length === 0) delete db.settings.modelOverrides
+  })
+  return buildState()
+})
+
 route('PUT', /^\/api\/decisions\/([^/]+)\/order$/, async (ctx) => {
   const modelKey = decodeURIComponent(ctx.params[0])
   await inv.setManualOrder(modelKey, ctx.body.order)
@@ -1866,6 +1981,21 @@ route('PUT', /^\/api\/decisions\/([^/]+)\/order$/, async (ctx) => {
 route('POST', /^\/api\/decisions\/([^/]+)\/pick$/, async (ctx) => {
   const modelKey = decodeURIComponent(ctx.params[0])
   await inv.setPinnedOffer(modelKey, ctx.body.offerId ? String(ctx.body.offerId) : '')
+  return buildState()
+})
+
+/**
+ * 比价分组的手动拖拽顺序：用户拖完的整表顺序落库（身份键数组）。
+ * 只存这个数组本身，不改任何价格/评分口径；没拖过的键跟在后面按默认顺序。
+ */
+route('PUT', /^\/api\/pricing\/order$/, async (ctx) => {
+  if (!Array.isArray(ctx.body?.order)) throw new HttpError(400, 'order 必须是数组')
+  const order = [...new Set(ctx.body.order.map((key) => String(key || '').trim()).filter(Boolean))]
+  if (order.length > 2000) throw new HttpError(400, '分组太多（上限 2000）')
+  await store.mutate((db) => {
+    if (order.length === 0) delete db.pricingGroupOrder
+    else db.pricingGroupOrder = order
+  })
   return buildState()
 })
 
@@ -1929,7 +2059,8 @@ function credentialForOffer(db, offer) {
 
 /** 协议探查页的级联选择器数据：站点 → 分组 → 模型（带探针状态标签）。 */
 function protocolTargets(db) {
-  const ignored = inv.ignoredModelSet(db)
+  // 完整规则（整类名单 + 单行例外）：单行捞回来的在协议探查页也不能再标「已忽略」
+  const isIgnored = inv.ignoreChecker(db)
   // 状态标签和探针页同一份判定：scoresFor + admissionTags，这里只透传，不另判一遍
   const scoreMap = scoresFor(db)
   const maxTtftMs = Number(db.settings.maxTtftMs) || 0
@@ -1953,8 +2084,8 @@ function protocolTargets(db) {
       const models = groups.get(groupName)
       // 同组同名模型只留一条；offerId 指向第一条，探测时按它取 Key
       if (models.has(name)) continue
-      // ignored 判定用身份键（ignoredModelSet 的口径）；modelKey 字段仍存存储键，
-      // 它表示「这条供给自己的名字」，前端拿去做别的比对
+      // ignored 判定用完整规则（ignoreChecker：整类名单 + 单行例外）；
+      // modelKey 字段仍存存储键，它表示「这条供给自己的名字」，前端拿去做别的比对
       const identityOfOffer = inv.modelIdentityKey(offer.modelKey || name, db.settings?.modelAliases || {})
       const modelKey = inv.normalizeModelKey(offer.modelKey || name)
       // 模型当前状况：与探针/比价页同一口径（admissionTags 唯一实现）。
@@ -1979,7 +2110,7 @@ function protocolTargets(db) {
         offerId: offer.id,
         model: name,
         modelKey,
-        ignored: Boolean(identityOfOffer) && ignored.has(identityOfOffer),
+        ignored: isIgnored(name),
         hasKey: Boolean(credentialForOffer(db, offer)),
         tags,
         blocked,
@@ -3082,7 +3213,26 @@ route('GET', /^\/api\/diagnosis\/ledger$/, async (ctx) => {
   }
 })
 
-/** 一键体检：用户亲手点才跑（会真的打上游、花 token，不做定时） */
+/** 长期评价：小时桶升维成「站点 / 模型 / 分组」三个维度的长期表现（按需拉取，不进 15 秒轮询） */
+route('GET', /^\/api\/diagnosis\/longterm$/, async () => {
+  const db = await store.readDb()
+  const providerName = new Map((db.providers || []).map((p) => [p.id, p.name]))
+  const offerMeta = new Map(
+    (db.offers || []).map((o) => [
+      o.id,
+      {
+        label: `${providerName.get(o.providerId) || '?'} · ${o.group || '默认'} · ${o.modelKey || o.upstreamName || '?'}`,
+        modelKey: o.modelKey || o.upstreamName || null,
+        providerId: o.providerId || null,
+        providerName: providerName.get(o.providerId) || null,
+        group: o.group || '',
+      },
+    ]),
+  )
+  return { generatedAt: new Date().toISOString(), ...aggregateLongTerm(db.offerStats || {}, offerMeta) }
+})
+
+ /** 一键体检：用户亲手点才跑（会真的打上游、花 token，不做定时） */
 route('POST', /^\/api\/diagnosis\/checkup$/, async (ctx) => {
   const body = ctx.body || {}
   return runCheckup({
@@ -4227,7 +4377,11 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
   let autoRoutePick = null
   let model = parsed.model
   if (!isFree && normalizeAutoRoute(db.settings.autoRoute).enabled) {
-    autoRoutePick = pickAutoRoute(db, { scores, benchmarks })
+    // 自动路由正在接真实流量：记活跃，驱动探针轮巡（daemon/autoprobe.js）。
+    // 就算这单最终没挑到模型也算了——外部请求进来了就是「开始起作用」
+    setAutoProbeActivity()
+    // 漂移降级名单也要递给热路径重挑：探针说最优但真实负载已漂移的站不能选回来
+    autoRoutePick = pickAutoRoute(db, { scores, benchmarks, driftDemoted: driftDemotedSet() })
     if (autoRoutePick) {
       model = autoRoutePick.modelKey
       // 换了模型才落盘：热路径拿到的是共享缓存对象，不能写；
@@ -4412,12 +4566,17 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
               ttftMs: speed.ttftMs,
               tps: speed.tps,
             })
-            // 这个站 5 分钟内已经空过几次：必然犯病的站不再耗时间
-            const hits = recentEmptyHits(recentEmpties, {
+            // 这个站空回复是否已经多到「严重影响生产效率」：看累计空耗时长，不看次数。
+            // 大上下文里一次白等可能就是一分钟（还要再补问一遍），轻请求空十次也
+            // 不疼——按时间算才能両边都对（门槛见 empty-guard.js 的 EMPTY_DETOUR_*）。
+            // 没到门槛就继续本地补全/同站补问，只在决策页标「空回复」给人看。
+            // 用户显式选了「换一家」模式不受此限——那是他自己的取舍
+            const wastedMs = emptyWastedMs(recentEmpties, {
               providerId: current.provider.id,
               model,
+              windowMs: EMPTY_DETOUR_WINDOW_MS,
             })
-            const stale = hits >= STALE_HITS
+            const stale = wastedMs >= EMPTY_DETOUR_WASTED_MS
             const base = planEmptyRetry({ estimatedMs: cost.estimatedMs, staleProvider: stale })
             // 用户选了「换一家」，或者这站已经连着空——都换成换站模式
             const reason = emptyGuard.mode === 'switch' || stale ? 'switch' : 'same'
@@ -4568,6 +4727,9 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
       })
       if (result.committed) {
         const latencyMs = Date.now() - started
+        // 真实价速比样本：首字 + 原始 usage 顺路进快窗口（成本换算在监视器 tick 里做，
+        // 热路径只 push，见 daemon/drift-watcher.js）
+        setDriftSample(candidate.offer.id, { ttftMs: result.ttftMs, latencyMs, usage: result.usage })
         // 上游 usage → 网关口径（净值 / 缓存读 / 缓存写 / 思考）：只在 wire.js 算一次，
         // 记账、决策日志、详细用量页全部吃这一份，否则三处各写一份取值顺序必然漂移
         const numbers = usageNumbers(result.usage)
@@ -4847,6 +5009,50 @@ function hostIsLocal(req) {
   if (!raw) return true // HTTP/1.0 无 Host 的本地调试请求，放行
   const name = raw.startsWith('[') ? raw.slice(0, raw.indexOf(']') + 1) : raw.split(':')[0]
   return LOCAL_HOSTS.has(name)
+}
+
+/**
+ * 自动路由活跃探针（daemon/autoprobe.js）的注入点：index.js 启动时把实例挂进来，
+ * 网关热路径在自动路由接单时调 setAutoProbeActivity() 记活跃。
+ * 用注入而不是 server.js 自建：探针轮巡和调度器要共用同一个实例（同一个节奏状态）。
+ */
+let autoProbeHook = null
+export function setAutoProbe(hook) {
+  autoProbeHook = hook
+}
+function setAutoProbeActivity() {
+  try {
+    autoProbeHook?.noteActivity()
+  } catch {
+    /* 活跃标记失败绝不影响这一单 */
+  }
+}
+
+/**
+ * 真实价速比漂移监视器（daemon/drift-watcher.js）的注入点：index.js 启动时挂进来。
+ * 网关热路径每单提交成功后记一个真实样本（首字 + usage），热路径只 push 不算钱；
+ * 决策页的接管状态区读 snapshot 展示实时分/基线/漂移。
+ */
+let driftWatcherHook = null
+export function setDriftWatcher(hook) {
+  driftWatcherHook = hook
+}
+function setDriftSample(offerId, sample) {
+  try {
+    driftWatcherHook?.record(offerId, sample)
+  } catch {
+    /* 记样本失败绝不影响这一单 */
+  }
+}
+/** 漂移降级名单（本轮周期内不当「最优」的供给）：网关重挑时也必须绕开它们，
+ * 否则热路径会把探针分最好但真实负载已漂移的站又选回来，和监视器来回震荡 */
+function driftDemotedSet() {
+  try {
+    const list = driftWatcherHook?.demotedList?.()
+    return list && list.length > 0 ? new Set(list) : null
+  } catch {
+    return null
+  }
 }
 
 export function createAppServer() {

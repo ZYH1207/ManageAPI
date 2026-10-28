@@ -209,5 +209,32 @@ console.log('[5] 边界：免费项不进池、无可用模型返回 null、appl
   ok(record.enabled === true, '落盘不清 enabled（接管状态由开关字段单独管）')
 }
 
+console.log('[6] 接管范围：不勾 = 全场，勾了 = 只在勾选里挑')
+{
+  const norm = normalizeAutoRoute({ enabled: true, scope: ['m-b', '', 5, 'm-b', null] })
+  ok(JSON.stringify(norm.scope) === '["m-b"]', `scope 归一：去空、去非字符串、去重 → ${JSON.stringify(norm.scope)}`)
+  ok(normalizeAutoRoute({ enabled: true }).scope.length === 0, '没填 scope → 空数组（全场参选）')
+
+  // 不勾：全场最优 m-a（有效成本 2 < 6）
+  ok(pickAutoRoute(db(), { scores, benchmarks }).modelKey === 'm-a', 'scope 为空 = 全场都参选')
+
+  // 只勾 m-b：m-a 再便宜也不参选
+  const onlyB = pickAutoRoute(db({ settings: { autoRoute: { enabled: true, scope: ['m-b'] } } }), { scores, benchmarks })
+  ok(onlyB.modelKey === 'm-b', `只勾 m-b → m-b（${onlyB.reason}）`)
+
+  // 只勾 m-c（准入不过）：范围内没有能登场的 → null，绝不从范围外抓壮丁
+  const onlyC = pickAutoRoute(db({ settings: { autoRoute: { enabled: true, scope: ['m-c'] } } }), { scores, benchmarks })
+  ok(onlyC === null, '勾选的模型全不可用 → null，不从范围外选')
+
+  // 勾的是身份键，byModel 键是存储键：勾 'g-4.1' 要能勾得住写成 'g-v4.1' 的供给
+  // （canonicalModelKey 抹平 v 前缀，两边过身份键后相等）
+  const variant = db({
+    settings: { autoRoute: { enabled: true, scope: ['g-4.1'] } },
+    offers: [offer('o-g1', 'p1', 'g-v4.1', 3, 2000)],
+  })
+  const variantPick = pickAutoRoute(variant, { scores: { 'o-g1': score({ quality: 1, ttftMs: 2000 }) }, benchmarks })
+  ok(variantPick?.modelKey === 'g-v4.1', `身份键匹配：勾 g-4.1 勾得住 g-v4.1（${variantPick?.modelKey ?? 'null'}）`)
+}
+
 console.log(failed === 0 ? '\n全部通过' : `\n${failed} 项失败`)
 process.exit(failed === 0 ? 0 : 1)

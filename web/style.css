@@ -426,6 +426,31 @@ input:focus, select:focus {
 /* 已忽略的模型仍然列出来（它就在这个分组里），但弱下去，别和「会用到的」抢注意力 */
 .gs-row.is-ignored .gs-name { color: var(--faint); }
 .gs-row.is-ignored .gs-price { color: var(--faint); }
+/* 比价分组拖拽：组头左边的把手 + 落点指示（拖到谁上半 = 插它前面，下半 = 后面） */
+.pricing-grip {
+  display: inline-flex; align-items: center; flex: none;
+  color: var(--faint); cursor: grab; border-radius: 4px; padding: 2px;
+}
+.pricing-grip:hover { color: var(--text); background: var(--hover); }
+.pricing-grip:active { cursor: grabbing; }
+.pricing-grip svg { width: 13px; height: 13px; }
+.table-wrap.dragging { opacity: 0.45; }
+.table-wrap.drop-before .group-head { box-shadow: inset 0 3px 0 var(--accent); }
+.table-wrap.drop-after .group-head { box-shadow: inset 0 -3px 0 var(--accent); }
+/* 忽略/显示开关徽章：灰色 = 已忽略，橙黄 = 已显示。它是个按钮，
+   要有可按感和悬浮反馈；比普通徽章多一圈边框让它看起来能点 */
+.ig-chip {
+  cursor: pointer;
+  border: 1px solid transparent;
+  font: inherit;
+  font-size: 11px;
+  line-height: 1.6;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+.ig-chip.ig-on { background: var(--divider); color: var(--faint); border-color: var(--divider); }
+.ig-chip.ig-on:hover { color: var(--text); border-color: var(--border-strong); }
+.ig-chip.ig-off { background: var(--warn-soft); color: var(--warn); border-color: var(--warn-border); }
+.ig-chip.ig-off:hover { background: var(--warn-border); }
 .gs-price { margin-left: auto; font-size: 12px; white-space: nowrap; }
 .gs-price .sub { font-size: 10px; color: var(--faint); }
 .gs-unpriced { color: var(--faint); }
@@ -1695,37 +1720,58 @@ button.with-icon { display: inline-flex; align-items: center; gap: 6px; white-sp
 
 .badge.ok { background: var(--accent-soft); color: var(--accent); }
 /* 忽略模型弹窗里的勾选列表 */
+/* 忽略模型面板：左右两栏——左边模型组（圆角卡，默认全收起），
+   右边选中组里的模型逐行开关（与分组弹窗的徽章同款） */
+.ig-split { display: flex; gap: 10px; max-height: 52vh; }
+.ig-pane-left {
+  flex: none; width: 192px; overflow-y: auto;
+  display: flex; flex-direction: column; gap: 5px; padding-right: 2px;
+}
+.ig-vendor-row {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 1px;
+  padding: 8px 10px; border-radius: 10px; border: 1px solid var(--divider);
+  background: var(--surface); cursor: pointer; text-align: left; font: inherit;
+}
+.ig-vendor-row:hover { border-color: var(--border-strong); }
+.ig-vendor-row.active { background: var(--accent-soft); border-color: var(--accent); }
+.ig-vendor-row.active .ig-vendor { color: var(--accent); }
+.ig-vendor-row .ig-vendor { font-weight: 600; font-size: 12.5px; color: var(--text); }
+.ig-vendor-row .hint { margin: 0; font-size: 10.5px; }
+.ig-pane-right {
+  flex: 1 1 auto; min-width: 0; overflow-y: auto;
+  border: 1px solid var(--divider); border-radius: 10px; padding: 2px 10px 6px;
+}
+.ig-detail-head {
+  display: flex; align-items: center; gap: 8px; padding: 9px 2px;
+  position: sticky; top: 0; background: var(--surface); z-index: 1;
+}
+.ig-model-row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 7px 2px; border-bottom: 1px solid var(--divider); font-size: 12.5px;
+}
+.ig-model-row:last-child { border-bottom: none; }
+.ig-model-row:hover { background: var(--hover); }
+.ig-model-row .mono { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ig-model-row .hint { flex: none; margin: 0; }
+.ig-model-row .grow { flex: 1 1 auto; }
+.ig-detail-head .grow { flex: 1 1 auto; }
+/* 同模型合并弹窗仍用旧的列表结构类（.ig-list/.ig-row/.ig-group…）：
+   忽略面板已换两栏布局不再用它们，这里只留给合并弹窗 */
 .ig-list { display: flex; flex-direction: column; max-height: 46vh; overflow-y: auto; }
 .ig-group { display: flex; flex-direction: column; }
 .ig-row {
   display: flex; align-items: center; gap: 10px;
   padding: 7px 4px; border-bottom: 1px solid var(--divider);
-  cursor: pointer; font-size: 13px;
+  font-size: 13px;
 }
 .ig-row:last-child { border-bottom: none; }
 .ig-row:hover { background: var(--hover); }
-.ig-row input[type='checkbox'] {
-  margin: 0; flex: none; width: 16px; height: 16px; padding: 0; border-radius: 4px;
-}
-.ig-row .mono { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.ig-row .hint { flex: none; margin: 0; }
-/* 厂牌分组：组头一行，子项缩进 */
 .ig-group-head {
   background: var(--hover); border-radius: 6px; margin-top: 6px;
-  padding: 6px 6px; font-weight: 600;
+  padding: 6px; font-weight: 600;
 }
-/* 组头的折叠箭头：默认朝下（展开），折叠时转 90° 朝右 */
-.ig-caret {
-  display: inline-grid; place-items: center; flex: none;
-  width: 18px; height: 18px; padding: 0; border: none; background: none;
-  color: var(--muted); cursor: pointer; border-radius: 4px;
-}
-.ig-caret:hover { background: var(--divider); color: var(--text); }
-.ig-caret svg { width: 12px; height: 12px; transition: transform 0.15s; }
-.ig-caret.is-collapsed svg { transform: rotate(-90deg); }
 .ig-children[hidden] { display: none; }
 .ig-group:first-child .ig-group-head { margin-top: 0; }
-.ig-vendor { flex: 1 1 auto; min-width: 0; }
 .ig-child { padding-left: 26px; }
 .ig-child .mono { color: var(--muted); }
 /* 「免费 N」徽章：免费紫（与免费分组的 .vchip-free 同款），图标和文字基线对齐 */

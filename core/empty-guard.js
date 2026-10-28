@@ -240,9 +240,29 @@ export function planEmptyRetry({ estimatedMs = 0, staleProvider = false } = {}) 
 /** 改道复检节奏：平均 20 分钟摸一次原站，正常了就把流量切回去 */
 export const DETOUR_RECHECK_MS = 20 * 60_000
 
-/** 同一个站这么多分钟里空过这么多轮，就认定它「必然犯病」，不再同站补问 */
-export const STALE_WINDOW_MS = 5 * 60_000
-export const STALE_HITS = 2
+/**
+ * 改道（故障转移）的门槛：同一个站 + 同一个模型在这么长的窗口里，
+ * 空回合累计空耗超过这么多毫秒，才认定「空回复已经严重影响生产效率」，
+ * 值得把流量挪走。
+ *
+ * 为什么看时间不看次数：一次空回合的代价不是常数。大上下文里一次白等
+ * 可能就是一分钟（还要再补问一遍，实际损失翻倍）；轻快的小请求空十次
+ * 也就几十秒。按次数判定会「错杀耐心补全的小请求站、放过慢刀大上下文」。
+ *
+ * 口径：窗口内每次空回合的 wastedMs（那次失败尝试实际耗掉的时间）累加。
+ * 刻意只记这确定性的一半——补问/重建的时长没有逐条落盘，不硬算；
+ * 所以阈值按真实损失的一半定：这里 2 分钟，对应真实等待约 4 分钟/半小时。
+ * 旧数据没有 wastedMs 的计 0（宁可少记，不编数）。
+ */
+export const EMPTY_DETOUR_WINDOW_MS = 30 * 60_000
+export const EMPTY_DETOUR_WASTED_MS = 120_000
+
+/**
+ * 「空回复」展示徽章的窗口：窗口内发生过空回合（含补全救回来的）就在决策页
+ * 标一个「空回复」，只给人看，不影响准入与路由——救得回来的空回合是「烦」，
+ * 不是「不可用」。真正的处置门槛见上面 EMPTY_DETOUR_*。
+ */
+export const EMPTY_REPLY_BADGE_WINDOW_MS = 60 * 60_000
 
 /** 复检连续正常几次才算「不波动了」，可以切回去 */
 export const DETOUR_OK_STREAK = 2
@@ -318,17 +338,24 @@ export function noteDetourCheck(db, offerId, { ok, at = new Date().toISOString()
   return row
 }
 
-/** 近期空回合次数（用来判断「这站是不是必然犯病」） */
-export function recentEmptyHits(events, { providerId, model, now = Date.now() } = {}) {
-  const since = now - STALE_WINDOW_MS
-  let hits = 0
+/**
+ * 近期空回合的累计空耗（毫秒）：改道门槛用的就是它（见 EMPTY_DETOUR_WASTED_MS）。
+ * 每条事件只累加 wastedMs（那次失败尝试实际耗掉的时间），旧数据没有的计 0。
+ */
+export function emptyWastedMs(
+  events,
+  { providerId, model, now = Date.now(), windowMs = EMPTY_DETOUR_WINDOW_MS } = {},
+) {
+  const since = now - windowMs
+  let total = 0
   for (const event of events || []) {
     if (event.providerId !== providerId) continue
     if (model && event.model && event.model !== model) continue
     const ts = Date.parse(event.ts || '')
-    if (Number.isFinite(ts) && ts >= since) hits += 1
+    if (!Number.isFinite(ts) || ts < since) continue
+    total += Math.max(0, Number(event.wastedMs) || 0)
   }
-  return hits
+  return total
 }
 
 /** 相对差：两边都缺就是 0，只有一边有就按「差得最远」算 1 */

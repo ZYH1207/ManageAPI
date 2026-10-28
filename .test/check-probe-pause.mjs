@@ -5,6 +5,9 @@
  *   1. 纯函数：core/schedule.js 的跨夜 / 边界 / 重叠 / 全天覆盖 / 非法输入
  *   2. 真跑：起假上游 + 起 daemon（把 60 秒一轮压到 400ms），用真实时钟跨分钟边界，
  *      验证「到点关」和「到点开」——不是断言某个函数返回值，而是看上游到底有没有收到请求。
+ *   3. 连锁机制：自动路由开着时定时探针整体让位（哪怕流量安静、轮巡自己停了
+ *      也不恢复）；手动关掉自动路由后才交还探测职责。用「从没探过的新模型」
+ *      制造到期，不用等真实分钟边界。
  *
  * 为什么必须用真实分钟边界：窗口精度是分钟，测试里没有注入假时钟（生产代码不留时间
  * 后门），所以只能等真实的 HH:MM 翻转。整轮最多两分钟。
@@ -285,6 +288,31 @@ try {
   // 收尾：清空时段，别把暂停状态留给后面的测试/用户
   state = await call('PATCH', '/api/settings', { probePauseWindows: [] })
   check('清空时段后恢复全天运行', state.probePause?.paused === false && state.probePause?.count === 0)
+
+  // --------------------------------------------------- 连锁：自动路由接管探测
+  console.log('\n连锁：自动路由开着 → 定时探针让位；手动关掉 → 交还')
+  // 从没探过的模型天然到期：连锁没生效的话，400ms 一轮的调度器立刻就会探它
+  models = ['test-model-a', 'test-model-b', 'test-model-c', 'test-model-d']
+  await call('POST', `/api/providers/${providerId}/sync`, {})
+  await sleep(2500)
+  const hitsBeforeChain = chatHits
+  check('自动路由关闭时，新到期模型照常被定时探针探测', chatHits > 0, `hits=${chatHits}`)
+
+  await call('PATCH', '/api/settings', { autoRouteEnabled: true })
+  await sleep(3000)
+  check('自动路由开着时，定时探针一个请求都不发', chatHits === hitsBeforeChain, `新增 ${chatHits - hitsBeforeChain} 个请求`)
+  // 流量安静、轮巡自动停下也不恢复定时探针：这个测试里没有网关流量，
+  // 轮巡本来就停着——再等一段，依然一个请求都不发才算过
+  await sleep(2000)
+  check('轮巡安静停下后，定时探针也不许冒出来', chatHits === hitsBeforeChain, `新增 ${chatHits - hitsBeforeChain} 个请求`)
+
+  await call('PATCH', '/api/settings', { autoRouteEnabled: false })
+  // 再补一个从没探过的模型：关掉时旧的都探过了、还没到下一轮间隔，
+  // 只有新到期目标能证明定时探针真的回来了
+  models = ['test-model-a', 'test-model-b', 'test-model-c', 'test-model-d', 'test-model-e']
+  await call('POST', `/api/providers/${providerId}/sync`, {})
+  await sleep(3000)
+  check('手动关掉自动路由后，定时探针接管探测', chatHits > hitsBeforeChain, `新增 ${chatHits - hitsBeforeChain} 个请求`)
 } catch (error) {
   console.log(`✗ 出错：${error.message}`)
   failures.push('异常')
