@@ -76,8 +76,11 @@ function skeletonHtml() {
     </section>`
 }
 
-/** 切到协议记录 tab 时调用（幂等）。每次都重置筛选——这个 tab 永远对应完整大库。 */
-export function ensureProtocolRecordsView(view) {
+/**
+ * 显示协议记录视图（幂等）。顶栏胶囊每次点「协议记录」都传 resetFilters:true——
+ * 这个视图永远对应完整大库，不带上一轮的筛选。
+ */
+export function ensureProtocolRecordsView(view, { resetFilters = true } = {}) {
   if (!view) return
   if (!state.built) {
     view.innerHTML = skeletonHtml()
@@ -96,7 +99,7 @@ export function ensureProtocolRecordsView(view) {
     wireEvents()
     state.built = true
   }
-  state.filters = { site: '', group: '', model: '' }
+  if (resetFilters) state.filters = { site: '', group: '', model: '' }
   state.expandedId = null
   void reload()
 }

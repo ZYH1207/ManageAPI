@@ -254,6 +254,7 @@ const EN = {
   '检测是否偷工': 'Quality checks',
   '协议探查': 'Protocols',
   '表面协议与真实协议': 'Surface vs real protocol',
+  '表面协议 · 真实协议 · 原生能力差异': 'Surface vs real protocol vs native capabilities',
   '协议记录': 'Protocol log',
   '全部探查历史': 'Full probe history',
   '全部探查历史 · 筛选与自动清理': 'Full history · filters & retention',

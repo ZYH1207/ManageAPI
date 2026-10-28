@@ -4855,7 +4855,7 @@ const SIDEBAR_KEY = 'manageapi.sidebarCollapsed'
   }
 })()
 
-const TABS = ['overview', 'monitor', 'free', 'pricing', 'decision', 'probes', 'protocol', 'protocol-records', 'gateway', 'usage', 'benchmark']
+const TABS = ['overview', 'monitor', 'free', 'pricing', 'decision', 'probes', 'protocol', 'gateway', 'usage', 'benchmark']
 
 /** 折叠状态：'provider:xxx' / 'pricing:模型名' / 'probe:站点id' */
 const collapsedPanels = new Set()
@@ -4889,6 +4889,32 @@ let connectCancelled = false
 /** 搜索框内容 */
 const filters = { pricing: '', decision: '', benchmark: '' }
 
+// 协议探查 tab 的两个视图（顶栏胶囊切换）：probe=测的主页面，records=历史大库
+let protocolViewMode = 'probe'
+
+function setProtocolViewMode(mode, { resetStore = false } = {}) {
+  protocolViewMode = mode
+  const probeView = $('#view-protocol')
+  const recordsView = $('#view-protocol-records')
+  if (probeView) probeView.hidden = mode !== 'probe'
+  if (recordsView) recordsView.hidden = mode !== 'records'
+  document.querySelectorAll('#protocol-top-seg [data-protocol-view]').forEach((button) => {
+    button.classList.toggle('active', button.dataset.protocolView === mode)
+  })
+  const meta = mode === 'records' ? { title: '协议记录', sub: '全部探查历史 · 筛选与自动清理' } : TAB_META.protocol
+  const titleEl = $('#page-title')
+  if (titleEl) titleEl.textContent = meta.title
+  if (activeTab === 'protocol') setPageSub(meta.sub)
+  // 顶栏文案刚被改成中文，得自己过一遗翻译（setTab 里的 translateDom 发生在这之前）
+  translateDom($('.topbar-left') || document.body)
+  if (mode === 'records') {
+    // 记录视图永远对应完整大库：resetStore=true 时重置筛选
+    ensureProtocolRecordsView(recordsView, { resetFilters: resetStore })
+    translateDom(recordsView || document.body)
+  }
+  if (location.hash !== '#protocol') history.replaceState(null, '', '#protocol')
+}
+
 const TAB_META = {
   overview: { title: '概览', sub: '当前状态一眼看完' },
   monitor: { title: '站点', sub: '余额趋势、倍率变动与站点管理' },
@@ -4897,7 +4923,6 @@ const TAB_META = {
   decision: { title: '智能决策', sub: '候选排序与手动调整' },
   probes: { title: '探针', sub: '指纹 / 截断 / 计费 / 缓存' },
   protocol: { title: '协议探查', sub: '表面协议 · 真实协议 · 原生能力差异' },
-  'protocol-records': { title: '协议记录', sub: '全部探查历史 · 筛选与自动清理' },
   gateway: { title: '网关', sub: '一个入口接管全部流量' },
   usage: { title: '用量', sub: '按 Key / 模型 / 站点统计' },
   benchmark: { title: '基准价', sub: '倍率换算的参照物' },
@@ -4933,6 +4958,8 @@ function setTab(name) {
     }
     const help = $('#view-help')
     if (help) help.hidden = false
+    const seg = $('#protocol-top-seg')
+    if (seg) seg.hidden = true
     const titleEl = $('#page-title')
     if (titleEl) titleEl.textContent = '使用说明'
     setPageSub('这个工具怎么用、为什么这么设计')
@@ -4943,6 +4970,8 @@ function setTab(name) {
 
   if (!TABS.includes(name)) name = 'overview'
   activeTab = name
+  const topSeg = $('#protocol-top-seg')
+  if (topSeg) topSeg.hidden = name !== 'protocol'
   document.querySelectorAll('#nav button').forEach((b) => b.classList.toggle('active', b.dataset.tab === name))
   for (const tabName of TABS) {
     const el = $(`#view-${tabName}`)
@@ -4969,13 +4998,11 @@ function setTab(name) {
   if (name === 'monitor' && !monitorData) void loadMonitor(monitorDays)
   // 协议探查也是按需拉：目标列表和记录在每次进页时刷新（站点页加的 Key 才能立刻看到）
   if (name === 'protocol') {
-    ensureProtocolView($(`#view-protocol`))
-    translateDom($('#view-protocol') || document.body)
-  }
-  // 协议记录 tab 永远对应完整大库：每次进页重置筛选、拉全量
-  if (name === 'protocol-records') {
-    ensureProtocolRecordsView($(`#view-protocol-records`))
-    translateDom($('#view-protocol-records') || document.body)
+    setProtocolViewMode(protocolViewMode, { resetStore: false })
+    if (protocolViewMode === 'probe') {
+      ensureProtocolView($(`#view-protocol`))
+      translateDom($('#view-protocol') || document.body)
+    }
   }
 }
 
@@ -4983,6 +5010,15 @@ function setTab(name) {
 window.addEventListener('hashchange', () => {
   const next = location.hash.replace('#', '') || 'providers'
   if (next !== activeTab && next !== `free/${freePane}`) setTab(next)
+})
+
+// 顶栏胶囊：探查页 ↔ 记录页。点「协议记录」永远重置到完整大库
+ document.querySelectorAll('#protocol-top-seg [data-protocol-view]').forEach((button) => {
+  button.addEventListener('click', () => {
+    setProtocolViewMode(button.dataset.protocolView, {
+      resetStore: button.dataset.protocolView === 'records',
+    })
+  })
 })
 
 // 概览图悬停：移入命中区显示当天明细，移出隐藏。

@@ -51,10 +51,6 @@
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16"/><path d="M4 12h10"/><path d="M4 17h7"/><circle cx="19" cy="12" r="2.5"/><circle cx="14" cy="17" r="2.5"/></svg>
           <span class="nav-text"><span class="nav-title" data-i18n="协议探查">协议探查</span><span class="nav-desc" data-i18n="表面协议与真实协议">表面协议与真实协议</span></span>
         </button>
-        <button data-tab="protocol-records">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8v13H3V8"/><path d="M1 3h22v5H1z"/><path d="M10 12h4"/></svg>
-          <span class="nav-text"><span class="nav-title" data-i18n="协议记录">协议记录</span><span class="nav-desc" data-i18n="全部探查历史">全部探查历史</span></span>
-        </button>
         <button data-tab="gateway">
           <svg viewBox="0 0 24 24"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
           <span class="nav-text"><span class="nav-title" data-i18n="网关">网关</span><span class="nav-desc" data-i18n="一个入口接管">一个入口接管</span></span>
@@ -92,6 +88,11 @@
           <span id="page-sub" class="topbar-sub"></span>
         </div>
         <div class="topbar-right">
+        <!-- 协议探查页专属：探查/记录视图切换，只在 tab=protocol 时显示 -->
+        <div class="seg pp-top-seg" id="protocol-top-seg" hidden>
+          <button type="button" data-protocol-view="probe" class="active">协议探查</button>
+          <button type="button" data-protocol-view="records">协议记录</button>
+        </div>
           <div class="notify-wrap">
             <button id="notify-btn" class="notify-btn" type="button" aria-label="通知" data-i18n-title="通知">
               <svg viewBox="0 0 24 24"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>

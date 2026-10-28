@@ -340,9 +340,23 @@
 .pp-record-row:hover { background: var(--hover); }
 .pp-record-row:last-child { border-bottom: none; }
 
+/* 顶栏右侧的「协议探查 / 协议记录」切换：用全局 .seg 样式，只压一下尺寸让它和旁边的
+   通知/刷新/币种按钮同一行高度（顶栏本身 52px，控件都是 26~30px） */
+.pp-top-seg {
+  height: 28px;
+  align-items: center;
+  font-size: 12px;
+  flex: none;
+}
+.pp-top-seg button {
+  padding: 3px 11px;
+  border-radius: 6px;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+
 /* 协议记录独立页 */
-.pp-records-page { padding: 16px 18px; }
-.pp-retention {
+.pp-records-page { padding: 16px 18px; }.pp-retention {
   display: inline-flex;
   align-items: center;
   gap: 8px;
