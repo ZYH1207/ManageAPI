@@ -53,7 +53,7 @@ console.log('断言：形状识别与真实协议推断（core/protocol-probe.js
 
 // ------------------------------------------------------------------ 真跑
 
-const mock = spawn(process.execPath, [join(import.meta.dirname, 'tmp/protocol-mock.mjs')], {
+const mock = spawn(process.execPath, [join(import.meta.dirname, 'protocol-mock.mjs')], {
   env: { ...process.env, PORT: String(PORT), MODE: 'native' },
   stdio: ['ignore', 'ignore', 'inherit'],
 })
