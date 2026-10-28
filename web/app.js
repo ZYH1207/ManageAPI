@@ -3719,12 +3719,25 @@ function modeCard(mode) {
 function routeNowPill() {
   if (!state.autoRoute?.enabled) return ''
   const takeover = state.autoRoute
-  const decision = (state.decisions || []).find((d) => d.modelKey === takeover.modelKey)
-  const winner = decision ? decision.candidates.find((c) => c.offerId === decision.chosenOfferId) : null
-  const where = winner?.providerName
-    ? ` <span class="route-now-where">· ${esc(winner.providerName)}${winner.group ? ` · ${esc(winner.group)}` : ''}</span>`
-    : ''
-  return `<span class="route-now" title="${t('自动路由正在把全部请求派给这个模型（当前档位下全场最优）')}">${t('正在使用')}<b class="mono">${esc(takeover.modelKey || '—')}</b>${where}</span>`
+  // 决策页的 modelKey 是**身份键**（deepseek-4.1-flash），自动路由记录的是
+  // **存储键**（deepseek-v4.1-flash）：两边先过身份键再比，否则永远匹配不上，
+  // 站名和分组就一直是空的（2026-10-29 实测）
+  const want = identityOf(takeover.modelKey || '')
+  const decision = (state.decisions || []).find(
+    (d) => identityOf(d.modelKey) === want && (!takeover.offerId || d.chosenOfferId === takeover.offerId),
+  ) || (state.decisions || []).find((d) => identityOf(d.modelKey) === want)
+  const winner = decision
+    ? (decision.candidates || []).find((c) => c.offerId === decision.chosenOfferId)
+    : null
+  // 站名 + 分组是「到底在用谁」的关键：只给模型名等于没说（同名模型散在
+  // 十几个分组里，价和速度能差几倍）
+  const provider = winner?.providerName || null
+  const group = winner?.group || ''
+  const where = provider
+    ? `<span class="route-now-where">${esc(provider)}${group ? ` · ${esc(group)}` : ''}</span>`
+    : `<span class="route-now-where dim">${t('定位中…')}</span>`
+  const tip = t('自动路由正在把全部请求派给这条供给（当前档位下全场最优）')
+  return `<span class="route-now" title="${esc(tip)}">${t('正在使用')}<b class="mono">${esc(takeover.modelKey || '—')}</b>${where}</span>`
 }
 
 /**
@@ -3798,7 +3811,16 @@ function patrolBadge() {
   }
   if (p.lastDoneAt) {
     const st = p.lastDoneTotal > 0 ? `${p.lastDoneOk}/${p.lastDoneTotal}` : '—'
-    return `<span class="badge ok" title="${esc(t('上一轮轮巡 {m} 分钟前完成：成功 {ok} / 共 {n} 条。下一轮按节奏自动开始', { m: minAgo(p.lastDoneAt), ok: st, n: p.lastDoneTotal }))}">${t('轮巡 {m} 分钟前 · {ok}/{n}', { m: minAgo(p.lastDoneAt), ok: st, n: p.lastDoneTotal })}</span>`
+    // 预计下一轮 = 上一轮完成 + 轮巡间隔（间隔由服务端下发，不在前端另写一份）
+    const nextAt = p.passIntervalMs ? p.lastDoneAt + p.passIntervalMs : null
+    const nextIn = nextAt ? Math.max(0, Math.round((nextAt - Date.now()) / 60000)) : null
+    const nextText =
+      nextIn === null
+        ? ''
+        : nextIn <= 0
+          ? t('· 下一轮随时开始')
+          : t('· 下一轮约 {n} 分钟后', { n: nextIn })
+    return `<span class="badge ok" title="${esc(t('上一轮轮巡 {m} 分钟前完成：成功 {ok} / 共 {n} 条。{next}', { m: minAgo(p.lastDoneAt), ok: st, n: p.lastDoneTotal, next: nextText }))}">${t('轮巡 {m} 分钟前 · {ok}/{n}', { m: minAgo(p.lastDoneAt), ok: st, n: p.lastDoneTotal })}${esc(nextText)}</span>`
   }
   return `<span class="badge" title="${esc(t('轮巡待命：自动路由在等真实流量，第一条请求进来几秒后自动开跑'))}">${t('轮巡待命')}</span>`
 }

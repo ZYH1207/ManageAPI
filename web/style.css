@@ -1215,7 +1215,15 @@ main { flex: 1; min-width: 0; display: flex; flex-direction: column; overflow: h
   flex: 0 1 auto; min-width: 0; max-width: 320px; overflow: hidden;
 }
 .route-now .mono { color: var(--accent); font-weight: 600; font-size: 11px; }
-.route-now-where { color: var(--faint); overflow: hidden; text-overflow: ellipsis; }
+.route-now-where {
+  /* 站名 + 分组是「到底在用谁」的关键信息，不能做成灰色小字：
+     同名模型散在十几个分组里，价和速度能差几倍，只给模型名等于没说 */
+  color: var(--text);
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.route-now-where.dim { color: var(--faint); font-weight: 400; }
 /* 故障转移徽标：实心红底，和探针的黄/灰状态徽标（.badge.danger 是软底色）拉开差距——
    这是「运行现场发病了」，不是「体检指标可疑」 */
 .badge.failover-badge { background: var(--danger); border-color: var(--danger); color: #fff; }

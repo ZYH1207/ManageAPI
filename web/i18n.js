@@ -879,6 +879,13 @@ Object.assign(EN, {
   '自动路由': 'Auto routing',
   '轮巡中 {n} 条…': 'Patrol running · {n} supplies…',
   '轮巡待命': 'Patrol idle',
+  '· 下一轮约 {n} 分钟后': '· next in ~{n}m',
+  '· 下一轮随时开始': '· next pass anytime now',
+  '上一轮轮巡 {m} 分钟前完成：成功 {ok} / 共 {n} 条。{next}':
+    'Last patrol finished {m}m ago: {ok} of {n} succeeded. {next}',
+  '定位中…': 'locating…',
+  '自动路由正在把全部请求派给这条供给（当前档位下全场最优）':
+    'Auto routing sends every request to this supply (best across the pool under the current basis)',
   '轮巡 {m} 分钟前 · {ok}/{n}': 'Patrol {m}m ago · {ok}/{n}',
   '轮巡正在进行：按节奏探测「现役模型 + 可能接替它的几个」的供给':
     'Patrol in progress: probes the serving model plus the few that could replace it',
