@@ -1179,8 +1179,10 @@ Object.assign(EN, {
   '删掉这个分组（Key 保留，可重新导入）': 'Delete this group (the key is kept and can re-import it)',
   '删掉这个分组（该分组下的模型记录删掉；挂在这个分组上的 Key 保留，之后在 Key 那行点「选分组」可以重新导入）':
     'Delete this group: its model rows are removed; any key bound to it is kept, and you can re-import the group from that key\u2019s “Pick group” button',
-  '同一个模型在另一档套餐里也有时，复制一条单独跟踪（分组归属跟随 Key，行内不可直接改）。不想要了可以在「站点」页删掉这个分组':
-    'Same model also exists in another plan? Copy one row to track it separately (group follows the key; not editable inline). Delete the group on the Sites page when you no longer need it',
+  '同一个模型在另一档套餐里也有时，复制一条单独跟踪（分组归属跟随 Key，行内不可直接改）':
+    'Same model also exists in another plan? Copy one row to track it separately (group follows the key; not editable inline)',
+  '删掉这个分组（比价页「＋」复制出来的，没挂 Key，别处没有删除入口）':
+    'Delete this group (copied from the Pricing page with “+”; no key is bound to it, so this is the only place to remove it)',
   '忽略后不再参与比价、智能决策、探针和网关': 'Once ignored: excluded from pricing, decisions, probes and the gateway',
   '当前按倍率算，切到「价格」才能填': 'Priced by ratio now — switch to "Price" to edit',
   '当前按手填单价算，切到「倍率」才能填': 'Priced by manual unit price — switch to "Ratio" to edit',

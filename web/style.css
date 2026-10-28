@@ -1012,13 +1012,14 @@ a.icon-btn:hover { text-decoration: none; }
   outline: 2px solid var(--accent); outline-offset: 1px;
 }
 /* 分组胶囊上的删除键：平时的透明度压到几乎看不见，hover 才亮出来——胶囊是信息展示，
-   不该让「删」这个动作抢走注意力，但也不能像以前那样根本没有入口 */
-.prov-group-chips .group-chip .chip-x {
+   不该让「删」这个动作抢走注意力，但也不能像以前那样根本没有入口。
+   比价表分组列里复制出来的分组也用它（同一个 class，两处同一款式） */
+.chip-x {
   border: none; background: none; padding: 0 0 0 3px; margin: 0;
   color: inherit; opacity: .35; cursor: pointer; display: inline-flex; align-items: center;
 }
-.prov-group-chips .group-chip .chip-x svg { width: 9px; height: 9px; }
-.prov-group-chips .group-chip .chip-x:hover { opacity: 1; color: var(--danger); }
+.chip-x svg { width: 9px; height: 9px; }
+.chip-x:hover { opacity: 1; color: var(--danger); }
 /* 「还有 N 个」/「收起」：这是入口不是装饰——虚线边 + hover 才亮，否则看着像一行说明文字，
    谁也不知道能点（之前它是 span，多出来的分组就真的没任何入口能看） */
 .prov-group-chips .group-chip-more {
@@ -1506,14 +1507,21 @@ button.group-chip:hover { color: var(--accent); }
 
 /* 模型名与分组超长时省略号：分组列曾把整张表撑到 270px+，
    把右侧的成本/价差直接挤出可视区。全名放在 title 里，悬停可见 */
-.pricing-table td.mono, .pricing-table td.mono .badge,
-.pricing-table td .group-chip-cell .badge {
+.pricing-table td.mono, .pricing-table td.mono .badge {
   max-width: 190px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
+/* 分组徽章里可能挂一枚删除键（复制出来的分组），省略号只能加在名字上——
+   否则 overflow:hidden 会把删除键一起裁掉，长分组名就再也删不掉了 */
+.pricing-table td .group-chip-cell .badge {
+  max-width: 190px; display: inline-flex; align-items: center;
+}
+.pricing-table td .group-chip-cell .badge .gc-name {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0;
+}
 .pricing-table td .group-chip-cell { max-width: 200px; display: inline-flex; align-items: center; gap: 4px; }
-/* 分组列里两个小按钮：＋ 复制到新分组 / 垃圾桶 删分组。图标压到 11px，
-   不然默认的 14px 会把这一列撑得很高 */
-.pricing-table td .group-chip-cell button svg { width: 11px; height: 11px; }
+/* 分组列里「＋」复制到新分组的按钮：图标压到 11px，不然默认的 14px 会把这一列撑得很高。
+   删除键（.chip-x）保持 9px，见上面的 .chip-x 规则 */
+.pricing-table td .group-chip-cell button:not(.chip-x) svg { width: 11px; height: 11px; }
 
 /* 综合成本 / 价差两列右侧吸附：横向滚动时始终可见——这两列才是比价要看的东西 */
 .pricing-table th:nth-last-child(-n+2), .pricing-table td:nth-last-child(-n+2) {

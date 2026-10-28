@@ -156,6 +156,24 @@ function groupChipOf(providerId, groupName) {
   return groupChipClass(groupOffers)
 }
 
+/**
+ * 比价页分组列里哪些分组该给删除键：只给「没挂任何 Key 的分组」。
+ * 这种分组只可能是比价页「＋」复制出来的（duplicateOffer 建组时刻意不挂 Key，
+ * 见 core/inventory.js），除了这一行没有别的删除入口；挂了 Key 的分组去「站点」页删，
+ * 别在比价表里每行都摆一个垃圾桶——那排垃圾桶占地方、还容易被当成「删这一条供给」。
+ * 口径和站点卡分组胶囊、del-group 的确认文案保持一致：Key 决定分组归属。
+ */
+function orphanGroupKeys() {
+  const keys = new Set()
+  for (const o of state.offers || []) {
+    if (o.group) keys.add(`${o.providerId}::${o.group}`)
+  }
+  for (const c of state.credentials || []) {
+    keys.delete(`${c.providerId}::${c.group || ''}`)
+  }
+  return keys
+}
+
 let toastTimer = null
 function toast(message, isError = false) {
   const el = $('#toast')
@@ -1946,6 +1964,7 @@ function renderPricing() {
     (group) => !filterText || group.modelKey.toLowerCase().includes(filterText),
   )
   const ignoredCount = (state.settings?.ignoredModels || []).length
+  const orphanGroups = orphanGroupKeys()
 
   const groups = visibleGroups.map((group) => {
     const panelKey = `pricing:${group.modelKey}`
@@ -1991,7 +2010,11 @@ function renderPricing() {
         <td>${esc(providerName(row.providerId))}</td>
         <td class="mono">${esc(row.upstreamName)}${badge}${perCall ? ' <span class="badge">按次</span>' : ''}</td>
         <td class="num sub-cell">${cacheCell}</td>
-        <td><span class="group-chip-cell">${row.group ? `<span class="badge ${groupChipOf(row.providerId, row.group)}" title="${esc(row.group)}">${esc(row.group)}</span>` : `<span style="color:var(--faint)" title="${t('该行的 Key 没有分组')}">${t('默认')}</span>`}<button class="ghost tiny" data-act="dup-offer" title="同一个模型在另一档套餐里也有时，复制一条单独跟踪（分组归属跟随 Key，行内不可直接改）。不想要了可以在「站点」页删掉这个分组">＋</button>${row.group ? `<button class="ghost danger tiny" data-act="del-group" data-provider="${esc(row.providerId)}" data-group="${esc(row.group)}" title="删掉这个分组（Key 保留，之后在 Key 那行点「选分组」可以重新导入）">${icon('trash')}</button>` : ''}</span></td>
+        <td><span class="group-chip-cell">${row.group ? `<span class="badge ${groupChipOf(row.providerId, row.group)}" title="${esc(row.group)}"><span class="gc-name">${esc(row.group)}</span>${
+          orphanGroups.has(`${row.providerId}::${row.group}`)
+            ? `<button class="chip-x" data-act="del-group" data-provider="${esc(row.providerId)}" data-group="${esc(row.group)}" title="删掉这个分组（比价页「＋」复制出来的，没挂 Key，别处没有删除入口）">${icon('trash')}</button>`
+            : ''
+        }</span>` : `<span style="color:var(--faint)" title="${t('该行的 Key 没有分组')}">${t('默认')}</span>`}<button class="ghost tiny" data-act="dup-offer" title="同一个模型在另一档套餐里也有时，复制一条单独跟踪（分组归属跟随 Key，行内不可直接改）">＋</button></span></td>
         <td>${modeCell}</td>
         <td class="num"><input type="number" step="0.001" placeholder="—" value="${row.inPrice ?? ''}" data-field="inPrice" ${perCall ? 'title="按次计费：这里填每次请求的价格"' : mode === 'ratio' ? 'title="原价。实际价 = 这个值 × 倍率"' : ''} /></td>
         <td class="num"><input type="number" step="0.001" placeholder="—" value="${perCall ? '' : row.outPrice ?? ''}" data-field="outPrice" ${perCall ? 'disabled title="按次计费不区分输入/输出"' : mode === 'ratio' ? 'title="原价。实际价 = 这个值 × 倍率"' : ''} /></td>
@@ -4754,7 +4777,7 @@ document.addEventListener('click', async (event) => {
     const name = prompt(
       '新分组名（例如：Pro 号池 / 特价池）。\n\n' +
         '用途：同一个模型在另一档套餐里也有时，给它复制一条单独记价，比价时和原分组并列看。\n' +
-        '注意：这样建出来的分组没有对应 Key；不想要了在「站点 → 分组倍率」里删掉它。',
+        '注意：这样建出来的分组没有对应 Key；不想要了在比价表里点它右边的小删除键。',
     )
     if (!name || !name.trim()) return
     await withBusy(actionButton, async () => {
