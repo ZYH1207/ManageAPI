@@ -313,16 +313,24 @@ async function buildState({ light = false } = {}) {
   const { ranked, unpriced } = pricing.rankByModel(paidOffers, db.settings, benchmarks, isTrusted)
   const summary = pricing.summarize(paidOffers, db.settings, benchmarks, isTrusted)
 
-  const usage = await usageSummary({ days: 30 })
-  // 关注度：有真实用量 > 调过手动顺序 > 探过。结论句默认推你真正在用的模型
+  // 用量按模型身份键汇总：同一个模型两种写法不该在用量页拆成两行
+  const usage = await usageSummary({
+    days: 30,
+    resolveModel: (name) => inv.modelIdentityKey(name, db.settings?.modelAliases || {}),
+  })
+  // 关注度：有真实用量 > 调过手动顺序 > 探过。结论句默认推你真正在用的模型。
+  // 三个来源的名字形状不一（用量是写入时的 modelKey、探针是 modelKey、手动排序是用户输入），
+  // 统一过一道身份键，否则「你在用的模型」永远匹配不上比价分组键，结论句就只会推价差最大的
+  const aliases = db.settings?.modelAliases || {}
+  const toIdentity = (name) => inv.modelIdentityKey(name, aliases) || ''
   const focusOrder = [
     ...new Set([
       ...Object.entries(usage.byModel || {})
         .sort((a, b) => (b[1].requests || 0) - (a[1].requests || 0))
-        .map(([key]) => key),
-      ...Object.keys(db.manualOrder || {}),
-      ...db.probes.map((p) => p.modelKey).filter(Boolean),
-    ]),
+        .map(([key]) => toIdentity(key)),
+      ...Object.keys(db.manualOrder || {}).map(toIdentity),
+      ...db.probes.map((p) => toIdentity(p.modelKey)).filter(Boolean),
+    ].filter(Boolean)),
   ]
 
   // 长期表现：探针 + 真实流量，按时间衰减加权，供概览页排名
@@ -399,11 +407,16 @@ async function buildState({ light = false } = {}) {
     }),
   }))
 
-  // 决策预览：每个模型当前的候选排序，供「智能决策」页展示
+  // 决策预览：每个模型当前的候选排序，供「智能决策」页展示。
+  // 比价分组的键现在可能是多个站点写法的合并体（claude-opus-4-5 + claude-opus-4.5），
+  // 不能直接拿分组键当「请求模型名」丢给 selectCandidates——它按名字匹配供给，
+  // 那样两个写法都匹配不上。用组内任一成员的 upstreamName 当入口即可（selectCandidates
+  // 内部再按身份键展开成整组）。
   // 外部监控上报的真实故障（故障转移）：降级不拉黑，准入、排序、快照共用一个判定
   const isFaulted = faultMatcher(db.failover)
   const decisions = rankedWithCache.map((group) => {
-    const order = db.manualOrder?.[group.modelKey] || null
+    const model = group.rows[0]?.upstreamName || group.modelKey
+    const order = db.manualOrder?.[model] || db.manualOrder?.[group.modelKey] || null
     const candidates = selectCandidates({
       offers: paidOffers,
       providers: db.providers,
@@ -411,7 +424,7 @@ async function buildState({ light = false } = {}) {
       scores: scoreMap,
       benchmarks,
       settings: db.settings,
-      model: group.modelKey,
+      model,
       order,
       isFaulted,
     })
@@ -422,6 +435,8 @@ async function buildState({ light = false } = {}) {
     const winner = rankedCandidates.find((c) => c.admission?.ok && !c.faulted) || null
     return {
       modelKey: group.modelKey,
+      display: group.display || group.modelKey,
+      variants: group.variants || [],
       candidates: rankedCandidates,
       chosenOfferId: winner?.offerId ?? null,
       chosenProviderName: winner?.providerName ?? null,
@@ -440,9 +455,13 @@ async function buildState({ light = false } = {}) {
   // 没有可用供给的也列出来但标灰——比默默消失强，至少看得出「这个模型现在没人接单」
   const headlineModels = decisions.map((decision) => ({
     modelKey: decision.modelKey,
+    display: decision.display || decision.modelKey,
     available: decision.candidates.filter((c) => c.admission?.ok).length,
     total: decision.candidates.length,
   }))
+
+  // 合并视图算一次，给 modelMerge / modelDisplay 共用（几百条供给 × 全表遍历，别重复算）
+  const mergeView = inv.modelMergeView(db, Object.keys(benchmarks))
 
   const result = {
     settings: db.settings,
@@ -516,6 +535,39 @@ async function buildState({ light = false } = {}) {
     // Key → 模型清单：密钥面板那行「总 / 忽略 / 可用」点开的弹窗用它。
     // 和 modelsByGroup 同一份 entry、同一个口径，只是换了索引键。
     modelsByCredential,
+    // 模型合并的当前结果与「疑似未合并」建议（纯函数，前端只负责展示）
+    modelMerge: mergeView,
+    /**
+     * 名字 → 身份键，以及 身份键 → 展示名。
+     *
+     * 前端各处（用量、基准价、忽略模型）本来各有一份「模型名」，合并之后
+     * 必须能落到同一个键上才不会又拆成两行。前端没有归一的实现（也不该有第二份），
+     * 所以由后端把这张索引算出：前端只查表，口径永远只有一份。
+     */
+    modelIdentity: (() => {
+      const map = {}
+      const aliasTable = db.settings?.modelAliases || {}
+      const add = (name) => {
+        const raw = String(name || '').trim()
+        if (!raw) return
+        const id = inv.modelIdentityKey(raw, aliasTable)
+        if (!id) return
+        map[raw.toLowerCase()] = id
+        // 归一后的键自己去查一次：前端拿到的可能是身份键本身
+        if (!map[id]) map[id] = id
+      }
+      for (const offer of db.offers) add(offer.modelKey || offer.upstreamName)
+      for (const key of Object.keys(benchmarks)) add(key)
+      for (const name of db.settings?.ignoredModels || []) add(name)
+      for (const name of Object.keys(aliasTable)) add(name)
+      return map
+    })(),
+    /** 身份键 → 给人看的名字（合并组用组内公认写法，单条就是它自己） */
+    modelDisplay: (() => {
+      const map = {}
+      for (const group of mergeView.groups) map[group.id] = group.display || group.id
+      return map
+    })(),
     // 全部模型（含被忽略的）与覆盖站点数：忽略模型弹窗要用，不能从过滤后的 offers 推
     modelIndex: (() => {
       const counts = new Map()
@@ -768,9 +820,12 @@ route('PATCH', /^\/api\/settings$/, async (ctx) => {
     }
     if (ctx.body.ignoredModels !== undefined) {
       if (!Array.isArray(ctx.body.ignoredModels)) throw new HttpError(400, '忽略的模型必须是数组')
-      // 归一化后去重：free/glm-5.3 与 glm-5.3 视为同一个模型，忽略一次两边都不再参与
+      // 存**身份键**：同一个模型的不同写法是同一个模型，忽略一次所有写法都不再参与。
+      // 以前存存储键（normalizeModelKey），忽略 deepseek-v4.1-flash 时
+      // deepseek-4.1-flash 那条还会照常出现在比价里
+      const aliases = db.settings?.modelAliases || {}
       const list = ctx.body.ignoredModels
-        .map((name) => (typeof name === 'string' ? inv.normalizeModelKey(name) : ''))
+        .map((name) => (typeof name === 'string' ? inv.modelIdentityKey(name, aliases) : ''))
         .filter(Boolean)
       if (list.length > 500) throw new HttpError(400, '最多忽略 500 个模型')
       db.settings.ignoredModels = [...new Set(list)]
@@ -1288,12 +1343,14 @@ route('POST', /^\/api\/providers\/([\w-]+)\/apply-group$/, async (ctx) => {
         exact: byGroupModel.get(`${group}::${offer.modelKey}`) || null,
         rate,
         sitePrice: hit,
-        hasBench: Boolean(benchTable[key]),
+        // 基准价查表带归一：站上叫 claude-opus-4-5、基准价表里叫 claude-opus-4.5
+        // 是完全正常的事，按原名查会得出「没基准价 → 落成手填价」的结论，倍率就白丢了
+        hasBench: Boolean(bench.benchmarkEntry(benchTable, key)),
         groupKnown,
       })
       if (via === 'ratio') viaRatio += 1
       if (via === 'percall') viaPercall += 1
-      if (via === 'manual' && !benchTable[key]) missingBench.push(offer.upstreamName)
+      if (via === 'manual' && !bench.benchmarkEntry(benchTable, key)) missingBench.push(offer.upstreamName)
 
       // 行上标出它属于哪个分组，页面就不用再显示「默认分组」了
       if (group) offer.group = group
@@ -1716,6 +1773,43 @@ route('PUT', /^\/api\/decisions\/([^/]+)\/order$/, async (ctx) => {
   const modelKey = decodeURIComponent(ctx.params[0])
   await inv.setManualOrder(modelKey, ctx.body.order)
   return buildState()
+})
+
+// ------------------------------------------------------------- 模型名合并
+
+/**
+ * 合并：把一批名字归到同一个身份（之后的比价/决策/网关清单都当作一个模型）。
+ * 入参 names 是**用户看到的原始写法**，服务端只归一存储键，不改 offer。
+ */
+route('POST', /^\/api\/models\/merge$/, async (ctx) => {
+  const names = Array.isArray(ctx.body.names) ? ctx.body.names : []
+  if (names.length === 0) throw new HttpError(400, '至少要选两个名字才谈得上合并')
+  const target = String(ctx.body.target || '').trim()
+  if (!target) throw new HttpError(400, '缺少合并目标（合并后按哪个名字显示）')
+  await inv.mergeModelNames(names, target)
+  return buildState()
+})
+
+/** 拆开：让这条名字自成一档，不再参与规则归一（比如 -highspeed 确实更贵） */
+route('POST', /^\/api\/models\/split$/, async (ctx) => {
+  const name = String(ctx.body.name || '').trim()
+  if (!name) throw new HttpError(400, '缺少模型名')
+  await inv.splitModelName(name)
+  return buildState()
+})
+
+/** 取消一条手动别名，回到自动规则归一 */
+route('DELETE', /^\/api\/models\/alias$/, async (ctx) => {
+  const name = String(ctx.body?.name || ctx.query?.get('name') || '').trim()
+  if (!name) throw new HttpError(400, '缺少模型名')
+  await inv.unaliasModelName(name)
+  return buildState()
+})
+
+/** 清空全部分手别名 */
+route('POST', /^\/api\/models\/aliases\/reset$/, async () => {
+  const result = await inv.resetModelAliases()
+  return { ...(await buildState()), aliasReset: result }
 })
 
 // ------------------------------------------------------------------- probes
@@ -2652,7 +2746,13 @@ route('POST', /^\/api\/failover\/clear$/, async (ctx) => {
 
 route('GET', /^\/api\/usage$/, async (ctx) => {
   const days = Math.min(Math.max(Number(ctx.query.get('days')) || 30, 1), 365)
-  return { usage: await usageSummary({ days }) }
+  const db = await store.readDb()
+  return {
+    usage: await usageSummary({
+      days,
+      resolveModel: (name) => inv.modelIdentityKey(name, db.settings?.modelAliases || {}),
+    }),
+  }
 })
 
 /**
@@ -3731,7 +3831,12 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
     }
   }
 
-  const manualOrder = db.manualOrder?.[inv.normalizeModelKey(model)] || null
+  // 手动排序键是身份键（合并后一组共用一个键）。自动路由接管后 model 可能已被改派，
+  // 所以要在接管之后再取；老数据里可能还存着 normalizeModelKey 时代的键，兜一次
+  const manualOrder =
+    db.manualOrder?.[inv.modelIdentityKey(model, db.settings?.modelAliases || {})] ||
+    db.manualOrder?.[inv.normalizeModelKey(model)] ||
+    null
   // 外部监控上报的真实故障：降级不拉黑（探针准入不受影响），但自动路由不把它当最优
   const isFaulted = faultMatcher(db.failover)
   // 临时改道的站：空回合守卫把它挂起了，流量应该已经走别家。
@@ -3795,7 +3900,7 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
           'free_pool_exhausted',
         )
       }
-      const available = listPublicModels({ offers: split.free, scores }).map((m) => m.id)
+      const available = listPublicModels({ offers: split.free, scores, settings: db.settings }).map((m) => m.id)
       return openaiError(
         res,
         404,
@@ -3806,7 +3911,7 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
   }
 
   if (candidates.length === 0) {
-    const available = listPublicModels({ offers: split.paid, scores }).map((m) => m.id)
+    const available = listPublicModels({ offers: split.paid, scores, settings: db.settings }).map((m) => m.id)
     return openaiError(
       res,
       404,
@@ -4189,7 +4294,7 @@ async function handleProxy(req, res, url) {
     })
 
     if (isFreeEntry) {
-      const models = listPublicModels({ offers: split.free, scores })
+      const models = listPublicModels({ offers: split.free, scores, settings: db.settings })
       return json(res, 200, {
         object: 'list',
         data: models.map((m) => shape(m, 'manage-api-free')),
@@ -4198,8 +4303,8 @@ async function handleProxy(req, res, url) {
 
     // 付费入口：付费模型 + 带 free/ 前缀的免费模型。
     // 带前缀是有意的——用户在下拉里能看见、能选，且一眼知道走的是免费池。
-    const paidModels = listPublicModels({ offers: split.paid, scores })
-    const freeModels = listPublicModels({ offers: split.free, scores })
+    const paidModels = listPublicModels({ offers: split.paid, scores, settings: db.settings })
+    const freeModels = listPublicModels({ offers: split.free, scores, settings: db.settings })
     return json(res, 200, {
       object: 'list',
       data: [

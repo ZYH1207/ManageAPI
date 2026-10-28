@@ -274,6 +274,36 @@ function providerName(id) {
   return state?.providers.find((p) => p.id === id)?.name || '未知站'
 }
 
+/** 名字 → 模型身份键（后端给的表：同一模型的多种写法落到同一个键） */
+function identityOf(name) {
+  const raw = String(name || '').trim().toLowerCase()
+  if (!raw) return ''
+  return state?.modelIdentity?.[raw] || raw
+}
+
+/** 身份键 → 给人看的名字；单条模型没有合并组时就是它自己 */
+function displayModel(idOrName) {
+  const id = identityOf(idOrName)
+  return state?.modelDisplay?.[id] || id || idOrName
+}
+
+/**
+ * 把一组「模型名」按身份键合并：返回 [{ id, display, names: [...], count }]。
+ * 用量、基准价这些页面本来是一行一个名字，合并后必须落到同一行，
+ * 否则同一个模型在这里还是两条，和比价页对不上。
+ */
+function groupByModelIdentity(entries) {
+  const groups = new Map()
+  for (const entry of entries || []) {
+    const id = identityOf(entry.name)
+    if (!groups.has(id)) groups.set(id, { id, display: displayModel(id), names: [], rows: [] })
+    const group = groups.get(id)
+    group.names.push(entry.name)
+    group.rows.push(entry)
+  }
+  return [...groups.values()]
+}
+
 // ------------------------------------------------------------------ 渲染
 
 // --------------------------------------------------------------- 通知中心
@@ -550,10 +580,11 @@ function headlineHtml() {
   const sentence = t('选用{provider}的 {model}，按{basis}算{verdict}：{metric}', {
     provider: `<strong>${esc(line.providerName || '—')}</strong>`,
     // 模型名可点：点开是本机未忽略的模型清单，选完整个句子重算
-    model: `<button class="headline-model" data-act="toggle-headline-models" aria-expanded="${headlineModelsOpen}" title="${esc(t('换一个模型看结论'))}"><span class="hm-name">${esc(line.modelKey)}</span><span class="caret">▾</span></button>`,
+    model: `<button class="headline-model" data-act="toggle-headline-models" aria-expanded="${headlineModelsOpen}" title="${esc(t('换一个模型看结论'))}"><span class="hm-name">${esc(displayModel(line.modelKey))}</span><span class="caret">▾</span></button>`,
     basis,
     verdict: `<strong>${t(words.verdict)}</strong>`,
     metric: `${t(words.metric)} <strong>${headlineMetric(line, mode)}</strong>`,
+
   })
 
   const menu = !headlineModelsOpen
@@ -2232,11 +2263,16 @@ function renderPricing() {
   }
 
   const filterText = filters.pricing.trim().toLowerCase()
-  const visibleGroups = state.ranked.filter(
-    (group) => !filterText || group.modelKey.toLowerCase().includes(filterText),
-  )
+  // 搜索要能搜到任何一种写法：合并后分组键是归一键，用户记住的多半是站上那个名字
+  const visibleGroups = state.ranked.filter((group) => {
+    if (!filterText) return true
+    const haystack = [group.modelKey, group.display, ...(group.variants || [])]
+    return haystack.filter(Boolean).some((name) => String(name).toLowerCase().includes(filterText))
+  })
   const ignoredCount = (state.settings?.ignoredModels || []).length
   const orphanGroups = orphanGroupKeys()
+  // 合并入口上的数字：疑似未合并的组数（已合并的是常态，不拿来当角标）
+  const mergeGroupCount = (state.modelMerge?.suggestions || []).length
 
   // 「只显示允许放行」按服务端下发的 admission 过滤：门禁结论只有
   // core/router.js#admissionOf 一份，前端不拿标签自己再拼一遍「什么算不合格」。
@@ -2344,7 +2380,8 @@ function renderPricing() {
       <div class="table-wrap">
         <div class="group-head">
           <button class="ghost tiny" data-act="toggle-panel" data-panel="${esc(panelKey)}">${isCollapsed ? '▸' : '▾'}</button>
-          <span class="model mono">${esc(group.modelKey)}</span>
+          <span class="model mono">${esc(group.display || group.modelKey)}</span>
+          ${(group.variants || []).length > 1 ? `<span class="badge" title="${t('这些站里同一个模型有 {n} 种写法，已合并成一行比价', { n: group.variants.length })}：${esc(group.variants.join(' / '))}">${t('已合并 {n} 种写法', { n: group.variants.length })}</span>` : ''}
           ${officialChipHtml(group.official)}
           ${group.spreadPct === null ? '' : `<span class="spread">价差 ${group.spreadPct}%</span>`}
           <span class="count">${group.providerCount} 个站 · ${shownRows.length === group.rows.length ? `${group.rows.length} 条供给` : `${shownRows.length} / ${group.rows.length} 条供给`}</span>
@@ -2381,6 +2418,9 @@ function renderPricing() {
         <span class="switch-text"><b>${t('只显示允许放行')}</b></span>
       </label>
       <span class="grow"></span>
+      <button class="with-icon" data-act="merge-models" title="${t('把同一个模型的不同写法归到一起（少个 v、点写成横线、带日期尾巴）')}">
+        ${icon('swap')}${t('同模型合并')}${mergeGroupCount ? ` ${mergeGroupCount}` : ''}
+      </button>
       <button class="with-icon" data-act="ignored-models" title="${t('忽略后不再参与比价、智能决策、探针和网关')}">
         ${icon('eye-off')}${t('忽略模型')}${ignoredCount ? ` ${ignoredCount}` : ''}
       </button>
@@ -2549,33 +2589,63 @@ const igCollapsed = new Set()
 
 // 厂牌前缀表与 vendorOf / vendorLabel 移到了 free-relay.js（胶囊配色与这里共用一份）
 
-/** 当前所有出现过的模型名 + 覆盖站点数（含已被忽略的，来自后端 modelIndex） */
+/**
+ * 当前所有出现过的模型（**按身份键合并**）+ 覆盖站点数 + 各站写法。
+ *
+ * 忽略是按身份键生效的（忽略一个写法 = 忽略整个模型），所以列表也必须按身份键
+ * 列一条——否则用户会看到两行「同一个模型」，勾掉一行另一行还在比价里，
+ * 与忽略的实际效果自相矛盾。
+ */
 function knownModels() {
-  const counts = new Map()
-  for (const row of state.modelIndex || []) counts.set(row.name, row.sites)
-  for (const offer of state.unpriced || []) {
-    const key = String(offer.modelKey || offer.upstreamName || '').trim()
-    if (key && !counts.has(key)) counts.set(key, 1)
+  const rows = new Map() // identity → { id, display, providers:Set, names:Set }
+  const touch = (name) => {
+    const raw = String(name || '').trim()
+    if (!raw) return null
+    const id = identityOf(raw)
+    let row = rows.get(id)
+    if (!row) {
+      row = { id, display: displayModel(id), providers: new Set(), names: new Set() }
+      rows.set(id, row)
+    }
+    row.names.add(raw)
+    return row
   }
-  for (const key of state.settings?.ignoredModels || []) if (!counts.has(key)) counts.set(key, 0)
-  return [...counts.entries()].sort((a, b) => a[0].localeCompare(b[0]))
+  // 站点数按 providerId 去重：一个站同时列了两种写法也只算一个站
+  for (const offer of state.offers || []) {
+    const row = touch(offer.modelKey || offer.upstreamName)
+    if (row) row.providers.add(offer.providerId)
+  }
+  // 被忽略 / 已下线的名字不在 offers 里了，但还得出现在列表里（否则没法取消忽略）
+  for (const entry of state.modelIndex || []) {
+    const row = touch(entry.name)
+    if (!row) continue
+    if (row.providers.size === 0) row.sites = Math.max(row.sites || 0, entry.sites)
+  }
+  for (const name of state.settings?.ignoredModels || []) touch(name)
+  return [...rows.values()]
+    .map((row) => ({
+      ...row,
+      sites: row.providers.size || row.sites || 0,
+      names: [...row.names].sort(),
+    }))
+    .sort((a, b) => a.display.localeCompare(b.display))
 }
 
 /** 按厂牌分组，组内按名字排；组按「未忽略数量多的在前」排，方便先处理没管过的 */
 function groupModels(rows) {
-  const ignored = new Set(state.settings?.ignoredModels || [])
+  const ignored = new Set((state.settings?.ignoredModels || []).map(identityOf))
   const groups = new Map()
-  for (const [name, sites] of rows) {
-    const key = vendorOf(name)
+  for (const row of rows) {
+    const key = vendorOf(row.display)
     if (!groups.has(key)) groups.set(key, [])
-    groups.get(key).push([name, sites])
+    groups.get(key).push(row)
   }
   return [...groups.entries()]
     .map(([key, items]) => ({
       key,
       label: vendorLabel(key),
       items,
-      ignoredCount: items.filter(([name]) => ignored.has(name)).length,
+      ignoredCount: items.filter((row) => ignored.has(row.id)).length,
     }))
     .sort((a, b) => b.items.length - a.items.length || a.label.localeCompare(b.label))
 }
@@ -2600,12 +2670,19 @@ function openIgnoredModels() {
   const title = $('#prov-modal-title')
   const body = $('#prov-modal-body')
   if (!modal || !body) return
-  const ignored = new Set(state.settings?.ignoredModels || [])
+  // 忽略名单里可能存着历史写法（未合并前的名字），统一映射到身份键再比对
+  const ignored = new Set((state.settings?.ignoredModels || []).map(identityOf))
   const rows = knownModels()
   const q = ignoredQuery.trim().toLowerCase()
-  const shown = rows.filter(([name]) => !q || name.toLowerCase().includes(q))
+  // 搜索要匹配展示名和它的所有写法
+  const shown = rows.filter(
+    (row) =>
+      !q ||
+      row.display.toLowerCase().includes(q) ||
+      row.names.some((name) => name.toLowerCase().includes(q)),
+  )
   const groups = groupModels(shown)
-  igGroupNames = new Map(groups.map((g) => [g.key, g.items.map(([name]) => name)]))
+  igGroupNames = new Map(groups.map((g) => [g.key, g.items.map((row) => row.id)]))
   title.textContent = t('忽略模型')
   body.innerHTML = `
     <p class="hint" style="margin:0 0 10px">
@@ -2633,11 +2710,15 @@ function openIgnoredModels() {
           <div class="ig-children" data-ig-children="${esc(group.key)}" ${folded ? 'hidden' : ''}>
           ${group.items
             .map(
-              ([name, count]) => `
-            <label class="ig-row ig-child">
-              <input type="checkbox" data-ig="${esc(name)}" ${ignored.has(name) ? 'checked' : ''} />
-              <span class="mono">${esc(name)}</span>
-              <span class="hint">${count ? t('{n} 个站', { n: count }) : t('已不在榜单里')}</span>
+              (row) => `
+            <label class="ig-row ig-child" title="${esc(row.names.join(' / '))}">
+              <input type="checkbox" data-ig="${esc(row.id)}" ${ignored.has(row.id) ? 'checked' : ''} />
+              <span class="mono">${esc(row.display)}${
+                row.names.length > 1
+                  ? `<span class="badge" style="margin-left:6px">${t('合并 {n} 种写法', { n: row.names.length })}</span>`
+                  : ''
+              }</span>
+              <span class="hint">${row.sites ? t('{n} 个站', { n: row.sites }) : t('已不在榜单里')}</span>
             </label>`,
             )
             .join('')}
@@ -2666,15 +2747,17 @@ async function saveIgnoredFromModal() {
 }
 
 async function toggleIgnoredModel(name, checked) {
-  const current = new Set(state.settings?.ignoredModels || [])
-  if (checked) current.add(name)
-  else current.delete(name)
+  // name 传进来就是身份键；名单统一存身份键，忽略才会「一处生效到所有写法」
+  const current = new Set((state.settings?.ignoredModels || []).map(identityOf))
+  if (checked) current.add(identityOf(name))
+  else current.delete(identityOf(name))
   try {
     state = await api('PATCH', '/api/settings', { ignoredModels: [...current] })
     render()
     // 不重画弹窗：勾选状态是浏览器自己维护的，重画会把列表滚回顶部
     syncIgGroups()
-    toast(checked ? t('已忽略 {name}', { name }) : t('已恢复 {name}', { name }))
+    const label = displayModel(name)
+    toast(checked ? t('已忽略 {name}', { name: label }) : t('已恢复 {name}', { name: label }))
   } catch (error) {
     toast(String(error), true)
   }
@@ -2688,6 +2771,122 @@ async function toggleVendorGroup(key, checked) {
   for (const box of boxes) box.checked = checked
   await saveIgnoredFromModal()
   toast(checked ? t('已忽略「{name}」全部模型', { name: vendorLabel(key) }) : t('已恢复「{name}」全部模型', { name: vendorLabel(key) }))
+}
+
+// --------------------------------------------------------------- 同模型合并
+
+/**
+ * 合并弹窗。
+ *
+ * 两块内容：
+ *   1. 已归并：规则（大小写 / 4-5 ↔ 4.5 / v 前缀 / 日期尾巴）自动归到一起的名字，可单个拆开
+ *   2. 疑似：形状被剥到「同一族」但规则没合的名字（典型：-thinking / -highspeed 尾巴），
+ *      给个一键合并——这类可能真不是同一个模型（高速版常贵一倍），所以要人点确认
+ */
+function openModelMerge() {
+  const modal = $('#prov-modal')
+  const title = $('#prov-modal-title')
+  const body = $('#prov-modal-body')
+  if (!modal || !body) return
+  const data = state.modelMerge || { groups: [], suggestions: [], aliasCount: 0, aliases: {} }
+  const aliasCount = Number(data.aliasCount) || 0
+  title.textContent = t('同模型合并')
+
+  const siteCount = (offers) => new Set((offers || []).map((o) => o.providerId)).size
+
+  const groupHtml = data.groups.length
+    ? data.groups
+        .map((group) => {
+          const members = group.members
+            .map((m) => {
+              const manual = Object.prototype.hasOwnProperty.call(data.aliases || {}, m.name)
+              return `<div class="ig-row ig-child">
+                <span class="mono" style="flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(m.name)}</span>
+                <span class="hint">${t('{n} 个站', { n: m.sites })}</span>
+                <button class="ghost tiny" data-act="merge-split" data-name="${esc(m.name)}" title="${t('让它自成一档，不再和别的写法合并')}">拆开</button>
+                ${manual ? `<span class="badge">${t('手动')}</span>` : ''}
+              </div>`
+            })
+            .join('')
+          return `<div class="ig-group">
+            <div class="ig-row ig-group-head">
+              <span class="mono" style="flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(group.display || group.id)}</span>
+              <span class="hint">${t('{n} 种写法 · {s} 个站', { n: group.members.length, s: siteCount(group.offers) })}</span>
+            </div>
+            <div class="ig-children">${members}</div>
+          </div>`
+        })
+        .join('')
+    : `<p class="hint" style="margin:6px 0 0">${t('没有需要归并的名字：每个模型在名下都只有一种写法。')}</p>`
+
+  const suggestionHtml = data.suggestions.length
+    ? data.suggestions
+        .map((sug) => {
+          const target = sug.target || sug.loose
+          const speed = sug.reason === 'speed'
+          // 按「当前身份」分组显示：用户要看清「现在它是几个模型，合并后变成一个」，
+          // 平铺一串名字会让人以为所有名字都要重组
+          const byId = new Map()
+          for (const m of sug.members) {
+            if (!byId.has(m.id)) byId.set(m.id, [])
+            byId.get(m.id).push(m)
+          }
+          const rows = [...byId.entries()]
+            .map(([id, list]) => {
+              const names = list.map((m) => m.name).join(' / ')
+              const sites = list.reduce((sum, m) => sum + m.sites, 0)
+              const already = id === target
+              return `<div class="ig-row ig-child">
+                <span class="mono" style="flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(names)}</span>
+                <span class="hint">${t('{n} 个站', { n: sites })}</span>
+                ${already ? `<span class="badge ok">${t('已在此组')}</span>` : ''}
+              </div>`
+            })
+            .join('')
+          const names = sug.members.map((m) => m.name)
+          return `<div class="ig-group">
+            <div class="ig-row ig-group-head">
+              <span class="mono" style="flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(target)}</span>
+              ${speed ? `<span class="badge warn" title="${t('高速版/极速版通常单独计价，合并前先确认价格')}">${t('可能不同价')}</span>` : ''}
+              <span class="hint">${t('{n} 个模型 · {m} 种写法', { n: byId.size, m: sug.members.length })}</span>
+              <button class="ghost tiny" data-act="merge-do" data-names="${esc(JSON.stringify(names))}" data-target="${esc(target)}">${t('合并成一个')}</button>
+            </div>
+            <div class="ig-children">${rows}</div>
+          </div>`
+        })
+        .join('')
+    : `<p class="hint" style="margin:6px 0 0">${t('没有疑似未合并的写法。')}</p>`
+
+  body.innerHTML = `
+    <p class="hint" style="margin:0 0 12px">
+      ${t('同一个模型在不同站写法不一（少个 v、点写成横线、带日期尾巴）时，网关会把它们当成两个模型。已归并的名字在比价、智能决策和网关模型清单里当作同一个模型。写给上游的模型名不受影响。')}
+    </p>
+    <h4 class="section-title" style="margin-top:0">${t('已归并')}${data.groups.length ? `（${data.groups.length}）` : ''}</h4>
+    <div class="ig-list">${groupHtml}</div>
+    <h4 class="section-title">${t('疑似还没合并')}${data.suggestions.length ? `（${data.suggestions.length}）` : ''}</h4>
+    <p class="hint" style="margin:0 0 8px">
+      ${t('这些名字差在 -thinking / -preview / -highspeed 这类尾巴上：可能只是叫法不同，也可能是真的不同型号（高速版常贵一倍）。确认价格后再合。')}
+    </p>
+    <div class="ig-list">${suggestionHtml}</div>
+    ${aliasCount ? `<p class="hint" style="margin-top:12px">${t('当前有 {n} 条手动合并。', { n: aliasCount })}<button class="ghost tiny" data-act="merge-reset">${t('全部恢复自动')}</button></p>` : ''}`
+  modal.hidden = false
+}
+
+/** 执行合并：把 data-names 里的名字全指到 target（target 是规整后的合并键） */
+async function doMergeModels(button) {
+  const names = JSON.parse(button.dataset.names || '[]')
+  const target = button.dataset.target || names[0]
+  if (!names.length || !target) return
+  await withBusy(button, async () => {
+    try {
+      state = await api('POST', '/api/models/merge', { names, target })
+      render()
+      openModelMerge()
+      toast(t('已合并 {n} 种写法到「{name}」', { n: names.length, name: target }))
+    } catch (error) {
+      toast(String(error), true)
+    }
+  })
 }
 
 // --------------------------------------------------------------- 决策视图
@@ -2777,9 +2976,12 @@ function renderDecision() {
   }
 
   const filterText = filters.decision.trim().toLowerCase()
-  const matchedDecisions = decisions.filter(
-    (decision) => !filterText || decision.modelKey.toLowerCase().includes(filterText),
-  )
+  // 搜索要能搜到任何一种写法：合并后 modelKey 是身份键，用户记住的多半是站上那个名字
+  const matchedDecisions = decisions.filter((decision) => {
+    if (!filterText) return true
+    const haystack = [decision.modelKey, decision.display, ...(decision.variants || [])]
+    return haystack.filter(Boolean).some((name) => String(name).toLowerCase().includes(filterText))
+  })
   // 「只显示可使用」按服务端下发的 admission 过滤：门禁结论只有
   // core/router.js#admissionOf 一份，前端不自己再拼一遍「什么算不可用」。
   // admission 缺失时（旧后端）不隐藏：宁可多显示，也不要静默吞掉供给。
@@ -2801,9 +3003,31 @@ function renderDecision() {
   const mode = state.decisionMode || state.settings?.decisionMode || 'value'
   const sortMark = (key) => (mode === key ? ' sort-by' : '')
 
+
   const blocks = visibleDecisions.map((decision) => {
     const panelKey = `decision:${decision.modelKey}`
     const isCollapsed = collapsedPanels.has(panelKey)
+    // 「合并后这个模型到底有几种写法、分别是谁」必须在决策页也能看见：
+    // 同一行里 8 条候选来自两个站名，不标出来用户会以为候选重复了。
+    // 展示名用来比对，命中说明这一站的写法就是常用写法，没必要在行里重复一遍
+    const shownName = decision.display || decision.modelKey
+    const variants = decision.variants || []
+    // 多数派写法：行内只标少数派（哪种写法是「另一种叫法」得一眼看出来，
+    // 而 8 行重复同一个名字纯属噪音）
+    const spellingCount = new Map()
+    for (const c of decision.candidates) {
+      const name = String(c.upstreamName || '')
+      if (!name) continue
+      spellingCount.set(name, (spellingCount.get(name) || 0) + 1)
+    }
+    let dominant = ''
+    let dominantCount = -1
+    for (const [name, count] of spellingCount) {
+      if (count > dominantCount) {
+        dominant = name
+        dominantCount = count
+      }
+    }
     const rows = decision.candidates.map((candidate, index) => {
       const badges = statusBadges(candidate.tags, {
         blocked: candidate.blocked || candidate.pendingRecovery,
@@ -2820,8 +3044,10 @@ function renderDecision() {
           <td>${esc(candidate.providerName || '—')}${isChosen ? ' <span class="badge ok">当前</span>' : ''}${
             candidate.faulted ? ` <span class="badge danger failover-badge" title="${t('外部监控上报了真实故障（探针没测到也以监控为准），已故障转移；保持期过后若仍是全场第一会自动提回')}">${t('故障转移')}</span>` : ''
           }${
-            candidate.upstreamName && candidate.upstreamName !== decision.modelKey
-              ? `<div class="sub mono">${esc(candidate.upstreamName)}</div>`
+            // 只标少数派写法：多数派每行重复一遍没信息量，
+            // 而少数派恰恰是「为什么要合并」的证据，不能省
+            candidate.upstreamName && dominant && candidate.upstreamName !== dominant
+              ? `<div class="sub mono">${t('该站写作 {name}', { name: candidate.upstreamName })}</div>`
               : ''
           }</td>
           <td>${candidate.group ? `<span class="badge ${groupChipOf(candidate.providerId, candidate.group)}">${esc(candidate.group)}</span>` : '<span style="color:var(--faint)">默认</span>'}</td>
@@ -2842,7 +3068,8 @@ function renderDecision() {
       <div class="table-wrap" data-model="${esc(decision.modelKey)}">
         <div class="group-head">
           <button class="ghost tiny" data-act="toggle-panel" data-panel="${esc(panelKey)}">${isCollapsed ? '▸' : '▾'}</button>
-          <span class="model mono">${esc(decision.modelKey)}</span>
+          <span class="model mono">${esc(shownName)}</span>
+          ${variants.length > 1 ? `<span class="badge" title="${t('这些站里同一个模型有 {n} 种写法，已合并成一个模型一起排序', { n: variants.length })}：${esc(variants.join(' / '))}">${t('已合并 {n} 种写法', { n: variants.length })}</span>` : ''}
           <span class="spread">${decision.chosenProviderName ? `当前选 ${esc(decision.chosenProviderName)}` : '没有可用供给'}</span>
           ${decision.manual ? '<button class="ghost tiny" data-act="reset-order">恢复自动</button>' : ''}
         </div>
@@ -2857,6 +3084,13 @@ function renderDecision() {
         </table>`}
       </div>`
   }).join('')
+
+  // 有多个模型是被合并过的：说明这里的候选池跨了站点的不同写法，
+  // 否则用户看到同一模型 8 条候选里有两套名字会以为是重复数据
+  const mergedCount = decisions.filter((d) => (d.variants || []).length > 1).length
+  const mergedHint = mergedCount
+    ? `<p class="hint">${t('其中 {n} 个模型在不同站写法不一（少个 v、点写成横线等），已按同一个模型合并排序——候选里会标出「该站写作…」的那种少数派写法。要调整合并关系，去比价页的「同模型合并」。', { n: mergedCount })}</p>`
+    : ''
 
   view.innerHTML = `
     ${modeCard(mode)}
@@ -2879,7 +3113,9 @@ function renderDecision() {
       </label>
     </div>
     <p class="hint">排序按上面的「决策侧重」。拖动任意一行都能改先后，包括暂时不会登场的那几条——位置随你定，但不会登场的站仍然不会被派活。</p>
-    <p class="hint">${t('注意：<b>同一个模型在不同站的状态是各自独立的</b>（A 站健康、B 站掉包很正常），所以这里按「站 × 模型」逐条评估，状态下方会写明具体原因。')}</p>    ${blocks ||
+    <p class="hint">${t('注意：<b>同一个模型在不同站的状态是各自独立的</b>（A 站健康、B 站掉包很正常），所以这里按「站 × 模型」逐条评估，状态下方会写明具体原因。')}</p>
+    ${mergedHint}
+    ${blocks ||
     (decisionOnlyAdmitted && hiddenCandidates
       ? `<div class="empty"><h3>${t('没有允许放行的供给')}</h3><p>${t('当前范围内有 {n} 条供给被这个开关隐藏了：慢速、结果可疑、不稳定、没有可信样本或冷却中。关掉开关就能看到它们。', { n: hiddenCandidates })}</p></div>`
       : '')}`
@@ -3507,7 +3743,7 @@ function renderUsage() {
     .sort((a, b) => tokenTotal(b[1]) - tokenTotal(a[1]))
     .slice(0, 15)
     .map(([model, row]) => `<tr>
-      <td class="mono">${esc(model)}</td>
+      <td class="mono">${esc(displayModel(model))}</td>
       <td class="num">${row.requests}</td>
       <td class="num">${formatTokens(row.input)}</td>
       <td class="num">${formatTokens(row.output)}</td>
@@ -3936,26 +4172,49 @@ let benchShowAll = false
 function renderBenchmark() {
   const view = $('#view-benchmark')
   const filterText = filters.benchmark.trim().toLowerCase()
-  const entries = Object.entries(state.benchmarks)
-    .filter(([key, entry]) => {
-      if (!filterText) return true
-      return (
-        key.toLowerCase().includes(filterText) ||
-        String(entry.display || '').toLowerCase().includes(filterText)
-      )
-    })
-    .sort((a, b) => a[0].localeCompare(b[0]))
 
-  // 与本地供给相关的判定：基准 key 被任何一条供给引用（benchmarkKey /
-  // modelKey / upstreamName 任一命中）
-  const usedKeys = new Set()
+  // 同一个模型在基准价表里可能有多条（claude-opus-4-5 与 claude-opus-4.5 各一条，
+  // 来自「从站导入」和「载入参考价」两条路）。合并之后它们是一个模型，
+  // 这里必须收成一行，否则用户以为表里有两份价，改动也只改到其中一份。
+  const allGroups = groupByModelIdentity(
+    Object.entries(state.benchmarks)
+      .filter(([key, entry]) => {
+        if (!filterText) return true
+        return (
+          key.toLowerCase().includes(filterText) ||
+          String(entry.display || '').toLowerCase().includes(filterText)
+        )
+      })
+      .map(([key, entry]) => ({ name: key, key, entry })),
+  )
+  // 组内挑一条当「主行」：手填的优先（那是用户确信的数），其次有输入价的
+  const primaryOf = (group) =>
+    [...group.rows].sort((a, b) => {
+      const score = (r) => [
+        String(r.entry.source || '') === 'manual' ? 1 : 0,
+        r.entry.in !== null && r.entry.in !== undefined ? 1 : 0,
+      ]
+      const sa = score(a)
+      const sb = score(b)
+      return sb[0] - sa[0] || sb[1] - sa[1]
+    })[0]
+
+  const entries = allGroups
+    .map((group) => ({ group, primary: primaryOf(group) }))
+    .sort((a, b) => String(a.group.display).localeCompare(String(b.group.display)))
+
+  // 与本地供给相关的判定：这一组里的**任何一个写法**被供给引用就算相关
+  // （合并之后供给上的名字可能是组里的少数派写法）
+  const usedIdentities = new Set()
   for (const o of state.offers || []) {
     for (const k of [o.benchmarkKey, o.modelKey, o.upstreamName]) {
-      if (k) usedKeys.add(String(k).toLowerCase())
+      if (k) usedIdentities.add(identityOf(k))
     }
   }
-  const isRelevant = ([key, entry]) =>
-    usedKeys.has(key.toLowerCase()) || String(entry.source || '') === 'manual'
+  const isRelevant = ({ group, primary }) =>
+    usedIdentities.has(group.id) ||
+    group.rows.some((r) => String(r.entry.source || '') === 'manual') ||
+    String(primary.entry.source || '') === 'manual'
   // 搜索时强制看全部（搜索意图就是找，别再分层）
   const layering = !filterText && !benchShowAll
   let matching = layering ? entries.filter(isRelevant) : entries
@@ -3979,17 +4238,23 @@ function renderBenchmark() {
     return s
   }
 
-  const rows = matching.map(([key, entry]) => {
-    // 次要信息合并成一行小字（显示名 · 来源），避免两行堆在 key 底下
+  const rows = matching.map(({ group, primary }) => {
+    const key = primary.key
+    const entry = primary.entry
+    // 次要信息合并成一行小字（显示名 · 来源 · 合并了哪几种写法）
     const extras = []
     const display = String(entry.display || '')
     if (display && display !== key) extras.push(display)
     const src = sourceLabel(entry.source)
     if (src) extras.push(src)
+    const spellings = group.names.filter((name) => name !== key)
+    // 保留组里所有写法：改价要同时写进去，否则按另一种写法查表的那条供给拿不到价
+    const aliasAttr = spellings.length ? esc(JSON.stringify(group.rows.map((r) => r.key))) : ''
     return `
-    <tr data-benchmark="${esc(key)}">
+    <tr data-benchmark="${esc(key)}"${aliasAttr ? ` data-benchmark-group="${aliasAttr}"` : ''}>
       <td class="mono">
         ${esc(key)}
+        ${spellings.length ? `<span class="badge" title="${t('同一个模型的其它写法，改价会一起写进去')}：${esc(spellings.join(' / '))}">${t('合并 {n} 种写法', { n: group.names.length })}</span>` : ''}
         ${extras.length ? `<div class="sub" style="color:var(--faint)">${esc(extras.join(' · '))}</div>` : ''}
       </td>
       <td class="num"><input type="number" step="0.001" placeholder="—" value="${entry.in ?? ''}" data-field="in" /></td>
@@ -6281,10 +6546,14 @@ document.addEventListener('click', async (event) => {
   }
 
   if (action === 'del-benchmark') {
-    const key = actionButton.closest('[data-benchmark]').dataset.benchmark
-    if (!confirm(`删除基准价「${key}」？`)) return
+    const row = actionButton.closest('[data-benchmark]')
+    const key = row.dataset.benchmark
+    const keys = row.dataset.benchmarkGroup ? JSON.parse(row.dataset.benchmarkGroup) : [key]
+    if (!confirm(`删除基准价「${key}」？${keys.length > 1 ? `（同组的 ${keys.length - 1} 种写法一起删）` : ''}`)) return
     await withBusy(actionButton, async () => {
-      state = await api('DELETE', `/api/benchmarks/${encodeURIComponent(key)}`)
+      for (const name of keys) {
+        state = await api('DELETE', `/api/benchmarks/${encodeURIComponent(name)}`)
+      }
       render()
       toast('已删除')
     })
@@ -6555,6 +6824,58 @@ document.addEventListener('click', async (event) => {
     } catch (error) {
       toast(error.message, true)
     }
+    return
+  }
+
+  if (action === 'merge-models') {
+    openModelMerge()
+    return
+  }
+
+  if (action === 'merge-do') {
+    await doMergeModels(actionButton)
+    return
+  }
+
+  if (action === 'merge-split') {
+    await withBusy(actionButton, async () => {
+      try {
+        state = await api('POST', '/api/models/split', { name: actionButton.dataset.name })
+        render()
+        openModelMerge()
+        toast(t('已拆开 {name}，它不再和别的写法合并', { name: actionButton.dataset.name }))
+      } catch (error) {
+        toast(String(error), true)
+      }
+    })
+    return
+  }
+
+  if (action === 'merge-unalias') {
+    await withBusy(actionButton, async () => {
+      try {
+        state = await api('DELETE', `/api/models/alias?name=${encodeURIComponent(actionButton.dataset.name)}`)
+        render()
+        openModelMerge()
+        toast(t('已恢复 {name} 的自动归并', { name: actionButton.dataset.name }))
+      } catch (error) {
+        toast(String(error), true)
+      }
+    })
+    return
+  }
+
+  if (action === 'merge-reset') {
+    await withBusy(actionButton, async () => {
+      try {
+        state = await api('POST', '/api/models/aliases/reset')
+        render()
+        openModelMerge()
+        toast(t('已清空所有手动合并，全部回到自动归并'))
+      } catch (error) {
+        toast(String(error), true)
+      }
+    })
     return
   }
 
@@ -7407,10 +7728,16 @@ document.addEventListener('change', async (event) => {
   const benchRow = input.closest('[data-benchmark]')
   if (benchRow) {
     const key = benchRow.dataset.benchmark
-    const entry = { ...state.benchmarks[key], modelKey: key }
-    entry[field] = input.value === '' ? null : input.value
+    // 合并组里的所有写法一起写：合并只是「显示成一行」，查表时每条供给还是按
+    // 自己的名字找（benchmarkEntry 会归一命中，但精确键更直接也更不容易漏）
+    const keys = benchRow.dataset.benchmarkGroup
+      ? JSON.parse(benchRow.dataset.benchmarkGroup)
+      : [key]
+    const patch = { [field]: input.value === '' ? null : input.value }
     try {
-      state = await api('PUT', '/api/benchmarks', entry)
+      for (const name of keys) {
+        state = await api('PUT', '/api/benchmarks', { ...state.benchmarks[name], ...patch, modelKey: name })
+      }
       render()
     } catch (error) {
       toast(error.message, true)

@@ -21,8 +21,10 @@
 import { offerCost } from './pricing.js'
 import { UNAVAILABLE_LABEL } from './failure.js'
 import { isRoutable, effectiveCost, THRESHOLDS, MIN_SAMPLES_FOR_VERDICT } from './score.js'
-import { normalizeModelKey } from './inventory.js'
+import { normalizeModelKey, modelIdentityKey } from './inventory.js'
 import { normalizeDecisionMode, compareByBasis } from './decision-mode.js'
+
+const INFINITY_COST = Number.POSITIVE_INFINITY
 
 /** scoreOffers 返回 Map，但也允许传普通对象，两种都兼容。 */
 function getScore(scores, offerId) {
@@ -237,6 +239,11 @@ export function selectCandidates({
   detours,
 }) {
   const key = normalizeModelKey(model)
+  // 身份键：deepseek-4.1-flash 与 deepseek-v4.1-flash 是同一个模型。
+  // 少了这一步，客户端把模型名缩写成站点的另一种写法就直接找不到供给——
+  // 「网关里它被识别成两个模型」正是这么来的
+  const aliases = settings?.modelAliases || null
+  const identity = modelIdentityKey(model, aliases)
   const maxTtftMs = Number(settings?.maxTtftMs) || 0
   // 用户开关：探针说可疑的也让它正常参与排序（首字上限仍然独立生效）
   const allowUntrusted = Boolean(settings?.allowUntrusted)
@@ -246,7 +253,8 @@ export function selectCandidates({
     (offer) =>
       offer.modelKey === key ||
       offer.upstreamName === model ||
-      normalizeModelKey(offer.upstreamName) === key,
+      normalizeModelKey(offer.upstreamName) === key ||
+      (identity && modelIdentityKey(offer.upstreamName, aliases) === identity),
   )
 
   const rows = matched.map((offer) => {
@@ -365,11 +373,18 @@ export function selectCandidates({
     })
 }
 
-/** 网关对外的模型清单：按归一化名去重，客户端用这个名字请求即可。 */
-export function listPublicModels({ offers, scores }) {
+/**
+ * 网关对外的模型清单：按**身份键**去重，客户端用这个名字请求即可。
+ *
+ * 用身份键而不是存储键：深站的 deepseek-4.1-flash 与别站的 deepseek-v4.1-flash
+ * 是同一个模型，在 /v1/models 里应该是**一项**（providers 计 2）。
+ * 两串都出现在下拉里，用户会以为有两个模型可选，选错了还以为换了个模型。
+ */
+export function listPublicModels({ offers, scores, settings }) {
+  const aliases = settings?.modelAliases || null
   const seen = new Map()
   for (const offer of offers) {
-    const id = offer.modelKey || normalizeModelKey(offer.upstreamName)
+    const id = modelIdentityKey(offer.upstreamName, aliases) || offer.modelKey || normalizeModelKey(offer.upstreamName)
     if (!id) continue
     const entry = seen.get(id)
     const score = getScore(scores, offer.id)

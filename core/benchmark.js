@@ -44,6 +44,15 @@ export async function readBenchmarks() {
   }
 }
 
+/**
+ * 基准价查表（带名字归一）：先精确，再抹平 4-5 ↔ 4.5 / 日期尾巴 / v 前缀 后命中。
+ *
+ * 这里导出只是为了调用方与写盘共用同一套口径：载入参考价写的是归一后的一个名字，
+ * 而站上可能全是另一个写法。不归一就会出现「同一组里一条有价、一条无价」，
+ * 进而把「倍率模式」误得成「手填价」——价格会被放大地错（实测放大约 10 倍过）。
+ */
+export { benchmarkEntry } from './model-name.js'
+
 export async function writeBenchmarks(table) {
   await mkdir(dataDir(), { recursive: true })
   await writeJsonAtomic(filePath(), table, 2)

@@ -1233,6 +1233,82 @@ Object.assign(EN, {
     'Checked models are excluded from pricing, routing, probes and the gateway. Click a vendor row to toggle the whole group.',
   '{n} 个模型': '{n} models',
   '已忽略「{name}」全部模型': 'Ignored every {name} model',
+  // ---- 同模型合并
+  '同模型合并': 'Merged model names',
+  '把同一个模型的不同写法归到一起（少个 v、点写成横线、带日期尾巴）':
+    'Treat different spellings of one model as the same model',
+  '同一个模型在不同站写法不一（少个 v、点写成横线、带日期尾巴）时，网关会把它们当成两个模型。已归并的名字在比价、智能决策和网关模型清单里当作同一个模型。写给上游的模型名不受影响。':
+    'When sites spell the same model differently (missing v, dash instead of dot, date suffix), the gateway counts them as two models. Merged spellings count as one in pricing, routing and the gateway model list. The name sent upstream is unchanged.',
+  '已归并': 'Merged',
+  '疑似还没合并': 'Possibly the same model',
+  '这些名字差在 -thinking / -preview / -highspeed 这类尾巴上：可能只是叫法不同，也可能是真的不同型号（高速版常贵一倍）。确认价格后再合。':
+    'These differ only by suffixes like -thinking / -preview / -highspeed: maybe just another name, maybe a genuinely different (often pricier) tier. Check the price before merging.',
+  '没有需要归并的名字：每个模型在名下都只有一种写法。':
+    'Nothing merged: every model has exactly one spelling.',
+  '没有疑似未合并的写法。': 'No likely duplicates.',
+  '{n} 种写法 · {s} 个站': '{n} spellings · {s} sites',
+  '{n} 个模型 · {m} 种写法': '{n} models · {m} spellings',
+  '拆开': 'Split',
+  '手动': 'manual',
+  '合并成一个': 'Merge into one',
+  '已在此组': 'already here',
+  '可能不同价': 'price may differ',
+  '高速版/极速版通常单独计价，合并前先确认价格':
+    'High-speed tiers are usually priced separately — check before merging',
+  '让它自成一档，不再和别的写法合并': 'Keep this spelling separate',
+  '已合并 {n} 种写法': 'merged {n} spellings',
+  '这些站里同一个模型有 {n} 种写法，已合并成一行比价':
+    'This model is listed under {n} spellings; they are compared as one row',
+  '已合并 {n} 种写法到「{name}」': 'Merged {n} spellings into “{name}”',
+  '已拆开 {name}，它不再和别的写法合并': 'Split {name}: it no longer merges with other spellings',
+  '已恢复 {name} 的自动归并': 'Restored automatic merging for {name}',
+  '已清空所有手动合并，全部回到自动归并': 'Cleared manual merges; everything is automatic again',
+  '当前有 {n} 条手动合并。': '{n} manual merge(s).',
+  '全部恢复自动': 'Reset all to automatic',
+  '该站写作 {name}': 'this site spells it {name}',
+  '合并 {n} 种写法': 'merged {n} spellings',
+  '同一个模型的其它写法，改价会一起写进去': 'Other spellings of the same model — editing writes to all of them',
+  '其中 {n} 个模型在不同站写法不一（少个 v、点写成横线等），已按同一个模型合并排序——候选里会标出「该站写作…」的那种少数派写法。要调整合并关系，去比价页的「同模型合并」。':
+    '{n} model(s) are spelled differently across sites (missing v, dash instead of dot…). They are ranked as one model; minority spellings are marked “this site spells it…”. Adjust the merges on the pricing page → “Merged model names”.',
+  '这些站里同一个模型有 {n} 种写法，已合并成一个模型一起排序':
+    'This model is spelled {n} ways across these sites; they are ranked as one model',
+  // ---- 同模型合并
+  '同模型合并': 'Merge model names',
+  '把同一个模型的不同写法归到一起（少个 v、点写成横线、带日期尾巴）':
+    'Group the different spellings of one model (missing v, dash instead of dot, dated suffix)',
+  '同一个模型在不同站写法不一（少个 v、点写成横线、带日期尾巴）时，网关会把它们当成两个模型。已归并的名字在比价、智能决策和网关模型清单里当作同一个模型。写给上游的模型名不受影响。':
+    'When sites spell the same model differently (missing v, dash instead of dot, dated suffix), the gateway treats them as two models. Merged names count as one model in pricing, routing and the gateway model list. The name sent upstream is untouched.',
+  '已归并': 'Merged',
+  '疑似还没合并': 'Probably not merged yet',
+  '这些名字差在 -thinking / -preview / -highspeed 这类尾巴上：可能只是叫法不同，也可能是真的不同型号（高速版常贵一倍）。确认价格后再合。':
+    'These differ only by a -thinking / -preview / -highspeed suffix: possibly the same model, possibly a different (often pricier) tier. Check the price before merging.',
+  '没有需要归并的名字：每个模型在名下都只有一种写法。':
+    'Nothing to merge: every model has a single spelling here.',
+  '没有疑似未合并的写法。': 'No likely unmerged spellings.',
+  '{n} 种写法 · {s} 个站': '{n} spellings · {s} sites',
+  '{n} 种写法': '{n} spellings',
+  '拆开': 'Split',
+  '手动': 'Manual',
+  '合并': 'Merge',
+  '用「{name}」': 'Use "{name}"',
+  '可能不同价': 'price may differ',
+  '高速版/极速版通常单独计价，合并前先确认价格':
+    'High-speed tiers are usually priced separately — check the price first',
+  '让它自成一档，不再和别的写法合并': 'Keep it separate instead of merging with other spellings',
+  '用另一种写法作为合并后的名字': 'Use the other spelling as the merged name',
+  '已合并 {n} 种写法到「{name}」': 'Merged {n} spellings into "{name}"',
+  '已拆开 {name}，它不再和别的写法合并': 'Split {name}: it no longer merges with other spellings',
+  '已恢复 {name} 的自动归并': 'Restored automatic merging for {name}',
+  '已清空所有手动合并，全部回到自动归并': 'Cleared all manual merges; back to automatic merging',
+  '当前有 {n} 条手动合并。': '{n} manual merges.',
+  '全部恢复自动': 'Reset all to automatic',
+  '该站写作 {name}': 'this site spells it {name}',
+  '合并 {n} 种写法': 'merged {n} spellings',
+  '同一个模型的其它写法，改价会一起写进去': 'Other spellings of the same model — editing writes to all of them',
+  '其中 {n} 个模型在不同站写法不一（少个 v、点写成横线等），已按同一个模型合并排序——候选里会标出「该站写作…」的那种少数派写法。要调整合并关系，去比价页的「同模型合并」。':
+    '{n} model(s) are spelled differently across sites (missing v, dash instead of dot…). They are ranked as one model; minority spellings are marked “this site spells it…”. Adjust the merges on the pricing page → “Merged model names”.',
+  '这些站里同一个模型有 {n} 种写法，已合并成一个模型一起排序':
+    'This model is spelled {n} ways across these sites; they are ranked as one model',
   '已恢复「{name}」全部模型': 'Restored every {name} model',
   '收起 / 展开': 'Collapse / expand',
   '刚刚': 'just now',

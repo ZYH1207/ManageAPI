@@ -10,6 +10,8 @@
 
 import { ensureFx } from './fx.js'
 import { normalizeDecisionMode, compareByBasis } from './decision-mode.js'
+// 模型名归一：比价分组 / 基准价查表都用同一套口径，别在这里再写一遍 trim
+import { identityKey, benchmarkEntry, pickDisplayName } from './model-name.js'
 
 const UNIT_MULTIPLIER = {
   per_mtok: 1,
@@ -66,7 +68,10 @@ export function resolveOfferPrice(offer, benchmarks = {}) {
   // 定价模式是谁，就用谁：pricingMode 是权威，
   // 不能拿「倍率有没有填」猜——否则切成手动后残留的倍率会继续把价格乘一遍。
   const key = offer.benchmarkKey || offer.modelKey || offer.upstreamName
-  const bench = benchmarks[key]
+  // 查表带归一：基准价表的键是「导入时的那个名字」，和模型名不一定同形
+  // （表里 claude-opus-4-5 与 claude-opus-4.5 并存过）。不归一就会出现
+  // 「同一组里一条有价、一条无价」，比价结论直接错
+  const bench = benchmarkEntry(benchmarks, key)
   const wantsRatio = offer.pricingMode === 'ratio'
   // 注意不能直接 Number(offer.ratio)：null 会被转成 0，把「没填倍率」当成「倍率 0（免费）」
   const hasRatio = offer.ratio !== null && offer.ratio !== undefined && offer.ratio !== ''
@@ -296,9 +301,22 @@ export function officialCost(bench, settings = {}) {
  * 不可信的供给仍然列出（价格信息本身有用），但不参与「最便宜」与价差的判定，
  * 否则会和 headline、路由的选择打架。
  */
+/**
+ * 比价分组键：一个模型一行，不看站点把它写成什么名字。
+ *
+ * 这里是「同模型合并」在比价侧的唯一生效点：deepseek-v4.1-flash 与
+ * deepseek-4.1-flash、claude-opus-4-5-20251101 与 claude-opus-4.5 必须落进同一行，
+ * 否则用户看到的「同一个模型两个价」其实是两行各自的最低价，价差结论也跟着错。
+ * 只影响分组键——写给上游的 model 仍旧是 offer.upstreamName，一个字不改。
+ */
+function modelGroupKey(offer, aliases) {
+  return identityKey(offer.modelKey || offer.upstreamName, aliases) || offer.modelKey || offer.upstreamName
+}
+
 export function rankByModel(offers, settings = {}, benchmarks = {}, isTrusted = () => true) {
   const groups = new Map()
   const unpriced = []
+  const aliases = settings?.modelAliases || null
 
   for (const offer of offers) {
     const cost = offerCost(offer, settings, benchmarks)
@@ -308,7 +326,7 @@ export function rankByModel(offers, settings = {}, benchmarks = {}, isTrusted = 
     if (cost.perCall) {
       if (cost.callPriceUsd === null) unpriced.push(row)
       else {
-        const key = offer.modelKey || offer.upstreamName
+        const key = modelGroupKey(offer, aliases)
         if (!groups.has(key)) groups.set(key, [])
         groups.get(key).push(row)
       }
@@ -318,7 +336,7 @@ export function rankByModel(offers, settings = {}, benchmarks = {}, isTrusted = 
       unpriced.push(row)
       continue
     }
-    const key = offer.modelKey || offer.upstreamName
+    const key = modelGroupKey(offer, aliases)
     if (!groups.has(key)) groups.set(key, [])
     groups.get(key).push(row)
   }
@@ -349,6 +367,14 @@ export function rankByModel(offers, settings = {}, benchmarks = {}, isTrusted = 
 
     return {
       modelKey,
+      // 展示名：分组键是归一键（deepseek-4.1-flash），给人看的应该是公认写法
+      // （deepseek-v4.1-flash）。基准价表的键就是现有最靠谱的「公认写法」线索
+      display: pickDisplayName(
+        rows.map((r) => r.offer.upstreamName),
+        Object.keys(benchmarks || {}),
+      ),
+      // 这一组混了哪几种写法：合并后必须能看见，否则「为什么这两个价在一行」没法解释
+      variants: [...new Set(rows.map((r) => r.offer.upstreamName))].sort(),
       rows: rows.map((r) => ({
         offerId: r.offer.id,
         providerId: r.offer.providerId,

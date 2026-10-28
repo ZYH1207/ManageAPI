@@ -189,8 +189,13 @@ function finalize(row) {
 
 /**
  * 汇总最近 N 天。返回按天、按 Key、按站点、按模型的四个切面。
+ *
+ * `resolveModel` 用来把「写入时的模型名」映射成模型身份键：同一个模型在不同站
+ * 写法不一（deepseek-v4.1-flash / deepseek-4.1-flash）时，用量表里不该出现两行，
+ * 否则用户会以为用了两个模型，而合并后的比价/决策只显示一个——数字对不上。
+ * 传函数而不是别名表：口径（怎么归一）只由调用方那一份实现决定。
  */
-export async function usageSummary({ days = 30 } = {}) {
+export async function usageSummary({ days = 30, resolveModel = null } = {}) {
   const data = await readUsage()
   const range = recentDays(days)
   const rangeSet = new Set(range)
@@ -208,7 +213,9 @@ export async function usageSummary({ days = 30 } = {}) {
       // 复合键是 keyId|providerId|model，model 排最后——模型名里含 | 时
       // 剩余段重新 join 才能还原（前两段是内部生成的 id，不会含 |）
       const [keyId, providerId, ...modelParts] = composite.split('|')
-      const model = modelParts.join('|')
+      const rawModel = modelParts.join('|')
+      // 历史行是按写入时的名字存的，归一后合并——老数据也跟着合，不用改写 usage.json
+      const model = (resolveModel && resolveModel(rawModel)) || rawModel
       addRow(totals, row)
       addRow(dayTotal, row)
       if (!byKey[keyId]) byKey[keyId] = emptyRow()

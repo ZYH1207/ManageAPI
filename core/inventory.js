@@ -3,7 +3,14 @@
  * 所有写操作走 mutate()，保证读-改-写原子性。
  */
 import { randomUUID, randomBytes } from 'node:crypto'
-import { readDb, mutate, encryptSecret, decryptSecret, normalizeGroup } from './store.js'
+import {
+  readDb,
+  mutate,
+  encryptSecret,
+  decryptSecret,
+  normalizeGroup,
+  remapManualOrderKeys,
+} from './store.js'
 // quota.js 只依赖内置类型，不回头 import 本文件，不会形成循环
 import { normalizeQuota, resetIfDue, consumeQuota } from './quota.js'
 // 登录态编排：凭据解密后调 providers 的登录协议（providers 不回头 import 本文件，无循环）
@@ -25,6 +32,13 @@ import {
   combineWithDetours,
   summarizeFaultSignals,
 } from './fault-signal.js'
+// 模型名归一：存储键 / 身份键两套口径都在 model-name.js（零依赖，不会再成环）
+import {
+  modelBaseKey,
+  identityKey,
+  SPLIT_PREFIX,
+  mergeOverview as modelNamesOverview,
+} from './model-name.js'
 
 export function newId(prefix) {
   return `${prefix}_${randomUUID().slice(0, 8)}`
@@ -35,17 +49,25 @@ export function nowIso() {
 }
 
 /**
- * 归一化模型名，用于跨站比对同一个模型。
+ * 归一化模型名，用于跨站比对同一个模型（**存储键**口径）。
  * 处理：大小写、空白、`provider/` 前缀、`:free` / `-free` 后缀。
+ *
+ * 实现搬到 core/model-name.js 的 modelBaseKey：两套口径（存储键 / 身份键）
+ * 必须放在一起看才不会各写一遍——这个项目的头号 bug 类型就是「同一个概念
+ * 在两处各归一一次，然后漂移」。这里只做转发。
  */
 export function normalizeModelKey(name) {
-  return String(name ?? '')
-    .trim()
-    .toLowerCase()
-    .replace(/\s+/g, '-')
-    .replace(/^[a-z0-9_.-]+\//, '')
-    .replace(/[-:]free$/, '')
-    .trim()
+  return modelBaseKey(name)
+}
+
+/**
+ * 身份键：判断「两个名字是不是同一个模型」。
+ * 在存储键之上再抹平 4-5 ↔ 4.5、v4.1 ↔ 4.1、日期尾巴，以及用户手动的合并/拆开。
+ * 只给「比价分组、网关模型清单、占比价用的忽略判定」使用——**不写回 offer.modelKey**，
+ * 因为写给上游的模型名必须保持站点原样。
+ */
+export function modelIdentityKey(name, aliases) {
+  return identityKey(name, aliases)
 }
 
 /**
@@ -344,8 +366,19 @@ export async function revealSecret(credentialId) {
  * 归一化口径只有这一份：routeableOffers 用它过滤供给，「站点卡分组里的模型」用它打
  * 「已忽略」标记——两边各写一遍 trim/大小写，迟早一边认得出、另一边认不出。
  */
+/**
+ * 忽略名单的判定集合。
+ *
+ * 键是**身份键**：同一个模型的不同写法（deepseek-v4.1-flash / deepseek-4.1-flash）
+ * 是一个模型，忽略一次必须整组消失，否则用户会看到「忽略了但还在比价里」。
+ * 调用方拿模型名来比对时也要走同一个归一（见 modelIdentityKey），
+ * 两边口径不一致就会一半生效一半不生效。
+ */
 export function ignoredModelSet(db) {
-  return new Set((db.settings?.ignoredModels || []).map((name) => normalizeModelKey(String(name))))
+  const aliases = db.settings?.modelAliases || {}
+  return new Set(
+    (db.settings?.ignoredModels || []).map((name) => identityKey(String(name), aliases)),
+  )
 }
 
 /**
@@ -356,12 +389,14 @@ export function ignoredModelSet(db) {
  */
 export function routeableOffers(db) {
   const pausedIds = new Set(db.providers.filter((p) => p.paused).map((p) => p.id))
+  // 忽略列表按身份键比对（口径唯一实现在 ignoredModelSet，别在这里再拼一份）
+  const aliases = db.settings?.modelAliases || {}
   const ignored = ignoredModelSet(db)
   return db.offers.filter((offer) => {
     if (offer.delistedAt) return false
     if (pausedIds.has(offer.providerId)) return false
     if (ignored.size) {
-      const key = normalizeModelKey(offer.modelKey || offer.upstreamName || '')
+      const key = identityKey(offer.modelKey || offer.upstreamName || '', aliases)
       if (key && ignored.has(key)) return false
     }
     return true
@@ -1112,16 +1147,129 @@ export async function consumeFreeQuota(offerId, { tokens = 0, requests = 1 } = {
   })
 }
 
+// ------------------------------------------------------------ 模型名合并
+
+/**
+ * 手动合并一批模型名：把 `names` 全部指给 `target`（别名表只做一层指向）。
+ *
+ * 为什么是别名而不是改 offer.modelKey：modelKey 是「写给上游的名字」的克隆，
+ * 一旦改掉，请求就会带着另一个站的名字出去，直接 404。身份层单独加一层，
+ * 上游永远拿原样名字，显示/比价/路由用合并后的身份。
+ *
+ * @param {string[]} names 要被归并的名字
+ * @param {string} target 归到哪个名字（可以不在 names 里）
+ */
+export async function mergeModelNames(names, target) {
+  return mutate((db) => {
+    const wanted = (Array.isArray(names) ? names : [names]).map((n) => modelBaseKey(n)).filter(Boolean)
+    const to = String(target ?? '').trim().toLowerCase()
+    if (!to) throw new Error('缺少合并目标')
+    if (!db.settings) db.settings = {}
+    const before = db.settings.modelAliases || {}
+    const table = { ...before }
+    let changed = 0
+    for (const name of wanted) {
+      if (name === to) delete table[name]
+      else table[name] = to
+      changed += 1
+    }
+    db.settings.modelAliases = table
+    // 身份键变了，手动排序的键必须跟着换，否则用户拖过的顺序会静默失效
+    db.manualOrder = remapManualOrderKeys(db.manualOrder, db.offers, table, before)
+    return { changed, target: to, aliases: table }
+  })
+}
+
+/**
+ * 拆开一个合并：让这条名字自成一档，不再参与规则归一。
+ * 比如 claude-opus-4-5 确实不是 claude-opus-4.5 时，拆开就不会再被合回去。
+ */
+export async function splitModelName(name) {
+  const base = modelBaseKey(name)
+  if (!base) throw new Error('缺少模型名')
+  return mutate((db) => {
+    if (!db.settings) db.settings = {}
+    const before = db.settings.modelAliases || {}
+    const table = { ...before }
+    // 指到 SPLIT_PREFIX 命名空间里的自己：不能写 base 本身，
+    // 否则另一个写法的归一键正好等于它，两者又撞回一组
+    table[base] = `${SPLIT_PREFIX}${base}`
+    db.settings.modelAliases = table
+    db.manualOrder = remapManualOrderKeys(db.manualOrder, db.offers, table, before)
+    return { split: base, aliases: table }
+  })
+}
+
+/** 取消一条别名（回到自动规则归一）。 */
+export async function unaliasModelName(name) {
+  const base = modelBaseKey(name)
+  if (!base) throw new Error('缺少模型名')
+  return mutate((db) => {
+    if (!db.settings) db.settings = {}
+    const before = db.settings.modelAliases || {}
+    const table = { ...before }
+    delete table[base]
+    db.settings.modelAliases = table
+    db.manualOrder = remapManualOrderKeys(db.manualOrder, db.offers, table, before)
+    return { reset: base, aliases: table }
+  })
+}
+
+/** 清空所有手动别名，全部回到自动归一。 */
+export async function resetModelAliases() {
+  return mutate((db) => {
+    if (!db.settings) db.settings = {}
+    const before = db.settings.modelAliases || {}
+    const count = Object.keys(before).length
+    db.settings.modelAliases = {}
+    db.manualOrder = remapManualOrderKeys(db.manualOrder, db.offers, {}, before)
+    return { cleared: count }
+  })
+}
+
+/**
+ * 合并总览（供界面展示）：现在哪些名字已经归在一起、哪些疑似该合并但还没合。
+ * 只读不写：规则归一是自动的，别名表是用户决定的，这两者分开说清楚。
+ */
+export function modelMergeView(db, official = null) {
+  const aliases = db.settings?.modelAliases || {}
+  const names = db.offers.filter((o) => !o.delistedAt).map((o) => o.modelKey || o.upstreamName || '')
+  const overview = modelNamesOverview(names, aliases, official)
+  // 把每个分组映射回实际供给，界面上才能显示「这条合并动了几个站的几个模型」
+  const byIdentity = new Map()
+  for (const offer of db.offers) {
+    if (offer.delistedAt) continue
+    const id = identityKey(offer.modelKey || offer.upstreamName || '', aliases)
+    if (!byIdentity.has(id)) byIdentity.set(id, [])
+    byIdentity.get(id).push({
+      offerId: offer.id,
+      providerId: offer.providerId,
+      upstreamName: offer.upstreamName,
+      group: offer.group || '',
+      paused: Boolean(db.providers.find((p) => p.id === offer.providerId)?.paused),
+    })
+  }
+  return {
+    ...overview,
+    groups: overview.groups.map((g) => ({ ...g, offers: byIdentity.get(g.id) || [] })),
+    aliasCount: Object.keys(aliases).length,
+    aliases,
+  }
+}
+
 // --------------------------------------------------------------- 手动排序
 
 /**
  * 保存某个模型的手动候选顺序；传空数组即恢复自动。
  * 只影响「可用的那几条」的相对次序，不会把不可信的站提到前面。
+ *
+ * 键统一成**身份键**：界面上看到的「一个模型」可能由两个站名合并而成，
+ * 存成身份键才能在名字写法变动后仍然命中。读的时候也按身份键查。
  */
 export async function setManualOrder(modelKey, order) {
   return mutate((db) => {
     if (!db.manualOrder || typeof db.manualOrder !== 'object') db.manualOrder = {}
-    const key = String(modelKey || '').trim()
+    const key = identityKey(String(modelKey || '').trim(), db.settings?.modelAliases || {})
     if (!key) throw new Error('缺少模型名')
     if (!Array.isArray(order) || order.length === 0) {
       delete db.manualOrder[key]
@@ -1134,7 +1282,8 @@ export async function setManualOrder(modelKey, order) {
 
 export async function getManualOrder(modelKey) {
   const db = await readDb()
-  return db.manualOrder?.[modelKey] || null
+  const key = identityKey(modelKey, db.settings?.modelAliases || {})
+  return db.manualOrder?.[key] || null
 }
 
 // ----------------------------------------------------------- 真实流量计数

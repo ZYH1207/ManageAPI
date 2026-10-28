@@ -17,8 +17,11 @@ import { ensureProtocolRecords } from './protocol-records.js'
 import { ensureEmptyEvents } from './empty-guard.js'
 import { ensureFaultSignals } from './fault-signal.js'
 import { writeJsonAtomic } from './fsx.js'
+// 模型身份键（零依赖文件，不会与 store 成环）
+import { identityKey } from './model-name.js'
 
-const DB_VERSION = 5
+// v5 = 协议探查记录 / 空回合记录 / 故障信号；v6 = 模型名身份归一（别名表）
+export const DB_VERSION = 6
 
 /**
  * 归一化分组名。定义在存储层（零依赖），台账层再导出——两边共用同一份，
@@ -120,6 +123,13 @@ export function emptyDb() {
       emptyGuard: { enabled: false, mode: 'same' },
     // 全局忽略的模型（归一化后的 key）：不参与比价、决策、探针、网关
     ignoredModels: [],
+    /**
+     * 模型名别名表：modelBaseKey → 目标键。
+     * 自动归一（4-5 ↔ 4.5 / v 前缀 / 日期尾巴）不需要写这里；
+     * 这里只存**用户决定的合并/拆开**——因为规则归一只能处理「形状」，
+     * 涉及语义（-thinking 是不是同一个模型、-highspeed 是不是另一个价）必须人拍。
+     */
+    modelAliases: {},
     },
     providers: [],
     credentials: [],
@@ -324,6 +334,45 @@ function collapseDuplicateOffers(db) {
   db.offers = offers.filter((o) => alive.has(o.id))
   return { removed: remap.size, remapped }
 }
+/**
+ * 把手动排序重新分配到「当前身份键」下。
+ *
+ * 两个时机用它：v6 迁移（老库的键还是存储键）、以及**每次改别名表之后**
+ * （合并/拆开都会改变身份键）。不重挂的话，用户拖过的顺序会在合并那一刻
+ * 静默失效——决策页还显示着那一行，排序却变回默认，不报任何错。
+ *
+ * 关键：分配的依据是**每条供给自己的身份**，不是旧键的形状。
+ * 只看键会把「别名生成的键」误当成一个永久的名字——实测拆开 hy4 时，
+ * 它那条顺序挂在 hy4-preview 上，只看键就会原地不动，于是顺序丢了。
+ *
+ * @param {object} table  旧的 manualOrder（键是旧身份，值是 offerId 数组）
+ * @param {Array} offers  当前供给（用来算每条供给的新身份）
+ * @param {object} next   新的别名表
+ * @param {object} prev   改之前的别名表（迁移时传空对象）
+ */
+export function remapManualOrderKeys(table, offers, next, prev = {}) {
+  if (!table || typeof table !== 'object') return table
+  const identityOf = new Map()
+  for (const offer of offers || []) {
+    identityOf.set(offer.id, identityKey(offer.modelKey || offer.upstreamName || '', next))
+  }
+  const out = {}
+  const push = (key, id) => {
+    if (!key) return
+    if (!out[key]) out[key] = []
+    if (!out[key].includes(id)) out[key].push(id)
+  }
+  for (const [key, order] of Object.entries(table)) {
+    if (!Array.isArray(order)) continue
+    for (const rawId of order) {
+      const id = String(rawId)
+      // 供给还在：按它现在的身份归档；供给已不在：按原键留着（别把顺序吃掉）
+      push(identityOf.get(id) || key, id)
+    }
+  }
+  return out
+}
+
 function migrate(db) {
   const version = Number(db.version) || 1
   if (version >= DB_VERSION) {
@@ -352,7 +401,7 @@ function migrate(db) {
       }
     }
   }
-  // v4：分组名归一化 + 收敛重复供给（v3 及以下才需要，幂等）
+  // v4：分组名归一化 + 收敛重复供给（幂等，v5 的库里跑一遍也无害）
   const collapse = collapseDuplicateOffers(db)
   if (collapse.removed > 0) {
     console.log(
@@ -365,6 +414,15 @@ function migrate(db) {
   ensureEmptyEvents(db)
   // 故障信号（新键，纯追加，幂等）
   ensureFaultSignals(db)
+  // v6：模型名身份归一。不改 offer.modelKey（那是写给上游的名字，改了就 404）——
+  // 合并按规则实时算，老库升上来直接生效。
+  const settings = db.settings || (db.settings = {})
+  if (!settings.modelAliases || typeof settings.modelAliases !== 'object') {
+    settings.modelAliases = {}
+  }
+  // 手动排序的键要跟着换成身份键：读的时候按身份键查，不迁移就会「拖过的顺序全丢」。
+  // 两条老键归到同一个身份时按出现顺序合并去重——排序本来就是相对次序
+  db.manualOrder = remapManualOrderKeys(db.manualOrder, db.offers, settings.modelAliases)
   db.version = DB_VERSION
   ensureMonitor(db)
   return db

@@ -125,10 +125,14 @@ try {
   )
   ok(migrated.traffic.o_c.ok === 3 && migrated.traffic.o_c.fail === 1, '流量计数累加（ok 3 / fail 1）')
   ok(!migrated.traffic.o_a, '死行的流量条目被清掉')
-  const order = migrated.manualOrder['deepseek-v4.1-flash'] || []
+  // v6 起手动排序的键是**身份键**（deepseek-v4.1-flash → deepseek-4.1-flash），
+  // 所以不能再按原始名字查；这里顺带钉住「键确实被换成身份键」这件事
+  const order = migrated.manualOrder[inv.modelIdentityKey('deepseek-v4.1-flash')] || []
   ok(new Set(order).size === order.length, '手动排序里没有重复 id')
   ok(order.includes('o_c') && order.includes('o_e'), '手动排序里的重复 id 已重挂到保留行')
-  ok(migrated.version === 4, '版本号升到 4')
+  ok(!migrated.manualOrder['deepseek-v4.1-flash'], '老口径的排序键已迁走，不会残留两份')
+  // 断言当前版本而不是写死数字：每加一版迁移就要改测试，只会逼人把数字越写越随意
+  ok(migrated.version === store.DB_VERSION, `版本号升到 ${store.DB_VERSION}`)
   await rm(dupHome, { recursive: true, force: true })
 
   console.log('[6] markDelisted 只看自己那个分组')
