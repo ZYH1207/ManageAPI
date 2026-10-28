@@ -11,7 +11,6 @@
  */
 
 import { offerCost } from './pricing.js'
-import { ensureFx } from './fx.js'
 // localDayKey 与 usage.js 同一份（usage 不回头 import 本文件，无循环）：
 // 花费曲线要拿这里的日键去 join usage 的天桶，两边必须同一口径——
 // 此前这里用 UTC 键，东八区每天凌晨 8 小时的用量对不上号
@@ -85,19 +84,16 @@ function toMap(list, keyOf) {
 }
 
 /**
- * 余额阈值：设置里统一存美元（`balanceWarnUsd`），站点余额可能是人民币，换算后再比。
- * 老配置只有 `balanceWarnCny`，按汇率折一次即可（迁移在 store.migrate 里做）。
+ * 余额阈值：设置里统一存**站点额度单位**（`balanceWarnUsd`，1:1 口径下就是 ¥），
+ * 站点余额也是额度单位，同一单位直接比——不再按币种乘市场汇率
+ * （那个乘法的结果就是 1.5 被放大成 10.03）。
+ * 老配置只有 `balanceWarnCny`，字段迁移在 store.migrate 里做。
  */
-function lowBalanceThreshold(settings, currency) {
-  const rawUsd = Number(settings.balanceWarnUsd ?? settings.balanceWarnCny)
-  const thresholdUsd = Number.isFinite(rawUsd) && rawUsd >= 0 ? rawUsd : 10
-  if (thresholdUsd === 0) return null
-  if (String(currency || 'USD').toUpperCase() === 'CNY') {
-    // 汇率真源在 fx 模块，别读兼容镜像
-    const fx = Number(ensureFx(settings).rates.CNY) || 7.2
-    return thresholdUsd * fx
-  }
-  return thresholdUsd
+function lowBalanceThreshold(settings) {
+  const raw = Number(settings.balanceWarnUsd ?? settings.balanceWarnCny)
+  const threshold = Number.isFinite(raw) && raw >= 0 ? raw : 10
+  if (threshold === 0) return null
+  return threshold
 }
 
 function pushAlert(m, { providerId, code, level = 'warn', title, detail = '', at, cooldownMs = ALERT_COOLDOWN_MS }) {
@@ -147,7 +143,7 @@ export function applySnapshot(db, snap) {
     })
     trim(m.balance, KEEP.balance)
 
-    const threshold = lowBalanceThreshold(settings, balance.currency)
+    const threshold = lowBalanceThreshold(settings)
     if (threshold !== null && balance.remaining <= threshold) {
       const level = balance.remaining <= 0 ? 'danger' : 'warn'
       const alert = pushAlert(m, {
@@ -366,8 +362,9 @@ function recentDays(count, now = new Date()) {
  *
  * 美元站按汇率折成人民币再相加——不折算的话「$5 + ¥10」这种加法在图上没有意义。
  */
-function buildBalanceSeries(m, days, settings = {}) {
-  const fx = Number(ensureFx(settings).rates.CNY) || 7.2
+function buildBalanceSeries(m, days, settings = {}, providers = []) {
+  // 站点额度 → 真实人民币：按站点自己的充值汇率（默认 1:1），不乘市场汇率
+  const unitOf = new Map(providers.map((p) => [p.id, siteUnitPrice(p, settings)]))
   const byProvider = new Map()
   for (const point of m.balance) {
     if (!byProvider.has(point.providerId)) byProvider.set(point.providerId, [])
@@ -393,8 +390,8 @@ function buildBalanceSeries(m, days, settings = {}) {
       }
       if (!last) continue
       perProvider[providerId] = last.balance
-      const isUsd = String(last.currency || 'CNY').toUpperCase() === 'USD'
-      total += isUsd ? last.balance * fx : last.balance
+      // 站点已删（列表里找不到）时也按 1:1，不回退到市场汇率
+      total += last.balance * (unitOf.get(providerId) ?? 1)
       counted += 1
     }
     return {
@@ -413,16 +410,19 @@ function buildBalanceSeries(m, days, settings = {}) {
 /**
  * 站点单价：1 个**站点额度单位**值多少人民币（= 充值时实际付的 ÷ 到账额度）。
  *
- * 三级回落：站点自己填的 → 全局默认值（`settings.defaultUnitPrice`，
- * 适合「所有站都是 1:1 充值」这种一刀切的情况）→ null（= 按市场汇率，
- * 即模型消费与实际消费相同，行为与改前完全一致）。
+ * 三级回落：站点自己填的 → 全局默认值（`settings.defaultUnitPrice`）→ **1**。
+ *
+ * 默认 1 是 2026-10-28 定的口径：中转站绝大多数是 1:1 充值，站内额度数值
+ * 本身就是人民币，**不再拿市场汇率兜底**——那个兜底假设「站内美元 = 真美元」，
+ * 会让 1:1 的站余额凭空 ×6.68、花费凭空 ÷6.68（同一个错的两个方向）。
+ * 真按美元扣费的国外站，把充值汇率填成市场汇率（如 6.68）就行。
  */
 export function siteUnitPrice(provider, settings) {
   const own = Number(provider?.unitPrice)
   if (Number.isFinite(own) && own > 0) return own
   const fallback = Number(settings?.defaultUnitPrice)
   if (Number.isFinite(fallback) && fallback > 0) return fallback
-  return null
+  return 1
 }
 
 /**
@@ -432,18 +432,16 @@ export function siteUnitPrice(provider, settings) {
  * （resolveOfferPrice 返回 base.currency），跟站点怎么卖额度无关：实测
  * codexpert / 秋 / 哈利恩 全部标成 CNY，即使它们的余额和计费都是美元。
  *
- * 真正的关系只有一条：「模型消费」里的美元额度是按**市场汇率**折算成人民币的，
- * 而站点实际卖你额度的价格是**站点单价**。所以
- *   实际消费 = 模型消费 × (站点单价 ÷ 市场汇率)
- *   没填单价     → 系数 1.0（两数完全相同，行为与改前一致）
- *   单价 1、市场 6.68 → 系数 0.15（充 1 元得 1 美元，真实花费只有估算的 15%）
+ * 真正的关系只有一条：站内额度数值 × 站点单价 = 真实人民币。所以
+ *   实际消费 = 模型消费 × 站点单价
+ *   默认单价 1  → 系数 1.0（1:1 充值，两数本来就相同）
+ *   单价 6.68  → 系数 6.68（真美元站，站内 $1 值 ¥6.68）
+ *
+ * 这里以前是 `站点单价 ÷ 市场汇率`，方向错了：那是「站内美元 = 真美元」的
+ * 旧口径，把 1:1 充值站的实际消费算成 1/6.68（余额那边反过来 ×6.68）。
  */
 export function spendFactorOf(provider, settings) {
-  const site = siteUnitPrice(provider, settings)
-  if (site === null) return 1
-  const fx = Number(ensureFx(settings).rates.CNY)
-  const market = Number.isFinite(fx) && fx > 0 ? fx : 7.2
-  return site / market
+  return siteUnitPrice(provider, settings)
 }
 
 /** 按天聚合花费：estimated = 站点口径估算（原逻辑不变），actual = 乘以站点单价 */
@@ -539,8 +537,7 @@ function localWeekStart(date = new Date()) {
  * 站点账单累计值是阶梯的（当天已花的钱不会回调），所以「今天」直接取当日，
  * 「本周/本月」按天累加——跨天的记录各自归属自己的那一天。
  */
-function buildSiteSpendSummary(m, settings) {
-  const fx = Number(ensureFx(settings).rates.CNY) || 7.2
+function buildSiteSpendSummary(m) {
   const now = new Date()
   const pad = (n) => String(n).padStart(2, '0')
   const todayKey = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`
@@ -584,9 +581,8 @@ function buildSiteSpendSummary(m, settings) {
 
   const round = (v) => Math.round(v * 1e4) / 1e4
   return {
-    // 站点账单是站点货币单位；按 1:1 的充值口径，它同时就是人民币近似值。
-    // 真正的换算留给前端（站点单价），这里只给原始数值。
-    fx,
+    // 站点账单是站点额度单位；1:1 充值口径下它本身就是人民币。
+    // 按站折单价留给前端（各站单价可能不同），这里只给原始数值。
     byProvider,
     today: { actual: round(totals.today.actual), requests: totals.today.requests, providers: totals.today.providers },
     week: { actual: round(totals.week.actual), providers: totals.week.providers },
@@ -647,7 +643,7 @@ export function buildMonitorView(db, { usageData = null, benchmarks = {}, days =
         currency: point?.currency || null,
         balance: point ? point.balance : null,
         at: point?.at || null,
-        threshold: lowBalanceThreshold(settings, point?.currency || 'CNY'),
+        threshold: lowBalanceThreshold(settings),
         groups: (m.snapshot[p.id]?.groups
           ? Object.values(m.snapshot[p.id].groups).map((g) => ({ name: g.name, rate: g.rate }))
           : []
@@ -712,12 +708,12 @@ export function buildMonitorView(db, { usageData = null, benchmarks = {}, days =
       unreadAnnouncements,
       lastRunAt: m.lastRunAt,
     },
-    balanceSeries: buildBalanceSeries(m, range, settings),
+    balanceSeries: buildBalanceSeries(m, range, settings, db.providers || []),
     // 花费：图表用 estimated（站点口径，行为不变）；KPI 卡另外给今日/本周/本月两口径
     spendSeries: spendDays ? buildSpendSeries(spendDays, range) : [],
     spendSummary: buildSpendSummary(spendDays || new Map()),
     // 站点账单口径的花费（今日/本周/本月），以及「哪些站读得到账单」
-    siteSpend: buildSiteSpendSummary(m, settings),
+    siteSpend: buildSiteSpendSummary(m),
     balanceByProvider,
     changes,
     announcements,

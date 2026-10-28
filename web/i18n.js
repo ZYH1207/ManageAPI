@@ -915,7 +915,7 @@ Object.assign(EN, {
   '令牌尾号': 'Token tail',
   '「令牌」是站点后台的登录凭证，一次填好整站通用，用来读余额、公告和分组': 'The token is the site login credential — fill it once per site for balance, announcements and groups',
   '未填站点令牌': 'No site token',
-  '站点充值汇率：充 1 元到账多少站点额度。1:1 充值的站填 1；充 ¥100 到账 $120 填 0.83。留空 = 按市场汇率折算。「实际消费」用它把站点账单换算成人民币。': 'Top-up rate: how much site credit ¥1 buys. 1:1 sites enter 1; ¥100 for $120 → 0.83. Empty = market rate. Actual spend converts the site bill with it.',
+  '站点充值汇率：充 1 元到账多少站点额度。1:1 充值的站填 1（绝大多数）；充 ¥100 到账 $120 填 0.83。留空 = 1:1。「实际消费」用它把站点额度换算成人民币。': 'Top-up rate: how much site credit ¥1 buys. 1:1 sites enter 1 (most relays); ¥100 for $120 → 0.83. Empty = 1:1. Actual spend converts site credit with it.',
   '今天': 'Today',
   '本周': 'This week',
   '本月': 'This month',

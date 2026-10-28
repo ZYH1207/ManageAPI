@@ -152,19 +152,21 @@ try {
 // ---- 花费双口径（模型消费 / 实际消费）
 console.log('\n断言：花费双口径')
 {
-  const { spendFactorOf, buildSpendSummary } = await import('../core/monitor.js')
+  const { spendFactorOf, siteUnitPrice, buildSpendSummary } = await import('../core/monitor.js')
   const settings = { fx: { rates: { CNY: 6.68 } } }
-  // 系数只跟「站点单价 vs 市场汇率」有关
-  check('不填单价时系数=1（两数相同）', spendFactorOf({}, settings) === 1)
-  check('单价 1、市场 6.68 → 1/6.68', Math.abs(spendFactorOf({ unitPrice: 1 }, settings) - 1 / 6.68) < 1e-9)
-  check('单价填市场汇率 → 无折扣', Math.abs(spendFactorOf({ unitPrice: 6.68 }, settings) - 1) < 1e-9)
+  // 站内额度数值 × 站点单价 = 真实人民币。默认单价 1（1:1），不除市场汇率——
+  // 那个除法会把 1:1 站的实际消费少算成 1/6.68
+  check('不填单价时系数=1（1:1，两数相同）', spendFactorOf({}, settings) === 1)
+  check('单价 1、市场 6.68 → 系数仍是 1（不除汇率）', spendFactorOf({ unitPrice: 1 }, settings) === 1)
+  check('单价填市场汇率 → 系数 6.68（真美元站）', Math.abs(spendFactorOf({ unitPrice: 6.68 }, settings) - 6.68) < 1e-9)
   check('非法单价按未填处理', spendFactorOf({ unitPrice: 0 }, settings) === 1)
-  check('1:1 充值的站实际消费低于模型消费', spendFactorOf({ unitPrice: 1 }, settings) < 0.2)
+  check('1:1 充值的站实际消费=模型消费', spendFactorOf({ unitPrice: 1 }, settings) === 1)
+  check('siteUnitPrice 默认 1，不返回 null', siteUnitPrice({}, settings) === 1)
   // 全局默认单价：所有站口径一致时只填一次
   const withDefault = { fx: { rates: { CNY: 6.68 } }, defaultUnitPrice: 1 }
-  check('全局默认单价生效（未填的站）', Math.abs(spendFactorOf({}, withDefault) - 1 / 6.68) < 1e-9)
+  check('全局默认单价生效（未填的站）', spendFactorOf({}, withDefault) === 1)
   check('站点自己的单价优先于全局默认',
-    Math.abs(spendFactorOf({ unitPrice: 6.68 }, withDefault) - 1) < 1e-9)
+    Math.abs(spendFactorOf({ unitPrice: 6.68 }, withDefault) - 6.68) < 1e-9)
 
   // 缓存命中按缓存价计费（不再全按输入价）
   {

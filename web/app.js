@@ -73,14 +73,34 @@ function priceText(cny) {
 }
 
 /**
- * 金额显示：余额这类「站点原生币种」的数值（p.currency 说它是 USD 就是 USD）。
- * 先折成人民币口径，再走 dispPrice 按全局显示币种出——
- * 以前余额直接用站点币种硬拼 ¥/$ 符号，顶栏切到人民币它还是显示美元
+ * 站点「1 个额度单位」值多少真实人民币。
+ *
+ * 中转站绝大多数是 1:1 充值（充 ¥1 到账 1 单位额度），卡上的「充值汇率」填 1，
+ * 这时额度数值本身就是人民币。**默认就是 1**，不按市场汇率兜底——
+ * 那个兜底假设「站内美元 = 真美元」，正是余额凭空 ×6.68 的根源。
+ * 真按美元扣费的国外站，把充值汇率填成市场汇率（如 6.68）。
+ * 与后端 core/monitor.js 的 siteUnitPrice 同一口径。
  */
-function dispAmount(value, currency) {
+function siteUnitCny(p) {
+  const own = Number(p?.unitPrice)
+  if (Number.isFinite(own) && own > 0) return own
+  const fallback = Number(state?.settings?.defaultUnitPrice)
+  if (Number.isFinite(fallback) && fallback > 0) return fallback
+  return 1
+}
+
+/**
+ * 金额显示：余额这类「站点原生额度」的数值（p.quotaRemaining 是站点自己报的数）。
+ * 先按站点单价折成真实人民币，再走 dispPrice 按全局显示币种出。
+ *
+ * 此前这里一律 × 汇率（`n * rateCny()`），把「站内美元」当成了真美元：
+ * 1:1 充值的站余额 2.49 被显示成 $16.63，凭空放大 6.7 倍，阈值也跟着放大。
+ * 官方的比价卡那次改动把**价格**统一成了 1:1 口径，余额这条链路漏了。
+ */
+function dispAmount(value, p) {
   const n = Number(value)
   if (value === null || value === undefined || !Number.isFinite(n)) return null
-  return dispPrice(currency === 'CNY' ? n : n * rateCny())
+  return dispPrice(n * siteUnitCny(p))
 }
 
 /** 日期时间（本机时区，固定 MM-DD HH:mm）：路由日志可能跨天，只有时分秒没法分辨 */
@@ -274,16 +294,15 @@ function buildNotifications() {
   const scores = state.scores || {}
 
   // 余额偏低（余额挂在站点上，一个站一条）。
-  // 阈值与监控告警同一份（settings.balanceWarnUsd，统一按美元；0 = 关闭提醒），
-  // 人民币余额按汇率折算后再比——此前这里硬编码 ¥10/$1.5，和告警设置对不上
+  // 阈值与监控告警同一份（settings.balanceWarnUsd，单位是站内额度；0 = 关闭提醒），
+  // 余额也是站内额度，同单位直接比——按币种乘汇率那套已去掉（1.5 会变成 10.03）
   for (const p of state.providers || []) {
     if (typeof p.quotaRemaining !== 'number') continue
     const currency = p.currency || 'CNY'
     const rawUsd = Number(state.settings?.balanceWarnUsd ?? state.settings?.balanceWarnCny)
     const warnUsd = Number.isFinite(rawUsd) && rawUsd >= 0 ? rawUsd : 10
     if (warnUsd === 0) continue
-    const fx = Number(state.settings?.fx?.rates?.CNY) || 7.2
-    const threshold = currency.toUpperCase() === 'CNY' ? warnUsd * fx : warnUsd
+    const threshold = warnUsd
     if (p.quotaRemaining > threshold) continue
     list.push({
       id: `quota:${p.id}:${p.quotaRemaining}`,
@@ -734,7 +753,7 @@ function renderOverview() {
         <td class="num">${scoreCell}</td>
         <td class="num">${offers.length}</td>
         <td class="num">${healthy ? `<span class="badge ok">${healthy}</span>` : '<span class="badge">0</span>'}</td>
-        <td class="num">${hasQuota ? `${priceSym()}${money(dispAmount(provider.quotaRemaining, provider.currency))}` : '<span style="color:var(--faint)">未录入</span>'}</td>
+        <td class="num">${hasQuota ? `${priceSym()}${money(dispAmount(provider.quotaRemaining, provider))}` : '<span style="color:var(--faint)">未录入</span>'}</td>
         <td class="num">${state.credentials.filter((c) => c.providerId === provider.id).length}</td>
       </tr>`
   }).join('')
@@ -1049,7 +1068,7 @@ function renderUsageCheck(providerId) {
       <div style="font-size:12px;line-height:1.9;padding:2px 0 4px">
         <div>我们记录的网关用量：<b>${priceText(est.cost)}</b>
           <span style="color:var(--faint)">（${est.requests || 0} 次 · 输入 ${formatTokens(est.input)} / 输出 ${formatTokens(est.output)}）</span></div>
-        ${site ? `<div style="color:var(--muted)">站点全站账单：<b>${site.actualCost === null ? '—' : priceText(site.actualCost * rateCny())}</b>
+        ${site ? `<div style="color:var(--muted)">站点全站账单：<b>${site.actualCost === null ? '—' : priceText(site.actualCost * siteUnitCny((state.providers || []).find((x) => x.id === providerId)))}</b>
           <span style="color:var(--faint)">（${site.requests ?? '—'} 次请求，含不经网关的直连流量）</span></div>` : ''}
       </div>
       ${comparable.length ? `
@@ -1169,11 +1188,8 @@ function providersHtml({ withForm = true, panel = '', actions = '' } = {}) {
     const priced = offers.filter((o) => o.inPrice !== null || o.outPrice !== null || o.ratio !== null)
     // 余额是站点级的：一个后台账号一套，跟下面挂几个 Key 无关
     const hasQuota = typeof p.quotaRemaining === 'number'
-    const quota = hasQuota
-      ? p.currency === 'USD'
-        ? p.quotaRemaining * rateCny()
-        : p.quotaRemaining
-      : 0
+    // 余额是站点级「额度数值」，折真实人民币只乘站点单价（充值汇率），不乘市场汇率
+    const quota = hasQuota ? p.quotaRemaining * siteUnitCny(p) : 0
 
     // 中转站的倍率按「分组」定，不是按模型——所以按分组给一个批量入口。
     // 倍率归并结果（统一/混合/站点值）算一次，分组胶囊与「分组倍率」弹窗共用，两边口径一致。
@@ -1280,12 +1296,10 @@ function providersHtml({ withForm = true, panel = '', actions = '' } = {}) {
     const kindText = kindMeta?.label || ''
     // 这个站有多少模型落在免费池里（后端算好名字，这里只数）
     const freeNames = Array.isArray(p.freeModels) ? p.freeModels : []
-    // 告警阈值设置里存的是美元；quota 已折成人民币，比较必须同口径——
-    // 以前 USD 站拿「人民币余额」对「美元阈值」，实际阈值被放大了 7 倍。
-    // 展示按全局显示币种走（priceSym/dispPrice）
-    const fxRate = rateCny()
+    // 告警阈值存的是「站内额度单位」（默认 1:1，就是 ¥）；余额也是站内额度，
+    // 同单位直接比，展示时两边同乘一个站点单价，不会出现「阈值被放大 7 倍」
     const warnUsd = Number(state.settings.balanceWarnUsd ?? state.settings.balanceWarnCny) || 0
-    const warnCny = warnUsd > 0 ? warnUsd * fxRate : 0
+    const warnCny = warnUsd * siteUnitCny(p)
     const statusBadge = hasQuota
       ? balanceBadge(quota, warnCny)
       : '<span class="badge">余额未录入</span>'
@@ -1294,7 +1308,7 @@ function providersHtml({ withForm = true, panel = '', actions = '' } = {}) {
     const giftAmount = p.giftBalance === null || p.giftBalance === undefined ? NaN : Number(p.giftBalance)
     const giftText =
       Number.isFinite(giftAmount) && giftAmount > 0
-        ? `${priceSym()}${money(dispAmount(giftAmount, p.currency))}`
+        ? `${priceSym()}${money(dispAmount(giftAmount, p))}`
         : ''
     const giftHint = giftText
       ? `<span class="hint" title="${esc(
@@ -1334,7 +1348,7 @@ function providersHtml({ withForm = true, panel = '', actions = '' } = {}) {
         <div class="prov-tiles">
           <div data-provider="${esc(p.id)}">
             <span class="k">余额</span>
-            <b>${hasQuota ? `${priceSym()}${money(dispAmount(p.quotaRemaining, p.currency))}` : '—'}</b>
+            <b>${hasQuota ? `${priceSym()}${money(dispAmount(p.quotaRemaining, p))}` : '—'}</b>
             ${giftHint}
           </div>
           <div>
@@ -1354,7 +1368,7 @@ function providersHtml({ withForm = true, panel = '', actions = '' } = {}) {
           </div>
           <div title="${esc(t('站点充值汇率：充 1 元到账多少站点额度。1:1 充值的站填 1；充 ¥100 到账 $120 填 0.83。留空 = 按市场汇率折算。「实际消费」用它把站点账单换算成人民币。'))}">
             <span class="k">${t('充值汇率')}</span>
-            <b><input class="unit-price" type="number" step="0.0001" min="0" placeholder="${p.currency === 'CNY' ? '1' : money(rateCny())}"
+            <b><input class="unit-price" type="number" step="0.0001" min="0" placeholder="1"
               value="${p.unitPrice ?? ''}" data-act="unit-price" /></b>
           </div>
           <div title="${esc(t('「令牌」是站点后台的登录凭证，一次填好整站通用，用来读余额、公告和分组'))}">
@@ -1491,8 +1505,8 @@ function syncPanelHtml(data = monitorData || {}) {
   return `
     <div class="sync-panel">
       <input type="number" min="0" step="5" id="monitor-interval" placeholder="同步间隔（分钟）" title="同步间隔（分钟），0 = 关闭" value="${data.settings?.monitorIntervalMinutes ?? 30}" />
-      <input type="number" min="0" step="0.5" id="monitor-warn" placeholder="告警阈值（$）" title="余额告警阈值（美元），0 = 不告警" value="${data.settings?.balanceWarnUsd ?? 1.5}" />
-      <input type="number" min="0" step="0.01" id="monitor-unit-price" placeholder="默认充值汇率" title="默认充值汇率（所有站口径一致时只填一次）：充 1 元到账 1 美元填 1；充 ¥100 到账 $120 填 0.83。留空 = 按市场汇率" value="${state?.settings?.defaultUnitPrice ?? ''}" />
+      <input type="number" min="0" step="0.5" id="monitor-warn" placeholder="告警阈值" title="余额告警阈值（站内额度单位，1:1 充值就是 ¥；0 = 不告警）" value="${data.settings?.balanceWarnUsd ?? 1.5}" />
+      <input type="number" min="0" step="0.01" id="monitor-unit-price" placeholder="默认充值汇率（默认 1）" title="默认充值汇率（所有站口径一致时只填一次）：充 1 元到账 1 单位额度填 1（绝大多数中转站）；充 ¥100 到账 $120 填 0.83。留空 = 1:1" value="${state?.settings?.defaultUnitPrice ?? ''}" />
       <button class="primary" data-act="monitor-save-settings">保存</button>
     </div>`
 }
@@ -4145,15 +4159,15 @@ function monitorChartSvg(balanceSeries = [], spendSeries = [], options = {}) {
   const n = Math.max(balanceSeries.length, spendSeries.length)
   if (n === 0) return ''
 
-  const { selected = 'ALL', providerIds = [], colorOf = () => 'var(--accent)', fx = 7.2 } = options
+  const { selected = 'ALL', providerIds = [], colorOf = () => 'var(--accent)', unitCny = () => 1 } = options
   const isAll = selected === 'ALL'
   const accent = isAll ? 'var(--accent)' : colorOf(selected)
 
-  // 余额序列：全部用后端 total（人民币），单站用该站余额折人民币
+  // 余额序列：全部用后端 total（已折真实人民币），单站用该站余额×站点单价
   const balVals = balanceSeries.map((d) => {
     if (isAll) return typeof d.total === 'number' ? d.total : null
     const raw = d.perProvider?.[selected]
-    return typeof raw === 'number' ? raw * fx : null
+    return typeof raw === 'number' ? raw * unitCny(selected) : null
   })
 
   const known = balVals.filter((v) => v !== null).map((v) => dispPrice(v))
@@ -4344,7 +4358,7 @@ function spendStat(range) {
   // 站点账单金额是站点货币单位；按 1:1 充值口径它同时就是人民币近似值，
   // 这里直接按「站点货币 → 人民币」用站点单价折一次（默认 1）。
   const hasSite = site && site.providers > 0
-  const siteCny = hasSite ? site.actual * siteUnitPriceForTotal() : 0
+  const siteCny = hasSite ? siteSpendCny(site, range) : 0
   const actualHtml = hasSite
     ? `<b class="spend-actual">${priceSym()}${money(dispPrice(siteCny))}</b>`
     : `<b class="spend-actual spend-muted">${t('读不到账单')}</b>`
@@ -4368,10 +4382,20 @@ function spendStat(range) {
  * 与 spendFactorOf 不同：这里账单已经是「站点货币」，直接乘单价就是人民币，
  * 不再和市场汇率比（账单不是按美元定价的估算值）。
  */
-function siteUnitPriceForTotal() {
-  const explicit = Number(state?.settings?.defaultUnitPrice)
-  if (Number.isFinite(explicit) && explicit > 0) return explicit
-  return 1
+function siteSpendCny(site, range) {
+  const byProvider = site?.byProvider || {}
+  const providers = new Map((state.providers || []).map((p) => [p.id, p]))
+  let total = 0
+  let seen = 0
+  for (const [pid, row] of Object.entries(byProvider)) {
+    const value = Number(row?.[range])
+    if (!Number.isFinite(value) || value === 0) continue
+    total += value * siteUnitCny(providers.get(pid))
+    seen += 1
+  }
+  // 旧后端只给总额、没有分站数据时，退回总额 × 默认单价
+  if (seen === 0) return Number(site?.actual) * siteUnitCny(null)
+  return total
 }
 
 function renderMonitor() {
@@ -4479,6 +4503,9 @@ function renderMonitor() {
   const seriesColorOf = (pid) => SERIES_COLORS[(Math.max(0, chartProviders.indexOf(pid)) % 8)]
   const seriesClassOf = (pid) => `series-${(Math.max(0, chartProviders.indexOf(pid)) % 8) + 1}`
   const colorOf = seriesColorOf
+  // 站点额度 → 真实人民币（充值汇率 / 1:1 / 市场汇率兜底），供单站余额线和悬停用
+  const providerById = new Map((state.providers || []).map((p) => [p.id, p]))
+  const unitCny = (pid) => siteUnitCny(providerById.get(pid))
   // 选中的站在数据里消失了（被删/暂停）→ 回落到全部
   if (chartSite !== 'ALL' && !chartProviders.includes(chartSite)) chartSite = 'ALL'
   const chart = monitorChartSvg(data.balanceSeries, data.spendSeries, {
@@ -4486,7 +4513,7 @@ function renderMonitor() {
     providerIds: chartProviders,
     colorOf,
     seriesClassOf,
-    fx: rateCny(),
+    unitCny,
   })
   const seg = `<div class="seg">${[7, 14, 30]
     .map((d) => `<button data-monitor-days="${d}" class="${d === monitorDays ? 'active' : ''}">${t('{n} 天', { n: d })}</button>`)
@@ -4511,7 +4538,7 @@ function renderMonitor() {
     balance: (data.balanceSeries || []).map((d) => {
       if (chartSite === 'ALL') return typeof d.total === 'number' ? d.total : null
       const raw = d.perProvider?.[chartSite]
-      return typeof raw === 'number' ? raw * rateCny() : null
+      return typeof raw === 'number' ? raw * unitCny(chartSite) : null
     }),
     spend: (data.spendSeries || []).map((d) => d.byProvider || {}),
     total: (data.spendSeries || []).map((d) => d.cny || 0),
@@ -5572,7 +5599,7 @@ document.addEventListener('click', async (event) => {
     // 阈值输入框可能不在页面上（设置面板收起来了），此时不要用默认值覆盖用户设置
     const patch = { monitorIntervalMinutes: interval }
     if (warnInput) patch.balanceWarnUsd = Number(warnInput.value || 0)
-    // 默认站点单价：空串表示「按市场汇率」，要显式传 null 才能清掉
+    // 默认站点单价：空串表示「1:1」，要显式传 null 才能清掉
     const unitInput = $('#monitor-unit-price')
     if (unitInput) patch.defaultUnitPrice = unitInput.value === '' ? null : Number(unitInput.value)
     await withBusy(actionButton, async () => {
