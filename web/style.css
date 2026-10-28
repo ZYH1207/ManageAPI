@@ -1340,6 +1340,17 @@ a.icon-btn:hover { text-decoration: none; }
 .table-wrap td.mono { white-space: nowrap; }
 .table-wrap td.mono .badge { margin-left: 6px; vertical-align: 1px; }
 
+/* 探针表列对齐（probe-table-align）：每站一张表，宽度只能由列定义决定，不能由内容撑。
+   以前是默认的 table-layout:auto，模型名一长第一列就变宽，状态和后面四个百分比列
+   整体往右挪——同一个页面上各站点的列边界都不一样，看着就是歪的。
+   现在除模型列吃剩余宽度，其余列都钉成 px（见 app.js 的 PROBE_COLS），列边界全部一致。 */
+.probe-table { table-layout: fixed; min-width: 940px; }
+.probe-table th, .probe-table td { padding-left: 10px; padding-right: 10px; }
+/* 模型名超出列宽就省略号，别把后面的列挤走；全名在 title 里 */
+.probe-table .probe-model { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 状态可能是「额度不足 · 等探测确认」这类长标签：裁在列内，宁可省略号也不溢出到隔壁 */
+.probe-table td .badge { max-width: 100%; overflow: hidden; text-overflow: ellipsis; vertical-align: bottom; }
+
 /* ------------------------------------------------------------ 展开详情行 */
 .detail-row td { background: var(--surface-2); }
 .detail-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 28px; padding: 14px 18px; }

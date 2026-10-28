@@ -3042,6 +3042,19 @@ function probeFilteredOffers() {
   )
 }
 
+/**
+ * 探针表列宽（probe-table-align）：每站一张表，宽度必须由列定义撑、不能由内容撑。
+ * 以前是默认的 table-layout:auto，模型名一长第一列就变宽，状态和后面四个百分比列
+ * 整体往右挪——同一个页面上各站点分组对不齐，看着歪。现在除了模型列吃剩余宽度，
+ * 其余列全部钉成 px，所有站点表的列边界一致。
+ */
+const PROBE_COLS = `<colgroup>
+            <col /><col style="width:132px" />
+            <col style="width:78px" /><col style="width:78px" />
+            <col style="width:78px" /><col style="width:78px" />
+            <col style="width:76px" /><col style="width:96px" /><col style="width:86px" />
+          </colgroup>`
+
 function renderProbes() {
   const view = $('#view-probes')
   const providersWithOffers = state.providers.filter((p) => state.offers.some((o) => o.providerId === p.id))
@@ -3181,7 +3194,7 @@ function renderProbes() {
           }`
       return `
         <tr data-offer="${esc(offer.id)}" ${hasDetail ? 'data-act="toggle-detail" tabindex="0" style="cursor:pointer"' : ''}>
-          <td class="mono">${esc(offer.upstreamName)}${offer.group ? ` <span class="badge ${groupChipOf(offer.providerId, offer.group)}">${esc(offer.group)}</span>` : ''}${hasDetail ? ' <span style="color:var(--faint);font-size:10px">▾</span>' : ''}</td>
+          <td class="mono"><span class="probe-model" title="${esc(offer.upstreamName)}">${esc(offer.upstreamName)}${offer.group ? ` <span class="badge ${groupChipOf(offer.providerId, offer.group)}">${esc(offer.group)}</span>` : ''}${hasDetail ? ' <span style="color:var(--faint);font-size:10px">▾</span>' : ''}</span></td>
           <td>${statusCell}</td>
           <td class="num">${pct(score?.availability)}</td>
           <td class="num">${pct(score?.fingerprintRate)}</td>
@@ -3207,7 +3220,8 @@ function renderProbes() {
           <span class="count">${offers.length} 个模型</span>
         </div>
         ${isCollapsed ? '' : `
-        <table>
+        <table class="probe-table">
+          ${PROBE_COLS}
           <thead><tr>
             <th>模型</th><th>状态</th>
             <th class="num">可用率</th><th class="num">指纹</th>
