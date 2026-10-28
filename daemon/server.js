@@ -26,14 +26,7 @@ import {
   isTerminalChunk,
   rewriteAppendedChunk,
 } from '../core/wire.js'
-import { detailRow, sumBuckets, facetOptions } from '../core/usage-detail.js'
-import {
-  appendDetail,
-  readDetail,
-  listDetailDays,
-  pruneDetail,
-  DETAIL_RETENTION_DAYS,
-} from '../core/usage-ledger.js'
+import { detailRows } from '../core/usage-detail.js'
 import {
   selectCandidates,
   listPublicModels,
@@ -2675,86 +2668,20 @@ route('GET', /^\/api\/usage$/, async (ctx) => {
  */
 route('GET', /^\/api\/usage\/detail$/, async (ctx) => {
   const days = Math.min(Math.max(Number(ctx.query.get('days')) || 7, 1), 90)
-  const limit = Math.min(Math.max(Number(ctx.query.get('limit')) || 200, 1), 2000)
-  const { from, to } = usageRangeParams(ctx)
-  const summary = await usageSummary({ days, from, to })
-
-  // 筛选：站点 / 分组（带 providerId，同名分组到处都是）/ 模型
-  const filter = {
-    providerId: String(ctx.query.get('providerId') || ''),
-    group: ctx.query.get('group')
-      ? { providerId: String(ctx.query.get('groupProviderId') || ''), name: String(ctx.query.get('group')) }
-      : null,
-    model: String(ctx.query.get('model') || ''),
-  }
-
-  // 小计与下拉选项都从全量聚合算：这样「筛出来的」永远等于「这段时间真的花了多少」
-  const subtotal = sumBuckets(summary.buckets, filter)
-  const facets = facetOptions(summary.buckets, filter)
-
-  const clearedAt = await usageClearedAt()
-  const clearedMs = clearedAt ? Date.parse(clearedAt) : null
-  const floorMs = Number.isFinite(clearedMs) ? clearedMs : null
-
-  // 明细：优先逐条账本（保留期内都查得到），没有就退回决策日志
-  const rangeDays = (summary.days || []).slice(-DETAIL_RETENTION_DAYS)
-  let source = 'ledger'
-  let rawRows = await readDetail(rangeDays)
-  if (!rawRows.length) {
-    source = 'log'
-    rawRows = await inv.listRouting(500)
-  }
-
-  const matched = []
-  let scanned = 0
-  let clearedDropped = 0
-  let missingUsage = 0
-  for (const raw of rawRows) {
-    const row = detailRow(raw)
-    if (!row) continue
-    scanned += 1
-    if (floorMs !== null && row.tsMs < floorMs) {
-      clearedDropped += 1
-      continue
-    }
-    if (filter.providerId && row.providerId !== filter.providerId) continue
-    if (
-      filter.group &&
-      (row.providerId !== filter.group.providerId || (row.group || '') !== filter.group.name)
-    ) {
-      continue
-    }
-    if (filter.model && row.model !== filter.model) continue
-    if (row.prompt === null) missingUsage += 1
-    matched.push(row)
-  }
-  matched.sort((a, b) => b.tsMs - a.tsMs)
-  const shown = matched.slice(0, limit)
-
+  const limit = Math.min(Math.max(Number(ctx.query.get('limit')) || 200, 1), 500)
+  const summary = await usageSummary({ days })
+  const detail = detailRows(await inv.listRouting(500), { days, limit })
   return {
     days,
     totals: summary.totals,
-    subtotal,
-    filter,
-    facets,
-    requests: shown,
+    requests: detail.rows,
     window: {
-      source,
-      // 明细覆盖：区间内还剩多少条可看、给了多少、被截掉多少
-      available: matched.length,
-      shown: shown.length,
-      capped: matched.length > shown.length,
-      scanned,
-      missingUsage,
-      // 账本保留天数：过期之后那几天只剩汇总
-      retentionDays: DETAIL_RETENTION_DAYS,
-      ledgerDays: (await listDetailDays()).slice(-DETAIL_RETENTION_DAYS),
-      // 清空水位线：清空之前的请求不再计入（汇总与明细同时遵守）
-      clearedAt: summary.clearedAt || null,
-      clearedDropped,
-      logLimit: source === 'log' ? 500 : null,
-      // 标记来源，前端据此说清「这些行是从哪儿来的」
-      generatedAt: new Date().toISOString(),
+      available: detail.available,
+      shown: detail.shown,
+      capped: detail.capped,
+      // 上游没回 usage 的条数：汇总里的 token 不含它们，页面上必须能解释这个差额
+      missingUsage: detail.missingUsage,
+      logLimit: 500,
     },
   }
 })
@@ -2937,10 +2864,6 @@ function flushRouting() {
   }
   if (!routingBuffer.length) return Promise.resolve()
   const batch = routingBuffer.splice(0, routingBuffer.length)
-  // 顺手写一份逐条明细账本（去掉候选详情，约 300 字节/条）。
-  // 和决策日志并行：日志是「最近发生了什么」的调试窗口（500 条），
-  // 账本是「每一条花了多少」的账（保留 30 天），用途不同别混着用
-  void appendDetail(batch)
   return inv.recordRoutingBatch(batch).catch((error) => {
     // 写失败把本批塞回队头，下个 2 秒周期重试——决策日志是排查依据，
     // 静默丢弃等于让「为什么选了它」永远查不到
