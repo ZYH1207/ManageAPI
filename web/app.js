@@ -408,19 +408,73 @@ function buildNotifications() {
   return list.sort((a, b) => (order[a.level] ?? 3) - (order[b.level] ?? 3))
 }
 
+// 面板当前页签：'notif' = 通知，'alerts' = 告警。告警详情也在这个面板里看，
+// 不再单独占页面一屏——之前告警只活在监控页第三屏，用户根本不知道它存在
+let notifyTab = 'notif'
+
+function unreadAlertCount() {
+  return (monitorData?.alerts || []).filter((a) => !a.readAt).length
+}
+
+function markNotifsRead() {
+  const ids = loadReadIds()
+  for (const n of buildNotifications()) ids.add(n.id)
+  saveReadIds(ids)
+  renderNotifications()
+}
+
+// 告警「全部已读」：读状态存在服务端 db，标记后顺带拿回最新 monitor 视图
+async function markAlertsReadRemote() {
+  try {
+    monitorData = await api('POST', '/api/monitor/alerts/read', {})
+  } catch {
+    /* 标不上就留着，下次再标 */
+  }
+  renderNotifications()
+}
+
+function paintNotifyTabs(unreadNotif, unreadAlerts) {
+  for (const tab of document.querySelectorAll('.notify-tab')) {
+    tab.classList.toggle('is-on', tab.dataset.notifyTab === notifyTab)
+  }
+  const notifCount = $('#notif-tab-count')
+  if (notifCount) {
+    notifCount.hidden = unreadNotif === 0
+    notifCount.textContent = unreadNotif > 99 ? '99+' : String(unreadNotif)
+  }
+  const alertCount = $('#alert-tab-count')
+  if (alertCount) {
+    alertCount.hidden = unreadAlerts === 0
+    alertCount.textContent = unreadAlerts > 99 ? '99+' : String(unreadAlerts)
+  }
+}
+
 function renderNotifications() {
   const list = buildNotifications()
   const readIds = loadReadIds()
-  const unread = list.filter((n) => !readIds.has(n.id))
+  const unreadNotif = list.filter((n) => !readIds.has(n.id))
+  const unreadAlerts = unreadAlertCount()
 
   const dot = $('#notify-dot')
-  if (dot) dot.hidden = unread.length === 0
+  if (dot) dot.hidden = unreadNotif.length === 0
 
+  // 图标跟着未读种类变：有未读告警 → 告警标志；看过（标已读）后回到铃铛。
+  // 通知未读照旧走红点，两套不互斥
   const btn = $('#notify-btn')
-  if (btn) btn.title = unread.length ? t('{n} 条未读', { n: unread.length }) : t('通知')
+  if (btn) {
+    btn.classList.toggle('is-alert', unreadAlerts > 0)
+    const n = unreadNotif.length + unreadAlerts
+    btn.title = n ? t('{n} 条未读', { n }) : t('通知')
+  }
+
+  paintNotifyTabs(unreadNotif.length, unreadAlerts)
 
   const container = $('#notify-list')
   if (!container) return
+  if (notifyTab === 'alerts') {
+    renderAlertsInPanel(container, monitorData?.alerts || [])
+    return
+  }
   if (list.length === 0) {
     container.innerHTML = '<div class="notify-empty">暂时没有通知</div>'
     translateDom(container)
@@ -436,6 +490,46 @@ function renderNotifications() {
     )
     .join('')
   translateDom(container)
+}
+
+function renderAlertsInPanel(container, alerts) {
+  if (!alerts.length) {
+    container.innerHTML =
+      '<div class="notify-empty">还没有告警。余额低于阈值、倍率变化、同步失败都会记在这里。</div>'
+    translateDom(container)
+    return
+  }
+  container.innerHTML = alerts
+    .map(
+      (a) => `
+      <div class="notify-item ${a.level === 'danger' ? 'danger' : a.level === 'warn' ? 'warn' : 'info'} ${a.readAt ? 'read' : ''}">
+        <span class="notify-bar"></span>
+        <span class="notify-text"><b>${esc(a.title)}</b>${a.detail ? `<span>${esc(a.detail)}</span>` : ''}<span class="notify-meta">${esc(a.providerName || '')} · ${agoText(a.at)}</span></span>
+      </div>`,
+    )
+    .join('')
+  translateDom(container)
+}
+
+/**
+ * 打开通知面板：告警数据在 monitor 视图里，没拉过就现拉（接口只读缓存，很轻）。
+ * 默认落在有未读的那栏——图标都变成告警了，点进来就该直接看到告警。
+ * 看哪栏就把哪栏标成已读，图标随之变回。
+ */
+async function openNotifyPanel() {
+  if (!monitorData && !monitorLoading) {
+    try {
+      await loadMonitor()
+    } catch {
+      /* 拉不到也先把通知栏亮出来 */
+    }
+  }
+  const hasUnreadAlerts = unreadAlertCount() > 0
+  const hasUnreadNotifs = buildNotifications().some((n) => !loadReadIds().has(n.id))
+  notifyTab = hasUnreadAlerts && !hasUnreadNotifs ? 'alerts' : 'notif'
+  renderNotifications()
+  if (notifyTab === 'notif') markNotifsRead()
+  else void markAlertsReadRemote()
 }
 
 /**
@@ -1445,7 +1539,7 @@ async function applyPickedGroup(button) {
       setTimeout(
         () =>
           toast(
-            `${r.missingBench.length} 个模型缺基准价，已按站点原价直接填。去「基准价」页补上官方价，才能用倍率统一调整。`,
+            `${r.missingBench.length} 个模型缺基准价，已按站点原价直接填。去「基准价」页核对，才能用倍率统一调整。`,
             true,
           ),
         1700,
@@ -1526,71 +1620,6 @@ function renderUsageCheck(providerId) {
         <pre class="raw-box">${esc(JSON.stringify(check.raw ?? null, null, 2))}</pre>
       </details>
     </div>`
-}
-
-/**
- * 概览图的悬停提示。
- *
- * 数据从卡片上的 data-chart-ctx 读——那是渲染时算好的同一份序列，
- * 保证 tooltip 和图上画的东西一致（尤其「全部」模式下的合计口径）。
- */
-function showChartTip(hitEl) {
-  const card = hitEl.closest('[data-chart-ctx]')
-  const tip = document.getElementById('chart-tip')
-  if (!card || !tip) return
-  let ctx
-  try {
-    ctx = JSON.parse(card.dataset.chartCtx)
-  } catch {
-    return
-  }
-  const i = Number(hitEl.dataset.chartDay)
-  if (!Number.isInteger(i) || i < 0) return
-
-  // 注意不能叫 money：那会和模块级 money() 撞名，函数体里再调用就是
-  // 自我引用的 TDZ 错误（整个 hover 处理器会静默失败）
-  const fmtMoney = (v) => `${priceSym()}${money(dispPrice(v))}`
-  const rows = []
-
-  if (ctx.site === 'ALL') {
-    const bal = ctx.balance[i]
-    rows.push(`<div class="chart-tip-head">${esc(ctx.days[i])}</div>`)
-    rows.push(`<div class="chart-tip-row"><span>${t('余额合计')}</span><b>${bal === null ? '—' : fmtMoney(bal)}</b></div>`)
-    const parts = ctx.providers
-      .map((pid) => ({ pid, name: ctx.names[pid] || pid, value: ctx.spend[i]?.[pid] || 0 }))
-      .filter((r) => r.value > 0)
-      .sort((a, b) => b.value - a.value)
-    if (parts.length) {
-      rows.push('<div class="chart-tip-sep"></div>')
-      for (const part of parts) {
-        rows.push(
-          `<div class="chart-tip-row"><span><i class="chart-tip-dot" style="background:${esc(ctx.colors[part.pid] || 'var(--faint)')}"></i>${esc(part.name)}</span><span>${fmtMoney(part.value)}</span></div>`,
-        )
-      }
-      rows.push(
-        `<div class="chart-tip-sep"></div><div class="chart-tip-row"><span>${t('花费合计')}</span><b>${fmtMoney(ctx.total[i] || 0)}</b></div>`,
-      )
-    }
-  } else {
-    const bal = ctx.balance[i]
-    rows.push(`<div class="chart-tip-head">${esc(ctx.days[i])} · ${esc(ctx.names[ctx.site] || ctx.site)}</div>`)
-    rows.push(`<div class="chart-tip-row"><span>${t('余额')}</span><b>${bal === null ? '—' : fmtMoney(bal)}</b></div>`)
-    rows.push(`<div class="chart-tip-row"><span>${t('花费')}</span><b>${fmtMoney(ctx.spend[i]?.[ctx.site] || 0)}</b></div>`)
-  }
-
-  tip.innerHTML = rows.join('')
-  tip.classList.add('is-on')
-
-  // 定位：跟随光标所在列，靠右时翻到左侧
-  const wrap = tip.parentElement
-  const wrapRect = wrap.getBoundingClientRect()
-  const hitRect = hitEl.getBoundingClientRect()
-  const centerX = hitRect.left + hitRect.width / 2 - wrapRect.left
-  const tipW = tip.offsetWidth
-  let left = centerX + 14
-  if (left + tipW > wrapRect.width) left = centerX - tipW - 14
-  tip.style.left = `${Math.max(0, left)}px`
-  tip.style.top = '12px'
 }
 
 /** 站点卡列表的 HTML（监控页专用；「站点」视图已并入监控页） */
@@ -1833,7 +1862,7 @@ function providersHtml({ withForm = true, panel = '', actions = '' } = {}) {
 
         <div class="prov-actions">
           <button data-act="open-login" title="用站点后台的账号密码登录，自动获取并续期令牌——令牌过期不再需要手动换">${icon('key')}账号登录</button>
-          <button data-act="prov-sync-all" title="同步模型 + 读余额 + 识别分组，一次跑完">${icon('refresh')}一键同步</button>
+          <button data-act="prov-sync-all" title="模型、分组、价格、密钥，一键同步">${icon('refresh')}一键同步</button>
           <button data-act="prov-panel" data-panel="keys">${icon('key')}密钥</button>
           <button data-act="prov-panel" data-panel="rates">${icon('columns')}分组倍率</button>
           <button data-act="open-group-picker" title="从站点读分组，选你买的那个，倍率自动填到下面所有模型">${icon('columns')}导入倍率</button>
@@ -1963,6 +1992,7 @@ function refreshSiteCards() {
   const host = $('#monitor-sites-host')
   if (!host) return
   host.innerHTML = providersHtml({ withForm: false, panel: syncPanelHtml(), actions: syncActionsHtml() })
+  injectFeedCards(host)
   bindSiteSearch()
   translateDom(host)
 }
@@ -2586,9 +2616,9 @@ function officialChipHtml(official) {
   // 先官方原价（含币种与单位），后有效成本；缺哪个价用 — 占位
   // 币种符号：¥ = 官方人民币价，$ = 站内美元，R$ = 真实美元（国外官方价）
   const cur = official.currency === 'CNY' ? '¥' : official.currency === 'RUSD' ? 'R$' : '$'
-  const detail = `${t('官方价')} ${t('输入')} ${cur}${official.in ?? '—'} · ${t('输出')} ${cur}${official.out ?? '—'}（${t('每百万 token')}）`
+  const detail = `${t('原厂价')} ${t('输入')} ${cur}${official.in ?? '—'} · ${t('输出')} ${cur}${official.out ?? '—'}（${t('每百万 token')}）`
   const w = Math.round(blendWeight() * 100)
-  const title = t('{detail} · 官方有效成本 = 输入按 {w}%、输出按 {ow}% 加权；在「基准价」页可改', {
+  const title = t('{detail} · 原厂有效成本 = 输入按 {w}%、输出按 {ow}% 加权；在「基准价」页可改', {
     detail,
     w,
     ow: 100 - w,
@@ -2598,7 +2628,7 @@ function officialChipHtml(official) {
   const eff = hasPeak
     ? `${t('峰')}${priceText(official.blendedCnyPerMtok)} / ${t('谷')}${priceText(official.offPeakBlendedCnyPerMtok)}`
     : priceText(official.blendedCnyPerMtok)
-  return `<span class="official-chip" title="${esc(title)}">${t('官方')} ${cur}${official.in ?? '—'}/${cur}${official.out ?? '—'} /M → ${t('有效')} ${eff}/M</span>`
+  return `<span class="official-chip" title="${esc(title)}">${t('原厂')} ${cur}${official.in ?? '—'}/${cur}${official.out ?? '—'} /M → ${t('有效')} ${eff}/M</span>`
 }
 
 function renderPricing() {
@@ -2727,7 +2757,7 @@ function renderPricing() {
             row.hasOffPeak && row.offPeakBlendedCnyPerMtok !== null ? `<div class="sub">空闲 ${priceText(row.offPeakBlendedCnyPerMtok)}</div>` : ''
           }${
             officialPctText
-              ? `<div class="sub" title="${esc(t('本行有效成本为官方有效成本的 {pct}（按波峰口径）', { pct: officialPctText }))}">${t('官方')} ${officialPctText}</div>`
+              ? `<div class="sub" title="${esc(t('本行有效成本为原厂有效成本的 {pct}（按波峰口径）', { pct: officialPctText }))}">${t('原厂')} ${officialPctText}</div>`
               : ''
           }`
       // 计费单位是站点声明、识别出来的（模型广场 billing_mode），不是每行手选的
@@ -2840,18 +2870,7 @@ function paintAutoRefresh() {
   btn.classList.toggle('is-off', !autoRefresh)
   const dot = $('#autorefresh-dot')
   if (dot) dot.style.background = autoRefresh ? 'var(--success)' : 'var(--faint)'
-}
-
-/** 顶栏币种开关：只影响显示，比较口径永远是美元 */
-function paintCurrencySwitch() {
-  const box = $('#cur-switch')
-  if (!box) return
-  const cur = displayCur()
-  for (const button of box.querySelectorAll('button')) {
-    const on = button.dataset.cur === cur
-    button.classList.toggle('is-on', on)
-    button.setAttribute('aria-pressed', on ? 'true' : 'false')
-  }
+  btn.title = autoRefresh ? t('自动同步：开着，每 15 秒一次；点一下关闭') : t('自动同步已关，点一下开启')
 }
 
 /**
@@ -4043,7 +4062,7 @@ function probeSpendBarsHtml(buckets = []) {
   }
   // 高度直接给像素：药水条是 flex item，百分比高度在 flex 容器里会被算成 0
   // （实测 48 根柱子全是 0px，整排看不见）——所以在这里换算成 px
-  const MAX_H = 34
+  const MAX_H = 22
   return `<div class="ps-bars" role="img">${cells
     .map(({ at, value }) => {
       const h = max > 0 && value > 0 ? Math.max(3, Math.round((value / max) * MAX_H)) : 3
@@ -4089,6 +4108,10 @@ function probeSpendCardHtml() {
         .join('')
     : `<div class="ps-row"><span class="ps-row-name dim">${t('还没有探针花费')}</span></div>`
 
+  // 一条探测记录都没有时趋势条整排是空的灰点，白白撑高卡片、把左边筛选行
+  // 和上面标题隔出一条大空隙——没花过钱就不画趋势条，卡压到最矮
+  const hasSpend = (total.probes || 0) > 0 || money > 0 || sites.length > 0
+
   return `
     <div class="ps-card">
       <div class="ps-card-head">
@@ -4099,7 +4122,7 @@ function probeSpendCardHtml() {
       <div class="ps-card-meta">
         ${since ? `${esc(t('统计自 {since} 起', { since }))} · ` : ''}${esc(t('共 {n} 次探测', { n: total.probes || 0 }))}
       </div>
-      ${probeSpendBarsHtml(probeSpend.buckets || [])}
+      ${hasSpend ? probeSpendBarsHtml(probeSpend.buckets || []) : ''}
       <div class="ps-rows">${siteRows}</div>
       ${total.unpriced > 0 ? `<div class="ps-card-meta ps-unpriced">${esc(t('有 {n} 次探测算不出金额', { n: total.unpriced }))}</div>` : ''}
     </div>`
@@ -4962,40 +4985,41 @@ function renderBenchmark() {
   ])].sort((a, b) => a.localeCompare(b))
 
   view.innerHTML = `
-    <p class="hint">基准价是「倍率」的换算参照。三条路：从站点导入官方价、以此站已填价为准、或载入内置参考价。</p>
+    <p class="hint">基准价是「倍率」的换算参照。三条路：从站点导入中转站基准价、以此站已填价为准、或载入内置的厂商官方参考价。</p>
     <div class="card">
       <div class="inline-form" style="border-top:none;margin-top:0;padding-top:0">
         <select id="import-provider" style="max-width:210px">${providerOptions || '<option value="">还没有站点</option>'}</select>
-        <button id="btn-plaza-benchmark" title="优先用令牌读「可用渠道」，没有则用模型广场" ${state.providers.length ? '' : 'disabled'}>从站点导入官方价</button>
+        <button id="btn-plaza-benchmark" title="优先用令牌读「可用渠道」，没有则用模型广场；导入的是中转站基准价，不是模型厂商的官方价" ${state.providers.length ? '' : 'disabled'}>从站点导入基准价</button>
         <button id="btn-import-benchmark" ${state.providers.length ? '' : 'disabled'}>以此站已填价为准</button>
         <span style="color:var(--faint);font-size:12px;margin:0 2px">或</span>
         <button id="btn-seed-benchmark">载入内置参考价</button>
       </div>
       <p class="hint" style="margin:10px 0 0">
-        ${t('<b>从站点导入官方价</b>：优先用「令牌」读该站的「可用渠道」（数据最全，不要求开广场），读不到再回落「模型广场」。只补空缺、不覆盖你已有的条目。<br />')}
+        ${t('<b>从站点导入基准价</b>：优先用「令牌」读该站的「可用渠道」（数据最全，不要求开广场），读不到再回落「模型广场」。导入的是<b>中转站基准价</b>——站方自己标的、还没乘分组倍率的那层价，不是模型厂商的官方价。只补空缺、不覆盖你已有的条目。<br />')}
         ${t('<b>以此站已填价为准</b>：把这个站已经填好的实际价整体设为基准，适合你确信它没虚标的情况。<br />')}
-        ${t('<b>载入内置参考价</b>：用工具内置的一份官方价（截至 {asOf}）。启动时已自动补过一次，这个按钮只补新出现的空缺，不覆盖你手填或从站导入的。价格常变，务必核对。', {
+        ${t('<b>载入内置参考价</b>：用工具内置的一份<b>模型厂商官方价</b>（OpenAI、DeepSeek 这些原厂的定价，截至 {asOf}）。启动时已自动补过一次，这个按钮只补新出现的空缺，不覆盖你手填或从站导入的。价格常变，务必核对。', {
           asOf: esc(state.reference?.asOf || '—'),
         })}
       </p>
     </div>
     <div class="card" id="bench-official-card">
-      <h3>${t('官方有效成本')}</h3>
-      <p class="hint" style="margin:6px 0 0">${t('由于中转站模板原因，1 美元 = 1 人民币。为了站内比价方便，特增加单位「真实美元 R.Dollar」：国外模型的官方价用它填，按汇率折算；常规情况不使用 CNY。')}</p>
-      <p class="hint" style="margin:4px 0 0">${t('选一个站内模型（也可以直接输入站内还没有的模型名），填官方输入 / 输出价。保存后比价页的每个分组头部会显示它的官方有效成本，供各站实际价做参照。')}</p>
+      <h3>${t('模型厂商官方价（原厂价）')}</h3>
+      <p class="hint" style="margin:6px 0 0">${t('这里的「官方」指模型厂商（OpenAI、Anthropic、DeepSeek 这些原厂）自己公布的定价，不是中转站的价；中转站的基准价在上面一格导入。')}</p>
+      <p class="hint" style="margin:4px 0 0">${t('由于中转站模板原因，1 美元 = 1 人民币。为了站内比价方便，特增加单位「真实美元 R.Dollar」：国外模型的原厂价用它填，按汇率折算；常规情况不使用 CNY。')}</p>
+      <p class="hint" style="margin:4px 0 0">${t('选一个站内模型（也可以直接输入站内还没有的模型名），填原厂输入 / 输出价。保存后比价页的每个分组头部会显示它的原厂有效成本，供各站实际价做参照。')}</p>
       <div class="inline-form" style="border-top:none;margin-top:8px;padding-top:0">
         <input id="bench-add-model" list="bench-model-list" placeholder="${t('模型名（如 gpt-5.5）')}" style="min-width:220px" spellcheck="false" />
         <datalist id="bench-model-list">${modelCandidates.map((k) => `<option value="${esc(k)}"></option>`).join('')}</datalist>
         <span class="hint" style="margin:0">${t('波峰')}</span>
-        <input id="bench-add-in" type="number" step="0.001" min="0" placeholder="${t('官方输入价')}" style="width:110px" />
-        <input id="bench-add-out" type="number" step="0.001" min="0" placeholder="${t('官方输出价')}" style="width:110px" />
-        <select id="bench-add-currency" style="width:88px" title="${t('真实美元 R.Dollar = 国外模型官方价专用，按汇率换算；站内美元与人民币 1:1')}">
+        <input id="bench-add-in" type="number" step="0.001" min="0" placeholder="${t('原厂输入价')}" style="width:110px" />
+        <input id="bench-add-out" type="number" step="0.001" min="0" placeholder="${t('原厂输出价')}" style="width:110px" />
+        <select id="bench-add-currency" style="width:88px" title="${t('真实美元 R.Dollar = 国外模型原厂价专用，按汇率换算；站内美元与人民币 1:1')}">
           <option value="USD">USD</option>
           <option value="RUSD">R.Dollar</option>
           <option value="CNY">CNY</option>
         </select>
         <span id="bench-add-preview" class="hint" style="margin:0"></span>
-        <button id="btn-bench-add" class="primary" disabled>${t('保存官方价')}</button>
+        <button id="btn-bench-add" class="primary" disabled>${t('保存原厂价')}</button>
       </div>
       <div class="inline-form" style="border-top:none;margin-top:4px;padding-top:0">
         <span class="hint" style="margin:0 0 0 0">${t('波谷')}</span>
@@ -5016,7 +5040,7 @@ function renderBenchmark() {
           <option value="RUSD" ${state.settings.displayCurrency === 'RUSD' ? 'selected' : ''}>R$ R.Dollar</option>
         </select>
       </label>
-      <label class="field-inline" title="${t('只用于「真实美元 R.Dollar」的换算（国外模型官方价）；站内价格不受影响')}">
+      <label class="field-inline" title="${t('只用于「真实美元 R.Dollar」的换算（国外模型原厂价）；站内价格不受影响')}">
         <span data-i18n="汇率 USD→CNY">汇率 USD→CNY</span>
         <input id="fx-input" data-act="fx" type="number" step="0.0001" min="1" value="${esc(rateCny())}" style="width:96px" />
       </label>
@@ -5388,13 +5412,17 @@ document.addEventListener('input', (event) => {
 
 let monitorData = null
 let monitorDays = 7
-/** 花费 KPI 的时间段：today / week / month。只影响那张卡，不影响图表 */
-let spendRange = 'today'
-/** 概览图选中项：'ALL' 看总体，或某个 providerId 只看该站 */
-let chartSite = 'ALL'
 let monitorLoading = false
 /** 公告面板当前选中的站点；'all' = 不分站。切站点只重渲染，不重新拉数据 */
 let noticeSite = 'all'
+/** 右窄栏两张卡（倍率变动/上游公告）的折叠状态，本地记住 */
+const FLOW_FOLD_KEY = 'manageapi.monitorFlowFold'
+let flowFold = { changes: false, notices: false }
+try {
+  flowFold = { ...flowFold, ...(JSON.parse(localStorage.getItem(FLOW_FOLD_KEY)) || {}) }
+} catch {
+  /* 坏了就当全展开 */
+}
 
 /** 相对时间：监控页到处都是「3 分钟前」，比 ISO 串好读得多 */
 function agoText(iso) {
@@ -5407,174 +5435,6 @@ function agoText(iso) {
   const hours = Math.floor(minutes / 60)
   if (hours < 24) return t('{n} 小时前', { n: hours })
   return t('{n} 天前', { n: Math.floor(hours / 24) })
-}
-
-/**
- * 余额概览：左轴余额折线（带面积），右轴每日花费柱。
- * 两个量级差得远（余额几十块、花费几毛），共用一根轴的话柱子会贴地看不见。
- */
-/**
- * 概览图：单站模式 / 全部模式。
- *
- * 折线永远只有一条（余额），柱子按选择切换：
- *   selected === 'ALL'  → 折线=各站余额合计，柱子=各站花费堆叠（每站一色）
- *   否则                → 折线=该站余额，柱子=该站每日花费（单色淡填充）
- *
- * 只有一条折线是刻意的：多站余额叠在一起时，小站的线会被压到贴地、
- * 互相穿插，看不出任何东西（实测 5 个站就糊成一片）。想看单站切过去，
- * 轴刻度会跟着缩放到该站的量级。
- */
-function monitorChartSvg(balanceSeries = [], spendSeries = [], options = {}) {
-  const W = 760
-  const H = 240
-  const padL = 54
-  const padR = 54
-  const padT = 14
-  const padB = 26
-  const innerW = W - padL - padR
-  const innerH = H - padT - padB
-  const n = Math.max(balanceSeries.length, spendSeries.length)
-  if (n === 0) return ''
-
-  const { selected = 'ALL', providerIds = [], colorOf = () => 'var(--accent)', unitCny = () => 1 } = options
-  const isAll = selected === 'ALL'
-  const accent = isAll ? 'var(--accent)' : colorOf(selected)
-
-  // 余额序列：全部用后端 total（已折真实人民币），单站用该站余额×站点单价
-  const balVals = balanceSeries.map((d) => {
-    if (isAll) return typeof d.total === 'number' ? d.total : null
-    const raw = d.perProvider?.[selected]
-    return typeof raw === 'number' ? raw * unitCny(selected) : null
-  })
-
-  const known = balVals.filter((v) => v !== null).map((v) => dispPrice(v))
-  const hasSpend = spendSeries.some((d) => {
-    if (isAll) return providerIds.some((pid) => (d.byProvider?.[pid] || 0) > 0)
-    return (d.byProvider?.[selected] || 0) > 0
-  })
-  if (known.length === 0 && !hasSpend) return ''
-
-  let min = known.length ? Math.min(...known) : 0
-  let max = known.length ? Math.max(...known) : 1
-  if (min === max) {
-    min = Math.max(0, min - 1)
-    max += 1
-  }
-  max += (max - min) * 0.15
-
-  // 花费：全部按当日所有站合计定轴，单站按该站
-  const spendVals = spendSeries.map((d) => {
-    const cny = isAll
-      ? providerIds.reduce((sum, pid) => sum + (d.byProvider?.[pid] || 0), 0)
-      : (d.byProvider?.[selected] || 0)
-    return dispPrice(cny) ?? 0
-  })
-  const spendMax = Math.max(0.01, ...spendVals) * 1.15
-
-  const x = (i) => padL + (n === 1 ? innerW / 2 : (i / (n - 1)) * innerW)
-  const yBal = (v) => padT + innerH - ((v - min) / (max - min)) * innerH
-  const ySpend = (v) => padT + innerH - (v / spendMax) * innerH
-  const barW = Math.max(3, Math.min(24, (innerW / Math.max(n, 1)) * 0.5))
-
-  // 网格 + 双轴刻度
-  const grid = [0, 1, 2, 3]
-    .map((i) => {
-      const ratio = i / 3
-      const py = padT + innerH * (1 - ratio)
-      const balLabel = min + (max - min) * ratio
-      const spendLabel = spendMax * ratio
-      return `<line class="grid-line" x1="${padL}" x2="${W - padR}" y1="${py.toFixed(1)}" y2="${py.toFixed(1)}" />
-      <text class="axis-label" x="${padL - 8}" y="${(py + 3.5).toFixed(1)}" text-anchor="end">${priceSym()}${money(balLabel)}</text>
-      <text class="axis-label" x="${W - padR + 8}" y="${(py + 3.5).toFixed(1)}">${priceSym()}${money(spendLabel)}</text>`
-    })
-    .join('')
-
-  // 柱子
-  let bars = ''
-  spendSeries.forEach((d, i) => {
-    const cx = x(i)
-    if (isAll) {
-      let acc = 0
-      for (const pid of providerIds) {
-        const cny = d.byProvider?.[pid] || 0
-        if (cny <= 0) continue
-        const v = dispPrice(cny) ?? 0
-        if (v <= 0) continue
-        const y0 = ySpend(acc)
-        const y1 = ySpend(acc + v)
-        bars += `<rect x="${(cx - barW / 2).toFixed(1)}" y="${y1.toFixed(1)}" width="${barW.toFixed(1)}" height="${Math.max(0.8, y0 - y1).toFixed(1)}" rx="1" fill="${colorOf(pid)}" opacity="0.85" />`
-        acc += v
-      }
-    } else {
-      const v = spendVals[i]
-      if (v <= 0) return
-      const y1 = ySpend(v)
-      bars += `<rect x="${(cx - barW / 2).toFixed(1)}" y="${y1.toFixed(1)}" width="${barW.toFixed(1)}" height="${Math.max(1, padT + innerH - y1).toFixed(1)}" rx="1" fill="${accent}" opacity="0.3" />`
-    }
-  })
-
-  // 余额折线（连续有效点才连）
-  const segments = []
-  let current = []
-  balVals.forEach((raw, i) => {
-    const v = raw === null ? null : dispPrice(raw)
-    if (v === null) {
-      if (current.length) segments.push(current)
-      current = []
-      return
-    }
-    current.push([x(i), yBal(v)])
-  })
-  if (current.length) segments.push(current)
-  const linePaths = segments
-    .filter((seg) => seg.length > 1)
-    .map((seg) => `M${seg.map(([px, py]) => `${px.toFixed(1)} ${py.toFixed(1)}`).join('L')}`)
-    .join(' ')
-  const dots = segments
-    .flat()
-    .map(([px, py]) => `<circle cx="${px.toFixed(1)}" cy="${py.toFixed(1)}" r="2.6" />`)
-    .join('')
-
-  // 逐日命中区：悬停看当天明细（余额 + 各站花费）
-  const hits = balanceSeries
-    .map((d, i) => {
-      const w = innerW / Math.max(n, 1)
-      // pointer-events="all" 必须显式写：fill="transparent" 的 rect 在 SVG 里
-      // 默认不接收指针事件（透明填充被当成不可见），悬停会直接穿透到 svg
-      return `<rect x="${(x(i) - w / 2).toFixed(1)}" y="${padT}" width="${w.toFixed(1)}" height="${innerH}" fill="transparent" pointer-events="all" data-chart-day="${i}" />`
-    })
-    .join('')
-
-  const step = Math.max(1, Math.ceil(n / 7))
-  const dayLabels = balanceSeries
-    .map((d, i) => {
-      const keep = (i > 0 && i % step === 0) || (i === n - 1 && n > 1)
-      if (!keep) return ''
-      const anchor = i === n - 1 ? 'end' : 'middle'
-      return `<text class="axis-label" x="${x(i).toFixed(1)}" y="${H - 8}" text-anchor="${anchor}">${esc(String(d.day).slice(5))}</text>`
-    })
-    .join('')
-
-  return `<svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(t('余额与花费趋势'))}" style="--chart-accent:${accent}">
-    ${grid}
-    ${bars}
-    ${linePaths ? `<path class="line" d="${linePaths}" />` : ''}
-    <g class="dots">${dots}</g>
-    ${dayLabels}
-    ${hits}
-  </svg>`
-}
-
-function feedAlertRow(row) {
-  const dot = row.level === 'danger' ? 'red' : row.level === 'warn' ? 'yellow' : ''
-  return `<div class="monitor-feed-row ${row.readAt ? 'read' : ''}">
-    <span class="dot ${dot}"></span>
-    <div class="monitor-feed-body">
-      <div class="monitor-feed-title">${esc(row.title)}</div>
-      ${row.detail ? `<div class="monitor-feed-detail">${esc(row.detail)}</div>` : ''}
-      <div class="monitor-feed-meta">${esc(row.providerName || '')} · ${agoText(row.at)}</div>
-    </div>
-  </div>`
 }
 
 /**
@@ -5613,45 +5473,35 @@ const SPEND_RANGES = [
   { key: 'week', label: '本周' },
   { key: 'month', label: '本月' },
 ]
+/** 花费小框当前选的时间段：只影响这个框，不碰别的卡片 */
+let spendRange = 'today'
 
-/**
- * 花费 KPI 卡：模型消费 / 实际消费双值 + 时间段切换。
- *
- * 「模型消费」是站点口径的估算（和余额概览的每日花费柱同一份数）；
- * 「实际消费」乘站点单价，回答「我的钱包到底少了多少钱」——两者在
- * 1:1 充值的站会差好几倍，所以必须并列显示，不能只留一个。
- */
-function spendStat(range) {
-  const estimate = monitorData?.spendSummary?.[range] || { estimated: 0, actual: 0 }
-  const site = monitorData?.siteSpend?.[range] || null
-  const label = SPEND_RANGES.find((r) => r.key === range)?.label || '今天'
-  const seg = `<span class="spend-range">${SPEND_RANGES.map(
-    (r) => `<button class="${r.key === range ? 'is-on' : ''}" data-spend-range="${r.key}">${t(r.label)}</button>`,
-  ).join('')}</span>`
-
-  // 「实际消费」只有站点账单一个来源：站点自己按天算的账。
-  // 网关侧的 token 估算缺 26% 的 token、上游 cached 字段也不可靠，
-  // 拿它乘单价得到的数永远和钱包对不上——所以不做展示，只留作内部参考。
-  // 站点账单金额是站点货币单位；按 1:1 充值口径它同时就是人民币近似值，
-  // 这里直接按「站点货币 → 人民币」用站点单价折一次（默认 1）。
+/** 顶栏花费小框：实际消费（站点账单口径），点开可选今天/本周/本月。没数据就藏起来 */
+function paintTopSpend() {
+  const btn = $('#top-spend')
+  if (!btn) return
+  const site = monitorData?.siteSpend?.[spendRange] || null
   const hasSite = site && site.providers > 0
-  const siteCny = hasSite ? siteSpendCny(site, range) : 0
-  const actualHtml = hasSite
-    ? `<b class="spend-actual">${priceSym()}${money(dispPrice(siteCny))}</b>`
-    : `<b class="spend-actual spend-muted">${t('读不到账单')}</b>`
-  const hint = hasSite ? t('{n} 个站点账单', { n: site.providers }) : t('站点未提供账单接口或令牌无效')
+  btn.hidden = !hasSite
+  if (!hasSite) return
+  const label = SPEND_RANGES.find((r) => r.key === spendRange)?.label || '今天'
+  const labelEl = $('#top-spend-label')
+  if (labelEl) labelEl.textContent = `${t('花费')} · ${t(label)}`
+  const value = $('#top-spend-value')
+  if (value) value.textContent = `${priceSym()}${money(dispPrice(siteSpendCny(site, spendRange)))}`
+  btn.title = t('实际消费 · {range}（{n} 个站点账单）', { range: t(label), n: site.providers })
+}
 
-  return {
-    k: `${t('花费')} · ${t(label)}`,
-    // 时间段切换单独一行：和金额挤在一行时，窄卡片会把「今天/本周/本月」
-    // 压成竖排（每个字一行）
-    vHtml: `<span class="spend-pair">
-        <span class="spend-item"><span class="spend-tag spend-tag--actual">${t('实际消费')}</span>${actualHtml}</span>
-      </span><span class="spend-range-row">${seg}</span>`,
-    sub: hint,
-    ic: 'receipt',
-    tint: 'tint-warn',
+function paintSpendMenu() {
+  for (const item of document.querySelectorAll('.top-spend-menu .spend-item')) {
+    item.classList.toggle('is-on', item.dataset.spendRange === spendRange)
   }
+}
+
+function closeSpendMenu() {
+  const menu = $('#top-spend-menu')
+  if (menu) menu.hidden = true
+  document.querySelector('.top-spend-wrap')?.classList.remove('open')
 }
 
 /**
@@ -5675,6 +5525,108 @@ function siteSpendCny(site, range) {
   return total
 }
 
+/**
+ * 倍率变动 + 上游公告 两张信息卡。不单独成排，而是插进站点卡的网格：
+ * 公告占第一行第一格，倍率变动占第二行第一格，站点卡从旁边接着平铺。
+ * renderMonitor 首次渲染和 refreshSiteCards（搜索/翻页局部重绘）都要注回去。
+ */
+function feedCardsHtml(data) {
+  // 公告按站点分组：顶部一排站点胶囊，下面只显示这一家的公告
+  const allAnnouncements = data.announcements || []
+  const noticeGroups = []
+  for (const row of allAnnouncements) {
+    let group = noticeGroups.find((item) => item.id === row.providerId)
+    if (!group) {
+      group = { id: row.providerId, name: row.providerName || row.providerId, rows: [], unread: 0 }
+      noticeGroups.push(group)
+    }
+    group.rows.push(row)
+    if (!row.readAt) group.unread += 1
+  }
+  if (noticeSite !== 'all' && !noticeGroups.some((group) => group.id === noticeSite)) noticeSite = 'all'
+
+  const noticeTabs = [
+    `<button class="monitor-notice-tab" data-act="monitor-notice-site" data-site="all" aria-pressed="${noticeSite === 'all'}">${t('全部站点')}（${allAnnouncements.length}）</button>`,
+    ...noticeGroups.map(
+      (group) =>
+        `<button class="monitor-notice-tab" data-act="monitor-notice-site" data-site="${esc(group.id)}" aria-pressed="${noticeSite === group.id}">${esc(group.name)}（${group.rows.length}）</button>`,
+    ),
+  ].join('')
+
+  const shownGroups = noticeSite === 'all' ? noticeGroups : noticeGroups.filter((group) => group.id === noticeSite)
+  const shownUnread = shownGroups.reduce((sum, group) => sum + group.unread, 0)
+  const noticeRows = shownGroups
+    .map(
+      (group) => `
+        <div class="monitor-feed-group">
+          <span>${esc(group.name)}</span>
+          <span class="hint">${t('{n} 条', { n: group.rows.length })}${group.unread ? ` · ${t('{n} 条未读', { n: group.unread })}` : ''}</span>
+        </div>
+        ${group.rows.map(feedAnnouncementRow).join('')}`,
+    )
+    .join('')
+
+  const announcementsCard = `
+    <div class="card monitor-feed-card monitor-notice-card${flowFold.notices ? ' is-folded' : ''}">
+      <div class="card-head">
+        <h3>上游公告</h3>
+        <div class="monitor-head-actions">
+          <span class="hint">${t('{n} 条未读', { n: shownUnread })}</span>
+          <button class="ghost tiny" data-act="monitor-read-announcements">全部已读</button>
+          <button class="flow-fold" type="button" data-act="flow-toggle" data-flow="notices" title="${t('收起 / 展开')}">${icon('chevron-down')}</button>
+        </div>
+      </div>
+      ${noticeGroups.length ? `<div class="monitor-notice-tabs">${noticeTabs}</div>` : ''}
+      <div class="monitor-feed-scroll">
+        ${noticeRows || '<div class="empty small"><p>还没有读到公告。多数站点是公共接口，加了站点就会自动拉。</p></div>'}
+      </div>
+    </div>`
+
+  // ---------------------------------------------------------- 倍率变动
+  const changeRows = (data.changes || [])
+    .slice(0, 12)
+    .map((row) => {
+      const dir = typeof row.pct === 'number' ? (row.pct > 0 ? 'up' : row.pct < 0 ? 'down' : 'flat') : 'flat'
+      const label = typeof row.pct === 'number' ? `${row.pct > 0 ? '+' : ''}${row.pct}%` : '—'
+      return `<div class="monitor-flow-row">
+        <div class="monitor-flow-top">
+          <span class="monitor-flow-key">${esc(row.key)}</span>
+          <span class="badge ${dir === 'up' ? 'danger' : dir === 'down' ? 'ok' : ''}">${label}</span>
+        </div>
+        <div class="monitor-flow-meta">
+          <span>${esc(row.providerName || '')}</span>
+          <span>${money(row.from)} → ${money(row.to)}</span>
+          <span>${agoText(row.at)}</span>
+        </div>
+      </div>`
+    })
+    .join('')
+
+  const changesCard = `
+    <div class="card monitor-flow-card${flowFold.changes ? ' is-folded' : ''}">
+      <div class="card-head">
+        <h3>最近倍率变动</h3>
+        <div class="monitor-head-actions">
+          <span class="hint">${t('{n} 条', { n: (data.changes || []).length })}</span>
+          <button class="flow-fold" type="button" data-act="flow-toggle" data-flow="changes" title="${t('收起 / 展开')}">${icon('chevron-down')}</button>
+        </div>
+      </div>
+      <div class="monitor-flow-list">
+        ${changeRows || '<div class="empty small"><p>还没有变动。第一次同步只记基线，之后才开始比较。</p></div>'}
+      </div>
+    </div>`
+
+  return announcementsCard + changesCard
+}
+
+/** 把两张信息卡插进站点卡网格的开头（已在就不重复插） */
+function injectFeedCards(host) {
+  const grid = host?.querySelector('.site-cards')
+  if (!grid || grid.classList.contains('has-feed')) return
+  grid.classList.add('has-feed')
+  grid.insertAdjacentHTML('afterbegin', feedCardsHtml(monitorData || {}))
+}
+
 function renderMonitor() {
   const view = $('#view-monitor')
   if (!view) return
@@ -5686,7 +5638,6 @@ function renderMonitor() {
   }
 
   const data = monitorData
-  const kpi = data.kpi || {}
   const providers = state?.providers || []
 
   if (providers.length === 0) {
@@ -5701,70 +5652,6 @@ function renderMonitor() {
       </div>`
     return
   }
-
-  // ---------------------------------------------------------------- KPI
-  const latestBalance = [...(data.balanceSeries || [])].reverse().find((d) => typeof d.total === 'number')
-  const kpiItems = [
-    {
-      k: '站点',
-      v: `${kpi.withBalance ?? 0}/${kpi.providerCount ?? providers.length}`,
-      sub: '有余额数据',
-      ic: 'servers',
-      tint: 'tint-muted',
-    },
-    {
-      k: '总余额',
-      // 后端给的 total 是人民币口径；主数字按显示币种渲染
-      v: latestBalance?.total == null
-        ? '—'
-        : `${priceSym()}${money(dispPrice(latestBalance.total))}`,
-      // 副标题给另一个口径的等值，方便对账；没有总额时才退回「最低」
-      sub: latestBalance?.total != null
-        ? (displayCur() === 'RUSD'
-            ? `≈ ¥${money(latestBalance.total)}（站内美元与人民币 1:1）`
-            : `≈ R$${money(latestBalance.total / rateCny())}（按汇率折算）`)
-        : (kpi.lowest
-            ? t('最低：{name} {amount}', {
-                name: kpi.lowest.name,
-                amount: `${kpi.lowest.currency || ''} ${money(kpi.lowest.balance)}`.trim(),
-              })
-            : '还没有余额数据'),
-      ic: 'wallet',
-      tint: 'tint-accent',
-    },
-    {
-      // 花费卡：模型消费（站点口径估算）与实际消费（钱包里真正少掉的钱）并列。
-      // 实际消费 = 估算 × (站点单价 ÷ 市场汇率)；不填单价时系数为 1，两数相同
-      ...spendStat(spendRange),
-    },
-    {
-      k: '24 小时变动',
-      v: kpi.rateChanges24h ?? 0,
-      sub: '倍率 / 价格',
-      ic: 'swap',
-      tint: 'tint-muted',
-    },
-    {
-      k: '未读告警',
-      v: kpi.unreadAlerts ?? 0,
-      sub: t('上次同步 {ago}', { ago: agoText(kpi.lastRunAt) }),
-      ic: 'alert',
-      tint: (kpi.unreadAlerts ?? 0) > 0 ? 'tint-warn' : 'tint-muted',
-    },
-  ]
-
-  const kpiHtml = `<div class="stats monitor-kpi">${kpiItems
-    .map(
-      (item) => `<div class="stat">
-        <div class="stat-main">
-          <div class="k">${esc(item.k)}</div>
-          <div class="v">${item.vHtml ?? esc(item.v)}</div>
-          ${item.sub ? `<div class="sub">${esc(item.sub)}</div>` : ''}
-        </div>
-        <div class="stat-icon ${item.tint}">${icon(item.ic)}</div>
-      </div>`,
-    )
-    .join('')}</div>`
 
   // ---------------------------------------------------------- 余额告警条
   // 余额告警此前只落在「未读告警」那个数字和下面第三屏的「告警动态」卡片里，
@@ -5801,160 +5688,9 @@ function renderMonitor() {
         </div>
       </div>`
 
-  // -------------------------------------------------------------- 图表
-  // 只把「有余额或有花费」的站放进选择器——没数据的站点了也是空图
-  const chartProviders = (data.balanceByProvider || [])
-    .filter((row) => row.balance !== null || (data.spendSeries || []).some((d) => (d.byProvider?.[row.providerId] || 0) > 0))
-    .map((row) => row.providerId)
-  // 直接解析 CSS 变量给 SVG 用：series-N 类挂在选择器胶囊上，
-  // SVG 里的 rect 拿不到那个作用域，必须给具体颜色值
-  const SERIES_COLORS = [
-    'hsl(226 55% 52%)', 'hsl(18 60% 52%)', 'hsl(166 45% 38%)', 'hsl(268 42% 56%)',
-    'hsl(340 48% 55%)', 'hsl(43 65% 45%)', 'hsl(200 50% 45%)', 'hsl(100 30% 42%)',
-  ]
-  const seriesColorOf = (pid) => SERIES_COLORS[(Math.max(0, chartProviders.indexOf(pid)) % 8)]
-  const seriesClassOf = (pid) => `series-${(Math.max(0, chartProviders.indexOf(pid)) % 8) + 1}`
-  const colorOf = seriesColorOf
-  // 站点额度 → 真实人民币（充值汇率 / 1:1 / 市场汇率兜底），供单站余额线和悬停用
-  const providerById = new Map((state.providers || []).map((p) => [p.id, p]))
-  const unitCny = (pid) => siteUnitCny(providerById.get(pid))
-  // 选中的站在数据里消失了（被删/暂停）→ 回落到全部
-  if (chartSite !== 'ALL' && !chartProviders.includes(chartSite)) chartSite = 'ALL'
-  const chart = monitorChartSvg(data.balanceSeries, data.spendSeries, {
-    selected: chartSite,
-    providerIds: chartProviders,
-    colorOf,
-    seriesClassOf,
-    unitCny,
-  })
-  const seg = `<div class="seg">${[7, 14, 30]
-    .map((d) => `<button data-monitor-days="${d}" class="${d === monitorDays ? 'active' : ''}">${t('{n} 天', { n: d })}</button>`)
-    .join('')}</div>`
-
-  // 站点选择胶囊：「全部」+ 有数据的站。只放站名，余额在卡片/KPI 里已经有了
-  const allChip = `<button class="monitor-chip${chartSite === 'ALL' ? ' is-on' : ''}" data-chart-site="ALL">${t('全部站点')}</button>`
-  const siteChips = (data.balanceByProvider || [])
-    .filter((row) => chartProviders.includes(row.providerId))
-    .map((row) => {
-      const on = chartSite === row.providerId ? ' is-on' : ''
-      return `<button class="monitor-chip ${seriesClassOf(row.providerId)}${on}" data-chart-site="${esc(row.providerId)}" title="${t('只看这个站')}">
-        <span class="dot"></span>${esc(row.name)}
-      </button>`
-    })
-    .join('')
-  const chips = allChip + siteChips
-
-  // 悬停所需的上下文（序列 + 站点名 + 配色）挂在卡片上，避免事件处理器再算一遍
-  const chartCtx = {
-    days: (data.balanceSeries || []).map((d) => d.day),
-    balance: (data.balanceSeries || []).map((d) => {
-      if (chartSite === 'ALL') return typeof d.total === 'number' ? d.total : null
-      const raw = d.perProvider?.[chartSite]
-      return typeof raw === 'number' ? raw * unitCny(chartSite) : null
-    }),
-    spend: (data.spendSeries || []).map((d) => d.byProvider || {}),
-    total: (data.spendSeries || []).map((d) => d.cny || 0),
-    site: chartSite,
-    names: Object.fromEntries((data.balanceByProvider || []).map((r) => [r.providerId, r.name])),
-    providers: chartProviders,
-    colors: Object.fromEntries(chartProviders.map((pid) => [pid, seriesColorOf(pid)])),
-  }
-  const chartCard = `
-    <div class="card monitor-chart-card" data-chart-ctx="${esc(JSON.stringify(chartCtx))}">
-      <div class="card-head">
-        <h3>余额概览</h3>
-        ${seg}
-      </div>
-      ${chart
-        ? `<div class="chart-wrap">${chart}<div class="chart-tip" id="chart-tip" role="tooltip"></div></div>`
-        : '<div class="empty small"><p>还没有同步到余额。点右上角「立即同步」跑一轮。</p></div>'}
-      <div class="chart-legend">
-        <span><i class="legend-line"></i>${chartSite === 'ALL'
-          ? t('余额合计（{sym}，其他币种按汇率折算）', { sym: priceSym() })
-          : t('该站余额（{sym}）', { sym: priceSym() })}</span>
-        <span><i class="legend-bar"></i>${chartSite === 'ALL' ? t('各站花费（堆叠）') : t('该站每日花费')}</span>
-      </div>
-      <div class="monitor-chips">${chips}</div>
-    </div>`
-
-  // ---------------------------------------------------------- 倍率变动
-  const changeRows = (data.changes || [])
-    .slice(0, 12)
-    .map((row) => {
-      const dir = typeof row.pct === 'number' ? (row.pct > 0 ? 'up' : row.pct < 0 ? 'down' : 'flat') : 'flat'
-      const label = typeof row.pct === 'number' ? `${row.pct > 0 ? '+' : ''}${row.pct}%` : '—'
-      return `<div class="monitor-flow-row">
-        <div class="monitor-flow-top">
-          <span class="monitor-flow-key">${esc(row.key)}</span>
-          <span class="badge ${dir === 'up' ? 'danger' : dir === 'down' ? 'ok' : ''}">${label}</span>
-        </div>
-        <div class="monitor-flow-meta">
-          <span>${esc(row.providerName || '')}</span>
-          <span>${money(row.from)} → ${money(row.to)}</span>
-          <span>${agoText(row.at)}</span>
-        </div>
-      </div>`
-    })
-    .join('')
-
-  const changesCard = `
-    <div class="card monitor-flow-card">
-      <div class="card-head">
-        <h3>最近倍率变动</h3>
-        <span class="hint">${t('{n} 条', { n: (data.changes || []).length })}</span>
-      </div>
-      ${changeRows || '<div class="empty small"><p>还没有变动。第一次同步只记基线，之后才开始比较。</p></div>'}
-    </div>`
-
   // ------------------------------------------------------------ 站点卡
   // 版式照 upstream-ops 的渠道卡：头行（站名 + 类型 + 时间/外链）、三格统计、
   // 两格「阈值·状态 / 上次同步」、分组 chips、底部动作按钮。
-  const siteCards = (data.balanceByProvider || [])
-    .map((row) => {
-      const prov = (state.providers || []).find((p) => p.id === row.providerId) || {}
-      const kindLabel = ID_PROVIDER_KIND[prov.kind]
-      const badge = balanceBadge(row.balance, row.threshold)
-      const currency = row.currency || 'CNY'
-      const balanceText = row.balance === null ? '—' : `${esc(currency)} ${money(row.balance)}`
-      const thresholdText = row.threshold === null ? t('未设阈值') : `${esc(currency)} ${money(row.threshold)}`
-      const groups = row.groups || []
-      // 变动流只有分组名 + 倍率，没有模型归属 → 厂商不可知，不猜；
-      // 倍率 0 的分组就是免费池，用免费色（与站点卡「免费 N」标记一致）
-      const groupChips = groups
-        .slice(0, 6)
-        .map((g) => `<span class="group-chip static ${g.rate === 0 ? 'vchip-free' : ''}">${esc(g.name)}${typeof g.rate === 'number' ? ` <span class="ratio-tone ${ratioToneClass(g.rate)}">×${g.rate}</span>` : ''}</span>`)
-        .join('')
-      const more = groups.length > 6
-        ? `<span class="hint">${t('还有 {n} 个', { n: groups.length - 6 })}</span>`
-        : ''
-      return `<div class="monitor-site">
-        <div class="prov-head">
-          <div class="prov-id">
-            <b>${esc(row.name)}</b>
-            ${kindLabel ? `<span class="badge">${esc(kindLabel)}</span>` : ''}
-          </div>
-          <div class="prov-head-right">
-            ${prov.baseUrl ? `<a class="icon-btn" href="${esc(prov.baseUrl)}" target="_blank" rel="noreferrer" title="${t('打开站点')}">${icon('external')}</a>` : ''}
-          </div>
-        </div>
-        <div class="prov-tiles">
-          <div><span class="k">${t('余额')}</span><b>${balanceText}</b></div>
-          <div><span class="k">${t('模型价')}</span><b>${row.modelCount === null ? '—' : row.modelCount}</b></div>
-          <div><span class="k">${t('分组')}</span><b>${groups.length}</b></div>
-        </div>
-        <div class="prov-tiles prov-tiles--2">
-          <div><span class="k">${t('阈值 · 状态')}</span><b><span>${thresholdText}</span>${badge}</b></div>
-          <div><span class="k">${t('上次同步')}</span><b>${agoText(row.at)}</b></div>
-        </div>
-        <div class="monitor-site-groups">${groupChips || `<span class="hint">${t('还没读到分组倍率')}</span>`}${more}</div>
-        <div class="prov-actions">
-          <button data-monitor-provider="${esc(row.providerId)}">${icon('refresh')} ${t('同步这个站')}</button>
-          ${prov.baseUrl ? `<a class="link-btn" href="${esc(prov.baseUrl)}" target="_blank" rel="noreferrer">${icon('external')} ${t('打开站点')}</a>` : ''}
-        </div>
-      </div>`
-    })
-    .join('')
-
   // 同步设置不单独占一行，挂在「站点余额与分组」的卡片头上——
   // 它和下面那排站点卡是同一件事：改完间隔/阈值，顺手就在这儿点「立即同步」。
   const syncPanel = syncPanelHtml(data)
@@ -5965,76 +5701,6 @@ function renderMonitor() {
       <div class="monitor-sites" id="monitor-sites-host"></div>
     </div>`
 
-  // -------------------------------------------------------- 告警 / 公告
-  // 两栏等高、各自内部滚动：公告动辄几百字，摊在页面流里会把下面所有卡片顶到几屏之外。
-  const allAlerts = data.alerts || []
-  const allAnnouncements = data.announcements || []
-
-  const alertsCard = `
-    <div class="card monitor-feed-card">
-      <div class="card-head">
-        <h3>告警动态</h3>
-        <div class="monitor-head-actions">
-          <span class="hint">${t('{n} 条未读', { n: kpi.unreadAlerts ?? 0 })}</span>
-          <button class="ghost tiny" data-act="monitor-read-alerts">全部已读</button>
-        </div>
-      </div>
-      <div class="monitor-feed-scroll">
-        ${allAlerts.length
-          ? allAlerts.map(feedAlertRow).join('')
-          : '<div class="empty small"><p>还没有告警。余额低于阈值、倍率变化、同步失败都会记在这里。</p></div>'}
-      </div>
-    </div>`
-
-  // 公告按站点分组：顶部一排站点胶囊，下面只显示这一家的公告
-  const noticeGroups = []
-  for (const row of allAnnouncements) {
-    let group = noticeGroups.find((item) => item.id === row.providerId)
-    if (!group) {
-      group = { id: row.providerId, name: row.providerName || row.providerId, rows: [], unread: 0 }
-      noticeGroups.push(group)
-    }
-    group.rows.push(row)
-    if (!row.readAt) group.unread += 1
-  }
-  if (noticeSite !== 'all' && !noticeGroups.some((group) => group.id === noticeSite)) noticeSite = 'all'
-
-  const noticeTabs = [
-    `<button class="monitor-notice-tab" data-act="monitor-notice-site" data-site="all" aria-pressed="${noticeSite === 'all'}">${t('全部站点')}（${allAnnouncements.length}）</button>`,
-    ...noticeGroups.map(
-      (group) =>
-        `<button class="monitor-notice-tab" data-act="monitor-notice-site" data-site="${esc(group.id)}" aria-pressed="${noticeSite === group.id}">${esc(group.name)}（${group.rows.length}）</button>`,
-    ),
-  ].join('')
-
-  const shownGroups = noticeSite === 'all' ? noticeGroups : noticeGroups.filter((group) => group.id === noticeSite)
-  const shownUnread = shownGroups.reduce((sum, group) => sum + group.unread, 0)
-  const noticeRows = shownGroups
-    .map(
-      (group) => `
-        <div class="monitor-feed-group">
-          <span>${esc(group.name)}</span>
-          <span class="hint">${t('{n} 条', { n: group.rows.length })}${group.unread ? ` · ${t('{n} 条未读', { n: group.unread })}` : ''}</span>
-        </div>
-        ${group.rows.map(feedAnnouncementRow).join('')}`,
-    )
-    .join('')
-
-  const announcementsCard = `
-    <div class="card monitor-feed-card">
-      <div class="card-head">
-        <h3>上游公告</h3>
-        <div class="monitor-head-actions">
-          <span class="hint">${t('{n} 条未读', { n: shownUnread })}</span>
-          <button class="ghost tiny" data-act="monitor-read-announcements">全部已读</button>
-        </div>
-      </div>
-      ${noticeGroups.length ? `<div class="monitor-notice-tabs">${noticeTabs}</div>` : ''}
-      <div class="monitor-feed-scroll">
-        ${noticeRows || '<div class="empty small"><p>还没有读到公告。多数站点是公共接口，加了站点就会自动拉。</p></div>'}
-      </div>
-    </div>`
-
   // 同步设置不单独占一行，挂在「站点余额与分组」的卡片头上——
   // 它和下面那排站点卡是同一件事：改完间隔/阈值，顺手就在这儿点「立即同步」。
 
@@ -6042,17 +5708,21 @@ function renderMonitor() {
     'monitor',
     data.kpi?.lastRunAt ? t('上次同步 {ago}', { ago: agoText(data.kpi.lastRunAt) }) : '还没有同步过',
   )
+  // 两张信息卡插进站点卡的网格：上游公告占第一行第一格，最近倍率变动占第二行
+  // 第一格，站点卡从旁边的格子接着平铺（显式定位见 .site-cards.has-feed）。
+  // 两栏布局会把窄栏叠到站点卡头上，作者已经否了三次，别再试
   view.innerHTML = `
-    ${kpiHtml}
     ${balanceAlarmHtml}
-    <div class="monitor-cols">${chartCard}${changesCard}</div>
-    ${sitesCard}
-    <div class="monitor-cols monitor-cols--feed">${alertsCard}${announcementsCard}</div>`
+    ${sitesCard}`
 
   // 站点卡与「添加站点」表单复用站点页的那一套，避免两处各写一份
   const sitesHost = $('#monitor-sites-host')
-  if (sitesHost) sitesHost.innerHTML = providersHtml({ withForm: false, panel: syncPanel, actions: syncActions })
+  if (sitesHost) {
+    sitesHost.innerHTML = providersHtml({ withForm: false, panel: syncPanel, actions: syncActions })
+    injectFeedCards(sitesHost)
+  }
   bindSiteSearch()
+  paintTopSpend()
 }
 
 async function loadMonitor(days = monitorDays) {
@@ -6358,19 +6028,12 @@ window.addEventListener('hashchange', () => {
   })
 })
 
-// 概览图悬停：移入命中区显示当天明细，移出隐藏。
-// 用 mousemove 而不是 click —— 图表信息是「扫过去看」的，不该要求点击
-document.addEventListener('mousemove', (event) => {
-  const hit = event.target.closest?.('[data-chart-day]')
-  const tip = document.getElementById('chart-tip')
-  if (hit) {
-    showChartTip(hit)
-    return
-  }
-  if (tip?.classList.contains('is-on')) {
-    // 移出图表范围才隐藏；在卡片内移动（比如滑到图例上）保持显示
-    if (!event.target.closest?.('.chart-wrap')) tip.classList.remove('is-on')
-  }
+// 点花费菜单以外的地方收起它
+document.addEventListener('click', (event) => {
+  const menu = $('#top-spend-menu')
+  if (!menu || menu.hidden) return
+  if (event.target.closest('.top-spend-wrap')) return
+  closeSpendMenu()
 })
 
 // 点语言菜单以外的地方收起它
@@ -6459,20 +6122,24 @@ document.addEventListener('click', async (event) => {
     const panel = $('#notify-panel')
     if (!panel) return
     panel.hidden = !panel.hidden
-    if (!panel.hidden) {
-      // 打开即视为已读：红点消失，列表项淡化但保留
-      const ids = loadReadIds()
-      for (const n of buildNotifications()) ids.add(n.id)
-      saveReadIds(ids)
+    if (!panel.hidden) void openNotifyPanel()
+    return
+  }
+  // 面板头部的 通知 / 告警 页签：切到哪栏就看哪栏，顺手把那栏标成已读
+  const notifyTabBtn = event.target.closest('[data-notify-tab]')
+  if (notifyTabBtn) {
+    const next = notifyTabBtn.dataset.notifyTab
+    if ((next === 'notif' || next === 'alerts') && next !== notifyTab) {
+      notifyTab = next
       renderNotifications()
+      if (next === 'alerts') void markAlertsReadRemote()
+      else markNotifsRead()
     }
     return
   }
   if (event.target.closest('[data-act="mark-read"]')) {
-    const ids = loadReadIds()
-    for (const n of buildNotifications()) ids.add(n.id)
-    saveReadIds(ids)
-    renderNotifications()
+    if (notifyTab === 'alerts') void markAlertsReadRemote()
+    else markNotifsRead()
     return
   }
 
@@ -6537,25 +6204,43 @@ document.addEventListener('click', async (event) => {
     return
   }
 
-  // 花费卡的时间段切换：三个区间后端一次算好，这里只重渲染，不重新拉数据
-  const spendRangeBtn = event.target.closest('[data-spend-range]')
-  if (spendRangeBtn) {
-    const next = spendRangeBtn.dataset.spendRange
-    if (next && next !== spendRange) {
-      spendRange = next
+  // 右窄栏：点卡片头上的箭头收起/展开倍率变动、上游公告
+  const foldBtn = event.target.closest('[data-act="flow-toggle"]')
+  if (foldBtn) {
+    const key = foldBtn.dataset.flow
+    if (key === 'changes' || key === 'notices') {
+      flowFold[key] = !flowFold[key]
+      try {
+        localStorage.setItem(FLOW_FOLD_KEY, JSON.stringify(flowFold))
+      } catch {
+        /* 记不住就算了，本次会话内仍然生效 */
+      }
       renderMonitor()
       translateDom($('#view-monitor') || document.body)
     }
     return
   }
 
-  const monitorDaysBtn = event.target.closest('[data-monitor-days]')
-  if (monitorDaysBtn) {
-    const days = Number(monitorDaysBtn.dataset.monitorDays)
-    if (days === monitorDays && monitorData) return
-    await withBusy(monitorDaysBtn, async () => {
-      await loadMonitor(days)
-    })
+  // 花费小框：点开选今天/本周/本月
+  if (event.target.closest('#top-spend')) {
+    const menu = $('#top-spend-menu')
+    if (menu) {
+      menu.hidden = !menu.hidden
+      document.querySelector('.top-spend-wrap')?.classList.toggle('open', !menu.hidden)
+    }
+    return
+  }
+  const spendItem = event.target.closest('[data-spend-range]')
+  if (spendItem) {
+    const next = spendItem.dataset.spendRange
+    if (SPEND_RANGES.some((r) => r.key === next)) {
+      if (next !== spendRange) {
+        spendRange = next
+        paintSpendMenu()
+        paintTopSpend()
+      }
+    }
+    closeSpendMenu()
     return
   }
 
@@ -6603,25 +6288,6 @@ document.addEventListener('click', async (event) => {
 
   if (event.target.closest('[data-act="close-prov-panel"]')) {
     closeProvPanel()
-    return
-  }
-
-  // 概览图的站点选择：单选，'ALL' 看总体，选站只看该站
-  const chartSiteBtn = event.target.closest('[data-chart-site]')
-  if (chartSiteBtn) {
-    const next = chartSiteBtn.dataset.chartSite
-    if (next && next !== chartSite) {
-      chartSite = next
-      renderMonitor()
-      translateDom($('#view-monitor') || document.body)
-    }
-    return
-  }
-
-  // 概览图悬停：显示当天余额 + 各站花费明细
-  const chartHit = event.target.closest?.('[data-chart-day]')
-  if (chartHit) {
-    showChartTip(chartHit)
     return
   }
 
@@ -6970,21 +6636,6 @@ document.addEventListener('click', async (event) => {
       state = await api('PATCH', '/api/settings', { fxAuto: true })
       render()
       toast(t('已恢复自动汇率，下一轮会去拉取'))
-    } catch (error) {
-      toast(error.message, true)
-    }
-    return
-  }
-
-  if (action === 'set-currency') {
-    const raw = String(actionButton.dataset.cur || '').toUpperCase()
-    const next = raw === 'CNY' || raw === 'RUSD' ? raw : 'USD'
-    if ((state.settings.displayCurrency || 'USD') === next) return
-    try {
-      state = await api('PATCH', '/api/settings', { displayCurrency: next })
-      render()
-      paintCurrencySwitch()
-      toast(t('显示币种已切换'))
     } catch (error) {
       toast(error.message, true)
     }
@@ -7551,7 +7202,8 @@ document.addEventListener('click', async (event) => {
 
   if (action === 'toggle-autorefresh') {
     setAutoRefresh(!autoRefresh)
-    toast(autoRefresh ? t('自动刷新已打开（15 秒）') : t('自动刷新已关闭'))
+    // 切换必须有提示：绿色=开着（每 15 秒一次），灰色=关了
+    toast(autoRefresh ? t('自动同步已开启（每 15 秒一次）') : t('自动同步已关闭'))
     return
   }
 
@@ -8720,8 +8372,8 @@ document.addEventListener('click', async (event) => {
         const via = r.source === 'channels' ? '可用渠道' : '模型广场'
         toast(
           r.added > 0
-            ? `从${via}导入 ${r.added} 条官方价${r.skipped ? `（跳过 ${r.skipped} 条：已存在或无官方价）` : ''}`
-            : `没有新增（都已有基准价，或${via}没给官方价）`,
+            ? `从${via}导入 ${r.added} 条基准价${r.skipped ? `（跳过 ${r.skipped} 条：已存在或无基准价）` : ''}`
+            : `没有新增（都已有基准价，或${via}没报价格）`,
           r.added === 0,
         )
       } catch (error) {
@@ -8740,7 +8392,7 @@ document.addEventListener('click', async (event) => {
     const inV = $('#bench-add-in').value
     const outV = $('#bench-add-out').value
     if (inV === '' && outV === '') {
-      toast('波峰行至少填一个官方价', true)
+      toast('波峰行至少填一个原厂价', true)
       return
     }
     const offInV = $('#bench-add-offin')?.value ?? ''
@@ -8757,7 +8409,7 @@ document.addEventListener('click', async (event) => {
           currency: $('#bench-add-currency').value,
         })
         render()
-        toast(t('已保存 {name} 的官方价，比价页组头会显示官方有效成本', { name: modelKey }))
+        toast(t('已保存 {name} 的原厂价，比价页组头会显示原厂有效成本', { name: modelKey }))
       } catch (error) {
         toast(error.message, true)
       }
@@ -8802,8 +8454,8 @@ document.addEventListener('click', async (event) => {
 function paintLangButton() {
   const lang = getLang()
   const label = $('#lang-label')
-  // 按钮上显示「当前」语言，和 MikuAPI 一样：中文环境写 CN ZH，英文写 us EN
-  if (label) label.textContent = lang === 'zh' ? 'CN ZH' : 'us EN'
+  // 按钮上只写当前语言的代码（CN / EN），点开才出选项
+  if (label) label.textContent = lang === 'zh' ? 'CN' : 'EN'
   document.documentElement.dataset.lang = lang
   for (const item of document.querySelectorAll('.lang-item')) {
     item.classList.toggle('active', item.dataset.lang === lang)
@@ -8872,10 +8524,11 @@ try {
   paintThemeButton()
   paintSidebarButton()
   paintAutoRefresh()
-  paintCurrencySwitch()
   scheduleRefresh()
   render()
   setTab(location.hash.replace('#', '') || 'monitor')
+  // 告警图标状态靠 monitor 视图的数据；不在站点页也要后台拉一份
+  if (!monitorData && !monitorLoading) void loadMonitor()
   // ?help=1 / ?contact=1 直接打开对应面板（方便分享链接）
   const params = new URLSearchParams(location.search)
   if (params.has('contact')) {
@@ -8884,7 +8537,10 @@ try {
     if (modal) modal.hidden = false
   } else if (params.has('notify')) {
     const panel = $('#notify-panel')
-    if (panel) panel.hidden = false
+    if (panel) {
+      panel.hidden = false
+      void openNotifyPanel()
+    }
   } else if (params.has('help')) {
     openHelpModal()
   }

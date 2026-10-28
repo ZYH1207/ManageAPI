@@ -59,7 +59,7 @@
         </button>
         <button data-tab="benchmark">
           <svg viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>
-          <span class="nav-text"><span class="nav-title" data-i18n="基准价">基准价</span><span class="nav-desc" data-i18n="官方价参照">官方价参照</span></span>
+          <span class="nav-text"><span class="nav-title" data-i18n="基准价">基准价</span><span class="nav-desc" data-i18n="基准价参照">基准价参照</span></span>
         </button>
         <button data-tab="diagnosis">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v6"/><path d="M8.5 9h7l3 12h-13z"/><path d="M10 13h4"/><path d="M12 11v6"/></svg>
@@ -68,6 +68,29 @@
       </nav>
 
       <div class="sidebar-foot">
+        <div class="side-duo">
+          <button type="button" class="side-link" data-act="show-help">
+            <svg viewBox="0 0 24 24"><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H20v15.5H6.5A2.5 2.5 0 0 0 4 21z"/><path d="M4 18.5V5.5"/><path d="M8 7h8"/></svg>
+            <span data-i18n="文档">文档</span>
+          </button>
+          <div class="lang-wrap side-lang">
+            <button id="lang-btn" class="lang-btn" type="button" title="切换语言" aria-label="切换语言" data-i18n-title="切换语言">
+              <span id="lang-label">CN</span>
+              <svg class="lang-chev" viewBox="0 0 24 24"><polyline points="6 15 12 9 18 15"/></svg>
+            </button>
+            <div id="lang-menu" class="lang-menu" hidden>
+              <button type="button" class="lang-item" data-act="set-lang" data-lang="en">
+                <span class="lang-code">EN</span>
+                <span class="lang-name">English</span>
+              </button>
+              <button type="button" class="lang-item" data-act="set-lang" data-lang="zh">
+                <span class="lang-code">CN</span>
+                <span class="lang-name">中文</span>
+                <svg class="lang-check" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>
+              </button>
+            </div>
+          </div>
+        </div>
         <button type="button" class="side-link" data-act="show-contact">
           <svg viewBox="0 0 24 24"><rect x="2.5" y="4.5" width="19" height="15" rx="2.5"/><path d="m3 7 9 6 9-6"/></svg>
           <span data-i18n="联系我们">联系我们</span>
@@ -95,52 +118,43 @@
           <button type="button" data-protocol-view="probe" class="active">协议探查</button>
           <button type="button" data-protocol-view="records">协议记录</button>
         </div>
+          <div class="top-spend-wrap">
+            <button id="top-spend" class="top-spend" type="button" title="实际消费 · 今天" hidden>
+              <span class="ts-label" id="top-spend-label">花费 · 今天</span>
+              <b class="ts-value" id="top-spend-value">—</b>
+              <svg class="ts-chev" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg>
+            </button>
+            <div id="top-spend-menu" class="top-spend-menu" hidden>
+              <button type="button" class="spend-item is-on" data-spend-range="today"><span data-i18n="今天">今天</span></button>
+              <button type="button" class="spend-item" data-spend-range="week"><span data-i18n="本周">本周</span></button>
+              <button type="button" class="spend-item" data-spend-range="month"><span data-i18n="本月">本月</span></button>
+            </div>
+          </div>
           <div class="notify-wrap">
             <button id="notify-btn" class="notify-btn" type="button" aria-label="通知" data-i18n-title="通知">
-              <svg viewBox="0 0 24 24"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
+              <svg class="nb-bell" viewBox="0 0 24 24"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
+              <svg class="nb-alert" viewBox="0 0 24 24"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
               <span id="notify-dot" class="notify-dot" hidden></span>
             </button>
             <div id="notify-panel" class="notify-panel" hidden>
               <div class="notify-head">
-                <span data-i18n="通知">通知</span>
+                <div class="notify-tabs">
+                  <button type="button" class="notify-tab is-on" data-notify-tab="notif"><span data-i18n="通知">通知</span><span class="nt-count" id="notif-tab-count" hidden></span></button>
+                  <button type="button" class="notify-tab" data-notify-tab="alerts"><span data-i18n="告警">告警</span><span class="nt-count" id="alert-tab-count" hidden></span></button>
+                </div>
                 <button class="ghost tiny" data-act="mark-read" data-i18n="全部已读">全部已读</button>
               </div>
               <div id="notify-list" class="notify-list"></div>
             </div>
           </div>
-          <button id="refresh-btn" class="top-btn refresh-btn" type="button" data-act="refresh-state" title="刷新" aria-label="刷新" data-i18n-title="刷新">
-            <svg viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-3-6.7"/><polyline points="21 4 21 10 15 10"/></svg>
-            <span data-i18n="刷新">刷新</span>
-          </button>
-          <button id="autorefresh-btn" class="top-btn autorefresh-btn" type="button" data-act="toggle-autorefresh" title="每 15 秒自动刷新一次" data-i18n-title="每 15 秒自动刷新一次">
-            <span class="dot green" id="autorefresh-dot"></span>
-            <span data-i18n="自动刷新">自动刷新</span>
-          </button>
-          <div class="cur-switch" id="cur-switch" role="group" aria-label="显示币种">
-            <button type="button" data-act="set-currency" data-cur="CNY" aria-pressed="false">¥ CNY</button>
-            <button type="button" data-act="set-currency" data-cur="USD" aria-pressed="true">$ USD</button>
-            <button type="button" data-act="set-currency" data-cur="RUSD" aria-pressed="false" title="真实美元：按汇率折算（国外模型官方价的口径）">R$ R.Dollar</button>
-          </div>
-          <button class="top-btn" type="button" data-act="show-help">
-            <svg viewBox="0 0 24 24"><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H20v15.5H6.5A2.5 2.5 0 0 0 4 21z"/><path d="M4 18.5V5.5"/><path d="M8 7h8"/></svg>
-            <span data-i18n="文档">文档</span>
-          </button>
-          <div class="lang-wrap">
-            <button id="lang-btn" class="lang-btn" type="button" title="切换语言" aria-label="切换语言" data-i18n-title="切换语言">
-              <span id="lang-label">CN ZH</span>
-              <svg class="lang-chev" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg>
+          <div class="refresh-group" role="group" aria-label="刷新">
+            <button id="autorefresh-btn" class="rg-btn rg-auto" type="button" data-act="toggle-autorefresh" title="自动刷新：开着，每 15 秒一次；点一下关闭">
+              <span class="dot green" id="autorefresh-dot"></span>
             </button>
-            <div id="lang-menu" class="lang-menu" hidden>
-              <button type="button" class="lang-item" data-act="set-lang" data-lang="en">
-                <span class="lang-code">us</span>
-                <span class="lang-name">English</span>
-              </button>
-              <button type="button" class="lang-item" data-act="set-lang" data-lang="zh">
-                <span class="lang-code">CN</span>
-                <span class="lang-name">中文</span>
-                <svg class="lang-check" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>
-              </button>
-            </div>
+            <span class="rg-sep" aria-hidden="true"></span>
+            <button id="refresh-btn" class="rg-btn rg-manual" type="button" data-act="refresh-state" title="手动刷新一次" data-i18n-title="手动刷新一次">
+              <span data-i18n="刷新">刷新</span>
+            </button>
           </div>
           <div id="topbar-badges" style="display:flex;gap:8px"></div>
         </div>
@@ -174,7 +188,7 @@
               <li><b>站点</b> 页添加中转站（地址结尾要带 <code>/v1</code>），粘贴它的 Key</li>
               <li>点 <b>一键同步</b>：拉模型、读余额、识别分组一次跑完；没填「令牌」时跳过识别分组</li>
               <li>同步没认出分组，就点 <b>导入倍率</b>，在分组列表里手动选你买的那个</li>
-              <li>缺官方价的模型，去 <b>基准价</b> 页补上，或者载入内置参考价</li>
+              <li>缺基准价的模型，去 <b>基准价</b> 页补上，或者载入内置参考价</li>
               <li>去 <b>探针</b> 页跑一次检测，让程序知道哪些站可信</li>
               <li>程序会按评分体系自动决定用哪个站，也可以在 <b>智能决策</b> 页手动调整先后</li>
               <li>去 <b>网关</b> 页复制地址和 Key，填进 DSH 等 agent 平台</li>
@@ -393,12 +407,14 @@
 
             <h4 class="doc-h4">基准价</h4>
             <p>
-              倍率换算的参照物，本质就是「官方价」：<code>实际价 = 基准价 × 倍率</code>。
+              倍率换算的参照物：<code>实际价 = 基准价 × 倍率</code>。
+              基准价有两种来路，别混：<b>中转站基准价</b>（站方自己标的，从站点导入）和
+              <b>模型厂商官方价</b>（OpenAI、DeepSeek 这些原厂公布的定价，内置参考价和底部表单填的都是它）。
               某个模型没有基准价，它的倍率就没法换算成钱，只能填绝对价。三个来源：<br />
-              · <b>从站点导入官方价</b> —— 选一个站，一键拉取。有「令牌」读可用渠道、没令牌读模型广场。
+              · <b>从站点导入基准价</b> —— 选一个站，一键拉取。有「令牌」读可用渠道、没令牌读模型广场。
               只补空缺，不覆盖你已有的<br />
               · <b>以此站已填价为准</b> —— 把某个站已经填好的实际价整体设为基准，适合你确信它没虚标<br />
-              · <b>载入内置参考价</b> —— 工具内置的一份官方价，启动时已自动补入，价格常变，务必核对
+              · <b>载入内置参考价</b> —— 工具内置的一份模型厂商官方价，启动时已自动补入，价格常变，务必核对
             </p>
             <p>
               表格里可以直接改价格。「空闲输入 / 空闲输出」是峰谷定价用的（比如 DeepSeek 空闲时段半价）。
@@ -507,7 +523,7 @@
               <b>余额读不到？</b> 多数站不对 API Key 开放余额接口。可以在站点卡片上点「令牌」填一个后台登录令牌，
               或者直接手动填余额。<br />
               <b>「导入倍率」和「基准价导入」有什么区别？</b> 站点页的导入倍率写的是<b>倍率</b>，
-              基准价页的写的是<b>官方价</b>。两边分工：官方价归基准价页，折扣归站点页。<br />
+              基准价页的写的是<b>基准价</b>（站方标的、未乘分组倍率的那层）。两边分工：基准价归基准价页，折扣归站点页。<br />
               <b>为什么同一个模型在两个分组里价格不一样？</b> 正常。分组背后是不同的上游渠道，
               原价和倍率都可能不同。所以必须先选对分组，价格才有意义。<br />
               <b>选了分组，价格还是没变？</b> 两种情况：① 那个模型没有基准价，只能填绝对价，

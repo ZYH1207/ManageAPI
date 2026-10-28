@@ -278,6 +278,29 @@ input:focus, select:focus {
   stroke-linejoin: round;
 }
 .side-link span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.notify-text .notify-meta { font-size: 11px; color: var(--faint); }
+
+/* 侧边栏底部：文档 + 语言并排一条，两个等宽按钮 */
+.side-duo { display: flex; gap: 4px; }
+.side-duo > * { flex: 1; min-width: 0; }
+.side-lang { display: block; }
+.sidebar-foot .lang-btn {
+  width: 100%; justify-content: center;
+  gap: 7px; height: auto; padding: 9px 8px;
+  border: none; background: none; border-radius: 9px;
+  color: var(--muted); font-size: 13px; font-weight: normal; letter-spacing: normal;
+}
+.sidebar-foot .lang-btn:hover { background: var(--hover); color: var(--text); }
+.sidebar-foot .lang-btn svg { width: 16px; height: 16px; flex: none; }
+.sidebar-foot .lang-btn #lang-label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sidebar-foot .lang-chev { width: 13px; height: 13px; flex: none; }
+.side-lang.open .lang-chev { transform: rotate(180deg); }
+.sidebar-foot .lang-menu {
+  top: auto; bottom: calc(100% + 6px); left: 10px; right: auto;
+}
+.sidebar.collapsed .side-duo { flex-direction: column; gap: 2px; }
+.sidebar.collapsed .side-lang .lang-btn { justify-content: center; padding: 9px 0; }
+.sidebar.collapsed .side-lang #lang-label { display: none; }
 
 /* ------------------------------------------------------------ 侧边栏收起 */
 .sidebar { transition: width 0.18s ease; }
@@ -618,6 +641,11 @@ main { flex: 1; min-width: 0; display: flex; flex-direction: column; overflow: h
   stroke-linecap: round;
   stroke-linejoin: round;
 }
+/* 有未读告警时铃铛换成告警标志；看过（标记已读）后换回铃铛 */
+.notify-btn .nb-alert { display: none; }
+.notify-btn.is-alert .nb-bell { display: none; }
+.notify-btn.is-alert .nb-alert { display: block; }
+.notify-btn.is-alert { color: var(--warn-strong); }
 .notify-dot {
   position: absolute;
   top: 4px;
@@ -628,6 +656,24 @@ main { flex: 1; min-width: 0; display: flex; flex-direction: column; overflow: h
   background: var(--danger-strong);
   border: 1.5px solid var(--surface);
 }
+/* 通知面板头部的 通知 / 告警 两页签 */
+.notify-tabs { display: inline-flex; gap: 2px; }
+.notify-tab {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 4px 9px;
+  border: none; background: none; border-radius: 7px;
+  color: var(--muted); font-size: 12px; cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+.notify-tab:hover { background: var(--hover); color: var(--text); }
+.notify-tab.is-on { background: var(--hover); color: var(--text); font-weight: 600; }
+.notify-tab .nt-count {
+  min-width: 16px; padding: 0 4px;
+  border-radius: 999px; background: var(--danger-strong);
+  color: #fff; font-size: 10px; font-weight: 600; line-height: 16px;
+  text-align: center;
+}
+.notify-tab .nt-count[hidden] { display: none; }
 .notify-panel {
   position: absolute;
   top: 40px;
@@ -1522,7 +1568,7 @@ a.icon-btn:hover { text-decoration: none; }
 .ps-card {
   width: 360px;
   max-width: 100%;
-  padding: 13px 15px 12px;
+  padding: 10px 14px 9px;
   background: var(--surface-2);
   border: 1px solid var(--border);
   border-radius: 14px;
@@ -1532,11 +1578,11 @@ a.icon-btn:hover { text-decoration: none; }
 .ps-card-trash { margin-left: auto; width: 26px; height: 26px; }
 .ps-card-trash:hover { color: var(--danger); background: var(--danger-soft); }
 /* 就一个数：探针花了多少钱。放最大，一眼看到 */
-.ps-total { margin-top: 4px; font-size: 26px; font-weight: 600; line-height: 1.2; letter-spacing: -0.3px; }
+.ps-total { margin-top: 2px; font-size: 20px; font-weight: 600; line-height: 1.2; letter-spacing: -0.3px; }
 .ps-card-meta { margin-top: 3px; font-size: var(--fs-2); color: var(--faint); }
 .ps-unpriced { color: var(--warn); }
 .ps-bars { display: flex; align-items: flex-end; gap: 2px; }
-.ps-card .ps-bars { height: 34px; margin: 10px 0 9px; }
+.ps-card .ps-bars { height: 22px; margin: 7px 0 6px; }
 .ps-bar { flex: 1; min-width: 3px; align-self: flex-end; border-radius: 2px 2px 0 0; background: var(--accent); opacity: 0.6; }
 .ps-bar.is-empty { background: var(--divider); opacity: 1; }
 /* 分站：站点名 + 金额，一行一个，字号跟正文一致 */
@@ -1561,11 +1607,67 @@ a.icon-btn:hover { text-decoration: none; }
 button > svg { width: 14px; height: 14px; flex: none; }
 button.with-icon { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
 
-/* 顶栏的刷新 / 自动刷新 */
-.refresh-btn svg { width: 14px; height: 14px; }
-.autorefresh-btn { gap: 6px; }
-.autorefresh-btn .dot { width: 6px; height: 6px; border-radius: 999px; }
-.autorefresh-btn.is-off { color: var(--faint); }
+/* 顶栏刷新组：左半是自动同步开关（圆点，绿=开灰=关），右半是手动刷新；
+   中间一根竖杆把两个动作分开——它们是两个东西 */
+.refresh-group {
+  display: inline-flex; align-items: center;
+  height: 32px;
+  border: 1px solid var(--border); border-radius: 9px;
+  background: var(--surface);
+  overflow: hidden;
+}
+.rg-btn {
+  height: 100%; padding: 0 10px;
+  border: none; background: none;
+  color: var(--muted); font-size: 13px; cursor: pointer;
+  display: inline-flex; align-items: center; gap: 6px;
+  transition: background 0.12s, color 0.12s;
+}
+.rg-btn:hover { background: var(--hover); color: var(--text); }
+.rg-auto .dot { width: 7px; height: 7px; border-radius: 999px; background: var(--success); transition: background 0.15s; }
+.rg-auto.is-off .dot { background: var(--faint); }
+.rg-sep { width: 1px; height: 16px; background: var(--border); flex: none; }
+.rg-manual { font-weight: 500; }
+
+/* 顶栏花费小框：可点开选 今天/本周/本月，放在通知按钮左边 */
+.top-spend-wrap { position: relative; }
+.top-spend {
+  display: inline-flex; align-items: center; gap: 7px;
+  height: 32px; padding: 0 11px;
+  border: 1px solid var(--border); border-radius: 9px;
+  background: var(--surface);
+  color: var(--muted); cursor: pointer;
+  font-variant-numeric: tabular-nums;
+  transition: background 0.12s, color 0.12s;
+}
+.top-spend:hover { background: var(--hover); color: var(--text); }
+.top-spend[hidden] { display: none; }
+.top-spend .ts-label { font-size: 12px; white-space: nowrap; }
+.top-spend .ts-value { font-size: 13px; font-weight: 600; color: var(--text); }
+.top-spend .ts-chev {
+  width: 13px; height: 13px; flex: none;
+  stroke: currentColor; fill: none;
+  stroke-width: 2; stroke-linecap: round; stroke-linejoin: round;
+  transition: transform 0.15s;
+}
+.top-spend-wrap.open .ts-chev { transform: rotate(180deg); }
+.top-spend-menu {
+  position: absolute; right: 0; top: calc(100% + 6px);
+  min-width: 116px; padding: 5px;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 11px; box-shadow: 0 10px 28px rgba(15, 26, 23, 0.14);
+  z-index: 60;
+}
+.top-spend-menu[hidden] { display: none; }
+.spend-item {
+  display: flex; align-items: center;
+  width: 100%; padding: 8px 10px;
+  border: none; background: none; border-radius: 8px;
+  color: var(--text); font-size: 13px; text-align: left; cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+.spend-item:hover { background: var(--hover); }
+.spend-item.is-on { color: var(--accent); font-weight: 600; }
 
 .badge.ok { background: var(--accent-soft); color: var(--accent); }
 /* 忽略模型弹窗里的勾选列表 */
@@ -1798,25 +1900,7 @@ button.group-chip {
 }
 button.group-chip:hover { color: var(--accent); }
 
-/* --------------------------------------------------------- 顶栏：文档 / 语言 */
-/* 顶栏币种开关：两段胶囊，选中的那段浮起来 */
-.cur-switch {
-  display: inline-flex; align-items: center; gap: 2px;
-  height: 30px; padding: 2px;
-  background: var(--hover); border: 1px solid var(--border); border-radius: 999px;
-}
-.cur-switch button {
-  height: 24px; padding: 0 10px; border: none; background: none; border-radius: 999px;
-  color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums;
-  cursor: pointer; white-space: nowrap; flex: none;
-  transition: background 0.14s, color 0.14s, box-shadow 0.14s;
-}
-.cur-switch button:hover { color: var(--text); }
-.cur-switch button.is-on {
-  background: var(--surface); color: var(--accent); font-weight: 600;
-  box-shadow: 0 1px 2px rgba(0, 0, 0, .08);
-}
-[data-theme='dark'] .cur-switch button.is-on { box-shadow: 0 1px 2px rgba(0, 0, 0, .5); }
+/* --------------------------------------------------------- 侧边栏：文档 / 语言 */
 
 /* 比价表列多，把内边距和输入框压窄，12 列才放得下。
    列宽有下限：容器再窄也横向滚，绝不把单元格挤到看不清 */
@@ -2112,7 +2196,28 @@ html[data-lang='en'] .doc[data-lang-block='en'] { display: block; }
   50% { border-color: var(--border); box-shadow: 0 0 0 0 transparent; }
 }
 
-/* 左图右列表：图要宽，变动流窄一点 */
+/* 卡片可折叠：点头上的箭头收起/展开（倍率变动 / 上游公告） */
+.flow-fold {
+  width: 26px; height: 26px;
+  display: grid; place-items: center;
+  border: none; background: none; border-radius: 7px;
+  color: var(--faint); cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+.flow-fold:hover { background: var(--hover); color: var(--text); }
+.flow-fold svg {
+  width: 15px; height: 15px;
+  stroke: currentColor; fill: none;
+  stroke-width: 2; stroke-linecap: round; stroke-linejoin: round;
+  transition: transform 0.15s;
+}
+.monitor-flow-card.is-folded .flow-fold svg,
+.monitor-notice-card.is-folded .flow-fold svg { transform: rotate(-90deg); }
+.monitor-flow-card.is-folded .monitor-flow-list,
+.monitor-notice-card.is-folded .monitor-notice-tabs,
+.monitor-notice-card.is-folded .monitor-feed-scroll { display: none; }
+
+/* 左图右列表：图要宽，变动流窄一点（已废弃，留名防止旧引用） */
 .monitor-cols {
   display: grid;
   grid-template-columns: minmax(0, 1.7fr) minmax(0, 1fr);
@@ -2393,12 +2498,21 @@ body.prov-dragging .drop-zone { display: flex; }
 /* 告警 / 公告 */
 .monitor-head-actions { display: flex; align-items: center; gap: 8px; }
 .monitor-head-actions .hint { margin: 0; }
-/* 卡片自己滚：高度由 .monitor-cols--feed 的 grid-auto-rows 定死，两栏永远一样高 */
+/* 右窄栏的公告卡：定高自己滚，不再被几百字公告把页面拉长 */
 .monitor-feed-card {
   display: flex; flex-direction: column;
-  min-height: 0; height: 100%; overflow: hidden;
+  min-height: 0; overflow: hidden;
 }
 .monitor-feed-card .card-head { flex: none; }
+/* 倍率变动/上游公告嵌进站点卡网格：公告占第一行最右一格，倍率变动占第二行最右一格，
+   站点卡从左边接着平铺。负数列号 = 永远是最右一列，窄屏列数变少也对。
+   信息卡内容多时卡内滚，不把所在行撑太高 */
+.site-cards .monitor-notice-card { grid-column: -2; grid-row: 1; }
+.site-cards .monitor-flow-card { grid-column: -2; grid-row: 2; }
+.site-cards .monitor-flow-list { max-height: 200px; }
+.site-cards .monitor-notice-card .monitor-feed-scroll { max-height: 180px; }
+/* 右窄栏的倍率变动列表：太高自己滚，不把右栏拉到天上去 */
+.monitor-flow-list { max-height: 340px; overflow-y: auto; overscroll-behavior: contain; }
 .monitor-feed-scroll {
   flex: 1; min-height: 0; overflow-y: auto;
   overscroll-behavior: contain;

@@ -221,7 +221,7 @@ const PATTERNS = [
   // 监控变动描述（core/monitor.js 生成，含站方数据没法整句进词典）
   [/^(.+)倍率下调至 ([\d.]+)$/, '$1 rate down to $2'],
   [/^(.+)倍率上调至 ([\d.]+)$/, '$1 rate up to $2'],
-  [/^(.+) 官方降价$/, '$1 official price dropped'],
+  [/^(.+) 原厂降价$/, '$1 official price dropped'],
   [/^(.+) 恢复供给$/, '$1 is back'],
   [/^(.+) ([\d.]+) → ([\d.]+)$/, '$1 $2 → $3'],
   // 探针证据行
@@ -263,7 +263,7 @@ const EN = {
   '用量': 'Usage',
   '消耗统计': 'Token spend',
   '基准价': 'Benchmarks',
-  '官方价参照': 'Official reference prices',
+  '基准价参照': 'Benchmark price reference',
   '使用说明': 'Docs',
   '联系我们': 'Contact',
   '汇率 USD→CNY': 'FX USD→CNY',
@@ -276,9 +276,17 @@ const EN = {
 
   // ---- 顶栏 / 通知
   '通知': 'Notifications',
+  '告警': 'Alerts',
   '全部已读': 'Mark all read',
   '暂无通知': 'Nothing to notify',
   '条未读': 'unread',
+  '手动刷新一次': 'Refresh once',
+  '自动同步已开启（每 15 秒一次）': 'Auto sync on (every 15s)',
+  '自动同步已关闭': 'Auto sync off',
+  '自动同步：开着，每 15 秒一次；点一下关闭': 'Auto sync: on, every 15s. Click to turn off',
+  '自动同步已关，点一下开启': 'Auto sync off. Click to turn on',
+  '实际消费 · {range}（{n} 个站点账单）': 'Actual spend · {range} ({n} site bills)',
+  '还没有告警。余额低于阈值、倍率变化、同步失败都会记在这里。': 'No alerts yet. Low balance, rate changes and sync failures are logged here.',
 
   // ---- 页面副标题
   '当前状态一眼看完': 'Everything at a glance',
@@ -601,13 +609,13 @@ const EN = {
   'token': 'tokens',
 
   // ---- 基准价
-  '从站点导入官方价': 'Import official prices',
+  '从站点导入基准价': 'Import site benchmark prices',
   '以此站已填价为准': 'Use this site\u2019s prices',
   '载入内置参考价': 'Load built-in prices',
   '空闲输入': 'Off-peak in',
   '空闲输出': 'Off-peak out',
-  '基准价是「倍率」的换算参照。三条路：从站点导入官方价、以此站已填价为准、或载入内置参考价。':
-    'Benchmarks are what ratios convert against. Three sources: import official prices from a site, use a site\u2019s own prices, or load the built-in list.',
+  '基准价是「倍率」的换算参照。三条路：从站点导入中转站基准价、以此站已填价为准、或载入内置的厂商官方参考价。':
+    'Benchmarks are what ratios convert against. Three sources: import a site\u2019s own benchmark prices, use a site\u2019s filled prices as-is, or load the built-in vendor-official list.',
   '条官方价': 'prices',
   '优先用令牌读「可用渠道」，没有则用模型广场': 'Read available channels with a token, falling back to the model plaza',
   '从站点读取分组倍率和模型价格': 'Read group ratios and model prices from the site',
@@ -697,7 +705,7 @@ Object.assign(EN, {
     ': reads the site\u2019s available channels with a token (richest data, no plaza needed), falling back to the model plaza. Only fills gaps, never overwrites.',
   '：把某个站已经填好的实际价整体设为基准，适合你确信它没虚标的情况。':
     ': takes one site\u2019s existing prices as the baseline — use it when you trust that site.',
-  '：用工具内置的一份官方价（截至 ': ': uses the built-in official price list (as of ',
+  '：用工具内置的一份模型厂商官方价（截至 ': ': uses the built-in vendor-official price list (as of ',
   '），价格常变，务必核对。': '). Prices change often — verify before relying on it.',
 
   // 站点页的令牌说明（整段走 t()，带 <code> 标记）
@@ -711,7 +719,7 @@ Object.assign(EN, {
   '0 = 不限；超过上限的供给不参与路由': '0 = no limit; slower supplies are excluded from routing',
   '：把这个站已经填好的实际价整体设为基准，适合你确信它没虚标的情况。':
     ': takes this site\u2019s existing prices as the baseline — use it when you trust the site.',
-  '：用工具内置的一份官方价（截至': ': uses the built-in official price list (as of',
+  '：用工具内置的一份模型厂商官方价（截至': ': uses the built-in vendor-official price list (as of',
   '给每个客户端单独一把 Key，用量才能分开统计；哪一把泄露了，单独轮换即可。':
     'One key per client so usage stays attributable; a leaked key can be rotated on its own.',
   '月 token 限额（可空）': 'Monthly token limit',
@@ -721,12 +729,12 @@ Object.assign(EN, {
 
 // 基准价三条说明整段走 t()（带 <b>/<br> 标记），避免按片段匹配出错
 Object.assign(EN, {
-  '<b>从站点导入官方价</b>：优先用「令牌」读该站的「可用渠道」（数据最全，不要求开广场），读不到再回落「模型广场」。只补空缺、不覆盖你已有的条目。<br />':
-    '<b>Import official prices</b>: reads the site\u2019s available channels with a token (richest data, no plaza needed), falling back to the model plaza. Only fills gaps, never overwrites.<br />',
+  '<b>从站点导入基准价</b>：优先用「令牌」读该站的「可用渠道」（数据最全，不要求开广场），读不到再回落「模型广场」。导入的是<b>中转站基准价</b>——站方自己标的、还没乘分组倍率的那层价，不是模型厂商的官方价。只补空缺、不覆盖你已有的条目。<br />':
+    '<b>Import site benchmarks</b>: reads the site\u2019s available channels with a token (richest data, no plaza needed), falling back to the model plaza. What gets imported is the <b>site\u2019s own benchmark price</b> — its base layer before group ratios, not the model vendor\u2019s official pricing. Only fills gaps, never overwrites.<br />',
   '<b>以此站已填价为准</b>：把这个站已经填好的实际价整体设为基准，适合你确信它没虚标的情况。<br />':
     '<b>Use this site\u2019s prices</b>: takes this site\u2019s existing prices as the baseline — use it when you trust the site.<br />',
-  '<b>载入内置参考价</b>：用工具内置的一份官方价（截至 {asOf}）。启动时已自动补过一次，这个按钮只补新出现的空缺，不覆盖你手填或从站导入的。价格常变，务必核对。':
-    '<b>Load built-in prices</b>: uses the bundled official price list (as of {asOf}). This already runs once at startup; the button only fills new gaps and never overwrites your manual or imported entries. Prices change often — verify before relying on it.',
+  '<b>载入内置参考价</b>：用工具内置的一份<b>模型厂商官方价</b>（OpenAI、DeepSeek 这些原厂的定价，截至 {asOf}）。启动时已自动补过一次，这个按钮只补新出现的空缺，不覆盖你手填或从站导入的。价格常变，务必核对。':
+    '<b>Load built-in prices</b>: uses the bundled <b>vendor-official price list</b> (pricing published by OpenAI, DeepSeek and other model vendors, as of {asOf}). This already runs once at startup; the button only fills new gaps and never overwrites your manual or imported entries. Prices change often — verify before relying on it.',
 })
 
 Object.assign(EN, {
@@ -1235,7 +1243,7 @@ Object.assign(EN, {
     'No changes yet — the first collection only records a baseline.',
   '低于阈值 {amount}': 'below threshold {amount}',
   '还没读到模型价': 'prices not read yet',
-  '{n} 个模型有官方价': '{n} models with published prices',
+  '{n} 个模型有原厂价': '{n} models with vendor-official prices',
   '还没读到分组倍率': 'No group rates yet',
   '站点余额与分组': 'Site balances & groups',
   '分组倍率来自站点公布的可用渠道': 'Group rates come from the channels the site publishes',
@@ -1437,7 +1445,7 @@ Object.assign(EN, {
 // 来源：dump-strings 渲染文案 × 词典 diff。@ 类是 title/placeholder 属性文案。
 Object.assign(EN, {
   // 站点卡按钮与操作提示
-  '同步模型 + 读余额 + 识别分组，一次跑完': 'Sync models + read balance + detect groups, in one go',
+  '模型、分组、价格、密钥，一键同步': 'Models, groups, prices, keys — sync all in one go',
   '从站点读分组，选你买的那个，倍率自动填到下面所有模型': 'Read groups from the site, pick the one you bought, ratios fill in automatically',
   '用管理令牌拉站方用量，和我们的估算对比': 'Pull site-side usage with the admin token and compare with our estimate',
   '站点后台的登录令牌，一次填好整站通用，用来读余额和用量': 'Admin token for the site backend — one per account, used for balance and usage',
@@ -1774,23 +1782,26 @@ Object.assign(EN, {
   '加载中…': 'Loading…',
 })
 
-// 比价组头的官方有效成本参照 + 基准价页「官方有效成本」表单
+// 比价组头的原厂有效成本参照 + 基准价页「模型厂商官方价」表单
 Object.assign(EN, {
-  '官方': 'Official',
-  '官方价': 'Official price',
-  '{detail} · 官方有效成本 = 输入按 {w}%、输出按 {ow}% 加权；在「基准价」页可改':
+  '原厂': 'Official',
+  '原厂价': 'Official price',
+  '{detail} · 原厂有效成本 = 输入按 {w}%、输出按 {ow}% 加权；在「基准价」页可改':
     '{detail} · Official effective cost = input × {w}% + output × {ow}%; edit it on the Benchmark page',
-  '官方有效成本': 'Official effective cost',
-  '选一个站内模型（也可以直接输入站内还没有的模型名），填官方输入 / 输出价。保存后比价页的每个分组头部会显示它的官方有效成本，供各站实际价做参照。':
-    'Pick a site model (or type a name that is not on any site yet) and enter the official input / output price. Each group header on the Pricing page then shows its official effective cost as a reference.',
+  '原厂有效成本': 'Official effective cost',
+  '模型厂商官方价（原厂价）': 'Model vendor official price',
+  '这里的「官方」指模型厂商（OpenAI、Anthropic、DeepSeek 这些原厂）自己公布的定价，不是中转站的价；中转站的基准价在上面一格导入。':
+    '"Official" here means the pricing published by the model vendors themselves (OpenAI, Anthropic, DeepSeek and other original providers) — not relay-station prices; the relay\u2019s benchmark prices are imported in the card above.',
+  '选一个站内模型（也可以直接输入站内还没有的模型名），填原厂输入 / 输出价。保存后比价页的每个分组头部会显示它的原厂有效成本，供各站实际价做参照。':
+    'Pick a site model (or type a name that is not on any site yet) and enter the vendor\u2019s official input / output price. Each group header on the Pricing page then shows its official effective cost as a reference.',
   '模型名（如 gpt-5.5）': 'Model name (e.g. gpt-5.5)',
-  '官方输入价': 'Official input price',
-  '官方输出价': 'Official output price',
+  '原厂输入价': 'Official input price',
+  '原厂输出价': 'Official output price',
   '官方价用什么币种标': 'Currency the official price is quoted in',
-  '保存官方价': 'Save official price',
+  '保存原厂价': 'Save official price',
   '先填模型名': 'Enter a model name first',
-  '至少填一个官方价': 'Enter at least one official price',
-  '已保存 {name} 的官方价，比价页组头会显示官方有效成本':
+  '至少填一个原厂价': 'Enter at least one official price',
+  '已保存 {name} 的原厂价，比价页组头会显示原厂有效成本':
     'Saved the official price of {name}; its official effective cost now shows on the Pricing page',
 })
 
@@ -1804,14 +1815,14 @@ Object.assign(EN, {
 Object.assign(EN, {
   '峰': 'peak ',
   '谷': '/off-peak ',
-  '本行有效成本为官方有效成本的 {pct}（按波峰口径）':
+  '本行有效成本为原厂有效成本的 {pct}（按波峰口径）':
     'This row costs {pct} of the official effective cost (peak basis)',
-  '由于中转站模板原因，1 美元 = 1 人民币。为了站内比价方便，特增加单位「真实美元 R.Dollar」：国外模型的官方价用它填，按汇率折算；常规情况不使用 CNY。':
-    'Relay templates quote in "dollars" but actually charge the same number in CNY (1 dollar = 1 CNY). For easier comparison we add the unit "Real Dollar (R.Dollar)": use it for official prices of foreign models, converted by the FX rate. Avoid CNY in normal cases.',
-  '真实美元 R.Dollar = 国外模型官方价专用，按汇率换算；站内美元与人民币 1:1':
-    'Real Dollar (R.Dollar) is for official prices of foreign models, converted by the FX rate; site dollars equal CNY 1:1',
-  '只用于「真实美元 R.Dollar」的换算（国外模型官方价）；站内价格不受影响':
-    'Only used to convert Real Dollars (R.Dollar, official prices of foreign models); site prices are unaffected',
+  '由于中转站模板原因，1 美元 = 1 人民币。为了站内比价方便，特增加单位「真实美元 R.Dollar」：国外模型的原厂价用它填，按汇率折算；常规情况不使用 CNY。':
+    'Relay templates quote in "dollars" but actually charge the same number in CNY (1 dollar = 1 CNY). For easier comparison we add the unit "Real Dollar (R.Dollar)": use it for official vendor prices of foreign models, converted by the FX rate. Avoid CNY in normal cases.',
+  '真实美元 R.Dollar = 国外模型原厂价专用，按汇率换算；站内美元与人民币 1:1':
+    'Real Dollar (R.Dollar) is for official vendor prices of foreign models, converted by the FX rate; site dollars equal CNY 1:1',
+  '只用于「真实美元 R.Dollar」的换算（国外模型原厂价）；站内价格不受影响':
+    'Only used to convert Real Dollars (R.Dollar, official vendor prices of foreign models); site prices are unaffected',
   '只影响价格显示的符号；站内美元与人民币 1:1，数值不变':
     'Only switches the displayed symbol; site dollars equal CNY 1:1, the number stays the same',
   '价格直接改，失焦即保存。「{sym}/百万 token」是综合成本：输入按 25%、输出按 75% 加权。中转站按美元标价、实际按人民币 1:1 扣费，所以这里的 $ 和 ¥ 是同一个数。':
@@ -1824,7 +1835,7 @@ Object.assign(EN, {
   '波谷': 'Off-peak',
   '波谷输入价': 'Off-peak input price',
   '波谷输出价': 'Off-peak output price',
-  '波峰行至少填一个官方价': 'Fill at least one official price in the peak row',
+  '波峰行至少填一个原厂价': 'Fill at least one official price in the peak row',
   '两格都留空 = 默认计价（无峰谷）；填了则比价组头分「峰 / 谷」展示两个有效成本。通用字段，任何模型都能用。':
     'Leave both empty for flat pricing (no peak/off-peak). Fill them and the pricing header shows two effective costs, peak / off-peak. Generic field — works for any model.',
   '真实美元 R.Dollar：国外模型专用，按汇率换算；站内美元与人民币 1:1':

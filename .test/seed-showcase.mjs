@@ -276,7 +276,7 @@ monitor.announcements = [
     id: 'ann_show04',
     providerId: 'p_show01',
     sourceKey: 'show:deepseek-price',
-    title: 'deepseek-v4.1-flash 官方降价',
+    title: 'deepseek-v4.1-flash 原厂降价',
     content: '官方输入价从 2.2 降到 2.0 元/百万 token，本站倍率不变，实际价同步下调。',
     publishedAt: iso(4 * DAY + 7 * HOUR),
     seenAt: iso(4 * DAY),
