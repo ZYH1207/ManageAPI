@@ -6887,7 +6887,7 @@ document.addEventListener('click', async (event) => {
     return
   }
 
-  // 一键同步：同步模型 → 读余额 →（有令牌时）识别分组，串着跑完再刷新
+  // 一键同步：拉取密钥（有令牌时）→ 同步模型 → 读余额 → 识别分组，串着跑完再刷新
   if (event.target.closest('[data-act="prov-sync-all"]')) {
     const btn = event.target.closest('[data-act="prov-sync-all"]')
     const card = btn.closest('.prov-card')
@@ -6895,7 +6895,18 @@ document.addEventListener('click', async (event) => {
     const hasToken = card?.dataset.hasToken === '1'
     if (!providerId) return
     const failed = []
+    const notes = []
     await withBusy(btn, async () => {
+      // 先把站点后台令牌列表里的新 Key 拉进来，同步才会按新 Key 的分组拉模型。
+      // 拉取失败不拦后面几步：令牌失效时「识别分组」会给出更准的报错。
+      if (hasToken) {
+        try {
+          const pulled = await api('POST', `/api/providers/${providerId}/pull-keys`, {})
+          if (pulled.imported?.length) notes.push(`新拉到 ${pulled.imported.length} 把密钥`)
+        } catch (error) {
+          failed.push(`拉取密钥：${error.message}`)
+        }
+      }
       try {
         await api('POST', `/api/providers/${providerId}/sync`, {})
       } catch (error) {

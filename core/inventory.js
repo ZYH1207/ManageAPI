@@ -283,7 +283,7 @@ export async function deleteProvider(id) {
 
 // -------------------------------------------------------------- credentials
 
-export async function createCredential({ providerId, label, secret, group = '', expiresAt = null }) {
+export async function createCredential({ providerId, label, secret, group = '', expiresAt = null, groupSource }) {
   if (!secret || !String(secret).trim()) throw new Error('API Key 不能为空')
   const encrypted = await encryptSecret(String(secret).trim())
   return mutate((db) => {
@@ -297,12 +297,46 @@ export async function createCredential({ providerId, label, secret, group = '', 
       tail: String(secret).trim().slice(-4),
       // 这把 Key 属于站点的哪个分组——同步模型、探针、路由都按它走
       group: normalizeGroup(group),
+      groupSource: groupSource === 'auto' ? 'auto' : undefined,
       expiresAt,
       createdAt: nowIso(),
     }
     db.credentials.push(credential)
     return credential
   })
+}
+
+/**
+ * 把站点后台令牌列表里的 Key 补进本地凭据：只补缺，不动已有的。
+ * 「是不是同一把 Key」复用 matchTokenBySecret 的口径（剥 sk- 前缀全等，
+ * 全不中再看唯一尾号）——站点把列表里的 Key 打了星号掩码时，靠尾号也
+ * 能认出「这把已经有了」，不会重复导入一把没用的掩码值。
+ * 新 Key 的分组直接用令牌自带的，记 auto（后台识别不覆盖用户手选）。
+ * 返回新导入的凭据 id 列表。
+ */
+export async function importMissingCredentials(providerId, items) {
+  const db = await readDb()
+  const known = []
+  for (const credential of db.credentials.filter((c) => c.providerId === providerId)) {
+    known.push({ id: credential.id, key: (await revealSecret(credential.id)) || '' })
+  }
+  const imported = []
+  for (const item of Array.isArray(items) ? items : []) {
+    const secret = String(item?.key || '').trim()
+    // 掩码值（含星号）和过短的残值补进来也同步不了模型，宁可跳过
+    if (!secret || secret.includes('*') || secret.replace(/^sk-/i, '').length < 8) continue
+    if (providers.matchTokenBySecret(known, secret)) continue
+    const credential = await createCredential({
+      providerId,
+      label: String(item.name || '').trim() || `后台导入 …${secret.slice(-4)}`,
+      secret,
+      group: item.group || '',
+      groupSource: 'auto',
+    })
+    known.push({ id: credential.id, key: secret })
+    imported.push(credential.id)
+  }
+  return imported
 }
 
 export async function updateCredential(id, patch) {

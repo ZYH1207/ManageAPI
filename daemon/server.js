@@ -981,6 +981,41 @@ route('DELETE', /^\/api\/credentials\/([\w-]+)$/, async (ctx) => {
 
 // ------------------------------------------------------- 同步模型 / 余额
 
+/**
+ * 从站点后台令牌列表拉取新 Key：只补缺，不动已有凭据的分组。
+ * 给「一键同步」用：用户在站点后台建了新令牌，不用手动复制粘贴。
+ */
+route('POST', /^\/api\/providers\/([\w-]+)\/pull-keys$/, async (ctx) => {
+  const providerId = ctx.params[0]
+  const db = await store.readDb()
+  const provider = db.providers.find((p) => p.id === providerId)
+  if (!provider) throw new HttpError(404, '站点不存在')
+  const adminToken = await inv.revealAdminToken(providerId)
+  if (!adminToken) throw new HttpError(400, '需要站点令牌（「账号登录」或手动填写）才能读后台的密钥列表')
+
+  let fetched
+  try {
+    fetched = await providers.fetchTokenList({ baseUrl: provider.baseUrl, adminToken, timeoutMs: 20000 })
+    await inv.setTokenStatus(provider.id, { ok: true })
+  } catch (error) {
+    // 401/403 说明令牌本身失效，别的错（网络、结构）不算令牌的锅
+    if (/HTTP (401|403)/.test(String(error?.message || ''))) {
+      await inv.setTokenStatus(provider.id, { ok: false, message: error.message })
+    }
+    throw error
+  }
+
+  const importedIds = await inv.importMissingCredentials(providerId, fetched.items)
+  const fresh = await store.readDb()
+  return {
+    source: fetched.source,
+    total: fetched.items.length,
+    imported: fresh.credentials
+      .filter((c) => importedIds.includes(c.id))
+      .map((c) => ({ id: c.id, label: c.label, tail: c.tail, group: c.group })),
+  }
+})
+
 route('POST', /^\/api\/providers\/([\w-]+)\/sync$/, async (ctx) => {
   const db = await store.readDb()
   const provider = db.providers.find((p) => p.id === ctx.params[0])
