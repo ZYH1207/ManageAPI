@@ -300,11 +300,14 @@ async function buildState({ light = false } = {}) {
   const modelsByCredential = {}
   {
     const ignored = inv.ignoredModelSet(db)
+    // ignoredModelSet 是按**身份键**建的集合，比对也必须用身份键。
+    // 拿存储键去 has() 永远查不到，表现为「忽略了但台账里不标已忽略」且不报错
+    const aliases = db.settings?.modelAliases || {}
     for (const offer of db.offers) {
       if (offer.delistedAt) continue
       const name = String(offer.upstreamName || offer.modelKey || '').trim()
       if (!name) continue
-      const key = inv.normalizeModelKey(offer.modelKey || offer.upstreamName || '')
+      const key = inv.modelIdentityKey(offer.modelKey || offer.upstreamName || '', aliases)
       // 价格走 offerCost：和比价/花费同一份换算（倍率模式的实际价、按次分支）
       const cost = pricing.offerCost(offer, db.settings, benchmarks)
       const entry = {
@@ -1877,6 +1880,9 @@ function protocolTargets(db) {
       const models = groups.get(groupName)
       // 同组同名模型只留一条；offerId 指向第一条，探测时按它取 Key
       if (models.has(name)) continue
+      // ignored 判定用身份键（ignoredModelSet 的口径）；modelKey 字段仍存存储键，
+      // 它表示「这条供给自己的名字」，前端拿去做别的比对
+      const identityOfOffer = inv.modelIdentityKey(offer.modelKey || name, db.settings?.modelAliases || {})
       const modelKey = inv.normalizeModelKey(offer.modelKey || name)
       // 模型当前状况：与探针/比价页同一口径（admissionTags 唯一实现）。
       // 前端拿去画标签，并在状况不佳时提醒「协议测试可能出现偏差」
@@ -1900,7 +1906,7 @@ function protocolTargets(db) {
         offerId: offer.id,
         model: name,
         modelKey,
-        ignored: ignored.has(modelKey),
+        ignored: Boolean(identityOfOffer) && ignored.has(identityOfOffer),
         hasKey: Boolean(credentialForOffer(db, offer)),
         tags,
         blocked,
