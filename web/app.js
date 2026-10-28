@@ -609,10 +609,10 @@ function checkupHtml() {
 }
 
 const DIAG_KIND_LABEL = {
-  quota: '额度不足',
-  budget: '单次预算超限',
-  'rate-limit': '限流中',
-  'model-missing': '模型不可用',
+  quota: '余额不足',
+  budget: '单次请求超限',
+  'rate-limit': '上游账号冷却中',
+  'model-missing': '该分组没有这个模型',
   'protocol-unsupported': '不支持该协议',
   outage: '未归类故障',
   slow: '慢速/超时',
@@ -3286,22 +3286,27 @@ async function doMergeModels(button) {
 
 // --------------------------------------------------------------- 决策视图
 
-// 冷却原因：额度不足 / 限流 / 模型不在分组——不是站坏了，别让人以为评分出错
+// 不可用的原因。「冷却」只留给真正的上游冷却（限流）：余额不足是账单问题，
+// 写成「冷却中」等于把「去充值」藏起来，用户根本不知道该干什么。
 const BLOCKED_LABEL = {
-  quota: '额度不足',
-  budget: '单次预算超限',
-  'rate-limit': '限流中',
-  'model-missing': '模型不可用',
+  quota: '余额不足',
+  budget: '单次请求超限',
+  'rate-limit': '上游账号冷却中',
+  'model-missing': '该分组没有这个模型',
+  'error-rate': '失败率过高',
 }
 /**
- * 冷却类状态的徽章文案。
+ * 不可用状态的徽章文案：原因 + 该做什么。
  *
- * pending=false —— 冷却窗口内，等时间到
- * pending=true  —— 冷却已到，等下一次探测成功才算恢复（路由仍然不放行）
+ * pending=false —— 等待窗口内，等时间到
+ * pending=true  —— 窗口到了，等一次成功调用确认恢复（路由仍然不放行）
  */
 function blockedLabel(blocked, { pending = false } = {}) {
-  const label = BLOCKED_LABEL[blocked?.kind] || '暂时不可用'
-  return `${t(label)} · ${t(pending ? '等探测确认' : '冷却中')}`
+  const kind = blocked?.kind
+  const label = BLOCKED_LABEL[kind] || '暂时不可用'
+  // 余额不足：不叫冷却，直接告诉人该去充值
+  if (kind === 'quota') return t(pending ? '余额不足 · 等确认恢复' : '余额不足 · 请充值')
+  return `${t(label)} · ${t(pending ? '等确认恢复' : '冷却中')}`
 }
 
 // 状态标签的文案与配色。kind 由 core/router.js#admissionTags 判定，这里只负责画——
@@ -3312,9 +3317,11 @@ const STATUS_TAG = {
   degraded: { label: '结果可疑', cls: 'warn' },
   unstable: { label: '不稳定', cls: 'danger' },
   'no-evidence': { label: '没有可信样本', cls: 'warn' },
+  unverified: { label: '待验证（曾余额不足）', cls: '' },
   inconclusive: { label: '证据不足', cls: '' },
   blocked: { label: '冷却中', cls: 'warn' },
-  'awaiting-recovery': { label: '等探测确认', cls: 'warn' },
+  billing: { label: '余额不足 · 请充值', cls: 'danger' },
+  'awaiting-recovery': { label: '等确认恢复', cls: 'warn' },
   fallback: { label: '兜底', cls: '' },
   ok: { label: '可用', cls: 'ok' },
 }

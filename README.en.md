@@ -209,11 +209,14 @@ quality      = availability × integrity
 | Upstream response | Counts as outage? | Handling |
 |---|---|---|
 | 5xx, timeout, connection failure, non-JSON body | yes | lowers availability |
-| Out of balance / over budget (402, 403 `INSUFFICIENT_BALANCE`) | no | 30-minute cooldown |
-| Rate limited (429) | no | 5-minute cooldown |
+| Out of balance / over budget (402, 403 `INSUFFICIENT_BALANCE`) | no | blocked for 1 minute, then retried |
+| Rate limited (429, account pool) | no | 5-minute cooldown (upstream's own retry hint wins) |
 | Model not in this group (404 `model not supported` / `not in group`) | no | 60-minute cooldown |
+| Single request too large (`REQUEST_BUDGET_EXCEEDED`) | no | blocked for 5 minutes |
 
-The "no" rows are not instability — that supply simply cannot serve right now (top up, wait out the limit, pick another group). Counting them as outages paints a wall of red for sites that only ran out of credit and drowns the real failures. Cooling supplies are skipped by routing and come back automatically after the cooldown or after one successful call; the UI labels them "out of credit / rate limited / model unavailable · cooling down" rather than "unstable".
+The "no" rows are not instability — that supply simply cannot serve right now (top up, wait out the limit, pick another group). Counting them as outages paints a wall of red for sites that only ran out of credit and drowns the real failures. Blocked supplies are skipped by routing.
+
+"Cooling down" is reserved for upstream accounts that are genuinely cooling down (rate limits / account pools, some models for 5 hours). Out of balance, oversized request and missing model are billing/config problems: the UI states the cause and the fix ("out of balance — top up", "model not in this group — switch group") instead of hiding them behind "cooling down". Out-of-balance supplies are blocked for one minute and then simply retried, so a top-up recovers within a minute; rate-limit / missing-model supplies wait for one successful call as evidence, and are re-probed every 10 minutes even when scheduled probing is turned off.
 
 Below 0.8 on either dimension means unusable; by default it sinks to the back and is only a last resort.
 

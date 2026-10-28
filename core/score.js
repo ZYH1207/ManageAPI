@@ -51,8 +51,20 @@ export const MIN_SAMPLES_FOR_VERDICT = 3
 export const FAIL_RATE_MIN_SAMPLES = 20
 export const FAIL_RATE_MIN_FAILS = 5
 export const FAIL_RATE_THRESHOLD = 0.15
-/** 比率型冷却的时长：比额度型短——它证明的是「现在不稳」，不是「没余额了」 */
+/** 比率型冷却的时长：比账号限流短——它证明的是「现在不稳」，不是「钱包空了」 */
 export const FAIL_RATE_COOLDOWN_MS = 10 * 60_000
+
+/**
+ * 哪些「不可用」在等待窗口过后仍要一次成功证据才放行。
+ *
+ * 只收「上游确实拒绝服务、且拒绝的原因不会自己消失」的几类：账号被限流、
+ * 分组里没这个模型、真实失败率过高。这几类放行一次就是白撞一次。
+ *
+ * **余额不足和单次请求超限不在其中**：它们是账单/参数问题，充值、缩小请求之后
+ * 立刻就该能用，而「再试一次」本身就是最好的证据。以前这两类也要等成功证据，
+ * 定时探测一关就永远等不到——供给被永久锁死（真实踩过，见 core/failure.js）。
+ */
+const EVIDENCE_RECOVERY_KINDS = new Set(['rate-limit', 'model-missing', 'error-rate'])
 
 /**
  * 证据量分级：多少个样本才算「结论站得住」。
@@ -184,7 +196,10 @@ export function scoreOffers(probes, traffic = {}, options = {}) {
     let probeUnavailable = 0
     let unavailableAt = 0
     let unavailableKind = null
+    let unavailableRetryMs = 0
     let successAt = 0
+    // 见过哪些「不可用」：判断「是不是纯粹的账单问题」（只有额度/预算失败）
+    const unavailableKindsSeen = new Set()
     for (const record of evidence) {
       const tsMs = new Date(record.ts).getTime()
       if (record.ok) {
@@ -192,15 +207,18 @@ export function scoreOffers(probes, traffic = {}, options = {}) {
         if (tsMs > successAt) successAt = tsMs
         continue
       }
-      const { kind, countsAsOutage } = classifyFailure(record.error)
+      const { kind, countsAsOutage, retryAfterMs } = classifyFailure(record.error)
       if (countsAsOutage) {
         probeOutage += 1
         continue
       }
       probeUnavailable += 1
+      unavailableKindsSeen.add(kind)
       if (tsMs > unavailableAt) {
         unavailableAt = tsMs
         unavailableKind = kind
+        // 上游自己说了多久就听它的：有的模型真的冷却 5 小时
+        unavailableRetryMs = Number(retryAfterMs) || 0
       }
     }
 
@@ -213,10 +231,13 @@ export function scoreOffers(probes, traffic = {}, options = {}) {
     }
     if (tsOf(trafficRow?.lastOkAt) > successAt) successAt = tsOf(trafficRow.lastOkAt)
     for (const [kind, entry] of Object.entries(trafficKinds)) {
+      unavailableKindsSeen.add(kind)
       const lastAt = tsOf(entry?.lastAt)
       if (lastAt > unavailableAt) {
         unavailableAt = lastAt
         unavailableKind = kind
+        // 真实流量里的 kinds 只存了次数和时间，没有上游给的时长，回落本地表
+        unavailableRetryMs = 0
       }
     }
 
@@ -237,7 +258,9 @@ export function scoreOffers(probes, traffic = {}, options = {}) {
     // 冷却期内不放行，但不当成「坏站」：额度充上、限流过去就自动恢复，
     // 判断依据是「最后一次不可用失败」晚于「最后一次成功」
     const blockedUntil =
-      unavailableKind && unavailableAt > successAt ? cooldownUntil(unavailableKind, unavailableAt) : 0
+      unavailableKind && unavailableAt > successAt
+        ? cooldownUntil(unavailableKind, unavailableAt, unavailableRetryMs)
+        : 0
     // 两条路取先到的那一条：时间型冷却优先，其次是比率型
     const blocked =
       blockedUntil > now
@@ -246,16 +269,19 @@ export function scoreOffers(probes, traffic = {}, options = {}) {
           ? { kind: 'error-rate', until: (tsOf(trafficRow?.lastFailAt) || now) + FAIL_RATE_COOLDOWN_MS }
           : null
 
-    // 冷却到期不等于恢复。冷却只回答「这段时间别去试」，恢复要**证据**：
-    // 最近一次证据仍是额度/限流/模型不可用（晚于最后一次成功），说明它还没被证明
-    // 能用了。此时放行只会再撞一次同样的墙——典型现场：一个模型 4 条供给，3 条
-    // 慢速被首字门槛挡住，剩下 1 条限流，网关就反复拿这条去试，时间全耗在必然失败的请求上。
+    // 冷却到期不等于恢复——但只对「等它自己到点」的那几类成立：
+    // 限流/模型不在分组/失败率过高，最近一次证据仍是它们，说明还没被证明能用，
+    // 此时放行只会再撞一次同样的墙（典型现场：一个模型 4 条供给，3 条慢速被
+    // 首字门槛挡住，剩下 1 条限流，网关就反复拿这条去试）。
     // 解除条件只有一个：之后有一次成功（探针或真实流量）把 successAt 推到失败之后。
+    //
+    // 余额不足 / 单次请求超限不在这里面：充值、缩小请求之后本来就该立刻能试，
+    // 再来一次 403 的代价只有一次往返，不构成「白等一个来回」。
     //
     // 比率型同理：失败率没跌下来之前不能因为「冷却到期了」就放行，
     // 否则刚好在时间边界上又撞一次（真实流量还是那批失败样本）。
     const pendingRecovery =
-      unavailableKind && unavailableAt > successAt
+      unavailableKind && unavailableAt > successAt && EVIDENCE_RECOVERY_KINDS.has(unavailableKind)
         ? { kind: unavailableKind, since: unavailableAt }
         : failRateBlocked
           ? { kind: 'error-rate', since: tsOf(trafficRow?.lastFailAt) || now }
@@ -263,6 +289,15 @@ export function scoreOffers(probes, traffic = {}, options = {}) {
 
     const quality =
       availability === null || integrity === null ? availability ?? integrity : availability * integrity
+
+    // 纯账单/参数问题：一次真正的故障都没有，所有「不可用」都是额度/预算类。
+    // 这种供给没有可用率分母，但它不是「没证据」——是「钱包或请求大小的问题」。
+    // 准入要因此放行（否则「没证据」那条规则会把充值后的供给一直挡住，
+    // 而唯一能产生证据的探针在定时探测关闭时根本不会跑）。
+    const billingOnly =
+      probeOutage + trafficFail === 0 &&
+      probeUnavailable + trafficUnavailable > 0 &&
+      [...unavailableKindsSeen].every((kind) => kind === 'quota' || kind === 'budget')
 
     const cacheRates = recent
       .filter((r) => typeof r.cacheHitRate === 'number')
@@ -336,8 +371,10 @@ export function scoreOffers(probes, traffic = {}, options = {}) {
       unavailableSamples: probeUnavailable + trafficUnavailable,
       // 冷却中的供给：不参与路由，但不是「坏」，额度/限流恢复后自动回来
       blocked,
-      // 冷却已到、但还没被证明恢复（最近一次证据是额度/限流/模型不可用）
+      // 冷却已到、但还没被证明恢复（最近一次证据是限流/模型缺失/失败率过高）
       pendingRecovery,
+      // 只有额度/预算类失败、没有任何真故障：不是「没证据」，是账单问题
+      billingOnly,
       // 真实流量的失败率（窗口内 fail/(ok+fail)）：界面与诊断要能解释
       // 「为什么它突然被冷却了」，不再只能看到一个 error-rate 标签
       failRate,
@@ -402,8 +439,13 @@ export function isRoutable(score) {
   // 这种供给的质量会退化成 null（有效成本按 1 算），等于纯按价格把最没有
   // 证据的那条排到前面。以前这类失败算故障，可用率是 0 自然挡住；归因之后
   // 必须显式要求「有证据」，否则「没测过」就变成了「合格」
-  if (score.availability === null) return false
-  if (score.availability < THRESHOLDS.availability) return false
+  //
+  // 例外：纯账单问题（只有额度/预算类失败、没有任何真故障）。它同样没有分母，
+  // 但「再试一次」就能证明——充值后立刻可用，不该被当成「没测过」而锁死。
+  if (score.availability === null && !score.billingOnly) return false
+  // 必须显式排除 null：`null < 0.8` 在 JS 里是 true（null 会变成 0），
+  // 上面那条 billingOnly 放行会被这一行默默又挡住
+  if (score.availability !== null && score.availability < THRESHOLDS.availability) return false
   // 完整性看「有没有确凿的不合格项」，不看平滑后的分数：
   // 平滑值低只说明证据多且都不好，具体判定由 integrityFaults 给出
   if (Array.isArray(score.integrityFaults) && score.integrityFaults.length > 0) return false

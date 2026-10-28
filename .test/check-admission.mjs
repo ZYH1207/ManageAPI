@@ -75,13 +75,18 @@ console.log('[2] 不登场，且说得出原因')
   // 网关只剩这条会去撞限流，反复失败把客户端时间全耗掉
   const cooling = admissionOf(row({ blocked: { kind: 'rate-limit', until: Date.now() + 120000 } }))
   ok(cooling.ok === false && cooling.kind === 'blocked', `限流冷却中 → ${cooling.kind}`)
-  ok(cooling.text.includes('限流中'), `冷却文案点名原因：${cooling.text}`)
-  ok(cooling.text.includes('分钟后自动重试'), `冷却文案带上剩余时间：${cooling.text}`)
+  ok(cooling.text.includes('上游账号冷却中'), `冷却文案点名原因：${cooling.text}`)
+  ok(cooling.text.includes('还剩') && cooling.text.includes('分钟'), `冷却文案带上剩余时间：${cooling.text}`)
+  // 余额不足不是「冷却」：必须直接说要充值，否则用户不知道该去交钱
+  const broke = admissionOf(row({ blocked: { kind: 'quota', until: Date.now() + 60000 } }))
+  ok(broke.ok === false && broke.kind === 'blocked', `余额不足 → ${broke.kind}`)
+  ok(broke.text.includes('余额不足') && broke.text.includes('充值'), `余额不足说清怎么办：${broke.text}`)
+  ok(!broke.text.includes('冷却'), `余额不足不叫「冷却」（那是账单问题，不是上游排队）：${broke.text}`)
 
   // 冷却到期但还没有成功证据：同样不放行，等下一次探测确认
   const recovering = admissionOf(row({ pendingRecovery: { kind: 'rate-limit', since: Date.now() - 60000 } }))
   ok(recovering.ok === false && recovering.kind === 'blocked', `冷却到期待复测 → ${recovering.kind}`)
-  ok(recovering.text.includes('等下一次探测'), `待复测文案说清在等什么：${recovering.text}`)
+  ok(recovering.text.includes('等一次成功调用'), `待复测文案说清在等什么：${recovering.text}`)
 }
 
 console.log('[3] 「放行可疑供给」只覆盖可疑/不稳定，不覆盖慢速和冷却')
@@ -197,7 +202,7 @@ console.log('[5] 全部不登场时的报错：慢速单独报，其余报不可
   ok(realistic.every((r) => r.admission.ok === false), '3 慢 + 1 限流 → 没有一条能登场')
   const failure4 = admissionFailure(realistic, { model: 'm', maxTtftMs: 8000 })
   ok(failure4.status === 400, `状态码 ${failure4.status}（重试无意义，不能给 5xx）`)
-  ok(failure4.detail.includes('限流中'), `逐站原因里有冷却：${failure4.detail}`)
+  ok(failure4.detail.includes('上游账号冷却中'), `逐站原因里有冷却：${failure4.detail}`)
 }
 
 console.log('[6] 门槛为 0（不限）时不因速度报错')

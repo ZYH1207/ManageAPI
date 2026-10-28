@@ -57,7 +57,7 @@ function makeBook(entries) {
   ok(f[0].severity === 'danger', '余额耗尽 = danger')
   ok(f[0].layer === 'site', '层级=站点')
   ok(f[0].title.includes('0.39') && f[0].title.includes('42'), '结论带余额数字和次数')
-  ok(f[0].detail.includes('并发无关'), '明确排除并发怀疑')
+  ok(f[0].detail.includes('并发'), '明确排除并发怀疑')
   ok(typeof f[0].action === 'string' && f[0].action.includes('充值'), '给出去处')
 
   // 只有次数、没有余额读数 → 降级为 warn 疑似
@@ -86,7 +86,7 @@ function makeBook(entries) {
   ])
   const f = checkBalanceDrain({ errorbook: book, providers: [{ id: 'p_q', name: '秋', quotaRemaining: 5 }] })
   ok(f.length === 1 && f[0].title.includes('限流'), '32 次 429 → 限流结论')
-  ok(f[0].action.includes('无需处理'), '限流建议=无需处理（自动冷却已兜住）')
+  ok(f[0].action.includes('不用处理') && f[0].action.includes('换一条供给'), '限流建议=不用处理 + 急用就换供给')
 }
 
 // ---------------------------------------------------------------- 规则② 并发自查

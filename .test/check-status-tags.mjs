@@ -73,8 +73,18 @@ console.log('[4] 没有分母 / 冷却中 / 兜底各标各的')
   ok(same(admissionTags(noEvidence), ['no-evidence']), '有样本但没有可用率 → 没有可信样本')
   const stale = row({ status: 'stale', availability: null, samples: 6 })
   ok(same(admissionTags(stale), ['fallback']), '证据全过期 → 兜底（不是「没有可信样本」）')
-  const blocked = row({ status: 'unknown', availability: null, samples: 6, blocked: { kind: 'quota', until: Date.now() + 1e6 } })
-  ok(same(admissionTags(blocked), ['blocked']), '冷却中 → 只标冷却，不标「没有可信样本」')
+  // 余额不足不叫「冷却」：单独一个 billing 标签，让页面直接写「请充值」
+  const broke = row({ status: 'unknown', availability: null, samples: 6, blocked: { kind: 'quota', until: Date.now() + 1e6 } })
+  ok(same(admissionTags(broke), ['billing']), '余额不足 → billing，不标「没有可信样本」')
+  const billingOnly = row({ status: 'unknown', availability: null, samples: 6, billingOnly: true })
+  ok(same(admissionTags(billingOnly), ['unverified']), '纯账单问题 → 待验证（不叫「没有可信样本」）')
+  const blocked = row({
+    status: 'unknown',
+    availability: null,
+    samples: 6,
+    blocked: { kind: 'rate-limit', until: Date.now() + 1e6 },
+  })
+  ok(same(admissionTags(blocked), ['blocked']), '真冷却（限流）→ 只标冷却，不标「没有可信样本」')
   // 冷却 + 慢速：两件事都成立，都标
   const blockedSlow = row({ tooSlow: true, blocked: { kind: 'rate-limit', until: Date.now() + 1e6 } })
   ok(same(admissionTags(blockedSlow), ['slow', 'blocked']), '又慢又冷却 → slow + blocked')
@@ -85,7 +95,7 @@ console.log('[4] 没有分母 / 冷却中 / 兜底各标各的')
     status: 'unknown',
     availability: null,
     samples: 6,
-    pendingRecovery: { kind: 'quota', since: Date.now() - 3600000 },
+    pendingRecovery: { kind: 'rate-limit', since: Date.now() - 3600000 },
   })
   ok(
     same(admissionTags(recoveringNoEvidence), ['awaiting-recovery']),

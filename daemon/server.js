@@ -1910,6 +1910,8 @@ function protocolTargets(db) {
         hasKey: Boolean(credentialForOffer(db, offer)),
         tags,
         blocked,
+        // 窗口到了但还没被证明恢复时，页面要把原因写出来（「上游账号冷却中 · 等确认恢复」）
+        pendingRecovery: score ? score.pendingRecovery || null : null,
         probeStatus,
       })
     }

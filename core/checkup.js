@@ -65,7 +65,11 @@ export function judgeOffer({ probe = null, modelListed = null, balance = null, l
   // 余额
   if (typeof balance === 'number' && balance < lowBalanceThreshold) {
     worse(balance <= 0 ? 'bad' : 'warn')
-    reasons.push(`余额只剩 ${balance.toFixed(2)}，随时可能拒单`)
+    reasons.push(
+      balance <= 0
+        ? `余额只剩 ${balance.toFixed(2)}：必定拒单，去这个站充值`
+        : `余额只剩 ${balance.toFixed(2)}，随时可能拒单，建议尽快充值`,
+    )
   }
 
   return { verdict, reasons }

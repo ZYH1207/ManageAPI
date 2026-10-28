@@ -152,8 +152,8 @@ export function applySnapshot(db, snap) {
         level,
         title:
           balance.remaining <= 0
-            ? `余额已用尽（${balance.currency || 'CNY'} ${balance.remaining}）`
-            : `余额低于阈值（剩 ${balance.currency || 'CNY'} ${balance.remaining}，阈值 ${Math.round(threshold * 100) / 100}）`,
+            ? `余额已用尽（${balance.currency || 'CNY'} ${balance.remaining}）—— 去这个站充值，充完 1 分钟内网关会自己重试`
+            : `余额低于阈值（剩 ${balance.currency || 'CNY'} ${balance.remaining}，阈值 ${Math.round(threshold * 100) / 100}）—— 快见底了，建议先充值`,
         at,
         cooldownMs: 12 * 3600 * 1000,
       })
@@ -164,8 +164,8 @@ export function applySnapshot(db, snap) {
       providerId,
       code: 'balance_failed',
       level: 'info',
-      title: '余额读取失败',
-      detail: balance.reason,
+      title: '余额读取失败（卡片上的余额会停在旧值）',
+      detail: `${balance.reason} → 去站点后台重新复制管理令牌（或直接手填余额），然后点卡片上的「一键同步」立刻重读`,
       at,
       cooldownMs: 24 * 3600 * 1000,
     })

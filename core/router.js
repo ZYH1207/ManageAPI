@@ -19,7 +19,7 @@
  * 「结果可疑但我认了」和「刚被上游拒过」是两件事，后者试了只会白等一个来回。
  */
 import { offerCost } from './pricing.js'
-import { UNAVAILABLE_LABEL } from './failure.js'
+import { describeUnavailable, isRealCooldown } from './failure.js'
 import { isRoutable, effectiveCost, THRESHOLDS, MIN_SAMPLES_FOR_VERDICT } from './score.js'
 import { normalizeModelKey, modelIdentityKey } from './inventory.js'
 import { normalizeDecisionMode, compareByBasis } from './decision-mode.js'
@@ -33,18 +33,21 @@ function getScore(scores, offerId) {
 }
 
 /**
- * 冷却类状态的文案：原因 + 还要等多久 / 在等什么。
+ * 这一类状态的文案：原因 + 还要等多久 / 在等什么 + 该做什么。
  *
- * 两种状态共用一套措辞，因为对客户端来说它们是同一件事（现在不派活），
- * 只差「是等时间还是等证据」：
- *   pending=false —— 冷却窗口内，等时间到（额度/限流/模型不可用）
- *   pending=true  —— 冷却已到，等下一次探测成功才算恢复
+ *   pending=false —— 等待窗口内，等时间到
+ *   pending=true  —— 窗口到了，等一次成功调用确认恢复
+ *
+ * 「冷却」只用在真正的账号冷却（限流）上：余额不足写成「冷却 30 分钟」会把
+ * 账单问题伪装成上游在排队，用户不知道该去充值。
  */
 function blockedText(reason, { pending = false } = {}) {
-  const label = UNAVAILABLE_LABEL[reason?.kind] || '暂时不可用'
-  if (pending) return `${label}：冷却已到，等下一次探测确认恢复`
+  const { label, hint } = describeUnavailable(reason?.kind)
+  const kind = reason?.kind
+  if (pending) return `${label}：已到点，等一次成功调用确认恢复（${hint}）`
   const minutes = Math.max(1, Math.ceil((Number(reason?.until) - Date.now()) / 60000))
-  return `${label}：冷却 ${minutes} 分钟后自动重试`
+  if (isRealCooldown(kind)) return `${label}：还剩 ${minutes} 分钟（${hint}）`
+  return `${label}：${minutes} 分钟后自动重试（${hint}）`
 }
 
 /**
@@ -116,8 +119,8 @@ export function admissionOf(row) {
   const samples = Number(row.samples) || 0
   const availability = row.availability
   if (availability === null || availability === undefined) {
-    if (samples === 0 || row.status === 'stale') {
-      // 放行
+    if (samples === 0 || row.status === 'stale' || row.billingOnly) {
+      // 放行：没探过 / 证据过期 / 纯账单问题（充值后重试本身就是证据）
     } else {
       return { ok: false, kind: 'no-evidence', text: '没有可信样本：探针被额度/限流挡住' }
     }
@@ -164,13 +167,16 @@ export function admissionTags(row) {
     !row.blocked &&
     !row.pendingRecovery
   ) {
-    // 有样本、可用率却没有分母：探针全被额度/限流挡住
-    tags.push('no-evidence')
+    // 有样本、可用率却没有分母：探针全被限流/模型缺失挡住（真没证据）。
+    // 纯账单问题不算「没证据」——那是钱包问题，准入会放行，标「待验证」就好
+    tags.push(row.billingOnly ? 'unverified' : 'no-evidence')
   }
-  // 冷却中不是「坏」：额度/限流/模型不在分组，恢复后自动回来。
-  // 冷却到期但还没探到成功，就是「待复测」——两种都要标，用户才知道为什么没派活
-  if (row.blocked) tags.push('blocked')
-  else if (row.pendingRecovery) tags.push('awaiting-recovery')
+  // 冷却中 / 待复测：不是「坏」，但此刻派过去只会失败。
+  // 余额不足单独给一个标签：那是账单问题，要人去充值，跟「上游在排队」不是一回事
+  if (row.blocked) tags.push(row.blocked.kind === 'quota' ? 'billing' : 'blocked')
+  else if (row.pendingRecovery) {
+    tags.push(row.pendingRecovery.kind === 'quota' ? 'billing' : 'awaiting-recovery')
+  }
   // 没有任何毛病时才谈「靠什么撑着」——否则「兜底」会盖住真正的问题
   if (tags.length === 0 && (row.status === 'stale' || row.status === 'unknown')) tags.push('fallback')
   if (tags.length === 0) tags.push('ok')
@@ -249,11 +255,20 @@ export function admissionFailure(candidates, { model = '', maxTtftMs = 0 } = {})
       message: `上游速度慢于首字门槛（${maxTtftMs}ms）：${detail}。可在「智能决策」页放宽门槛，或换个模型`,
     }
   }
+  // 最后一句必须是「我能做什么」。只报原因不给出路，用户照样看不懂
+  const kinds = new Set(candidates.map((c) => c.admission?.kind).filter(Boolean))
+  const advice = kinds.has('blocked')
+    ? '按括号里的提示处理（充值 / 等冷却 / 换分组），或到「智能决策」页换一条供给'
+    : kinds.has('degraded') || kinds.has('unstable')
+      ? '这些供给结果不可信或不稳：去「探针」页复测一次，或换一条供给'
+      : kinds.has('no-evidence')
+        ? '这些供给没有可用样本：在「探针」页手动探一次就有结论'
+        : '到「智能决策」页看全部候选和原因'
   return {
     status: 400,
     type: 'no_available_supply',
     detail,
-    message: `没有可用的 ${model}：${detail}`,
+    message: `没有可用的 ${model}：${detail}。${advice}`,
   }
 }
 
@@ -376,6 +391,8 @@ export function selectCandidates({
       blocked: score?.blocked || null,
       // 冷却已到、但还没被证明恢复：同样不派，等下一次探测成功
       pendingRecovery: score?.pendingRecovery || null,
+      // 只有额度/预算类失败、没有任何真故障：不是「没证据」，是账单问题
+      billingOnly: Boolean(score?.billingOnly),
       availability: score?.availability ?? null,
       integrityFaults: score?.integrityFaults || [],
       allowUntrusted,

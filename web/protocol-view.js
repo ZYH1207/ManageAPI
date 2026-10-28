@@ -43,16 +43,20 @@ const STATUS_TAG = {
   degraded: { label: '结果可疑', cls: 'warn' },
   unstable: { label: '不稳定', cls: 'danger' },
   'no-evidence': { label: '没有可信样本', cls: 'warn' },
+  unverified: { label: '待验证（曾余额不足）', cls: '' },
   inconclusive: { label: '证据不足', cls: '' },
   blocked: { label: '冷却中', cls: 'warn' },
+  billing: { label: '余额不足 · 请充值', cls: 'danger' },
+  'awaiting-recovery': { label: '等确认恢复', cls: 'warn' },
   fallback: { label: '兜底', cls: '' },
   ok: { label: '可用', cls: 'ok' },
 }
 const BLOCKED_LABEL = {
-  quota: '额度不足',
-  budget: '单次预算超限',
-  'rate-limit': '限流中',
-  'model-missing': '模型不可用',
+  quota: '余额不足',
+  budget: '单次请求超限',
+  'rate-limit': '上游账号冷却中',
+  'model-missing': '该分组没有这个模型',
+  'error-rate': '失败率过高',
 }
 
 const MANUAL_KEY = 'manageapi.protocol.manual'
@@ -60,7 +64,16 @@ const BATCH_WARN_KEY = 'manageapi.protocol.batchWarn'
 /** 超过这个数量就弹「可能消耗过多 Token」确认 */
 const BATCH_WARN_LIMIT = 5
 
-const BAD_TAG_KINDS = new Set(['slow', 'degraded', 'unstable', 'no-evidence', 'inconclusive', 'blocked'])
+const BAD_TAG_KINDS = new Set([
+  'slow',
+  'degraded',
+  'unstable',
+  'no-evidence',
+  'inconclusive',
+  'blocked',
+  'awaiting-recovery',
+  'billing',
+])
 
 const state = {
   targets: null,
@@ -142,7 +155,9 @@ function statusBadgesHtml(model) {
       const label =
         kind === 'blocked' && model.blocked
           ? `${t(BLOCKED_LABEL[model.blocked.kind] || '暂时不可用')} · ${t('冷却中')}`
-          : t(spec.label)
+          : kind === 'awaiting-recovery' && model.pendingRecovery
+            ? `${t(BLOCKED_LABEL[model.pendingRecovery.kind] || '暂时不可用')} · ${t('等确认恢复')}`
+            : t(spec.label)
       return `<span class="badge${spec.cls ? ` ${spec.cls}` : ''}">${esc(label)}</span>`
     })
     .join(' ')

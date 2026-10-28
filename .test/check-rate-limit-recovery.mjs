@@ -123,7 +123,7 @@ console.log('[2] 现场：3 条慢速 + 1 条限流 → 一条都不登场，400
   )
   const failure = admissionFailure(rows, { model: 'm', maxTtftMs: 8000 })
   ok(failure.status === 400, `直接 400，不拿限流那条碰运气（${failure.status}）`)
-  ok(failure.detail.includes('限流中'), `逐站原因里有「限流中」：${failure.detail.slice(0, 80)}…`)
+  ok(failure.detail.includes('上游账号冷却中'), `逐站原因里有「上游账号冷却中」：${failure.detail.slice(0, 80)}…`)
   ok(failure.detail.includes('慢速'), '慢速的三条也在原因里')
 }
 
@@ -193,6 +193,35 @@ console.log('[3] 定时探测：冷却窗口内跳过，冷却到期按 10 分�
     ok(probed.has('traffic-only'), '只有真实流量 429 的供给也被复测（没有探针记录不等于不用管）')
     ok(!probed.has('cooling'), '冷却窗口内（2 分钟前限流）跳过，不白烧请求')
     ok(!probed.has('healthy'), '健康站仍按基础间隔（60 分钟），不因为别人复测被顺带探')
+
+    // ---------------------------------------------------------------- 关闭定时探测
+    // 「定时探测 = 关闭」只关例行体检，不关自愈：否则冷却中的供给永远拿不到
+    // 新证据，路由也就不放行，等于永久锁死（真实踩过：余额充回来了，供给还挂着
+    // 「等探测确认」，因为没人再去探）
+    await store.mutate((db) => {
+      db.settings.probeIntervalMinutes = 0
+      db.offers = ['cooling2', 'healthy2', 'never'].map(mkOffer)
+      db.probes = [
+        { offerId: 'cooling2', ts: isoAgo(12 * 60_000), ...limited },
+        { offerId: 'healthy2', ts: isoAgo(12 * 60_000), ...good },
+      ]
+      db.traffic = {}
+    })
+    const probed2 = new Set()
+    const stop2 = startProbeScheduler({
+      runProbes: async ({ offerIds }) => {
+        for (const id of offerIds) probed2.add(id)
+        return []
+      },
+      tickMs: 25,
+      firstDelayMs: 0,
+      logger: { info() {}, warn() {} },
+    })
+    await new Promise((resolve) => setTimeout(resolve, 400))
+    stop2()
+    ok(probed2.has('cooling2'), '定时探测关闭后，冷却到期的供给仍被复测（自愈不看开关）')
+    ok(!probed2.has('healthy2'), '定时探测关闭后，健康站不再例行探测')
+    ok(!probed2.has('never'), '也不会借自愈给从没探过的供给「开张」')
   } finally {
     await rm(home, { recursive: true, force: true }).catch(() => {})
   }
@@ -355,7 +384,7 @@ console.log('[4] 真跑网关：限流的供给一次都不该被请求')
     const secondBody = await second.json()
     ok(second.status === 400, `没有可用供给 → 400（${second.status}）`)
     ok(JSON.stringify(secondBody).includes('no_available_supply'), '错误码指明「没有可用供给」')
-    ok(JSON.stringify(secondBody).includes('限流中'), '错误信息说清是限流中')
+    ok(JSON.stringify(secondBody).includes('上游账号冷却中'), '错误信息说清是上游账号冷却')
     ok(hits['/a/v1'] === 0 && hits['/b/v1'] === 0, '上游一次请求都没发（时间不浪费在必然失败的路上）')
   } finally {
     app.kill()

@@ -220,7 +220,7 @@ try {
   await new Promise((r) => setTimeout(r, 300))
   const body1 = await evaluate(`document.querySelector('#view-diagnosis').innerHTML`)
   ok(body1.includes('insufficient balance'), '展开后账本数据可见')
-  ok(body1.includes('额度不足'), 'kind=quota 显示为「额度不足」')
+  ok(body1.includes('余额不足'), 'kind=quota 显示为「余额不足」（账单问题，不叫冷却）')
   ok(body1.includes('42'), '失败次数显示')
   ok(!body1.includes('供给表现</h3>') && !body1.includes('吐字/s'), '另一块仍收起')
 

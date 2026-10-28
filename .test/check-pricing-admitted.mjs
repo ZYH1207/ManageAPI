@@ -56,7 +56,8 @@ console.log('[1] 契约：被隐藏的正好是那几类硬伤')
     ['结果可疑', row({ status: 'degraded', integrityFaults: ['指纹不符'] })],
     ['不稳定', row({ status: 'unstable', availability: 0.33 })],
     ['没有可信样本', row({ status: 'unknown', availability: null, samples: 5 })],
-    ['冷却中', row({ blocked: { kind: 'quota', until: Date.now() + 1e6 }, availability: null, samples: 1 })],
+    ['余额不足', row({ blocked: { kind: 'quota', until: Date.now() + 1e6 }, availability: null, samples: 1 })],
+    ['冷却中', row({ blocked: { kind: 'rate-limit', until: Date.now() + 1e6 }, availability: null, samples: 1 })],
     [
       '冷却到期待复测',
       row({ pendingRecovery: { kind: 'rate-limit', since: Date.now() - 60000 } }),
@@ -66,7 +67,9 @@ console.log('[1] 契约：被隐藏的正好是那几类硬伤')
     ok(admissionOf(sample).ok === false, `${label} → 不显示`)
     const tags = admissionTags(sample)
     ok(
-      tags.some((k) => ['slow', 'degraded', 'unstable', 'no-evidence', 'blocked', 'awaiting-recovery'].includes(k)),
+      tags.some((k) =>
+        ['slow', 'degraded', 'unstable', 'no-evidence', 'blocked', 'billing', 'awaiting-recovery'].includes(k),
+      ),
       `${label} → 标签里确实有对应的毛病（${tags.join('+')}）`,
     )
   }
@@ -141,7 +144,8 @@ console.log('[3] /api/state 下发 admission（前端靠它过滤，不自己拼
       { offerId: id('healthy-model'), ts, ...good },
       { offerId: id('healthy-model'), ts, ...good },
       // 冷却中：额度不足，不是坏站，但此刻不派活（放行只是再撞一次）
-      { offerId: id('blocked-model'), ts, ok: false, error: 'insufficient balance' },
+      // 余额不足：1 分钟窗口内（10 秒前刚失败），所以此刻仍然不放行
+      { offerId: id('blocked-model'), ts: new Date(Date.now() - 10_000).toISOString(), ok: false, error: 'insufficient balance' },
       // 冷却已到（429 是 20 分钟前，5 分钟冷却早过了），但之后没有成功证据：
       // 路由仍然不放行，等下一次探测确认
       { offerId: id('recovering-model'), ts: new Date(Date.now() - 90 * 60_000).toISOString(), ...good },
@@ -186,7 +190,7 @@ console.log('[3] /api/state 下发 admission（前端靠它过滤，不自己拼
       ok(score('degraded-model')?.admission?.ok === false, '可疑 → 不放行')
       ok(score('unstable-model')?.admission?.ok === false, '不稳定 → 不放行')
       ok(score('blocked-model')?.admission?.ok === false, '冷却中 → 不放行（放行只是再撞一次限流）')
-      ok(score('blocked-model')?.blocked?.kind === 'quota', '冷却原因下发到前端（额度不足）')
+      ok(score('blocked-model')?.blocked?.kind === 'quota', '不可用原因下发到前端（余额不足）')
       ok(
         score('recovering-model')?.blocked === null && Boolean(score('recovering-model')?.pendingRecovery),
         '冷却到期但没复测成功 → pendingRecovery',

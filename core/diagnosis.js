@@ -70,9 +70,11 @@ export function checkBalanceDrain({ errorbook = {}, providers = [], monitorBalan
         layer: 'site',
         severity: 'danger',
         title: `「${p.name}」余额只剩 ${balance.toFixed(2)}，最近 6 小时拒了你 ${hit.quota} 单`,
-        detail: '报错是计费错（insufficient balance），不是限流——跟你的并发无关，充值即解。',
+        detail:
+          '这是计费错（insufficient balance），不是限流也不是你的并发问题：账号钱包空了。' +
+          '网关会把这类供给按余额不足处理（1 分钟后自动重试），不会误判成坏站。',
         evidence: { balance, quotaErrors: hit.quota, templates: hit.templates.slice(0, 2) },
-        action: '给这个站充值；充完它会在下次请求自动恢复，不用重启网关',
+        action: '去这个站充值；充完不用重启网关，1 分钟内网关会自己重新试',
       })
     } else if (hit.quota >= 5) {
       findings.push({
@@ -86,7 +88,7 @@ export function checkBalanceDrain({ errorbook = {}, providers = [], monitorBalan
           ? `余额读数 ${balance}（偏低）`
           : '余额接口没读到数，无法确认是欠费还是站方账号池抖动',
         evidence: { quotaErrors: hit.quota, balance: balance ?? null },
-        action: lowBalance ? '建议充值' : '点开账本看原始报错，或隔一小时再观察',
+        action: lowBalance ? '去这个站充值（余额低于 1 很容易随时拒单）' : '点开错误账本看原始报错，或隔一小时再观察',
       })
     }
     if (hit.rateLimit >= 10) {
@@ -97,9 +99,9 @@ export function checkBalanceDrain({ errorbook = {}, providers = [], monitorBalan
         layer: 'site',
         severity: 'warn',
         title: `「${p.name}」最近 6 小时被限流 ${hit.rateLimit} 次`,
-        detail: '限流是站方账号池的事，等它过去即可；网关已自动冷却这些供给',
+        detail: '限流是站方账号池在排队，不是你的并发太大；网关会按上游给的冷却时间避开它，到点自动复测',
         evidence: { rateLimitErrors: hit.rateLimit },
-        action: '无需处理；持续整天都这样再考虑换站',
+        action: '不用处理；要立刻恢复就换一条供给，或者等它到点（有的模型冷却 5 小时）',
       })
     }
   }

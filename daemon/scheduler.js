@@ -7,9 +7,12 @@
  *
  * 间隔是自适应的：健康站按用户设定的基础间隔，其它站（不健康 / 证据不足 /
  * 过期 / 从没探过）按 1/3 间隔（最少 10 分钟）补测——问题站点应该尽快拿到
- * 新证据，而不是等一整轮。冷却中的供给（额度不足/限流）在冷却窗口内直接跳过；
- * 冷却到期后按 RECOVERY_INTERVAL_MIN 复测，探到成功才重新放行（路由侧看
+ * 新证据，而不是等一整轮。冷却中的供给（限流/模型不在分组）在窗口内直接跳过；
+ * 窗口到了按 RECOVERY_INTERVAL_MIN 复测，探到成功才重新放行（路由侧看
  * score.pendingRecovery，不看钟）。
+ *
+ * 「定时探测 = 关闭」只关例行体检：冷却/待复测的那几条仍会按复测节奏去验，
+ * 否则关掉定时探测之后，它们永远拿不到新证据，也就永远不放行（见下面 selfHealOnly）。
  *
  * 暂停时段（core/schedule.js）优先于上面一切：窗口内一个请求都不发，到点自动恢复。
  */
@@ -109,7 +112,6 @@ export function startProbeScheduler({
     }
 
     const intervalMinutes = Number(db.settings.probeIntervalMinutes) || 0
-    if (intervalMinutes <= 0) return
 
     // --------------------------------------------------------------- 暂停时段
     // 放在到期判断之前：窗口内连「谁该探」都不用算，一个请求都不发。
@@ -128,6 +130,10 @@ export function startProbeScheduler({
       logger.info?.('[定时探测] 暂停时段结束，恢复探测')
       pausedLogged = false
     }
+    // 「定时探测 = 关闭」只关「例行体检」，不关自愈：冷却到期/待复测的供给必须
+    // 有人去验，否则永远回不来。以前这一句早退在复测判定之前，于是关掉定时探测
+    // 之后，冷却中的供给就再也不会有新证据（路由也不放行），永久锁死。
+    const selfHealOnly = intervalMinutes <= 0
     // 不健康 / 证据不足 / 过期的供给加密补测，让问题站点尽快拿到新证据
     const retryMinutes = Math.max(RETRY_INTERVAL_FLOOR_MIN, Math.round(intervalMinutes / 3))
     // 到期候选只用「在役」供给（未下线/站点未暂停/未忽略）——与 runProbes 同口径。
@@ -143,15 +149,18 @@ export function startProbeScheduler({
     const due = routable
       .filter((offer) => {
         const score = scores.get(offer.id)
-        if (!score || !score.lastProbeAt) return true
-        // 冷却中（额度不足/限流/模型不在分组）探了也是白探：等冷却结束再验
+        // 自愈模式不主动给新供给「开张」：只补冷却/待复测这几条，其余照旧不探
+        if (!score || !score.lastProbeAt) return !selfHealOnly
+        // 冷却中（限流/模型不在分组）探了也是白探：等窗口到了再验
         if (score.blocked && score.blocked.until > now) return false
-        // 冷却已到、但最近一次证据仍是「暂时不可用」（额度/限流/模型不在分组）：
-        // 按复测节奏探，探到成功才算恢复。路由在恢复前一直不放行（见
-        // score.pendingRecovery）——不复测就会永远停在那里，复测太慢又会把站晾着
+        // 冷却已到、但最近一次证据仍是「等它自己恢复」的那几类：按复测节奏探，
+        // 探到成功才算恢复（见 score.pendingRecovery）——不复测就会永远停在那里。
+        // 余额不足/单次超限已经不在 pendingRecovery 里（充值/缩小请求后本来就该
+        // 立刻能试），它们会走下面的例行探测或直接由真实调用自证。
         if (score.pendingRecovery) {
           return now - new Date(score.lastProbeAt).getTime() >= RECOVERY_INTERVAL_MIN * 60000
         }
+        if (selfHealOnly) return false
         // 「健康但有完整性疑点」也要加密探测：截断/虚报要 2 个样本才定性，
         // 只测到 1 次异常时状态还是 healthy，若按基础间隔等一小时才补第二针，
         // 真砍额度的站会被放过一小时。这里让它走重试间隔，20 分钟内见分晓

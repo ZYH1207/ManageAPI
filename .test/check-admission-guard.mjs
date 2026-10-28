@@ -89,17 +89,31 @@ const scoreOf = (offerId, trafficRow) => {
   const edge = scoreOf('o_edge', traffic('o_edge', { ok: 15, fail: 5 })) // 20 样本、25%
   eq(edge.blocked?.kind, 'error-rate', '恰好达标就冷却（20 样本 / 5 次失败 / 25%）')
 
-  // 完全成功后失败一次的旧行为仍在（时间型冷却优先级）
+  // 时间型窗口仍在（优先级高于比率型）：余额不足只挡 1 分钟，充了钱就该马上能试
   const quotaRow = scoreOffers(
     [
       probe('o_q'),
-      // 失败必须比成功更新，时间型冷却才成立
-      { offerId: 'o_q', ts: iso(60_000), ok: false, error: 'HTTP 403 insufficient balance' },
+      // 失败必须比成功更新，时间型窗口才成立
+      { offerId: 'o_q', ts: iso(20_000), ok: false, error: 'HTTP 403 insufficient balance' },
     ],
     {},
     { now },
   ).get('o_q')
-  eq(quotaRow.blocked?.kind, 'quota', '额度类错误仍走时间型冷却（不被比率型覆盖）')
+  eq(quotaRow.blocked?.kind, 'quota', '余额不足仍走时间型窗口（不被比率型覆盖）')
+  ok(quotaRow.blocked.until - now <= 60_000, `余额不足只挡 1 分钟（实际 ${Math.round((quotaRow.blocked.until - now) / 1000)} 秒）`)
+
+  // 1 分钟一过就不再挂状态：充值后靠「再试一次」自证，不要求先有成功证据
+  const quotaExpired = scoreOffers(
+    [
+      probe('o_q2'),
+      { offerId: 'o_q2', ts: iso(120_000), ok: false, error: 'HTTP 403 insufficient balance' },
+    ],
+    {},
+    { now },
+  ).get('o_q2')
+  eq(quotaExpired.blocked, null, '余额不足 1 分钟后不再挡住')
+  eq(quotaExpired.pendingRecovery, null, '也不要求「先有成功证据」才放行')
+  eq(quotaExpired.billingOnly, true, '标记成纯账单问题（没有真故障）')
 }
 
 // ---------------------------------------------------------------- ② 绝境兜底
