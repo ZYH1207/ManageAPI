@@ -210,6 +210,16 @@ export function scoreOffers(probes, traffic = {}, options = {}) {
       unavailableKind && unavailableAt > successAt ? cooldownUntil(unavailableKind, unavailableAt) : 0
     const blocked = blockedUntil > now ? { kind: unavailableKind, until: blockedUntil } : null
 
+    // 冷却到期不等于恢复。冷却只回答「这段时间别去试」，恢复要**证据**：
+    // 最近一次证据仍是额度/限流/模型不可用（晚于最后一次成功），说明它还没被证明
+    // 能用了。此时放行只会再撞一次同样的墙——典型现场：一个模型 4 条供给，3 条
+    // 慢速被首字门槛挡住，剩下 1 条限流，网关就反复拿这条去试，时间全耗在必然失败的请求上。
+    // 解除条件只有一个：之后有一次成功（探针或真实流量）把 successAt 推到失败之后。
+    const pendingRecovery =
+      unavailableKind && unavailableAt > successAt
+        ? { kind: unavailableKind, since: unavailableAt }
+        : null
+
     const quality =
       availability === null || integrity === null ? availability ?? integrity : availability * integrity
 
@@ -285,6 +295,8 @@ export function scoreOffers(probes, traffic = {}, options = {}) {
       unavailableSamples: probeUnavailable + trafficUnavailable,
       // 冷却中的供给：不参与路由，但不是「坏」，额度/限流恢复后自动回来
       blocked,
+      // 冷却已到、但还没被证明恢复（最近一次证据是额度/限流/模型不可用）
+      pendingRecovery,
       availability,
       fingerprintRate,
       truncationRate,
@@ -338,6 +350,9 @@ export function isRoutable(score) {
   if (score.status === 'inconclusive') return false
   // 冷却中（额度不足/限流/模型不在分组）：不是坏站，但此刻派过去只会失败
   if (score.blocked) return false
+  // 冷却已到但还没有成功证据：同样不放行。恢复看证据不看钟（见 scoreOffers 的
+  // pendingRecovery）——否则冷却一过就再撞一次限流，白等一个来回
+  if (score.pendingRecovery) return false
   // 一条可靠性样本都没有（探针全是额度/限流失败，归因后不进分母）时不能放行：
   // 这种供给的质量会退化成 null（有效成本按 1 算），等于纯按价格把最没有
   // 证据的那条排到前面。以前这类失败算故障，可用率是 0 自然挡住；归因之后

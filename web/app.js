@@ -2164,7 +2164,10 @@ function renderPricing() {
       const score = state.scores[row.offerId]
       // 状态标签由服务端按 core/router.js#admissionTags 下发：慢速 / 可疑 / 不稳定
       // 可以同时成立，全都标出来。价目表里只标「毛病」：可用是默认、兜底是决策页的概念
-      const badges = statusBadges(score?.tags, { blocked: score?.blocked, hide: ['ok', 'fallback'] })
+      const badges = statusBadges(score?.tags, {
+        blocked: score?.blocked || score?.pendingRecovery,
+        hide: ['ok', 'fallback'],
+      })
       const cacheCell =
         row.cacheHitRate === null || row.cacheHitRate === undefined
           ? '—'
@@ -2255,7 +2258,7 @@ function renderPricing() {
             })
           : t('{shown} / {total} 个模型', { shown: shownGroups.length, total: state.ranked.length })
       }</span>
-      <label class="switch switch-inline" title="${t('打开后只显示准入通过的供给：慢速 / 结果可疑 / 不稳定 / 没有可信样本整行隐藏；冷却中、评分过期、未探测的仍然显示（它们不是坏站）。随时可切。')}">
+      <label class="switch switch-inline" title="${t('打开后只显示准入通过的供给：慢速 / 结果可疑 / 不稳定 / 没有可信样本 / 冷却中（额度不足、限流）整行隐藏；评分过期、未探测的仍然显示（它们不是坏站）。随时可切。')}">
         <input type="checkbox" id="pricing-only-admitted" ${onlyAdmitted ? 'checked' : ''} />
         <span class="switch-track"><span class="switch-knob"></span></span>
         <span class="switch-text"><b>${t('只显示允许放行')}</b></span>
@@ -2270,7 +2273,7 @@ function renderPricing() {
     ${ignoredCount ? `<p class="hint">已忽略 ${ignoredCount} 个模型：它们不出现在比价、智能决策、探针和网关里。<button class="ghost tiny" data-act="ignored-models">管理</button></p>` : ''}
     ${groups ||
     (onlyAdmitted && hiddenRows
-      ? `<div class="empty"><h3>${t('没有允许放行的供给')}</h3><p>${t('当前范围内有 {n} 条供给被这个开关隐藏了：慢速、结果可疑、不稳定或没有可信样本。关掉开关就能看到它们。', { n: hiddenRows })}</p></div>`
+      ? `<div class="empty"><h3>${t('没有允许放行的供给')}</h3><p>${t('当前范围内有 {n} 条供给被这个开关隐藏了：慢速、结果可疑、不稳定、没有可信样本或冷却中。关掉开关就能看到它们。', { n: hiddenRows })}</p></div>`
       : '')}${unpricedBlock}`
 }
 
@@ -2505,9 +2508,15 @@ const BLOCKED_LABEL = {
   'rate-limit': '限流中',
   'model-missing': '模型不可用',
 }
-function blockedLabel(blocked) {
+/**
+ * 冷却类状态的徽章文案。
+ *
+ * pending=false —— 冷却窗口内，等时间到
+ * pending=true  —— 冷却已到，等下一次探测成功才算恢复（路由仍然不放行）
+ */
+function blockedLabel(blocked, { pending = false } = {}) {
   const label = BLOCKED_LABEL[blocked?.kind] || '暂时不可用'
-  return `${t(label)} · ${t('冷却中')}`
+  return `${t(label)} · ${t(pending ? '等探测确认' : '冷却中')}`
 }
 
 // 状态标签的文案与配色。kind 由 core/router.js#admissionTags 判定，这里只负责画——
@@ -2520,6 +2529,7 @@ const STATUS_TAG = {
   'no-evidence': { label: '没有可信样本', cls: 'warn' },
   inconclusive: { label: '证据不足', cls: '' },
   blocked: { label: '冷却中', cls: 'warn' },
+  'awaiting-recovery': { label: '等探测确认', cls: 'warn' },
   fallback: { label: '兜底', cls: '' },
   ok: { label: '可用', cls: 'ok' },
 }
@@ -2529,7 +2539,8 @@ const STATUS_TAG = {
  *
  * @param {string[]} tags core/router.js#admissionTags 的返回
  * @param {{blocked?:object, released?:boolean, hide?:string[]}} options
- *   blocked  —— 冷却中的具体原因（额度不足 / 限流中…），措辞统一走 blockedLabel
+ *   blocked  —— 冷却/待复测的具体原因（额度不足 / 限流中…），措辞统一走 blockedLabel；
+ *               待复测时传 pendingRecovery 那个对象也行（blockedLabel 只读 kind）
  *   released —— 「放行可疑供给」开着、准入放行了的可疑站，末尾补一个「已放行」，
  *               不往每一条问题上重复挂后缀
  *   hide     —— 不画的标签。比价页那种价格表里「可用」是默认状态、「兜底」是
@@ -2542,7 +2553,12 @@ function statusBadges(tags, { blocked = null, released = false, hide = [] } = {}
     .map((kind) => {
       const spec = STATUS_TAG[kind]
       if (!spec) return `<span class="badge">${esc(kind)}</span>`
-      const label = kind === 'blocked' && blocked ? blockedLabel(blocked) : t(spec.label)
+      const label =
+        kind === 'blocked'
+          ? blockedLabel(blocked)
+          : kind === 'awaiting-recovery'
+            ? blockedLabel(blocked, { pending: true })
+            : t(spec.label)
       return `<span class="badge${spec.cls ? ` ${spec.cls}` : ''}">${label}</span>`
     })
   if (released) html.push(`<span class="badge warn">${t('已放行')}</span>`)
@@ -2582,7 +2598,7 @@ function renderDecision() {
     const isCollapsed = collapsedPanels.has(panelKey)
     const rows = decision.candidates.map((candidate, index) => {
       const badges = statusBadges(candidate.tags, {
-        blocked: candidate.blocked,
+        blocked: candidate.blocked || candidate.pendingRecovery,
         // 准入放行了、探针却判它不可信：只可能是「放行可疑供给」开着，标出来
         released: Boolean(candidate.admission?.ok) && candidate.probeOk === false,
       })
@@ -2909,9 +2925,10 @@ function renderProbes() {
       const status = PROBE_STATUS[score?.status || 'unknown']
       const hasDetail = score && score.samples > 0
       // 冷却中（额度不足/限流/模型不在分组）单独标出来：可用率看不出问题，
-      // 但路由会跳过它。此时不再并排显示「未探测」——那是两回事，容易看串
-      const statusCell = score?.blocked
-        ? `<span class="badge warn">${esc(blockedLabel(score.blocked))}</span>`
+      // 但路由会跳过它。冷却到期但还没探到成功也一样（待复测），两种都标
+      const cool = score?.blocked || score?.pendingRecovery || null
+      const statusCell = cool
+        ? `<span class="badge warn">${esc(blockedLabel(cool, { pending: !score.blocked }))}</span>`
         : `<span class="badge ${status.cls}">${status.label}</span>${
             // 证据量：同样的「健康」，1 个样本和 10 个样本确定性差很多
             score && score.confidence !== 'high'

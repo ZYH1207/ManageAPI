@@ -6,9 +6,9 @@
  * 口径，迟早和网关的门禁漂移。所以服务端在 scores 里直接下发 admission
  * （core/router.js#admissionOf），前端只认 ok。这个测试钉死三件事：
  *
- *   1. 契约：admission.ok 为假 ⇔ 标签里有慢速 / 可疑 / 不稳定 / 没有可信样本；
- *      冷却中、评分过期、未探测、证据不足仍然放行（它们不是坏站）
- *   2. 「放行可疑供给」打开后，可疑 / 不稳定重新可见，慢速仍然隐藏（首字门槛独立）
+ *   1. 契约：admission.ok 为假 ⇔ 标签里有慢速 / 可疑 / 不稳定 / 没有可信样本 /
+ *      冷却中（含冷却到期待复测）；评分过期、未探测、证据不足仍然放行（它们不是坏站）
+ *   2. 「放行可疑供给」打开后，可疑 / 不稳定重新可见，慢速与冷却中仍然隐藏
  *   3. 端到端：/api/state 的 scores[offerId] 真的带 admission，且和 admissionOf
  *      的结论一致——少下发这个字段，前端会静默地什么都不隐藏
  *
@@ -41,6 +41,7 @@ const row = (patch = {}) => ({
   availability: 1,
   integrityFaults: [],
   blocked: null,
+  pendingRecovery: null,
   samples: 10,
   allowUntrusted: false,
   ttftMs: 2000,
@@ -55,12 +56,17 @@ console.log('[1] 契约：被隐藏的正好是那几类硬伤')
     ['结果可疑', row({ status: 'degraded', integrityFaults: ['指纹不符'] })],
     ['不稳定', row({ status: 'unstable', availability: 0.33 })],
     ['没有可信样本', row({ status: 'unknown', availability: null, samples: 5 })],
+    ['冷却中', row({ blocked: { kind: 'quota', until: Date.now() + 1e6 }, availability: null, samples: 1 })],
+    [
+      '冷却到期待复测',
+      row({ pendingRecovery: { kind: 'rate-limit', since: Date.now() - 60000 } }),
+    ],
   ]
   for (const [label, sample] of cases) {
     ok(admissionOf(sample).ok === false, `${label} → 不显示`)
     const tags = admissionTags(sample)
     ok(
-      tags.some((k) => ['slow', 'degraded', 'unstable', 'no-evidence'].includes(k)),
+      tags.some((k) => ['slow', 'degraded', 'unstable', 'no-evidence', 'blocked', 'awaiting-recovery'].includes(k)),
       `${label} → 标签里确实有对应的毛病（${tags.join('+')}）`,
     )
   }
@@ -70,21 +76,22 @@ console.log('[1] 契约：被隐藏的正好是那几类硬伤')
     ['评分过期', row({ status: 'stale' })],
     ['未探测', row({ status: 'unknown', availability: null, samples: 0 })],
     ['证据不足', row({ status: 'inconclusive', availability: 0.5 })],
-    ['冷却中', row({ blocked: { kind: 'quota', until: Date.now() + 1e6 }, availability: null, samples: 1 })],
   ]
   for (const [label, sample] of kept) {
     ok(admissionOf(sample).ok === true, `${label} → 仍然显示（不是坏站）`)
   }
 }
 
-console.log('[2] 「放行可疑供给」打开后：可疑/不稳定重新可见，慢速仍隐藏')
+console.log('[2] 「放行可疑供给」打开后：可疑/不稳定重新可见，慢速与冷却中仍隐藏')
 {
   const suspicious = row({ status: 'degraded', integrityFaults: ['指纹不符'], allowUntrusted: true })
   const unstable = row({ status: 'unstable', availability: 0.33, allowUntrusted: true })
   const slow = row({ tooSlow: true, ttftMs: 9000, allowUntrusted: true })
+  const cooling = row({ blocked: { kind: 'rate-limit', until: Date.now() + 1e6 }, allowUntrusted: true })
   ok(admissionOf(suspicious).ok === true, '可疑 + 已放行 → 显示')
   ok(admissionOf(unstable).ok === true, '不稳定 + 已放行 → 显示')
   ok(admissionOf(slow).ok === false, '慢速 + 已放行 → 仍隐藏（首字门槛是独立设置）')
+  ok(admissionOf(cooling).ok === false, '冷却中 + 已放行 → 仍隐藏（刚被上游拒过）')
 }
 
 // ---------------------------------------------------------------- 端到端
@@ -98,7 +105,15 @@ console.log('[3] /api/state 下发 admission（前端靠它过滤，不自己拼
 
     const provider = await inv.createProvider({ name: '过滤测试站', baseUrl: 'http://127.0.0.1:5198/v1' })
     const cred = await inv.createCredential({ providerId: provider.id, label: 'k1', secret: 'sk-1' })
-    const models = ['slow-model', 'degraded-model', 'unstable-model', 'healthy-model', 'blocked-model', 'new-model']
+    const models = [
+      'slow-model',
+      'degraded-model',
+      'unstable-model',
+      'healthy-model',
+      'blocked-model',
+      'recovering-model',
+      'new-model',
+    ]
     await inv.syncOffers(provider.id, cred.id, models)
 
     let db = await store.readDb()
@@ -125,8 +140,17 @@ console.log('[3] /api/state 下发 admission（前端靠它过滤，不自己拼
       { offerId: id('healthy-model'), ts, ...good },
       { offerId: id('healthy-model'), ts, ...good },
       { offerId: id('healthy-model'), ts, ...good },
-      // 冷却中：额度不足，不是坏站
+      // 冷却中：额度不足，不是坏站，但此刻不派活（放行只是再撞一次）
       { offerId: id('blocked-model'), ts, ok: false, error: 'insufficient balance' },
+      // 冷却已到（429 是 20 分钟前，5 分钟冷却早过了），但之后没有成功证据：
+      // 路由仍然不放行，等下一次探测确认
+      { offerId: id('recovering-model'), ts: new Date(Date.now() - 90 * 60_000).toISOString(), ...good },
+      {
+        offerId: id('recovering-model'),
+        ts: new Date(Date.now() - 20 * 60_000).toISOString(),
+        ok: false,
+        error: 'HTTP 429：rate limit exceeded',
+      },
       // new-model 一次都没探过：没有评分，也就没有 admission
     ]
     await store.mutate((d) => {
@@ -161,7 +185,13 @@ console.log('[3] /api/state 下发 admission（前端靠它过滤，不自己拼
       ok(score('slow-model')?.admission?.kind === 'slow', `慢速的 kind 是 slow（得到 ${score('slow-model')?.admission?.kind}）`)
       ok(score('degraded-model')?.admission?.ok === false, '可疑 → 不放行')
       ok(score('unstable-model')?.admission?.ok === false, '不稳定 → 不放行')
-      ok(score('blocked-model')?.admission?.ok === true, '冷却中 → 仍然允许放行（可见）')
+      ok(score('blocked-model')?.admission?.ok === false, '冷却中 → 不放行（放行只是再撞一次限流）')
+      ok(score('blocked-model')?.blocked?.kind === 'quota', '冷却原因下发到前端（额度不足）')
+      ok(
+        score('recovering-model')?.blocked === null && Boolean(score('recovering-model')?.pendingRecovery),
+        '冷却到期但没复测成功 → pendingRecovery',
+      )
+      ok(score('recovering-model')?.admission?.ok === false, '待复测 → 不放行（恢复看证据不看钟）')
       ok(score('new-model') === null, '没探过的供给没有评分（前端按「缺失不隐藏」处理）')
 
       // 服务端下发的结论必须和门禁函数一致，不能是另算的一份
@@ -173,6 +203,7 @@ console.log('[3] /api/state 下发 admission（前端靠它过滤，不自己拼
           availability: s.availability,
           integrityFaults: s.integrityFaults,
           blocked: s.blocked,
+          pendingRecovery: s.pendingRecovery,
           samples: (s.samples || 0) + (s.trafficSamples || 0),
           allowUntrusted: false,
         })
@@ -186,8 +217,11 @@ console.log('[3] /api/state 下发 admission（前端靠它过滤，不自己拼
       const visible = (name) => state.scores?.[id(name)]?.admission?.ok !== false
       const shown = models.filter(visible)
       const hidden = models.filter((n) => !visible(n))
-      ok(hidden.join(',') === 'slow-model,degraded-model,unstable-model', `隐藏的正好是三条硬伤（${hidden.join(',')}）`)
-      ok(shown.join(',') === 'healthy-model,blocked-model,new-model', `显示的是健康 / 冷却中 / 未探测（${shown.join(',')}）`)
+      ok(
+        hidden.join(',') === 'slow-model,degraded-model,unstable-model,blocked-model,recovering-model',
+        `隐藏的是三条硬伤 + 冷却中 + 待复测（${hidden.join(',')}）`,
+      )
+      ok(shown.join(',') === 'healthy-model,new-model', `显示的是健康 / 未探测（${shown.join(',')}）`)
 
       // 打开「放行可疑供给」：可疑 / 不稳定重新可见，慢速仍然隐藏
       await store.mutate((d) => {
@@ -199,6 +233,7 @@ console.log('[3] /api/state 下发 admission（前端靠它过滤，不自己拼
       ok(visibleRelaxed('degraded-model'), '放行可疑供给后：可疑 → 重新显示')
       ok(visibleRelaxed('unstable-model'), '放行可疑供给后：不稳定 → 重新显示')
       ok(!visibleRelaxed('slow-model'), '放行可疑供给后：慢速 → 仍然隐藏')
+      ok(!visibleRelaxed('blocked-model'), '放行可疑供给后：冷却中 → 仍然隐藏')
     } finally {
       await new Promise((resolve) => server.close(resolve))
     }

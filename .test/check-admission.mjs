@@ -1,6 +1,6 @@
 /**
  * 准入门禁自检（纯函数，不联网）：
- *   1. 什么算「不登场」：慢速 / 可疑 / 不稳定 / 没有可信样本
+ *   1. 什么算「不登场」：慢速 / 可疑 / 不稳定 / 没有可信样本 / 冷却中 / 待复测
  *   2. 什么是「能登场但只兜底」：评分过期 / 未探测——真实调用本身就是证据，不拦
  *   3. 排序：默认能登场的在前，不登场的排在后面
  *   4. 全部不登场时的报错文案：慢速和不可用分开报，且用 400
@@ -9,6 +9,10 @@
  * 背景：以前网关「所有候选都不健康」时仍然按价格挨个试，决策页却显示
  * 「没有可用供给」——两处口径不一致。现在准入收口在 admissionOf，
  * 报错收口在 admissionFailure，这个测试把它们钉死。
+ *
+ * 冷却中（额度不足 / 限流 / 模型不在分组）曾经是「放行兜底」，后来改成不放行：
+ * 一个模型 4 条供给，3 条慢速 + 1 条限流时，放行等于把时间全花在必然失败的请求上。
+ * 恢复看证据不看钟——冷却到期也要等下一次探测成功（pendingRecovery）。
  *
  * 用法：node .test/check-admission.mjs
  */
@@ -30,6 +34,7 @@ const row = (patch = {}) => ({
   availability: 1,
   integrityFaults: [],
   blocked: null,
+  pendingRecovery: null,
   allowUntrusted: false,
   ttftMs: 2000,
   ...patch,
@@ -44,14 +49,6 @@ console.log('[1] 能登场')
     '一次都没探过 → 登场（没证据不等于坏证据）',
   )
   ok(admissionOf(row({ status: 'inconclusive', availability: 0.5 })).ok === true, '证据不足 → 登场兜底')
-  ok(
-    admissionOf(row({ blocked: { kind: 'quota', until: Date.now() + 1e6 } })).ok === true,
-    '冷却中（额度不足）→ 仍然登场兜底，不是坏站',
-  )
-  ok(
-    admissionOf(row({ availability: null, blocked: { kind: 'quota', until: Date.now() + 1e6 } })).ok === true,
-    '可用率无分母但只是冷却 → 放行',
-  )
   ok(
     admissionOf(row({ status: 'stale', availability: null, samples: 6 })).ok === true,
     '全部证据都过期（可用率因此无分母）→ 仍然登场，不能当成「没有可信样本」',
@@ -73,15 +70,31 @@ console.log('[2] 不登场，且说得出原因')
 
   const noEvidence = admissionOf(row({ status: 'unknown', availability: null, blocked: null, samples: 5 }))
   ok(noEvidence.ok === false && noEvidence.kind === 'no-evidence', `没有可信样本 → ${noEvidence.kind}`)
+
+  // 冷却中：额度/限流/模型不在分组。以前这里放行兜底，结果是一组里其它供给都慢时，
+  // 网关只剩这条会去撞限流，反复失败把客户端时间全耗掉
+  const cooling = admissionOf(row({ blocked: { kind: 'rate-limit', until: Date.now() + 120000 } }))
+  ok(cooling.ok === false && cooling.kind === 'blocked', `限流冷却中 → ${cooling.kind}`)
+  ok(cooling.text.includes('限流中'), `冷却文案点名原因：${cooling.text}`)
+  ok(cooling.text.includes('分钟后自动重试'), `冷却文案带上剩余时间：${cooling.text}`)
+
+  // 冷却到期但还没有成功证据：同样不放行，等下一次探测确认
+  const recovering = admissionOf(row({ pendingRecovery: { kind: 'rate-limit', since: Date.now() - 60000 } }))
+  ok(recovering.ok === false && recovering.kind === 'blocked', `冷却到期待复测 → ${recovering.kind}`)
+  ok(recovering.text.includes('等下一次探测'), `待复测文案说清在等什么：${recovering.text}`)
 }
 
-console.log('[3] 「放行可疑供给」只覆盖可疑/不稳定，不覆盖慢速')
+console.log('[3] 「放行可疑供给」只覆盖可疑/不稳定，不覆盖慢速和冷却')
 {
   ok(admissionOf(row({ status: 'degraded', allowUntrusted: true })).ok === true, '开关打开 → 可疑的重新登场')
   ok(admissionOf(row({ status: 'unstable', allowUntrusted: true })).ok === true, '开关打开 → 不稳定的重新登场')
   ok(
     admissionOf(row({ tooSlow: true, allowUntrusted: true })).ok === false,
     '开关打开 → 慢速仍然不登场（门槛是独立设置）',
+  )
+  ok(
+    admissionOf(row({ blocked: { kind: 'rate-limit', until: Date.now() + 120000 }, allowUntrusted: true })).ok === false,
+    '开关打开 → 冷却中仍然不登场（刚被上游拒过，试了只会白等）',
   )
 }
 
@@ -111,6 +124,7 @@ const score = (patch = {}) => ({
   quality: 1,
   stale: false,
   blocked: null,
+  pendingRecovery: null,
   confidence: 'medium',
   ttftMs: 2000,
   ...patch,
@@ -171,6 +185,19 @@ console.log('[5] 全部不登场时的报错：慢速单独报，其余报不可
   const failure3 = admissionFailure(allBlocked, { model: 'm', maxTtftMs: 8000 })
   ok(failure3.type === 'no_available_supply', `没有可信样本 → ${failure3.type}`)
   ok(failure3.detail.includes('没有可信样本'), '原因写清楚了')
+
+  // 现场：3 条慢速 + 1 条限流。以前限流那条会被放行兜底，网关反复撞它；
+  // 现在一条都不登场，直接 400 并说清每条为什么不行
+  const realistic = run({
+    slow1: score({ ttftMs: 16522 }),
+    slow2: score({ ttftMs: 19300 }),
+    slow3: score({ ttftMs: 22000 }),
+    limited: score({ blocked: { kind: 'rate-limit', until: Date.now() + 180000 } }),
+  })
+  ok(realistic.every((r) => r.admission.ok === false), '3 慢 + 1 限流 → 没有一条能登场')
+  const failure4 = admissionFailure(realistic, { model: 'm', maxTtftMs: 8000 })
+  ok(failure4.status === 400, `状态码 ${failure4.status}（重试无意义，不能给 5xx）`)
+  ok(failure4.detail.includes('限流中'), `逐站原因里有冷却：${failure4.detail}`)
 }
 
 console.log('[6] 门槛为 0（不限）时不因速度报错')

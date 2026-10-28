@@ -7,7 +7,9 @@
  *
  * 间隔是自适应的：健康站按用户设定的基础间隔，其它站（不健康 / 证据不足 /
  * 过期 / 从没探过）按 1/3 间隔（最少 10 分钟）补测——问题站点应该尽快拿到
- * 新证据，而不是等一整轮。冷却中的供给（额度不足/限流）直接跳过，探了也是白探。
+ * 新证据，而不是等一整轮。冷却中的供给（额度不足/限流）在冷却窗口内直接跳过；
+ * 冷却到期后按 RECOVERY_INTERVAL_MIN 复测，探到成功才重新放行（路由侧看
+ * score.pendingRecovery，不看钟）。
  *
  * 暂停时段（core/schedule.js）优先于上面一切：窗口内一个请求都不发，到点自动恢复。
  */
@@ -21,6 +23,8 @@ const MAX_PER_TICK = 10
 const CHECK_INTERVAL_MS = 60000
 const FIRST_RUN_DELAY_MS = 5000
 const RETRY_INTERVAL_FLOOR_MIN = 10
+/** 冷却到期后的复测节奏：限流通常几分钟就过去，等一整轮（可能几小时）太慢 */
+const RECOVERY_INTERVAL_MIN = 10
 
 export function startProbeScheduler({
   runProbes,
@@ -121,6 +125,12 @@ export function startProbeScheduler({
         if (!score || !score.lastProbeAt) return true
         // 冷却中（额度不足/限流/模型不在分组）探了也是白探：等冷却结束再验
         if (score.blocked && score.blocked.until > now) return false
+        // 冷却已到、但最近一次证据仍是「暂时不可用」（额度/限流/模型不在分组）：
+        // 按复测节奏探，探到成功才算恢复。路由在恢复前一直不放行（见
+        // score.pendingRecovery）——不复测就会永远停在那里，复测太慢又会把站晾着
+        if (score.pendingRecovery) {
+          return now - new Date(score.lastProbeAt).getTime() >= RECOVERY_INTERVAL_MIN * 60000
+        }
         // 「健康但有完整性疑点」也要加密探测：截断/虚报要 2 个样本才定性，
         // 只测到 1 次异常时状态还是 healthy，若按基础间隔等一小时才补第二针，
         // 真砍额度的站会被放过一小时。这里让它走重试间隔，20 分钟内见分晓

@@ -2,7 +2,7 @@
  * 路由层：给定一个客户端请求的模型名，决定这一单交给谁。
  *
  * 决策规则（刻意做成可解释的两步，而不是加权打分）：
- *   1. 准入：见 admissionOf——慢速 / 可疑 / 不稳定 / 没有可信样本一律不登场
+ *   1. 准入：见 admissionOf——慢速 / 可疑 / 不稳定 / 没有可信样本 / 冷却中一律不登场
  *   2. 排序：剩下的人按 settings.decisionMode 选定的口径升序
  *      性价比（默认）→ 有效成本；价格 → 名义单价；首字速度 → 首字延迟
  *      三档都只改「谁排前面」，准入规则完全不看这个开关
@@ -15,9 +15,11 @@
  *
  * 但用户可以在探针页打开「放行可疑供给」：打开后可疑/不稳定的站重新获得准入，
  * 再由当前决策侧重（性价比 / 价格 / 首字速度）自己决定谁排前面。
- * 首字门槛是独立的显式设置，不受这个开关影响。
+ * 首字门槛是独立的显式设置，不受这个开关影响；冷却中同样不受影响——
+ * 「结果可疑但我认了」和「刚被上游拒过」是两件事，后者试了只会白等一个来回。
  */
 import { offerCost } from './pricing.js'
+import { UNAVAILABLE_LABEL } from './failure.js'
 import { isRoutable, effectiveCost, THRESHOLDS, MIN_SAMPLES_FOR_VERDICT } from './score.js'
 import { normalizeModelKey } from './inventory.js'
 import { normalizeDecisionMode, compareByBasis } from './decision-mode.js'
@@ -29,6 +31,21 @@ function getScore(scores, offerId) {
 }
 
 /**
+ * 冷却类状态的文案：原因 + 还要等多久 / 在等什么。
+ *
+ * 两种状态共用一套措辞，因为对客户端来说它们是同一件事（现在不派活），
+ * 只差「是等时间还是等证据」：
+ *   pending=false —— 冷却窗口内，等时间到（额度/限流/模型不可用）
+ *   pending=true  —— 冷却已到，等下一次探测成功才算恢复
+ */
+function blockedText(reason, { pending = false } = {}) {
+  const label = UNAVAILABLE_LABEL[reason?.kind] || '暂时不可用'
+  if (pending) return `${label}：冷却已到，等下一次探测确认恢复`
+  const minutes = Math.max(1, Math.ceil((Number(reason?.until) - Date.now()) / 60000))
+  return `${label}：冷却 ${minutes} 分钟后自动重试`
+}
+
+/**
  * 准入门禁：这条候选现在能不能真的派流量。
  *
  * 和 isRoutable 的差别只有一个字——**过期不是罪**。
@@ -36,10 +53,17 @@ function getScore(scores, offerId) {
  * （scoreOffers 会把流量并进可用率）。所以过期 / 未探测的供给照样准入，
  * 只是排在健康供给之后兜底：先让真实流量跑起来，下一轮评分就自愈了。
  *
- * 硬拒的只有三类，用户看得出来、也修得动：
+ * 硬拒的只有四类，用户看得出来、也修得动：
  *   慢速 —— 首字超过门槛，这是你自己设的线
  *   可疑 / 不稳定 —— 探针抓到掉包/截断/虚报，或真实可用率不到 80%
  *   没有可信样本 —— 探针全被额度/限流挡住，可用率根本没有分母
+ *   冷却中 / 待复测 —— 额度不足、限流、模型不在分组（见下）
+ *
+ * 冷却为什么不放行：冷却意味着「刚才这条供给明确说不行」，放行只是再撞一次
+ * 同样的墙。真实踩过：一个模型 4 条供给，3 条慢速被首字门槛挡住，剩下 1 条
+ * 限流，网关就反复重试那条限流，客户端等半天最后仍然失败。
+ * 恢复也不看钟：冷却到期后要等下一次探测（或真实调用）成功才放行，见
+ * score.js 的 pendingRecovery。
  *
  * 判定只用这一份：网关派活、决策页的「当前选」、报错文案都调它，
  * 别在调用方再写一遍「什么算可用」，否则两处口径迟早漂移。
@@ -49,6 +73,14 @@ export function admissionOf(row) {
   // 慢速：这是用户自己设的线，不因「放行可疑供给」而失效
   if (row.tooSlow) {
     return { ok: false, kind: 'slow', text: `慢速：首字 ${row.ttftMs}ms 超过门槛` }
+  }
+  // 冷却中 / 待复测：同样不受「放行可疑供给」影响。那个开关是「我认了结果可疑
+  // 也愿意试」，而这里是「刚被上游明确拒过」，试了只会白等一个来回。
+  if (row.blocked) {
+    return { ok: false, kind: 'blocked', text: blockedText(row.blocked) }
+  }
+  if (row.pendingRecovery) {
+    return { ok: false, kind: 'blocked', text: blockedText(row.pendingRecovery, { pending: true }) }
   }
   // 「放行可疑供给」是用户的显式覆盖：打开后可疑/不稳定的重新获得准入
   if (!row.allowUntrusted) {
@@ -67,12 +99,12 @@ export function admissionOf(row) {
   // 可用率是 null 有三种来源，别一锅端：
   //   样本 0        —— 一次都没探过。`没证据` != `坏证据`，放行（新站不放行就永远用不了）
   //   状态 stale    —— 有证据但都过期了。放行，派一次真实调用就刷新了（用户明确要的）
-  //   其余（samples>0、不是 stale、又不是冷却中）—— 探针全被额度/限流挡住，
+  //   其余（samples>0、不是 stale、又不是冷却/待复测）—— 探针全被额度/限流挡住，
   //                  可用率根本没有分母，这种才是真的「没有可信样本」
   const samples = Number(row.samples) || 0
   const availability = row.availability
   if (availability === null || availability === undefined) {
-    if (samples === 0 || row.status === 'stale' || row.blocked) {
+    if (samples === 0 || row.status === 'stale') {
       // 放行
     } else {
       return { ok: false, kind: 'no-evidence', text: '没有可信样本：探针被额度/限流挡住' }
@@ -115,13 +147,16 @@ export function admissionTags(row) {
     (availability === null || availability === undefined) &&
     samples > 0 &&
     row.status !== 'stale' &&
-    !row.blocked
+    !row.blocked &&
+    !row.pendingRecovery
   ) {
     // 有样本、可用率却没有分母：探针全被额度/限流挡住
     tags.push('no-evidence')
   }
-  // 冷却中不是「坏」：额度/限流/模型不在分组，恢复后自动回来
+  // 冷却中不是「坏」：额度/限流/模型不在分组，恢复后自动回来。
+  // 冷却到期但还没探到成功，就是「待复测」——两种都要标，用户才知道为什么没派活
   if (row.blocked) tags.push('blocked')
+  else if (row.pendingRecovery) tags.push('awaiting-recovery')
   // 没有任何毛病时才谈「靠什么撑着」——否则「兜底」会盖住真正的问题
   if (tags.length === 0 && (row.status === 'stale' || row.status === 'unknown')) tags.push('fallback')
   if (tags.length === 0) tags.push('ok')
@@ -212,11 +247,17 @@ export function selectCandidates({ offers, providers, credentials, scores, bench
     const reasons = []
     // 徽章已经写着「慢速」，理由只补数字：差多少、门槛多少
     if (tooSlow) reasons.push(`首字 ${ttftMs}ms > 门槛 ${maxTtftMs}ms`)
+    // 冷却中 / 待复测：这是「刚才上游明确说不行」，必须让人看得出为什么没派它
+    if (score?.blocked) reasons.push(blockedText(score.blocked))
+    else if (score?.pendingRecovery) reasons.push(blockedText(score.pendingRecovery, { pending: true }))
     // 评分过期不挡路（真实调用本身就是证据），但要说清楚它现在是靠不住的
     if (score?.stale) reasons.push('评分过期：没有新鲜证据，先拿真实调用打探')
     // 探针全被额度/限流挡住时，可用率没有分母（null）——这不是「能用」，
-    // 而是「没有任何可靠性证据」，必须说清楚，否则用户看不懂为什么没选它
-    if (score && score.availability === null && !score.blocked) reasons.push('没有可信样本')
+    // 而是「没有任何可靠性证据」，必须说清楚，否则用户看不懂为什么没选它。
+    // 冷却 / 待复测已经单独说了原因，不再重复标「没有可信样本」
+    if (score && score.availability === null && !score.blocked && !score.pendingRecovery) {
+      reasons.push('没有可信样本')
+    }
     if (typeof score?.availability === 'number' && score.availability < THRESHOLDS.availability) {
       reasons.push(`可用率 ${Math.round(score.availability * 100)}%`)
     }
@@ -248,6 +289,8 @@ export function selectCandidates({ offers, providers, credentials, scores, bench
       confidence: score?.confidence ?? null,
       // 冷却中（额度不足/限流/模型不在分组）：不是坏站，但此刻不派过去
       blocked: score?.blocked || null,
+      // 冷却已到、但还没被证明恢复：同样不派，等下一次探测成功
+      pendingRecovery: score?.pendingRecovery || null,
       availability: score?.availability ?? null,
       integrityFaults: score?.integrityFaults || [],
       allowUntrusted,
@@ -330,6 +373,9 @@ export function explain(candidates) {
     // 冷却中（额度不足/限流/模型不在分组）：决策页用它显示「额度不足 · 冷却中」，
     // 不然用户看到一条看着健康的站却没被选，会以为评分出错
     blocked: c.blocked ? { kind: c.blocked.kind, until: c.blocked.until } : null,
+    // 冷却已到、等探测确认：决策页显示「限流中 · 等探测确认」，
+    // 不然用户看到一条看着健康的站却没被选，会以为评分出错
+    pendingRecovery: c.pendingRecovery ? { kind: c.pendingRecovery.kind, since: c.pendingRecovery.since } : null,
     statusReason: c.statusReason ?? null,
   }))
 }

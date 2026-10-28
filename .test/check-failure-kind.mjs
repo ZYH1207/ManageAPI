@@ -76,12 +76,16 @@ console.log('[3] 冷却会自动过期，或被之后的成功调用解除')
     probe('e', false, 'HTTP 429：rate limit exceeded', (UNAVAILABLE_COOLDOWN_MS['rate-limit'] + 60000) / 3600000),
   ]).get('e')
   ok(expired.blocked === null, '限流冷却 5 分钟后失效')
+  // 但「冷却到期」不等于「恢复」：之后没有成功证据，仍然不放行
+  ok(expired.pendingRecovery?.kind === 'rate-limit', '冷却到期后仍标记 pendingRecovery')
+  ok(isRoutable(expired) === false, '没探到成功之前不可路由（不再撞限流）')
 
   const recovered = score([
     probe('r', false, 'HTTP 403：INSUFFICIENT_BALANCE', 0.5),
     probe('r', true, null, 0.1),
   ]).get('r')
   ok(recovered.blocked === null, '之后探测成功 → 解除冷却')
+  ok(recovered.pendingRecovery === null, '成功后清掉 pendingRecovery')
   ok(recovered.status === 'healthy', '并且判健康')
 
   // 单次预算超限只冷却 5 分钟：那一次请求太大，不代表供给不能用
@@ -103,7 +107,33 @@ console.log('[4] 真实流量里的额度失败同样不进可用率')
   ok(s.availability === 1, `可用率只算 3 次成功（实际 ${s.availability}）`)
   ok(s.trafficUnavailable === 2, '额度失败单独统计')
   ok(s.blocked?.kind === 'quota', '最近一次是额度失败 → 冷却')
+  ok(s.pendingRecovery?.kind === 'quota', '且还没被证明恢复')
   ok(isRoutable(s) === false, '冷却中不路由')
+}
+
+// 已经健康过（可用率 100%）的供给，一次限流之后也不能马上放行：
+// 否则冷却一过就再撞一次，客户端白等一个来回
+console.log('[4b] 健康过的供给被限流后，冷却到期仍要等成功证据')
+{
+  const s = score([
+    probe('h', true, null, 2),
+    probe('h', true, null, 1.5),
+    probe('h', true, null, 1),
+    probe('h', false, 'HTTP 429：rate limit exceeded', 0.3),
+  ]).get('h')
+  ok(s.availability === 1, `可用率仍然 1（限流不进分母，实际 ${s.availability}）`)
+  ok(s.status === 'healthy', `状态仍是 healthy（实际 ${s.status}）`)
+  ok(s.blocked === null, '5 分钟冷却已过')
+  ok(s.pendingRecovery?.kind === 'rate-limit', '但最近一次证据是限流 → 待复测')
+  ok(isRoutable(s) === false, '不放行')
+
+  const after = score([
+    probe('h2', true, null, 2),
+    probe('h2', false, 'HTTP 429：rate limit exceeded', 0.3),
+    probe('h2', true, null, 0.1),
+  ]).get('h2')
+  ok(after.pendingRecovery === null, '再探一次成功 → 恢复')
+  ok(isRoutable(after) === true, '恢复后可路由')
 }
 
 console.log('[5] 真实流量成功给探针过期的站点续命')
@@ -129,6 +159,7 @@ console.log('[6] 没有可靠性样本的供给不能路由（「没测过」不
   ]).get('n1')
   ok(onlyLimited.availability === null, '可用率为空（没有可靠性样本）')
   ok(onlyLimited.blocked === null, '冷却已过期')
+  ok(onlyLimited.pendingRecovery?.kind === 'rate-limit', '仍待复测（不是「已经好了」）')
   ok(isRoutable(onlyLimited) === false, '仍然不可路由——没证据就不放行')
   ok(onlyLimited.quality === null, '质量为空，不会被当成合格质量参与比价')
 }

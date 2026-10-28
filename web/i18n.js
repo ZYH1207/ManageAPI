@@ -760,14 +760,14 @@ Object.assign(EN, {
 // 比价页「只显示允许放行」开关
 Object.assign(EN, {
   '只显示允许放行': 'Only admitted',
-  '打开后只显示准入通过的供给：慢速 / 结果可疑 / 不稳定 / 没有可信样本整行隐藏；冷却中、评分过期、未探测的仍然显示（它们不是坏站）。随时可切。':
-    'Show only supplies that pass admission: rows flagged slow, suspicious, unstable or without usable samples are hidden; cooling down, stale and never-probed rows stay visible (they are not bad sites). Toggle any time.',
+  '打开后只显示准入通过的供给：慢速 / 结果可疑 / 不稳定 / 没有可信样本 / 冷却中（额度不足、限流）整行隐藏；评分过期、未探测的仍然显示（它们不是坏站）。随时可切。':
+    'Show only supplies that pass admission: rows flagged slow, suspicious, unstable, without usable samples or cooling down (out of credit, rate limited) are hidden; stale and never-probed rows stay visible (they are not bad sites). Toggle any time.',
   '{shown} / {total} 个模型': '{shown} / {total} models',
   '{shown} / {total} 个模型 · 已隐藏 {n} 条供给':
     '{shown} / {total} models · {n} supplies hidden',
   '没有允许放行的供给': 'No admitted supplies',
-  '当前范围内有 {n} 条供给被这个开关隐藏了：慢速、结果可疑、不稳定或没有可信样本。关掉开关就能看到它们。':
-    '{n} supplies in this view are hidden by the switch: slow, suspicious, unstable or without usable samples. Turn it off to see them.',
+  '当前范围内有 {n} 条供给被这个开关隐藏了：慢速、结果可疑、不稳定、没有可信样本或冷却中。关掉开关就能看到它们。':
+    '{n} supplies in this view are hidden by the switch: slow, suspicious, unstable, without usable samples or cooling down. Turn it off to see them.',
 })
 
 // 放行可疑供给（开关）
@@ -913,6 +913,8 @@ Object.assign(EN, {
   '模型不可用': 'Model unavailable',
   '暂时不可用': 'Temporarily unavailable',
   '冷却中': 'cooling down',
+  // 冷却到期但还没探到成功：路由仍然不放行，等下一次探测确认
+  '等探测确认': 'waiting for a probe',
   '指纹不符': 'Fingerprint mismatch',
   '输出截断': 'Output truncated',
   '低于门槛': 'below the 80% floor',

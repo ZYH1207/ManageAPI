@@ -31,6 +31,7 @@ const row = (patch = {}) => ({
   availability: 1,
   integrityFaults: [],
   blocked: null,
+  pendingRecovery: null,
   samples: 10,
   ttftMs: 2000,
   ...patch,
@@ -77,6 +78,19 @@ console.log('[4] 没有分母 / 冷却中 / 兜底各标各的')
   // 冷却 + 慢速：两件事都成立，都标
   const blockedSlow = row({ tooSlow: true, blocked: { kind: 'rate-limit', until: Date.now() + 1e6 } })
   ok(same(admissionTags(blockedSlow), ['slow', 'blocked']), '又慢又冷却 → slow + blocked')
+  // 冷却到期、但还没有成功证据：不是「冷却中」，也不是「可用」，是「等探测确认」
+  const recovering = row({ pendingRecovery: { kind: 'rate-limit', since: Date.now() - 60000 } })
+  ok(same(admissionTags(recovering), ['awaiting-recovery']), '冷却到期待复测 → awaiting-recovery')
+  const recoveringNoEvidence = row({
+    status: 'unknown',
+    availability: null,
+    samples: 6,
+    pendingRecovery: { kind: 'quota', since: Date.now() - 3600000 },
+  })
+  ok(
+    same(admissionTags(recoveringNoEvidence), ['awaiting-recovery']),
+    '待复测时不再重复标「没有可信样本」（同一个原因说一次就够）',
+  )
 }
 
 console.log('[5] explain 把标签下发给前端（决策页照着画）')
