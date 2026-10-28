@@ -1868,7 +1868,6 @@ function providersHtml({ withForm = true, panel = '', actions = '' } = {}) {
           <button data-act="prov-panel" data-panel="rates">${icon('columns')}分组倍率</button>
           <button data-act="open-group-picker" title="从站点读分组，选你买的那个，倍率自动填到下面所有模型">${icon('columns')}导入倍率</button>
           <button data-act="usage-check" title="用管理令牌拉站方用量，和我们的估算对比">${icon('receipt')}用量核对</button>
-          <button data-act="export">${icon('download')}导出配置</button>
         </div>
 
         <div class="prov-detail" hidden>
@@ -6917,26 +6916,7 @@ document.addEventListener('click', async (event) => {
       state = await api('GET', '/api/state')
       render()
     })
-    toast(failed.length ? `部分完成：${failed.join('；')}` : '已同步', failed.length > 0)
-    return
-  }
-
-  if (action === 'export') {
-    const includeKey = confirm('导出内容会包含完整 API Key，确认？\n\n取消则导出脱敏版本。')
-    try {
-      // 取明文 Key 要额外带一个自定义头：跨站请求想伪造这个头必须先过 CORS 预检，
-      // 而本服务不返回 CORS 头，预检必然失败——等于给「网页偷 Key」加了道门。
-      const data = await api(
-        'GET',
-        `/api/export/config?providerId=${encodeURIComponent(providerId)}&includeKey=${includeKey ? 1 : 0}`,
-        null,
-        includeKey ? { 'x-manage-api-intent': 'reveal-secret' } : null,
-      )
-      await navigator.clipboard.writeText(data.envBlock)
-      toast('配置已复制到剪贴板')
-    } catch (error) {
-      toast(error.message, true)
-    }
+    toast(failed.length ? `部分完成：${failed.join('；')}` : notes.length ? `已同步（${notes.join('，')}）` : '已同步', failed.length > 0)
     return
   }
 

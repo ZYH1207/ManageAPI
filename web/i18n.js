@@ -413,7 +413,6 @@ const EN = {
   '导入倍率': 'Import ratios',
   '用量核对': 'Usage check',
   '读余额': 'Read balance',
-  '导出配置': 'Export config',
   '令牌': 'Token',
   '令牌 ✓': 'Token ✓',
   '选分组': 'Pick group',
@@ -758,7 +757,6 @@ Object.assign(EN, {
   '汇率已更新': 'FX rate updated',
   '站点已添加': 'Site added',
   '网关地址已复制': 'Gateway URL copied',
-  '配置已复制到剪贴板': 'Config copied to clipboard',
   '余额已更新': 'Balance updated',
   '分组已更新': 'Group updated',
   '已保存': 'Saved',
@@ -1535,7 +1533,6 @@ Object.assign(EN, {
   '已同步': 'Synced',
   '这个站采完了': 'Site collected',
   '汇率已更新（手动）': 'FX rate updated (manual)',
-  '配置已复制到剪贴板': 'Config copied to clipboard',
   'Key 已删除': 'Key deleted',
   '已恢复自动汇率': 'Back to auto FX',
 })

@@ -3222,34 +3222,6 @@ route('GET', /^\/api\/export\/backup$/, async () => {
   }
 })
 
-route('GET', /^\/api\/export\/config$/, async (ctx) => {
-  const providerId = ctx.query.get('providerId')
-  const includeKey = ctx.query.get('includeKey') === '1'
-  if (includeKey && ctx.req.headers['x-manage-api-intent'] !== 'reveal-secret') {
-    // 明文 Key 只给页面自己的「导出」按钮：跨站请求拿不到这个自定义头（预检会被拒）
-    throw new HttpError(403, '导出明文 Key 需要页面内的确认操作')
-  }
-  const db = await store.readDb()
-  const provider = db.providers.find((p) => p.id === providerId)
-  if (!provider) throw new HttpError(404, '站点不存在')
-  const credential = db.credentials.find((c) => c.providerId === provider.id)
-  const models = db.offers.filter((o) => o.providerId === provider.id).map((o) => o.upstreamName)
-  const apiKey = includeKey && credential ? await inv.revealSecret(credential.id) : 'sk-********'
-
-  const openaiCompatible = {
-    baseURL: provider.baseUrl,
-    apiKey,
-    models,
-  }
-  const envBlock = [
-    `# ${provider.name}`,
-    `export OPENAI_BASE_URL="${provider.baseUrl}"`,
-    `export OPENAI_API_KEY="${apiKey}"`,
-  ].join('\n')
-
-  return { provider: { id: provider.id, name: provider.name, baseUrl: provider.baseUrl }, openaiCompatible, envBlock, modelCount: models.length }
-})
-
 // ------------------------------------------------------------------ 网关
 
 // 决策日志攒批写：每个请求都单独 mutate 等于把 1MB 的 db.json 整份重写一遍，
