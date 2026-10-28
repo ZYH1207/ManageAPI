@@ -720,6 +720,14 @@ Object.assign(EN, {
   '证据不足': 'Not enough evidence',
   '花费': 'Spend',
   '真实花费': 'Actual spend',
+  '数字直接来自站点自己的账单接口，按天汇总，不是本地估算。':
+    'The number comes straight from the site\u2019s own billing API, summed per day. It is not a local estimate.',
+  '只有当站点开放用量接口、且填了有效令牌时才有数；读不到显示「读不到账单」，不会拿估算顶替。':
+    'It only exists when the site exposes a usage API and a valid token is set; otherwise it shows "no bill" rather than substituting an estimate.',
+  '它包含这个站当天的全部消耗，包括探针自检产生的请求。':
+    'It covers everything this site charged that day, including the requests made by probing itself.',
+  '和历史某天对不上时，是因为账单可回溯，而本工具只会保留最近 45 天。':
+    'If an older day looks off, remember the site can bill retroactively while this tool only keeps the last 45 days.',
   // 词典补漏：t() 用到但此前缺失的条目（英文界面之前会回落成中文）
   '诊断信息': 'Diagnostics',
   '下面这段可以直接全选复制，发给开发者定位问题。': 'Select the block below and send it to the developer to help pin down the issue.',

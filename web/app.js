@@ -3124,6 +3124,14 @@ function spendStat(range) {
   return {
     // 「真实花费」标成强调色：这个数字是站点自己算的账，不是估算，值得一眼分辨
     kHtml: `<span class="k-em">${t('真实花费')}</span> · ${t(label)}`,
+    // 悬停说明：这个数字的来历容易被误读（尤其和「网关用量核对」放一起时），
+    // 所以直接讲清楚它是什么、不是什么
+    kHint: [
+      t('数字直接来自站点自己的账单接口，按天汇总，不是本地估算。'),
+      t('只有当站点开放用量接口、且填了有效令牌时才有数；读不到显示「读不到账单」，不会拿估算顶替。'),
+      t('它包含这个站当天的全部消耗，包括探针自检产生的请求。'),
+      t('和历史某天对不上时，是因为账单可回溯，而本工具只会保留最近 45 天。'),
+    ].join('|'),
     // 时间段切换单独一行：和金额挤在一行时，窄卡片会把「今天/本周/本月」
     // 压成竖排（每个字一行）
     vHtml: `${actualHtml}<span class="spend-range-row">${seg}</span>`,
@@ -3247,7 +3255,7 @@ function renderMonitor() {
     .map(
       (item) => `<div class="stat">
         <div class="stat-main">
-          <div class="k">${item.kHtml ?? esc(item.k)}</div>
+          <div class="k"${item.kHint ? ` data-hint="${esc(item.kHint)}"` : ''}>${item.kHtml ?? esc(item.k)}</div>
           <div class="v">${item.vHtml ?? esc(item.v)}</div>
           ${item.sub ? `<div class="sub${item.subWrap ? ' sub--wrap' : ''}">${esc(item.sub)}</div>` : ''}
         </div>
@@ -3770,6 +3778,77 @@ document.addEventListener('mousemove', (event) => {
     if (!event.target.closest?.('.chart-wrap')) tip.classList.remove('is-on')
   }
 })
+
+// 通用悬停说明：任何带 data-hint 的元素，鼠标进入时在其下方浮出一段解释。
+// 用原生 title 不行——那段文案是两三句话，title 不支持换行、还要等一秒才出现。
+// 浮层只在页面里存在一个，跟着触发元素走；移出即隐藏。
+let hintEl = null
+function ensureHintEl() {
+  if (hintEl && hintEl.isConnected) return hintEl
+  hintEl = document.createElement('div')
+  hintEl.className = 'hover-hint'
+  hintEl.setAttribute('role', 'tooltip')
+  document.body.appendChild(hintEl)
+  return hintEl
+}
+function hideHint() {
+  if (hintEl) hintEl.classList.remove('is-on')
+}
+function showHint(el) {
+  const text = el.dataset.hint
+  if (!text) return
+  const tip = ensureHintEl()
+  // 文案里用 | 分段，每段一行
+  tip.innerHTML = text
+    .split('|')
+    .map((line) => `<div class="hover-hint-line">${esc(line.trim())}</div>`)
+    .join('')
+  tip.classList.add('is-on')
+  // 摆放策略（按可用空间依次尝试）：
+  //   1. 右侧 —— KPI 卡是横向排布，右侧通常是空白，最不打扰；
+  //   2. 左侧 —— 右侧不够宽时的镜像选择；
+  //   3. 上方 / 下方 —— 前面都不行才用，并夹回视口。
+  // 之所以不用「下方优先」：这张卡的标题下面紧跟金额和切换按钮，往下摆会正好
+  // 盖住用户正要看的东西（实测 193px 高的浮层直接把 ¥ 金额挡住）。
+  const r = el.getBoundingClientRect()
+  const rect = tip.getBoundingClientRect()
+  const GAP = 8
+  const clampX = (x) => Math.min(Math.max(8, x), Math.max(8, window.innerWidth - rect.width - 8))
+  const clampY = (y) => Math.min(Math.max(8, y), Math.max(8, window.innerHeight - rect.height - 8))
+  let left
+  let top
+
+  const rightSpace = window.innerWidth - r.right - GAP
+  const leftSpace = r.left - GAP
+  if (rightSpace >= rect.width) {
+    left = r.right + GAP
+    top = clampY(r.top + r.height / 2 - rect.height / 2)
+  } else if (leftSpace >= rect.width) {
+    left = r.left - rect.width - GAP
+    top = clampY(r.top + r.height / 2 - rect.height / 2)
+  } else if (r.top - rect.height - GAP >= 8) {
+    left = clampX(r.left + r.width / 2 - rect.width / 2)
+    top = r.top - rect.height - GAP
+  } else {
+    left = clampX(r.left + r.width / 2 - rect.width / 2)
+    top = clampY(r.bottom + GAP)
+  }
+  tip.style.left = `${Math.round(left)}px`
+  tip.style.top = `${Math.round(top)}px`
+}
+document.addEventListener('mouseover', (event) => {
+  const el = event.target.closest?.('[data-hint]')
+  if (el) showHint(el)
+})
+document.addEventListener('mouseout', (event) => {
+  const el = event.target.closest?.('[data-hint]')
+  if (!el) return
+  // 移到该元素内部子节点不算移出
+  if (el.contains(event.relatedTarget)) return
+  hideHint()
+})
+// 滚动/切换页面时浮层会留在原地，直接收起
+document.addEventListener('scroll', hideHint, true)
 
 // 点语言菜单以外的地方收起它
 document.addEventListener('click', (event) => {
