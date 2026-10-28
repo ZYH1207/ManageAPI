@@ -178,34 +178,49 @@
 
             <h4 class="doc-h4">站点</h4>
             <p>
-              录入中转站和 Key 的地方，同时也是监控页：上方是余额曲线、倍率变动和上游公告，下方是站点卡。
+              录入中转站和 Key 的地方，同时也是监控页：上方是余额概览、倍率变动和上游公告，下方是站点卡。
               一个站可以挂多个 Key。<br />
               · <b>名称</b> —— 随便填，只用于你自己识别<br />
               · <b>地址</b> —— 中转站给你的 API 地址，<b>结尾必须带 <code>/v1</code></b>
               （如 <code>https://api.example.com/v1</code>）<br />
-              · <b>类型</b> —— 不确定就选「不确定」，不影响功能<br />
+              · <b>类型</b> —— 不确定就选「不确定」，填完令牌会自动识别（one-api / new-api / Sub2API）<br />
               · <b>Key</b> —— 粘贴完整的 <code>sk-...</code>，加密存储，界面只显示尾号
             </p>
             <p>每个站点卡片上有一排按钮：</p>
             <p>
+              · <b>账号登录</b> —— 用站点后台的账号密码登录，自动获取令牌并续期（过期自动重登，10 分钟冷却）。验证码 / 2FA 的站不支持，会明确告诉你<br />
               · <b>一键同步</b> —— 同步模型 → 读余额 →（有「令牌」时）识别分组，串着跑完；某一步失败不影响其他步骤。<br />
               · <b>密钥</b> —— 展开这个站的 Key 列表：加 Key、删 Key、看每把 Key 绑的分组。<br />
               · <b>分组倍率</b> —— 展开分组倍率，改倍率或恢复站点值。详见下面「分组」一节。<br />
               · <b>导入倍率</b> —— 读不到后台时的手动方案：列出该站所有分组，你选一个。<br />
-              · <b>用量核对</b> —— 用管理令牌拉站方记录的消费，和我们的估算对比。<br />
+              · <b>用量核对</b> —— 拉站方逐条用量明细，和网关记录做<b>扣费核验</b>：单价对不对、token 数是否吻合。<br />
               · <b>导出配置</b> —— 生成 OpenAI 兼容的配置片段，方便复制到客户端。<br />
-              · <b>令牌</b>（在站点卡片上）—— 站点后台的登录令牌，用来读余额、用量和识别分组。一个后台账号填一次，整站通用；不参与对话。<br />
+              · <b>令牌</b>（在站点卡片上）—— 站点后台的登录令牌，用来读余额、账单和识别分组。一个后台账号填一次，整站通用；不参与对话。保存后会自动识别这个站是哪一系。<br />
+              · <b>充值汇率</b>（在站点卡片上）—— 充 1 元到账多少站点额度。1:1 充值的站填 1；充 ¥100 到账 $120 填 0.83。留空 = 按市场汇率折算。「实际消费」用它把站点账单换算成人民币。<br />
               · <b>分组</b>（在 Key 那一行）—— 显示这把 Key 属于哪个分组，点它也能打开选分组。
             </p>
             <p>
               <b>令牌怎么拿</b>：浏览器登录站点后台 → F12 → Network → 点任意 <code>/api/v1/</code> 开头的请求 →
               复制 Request Headers 里的 <code>Authorization</code> 值（去掉 <code>Bearer </code> 前缀）。
-              令牌会过期（一般 7-30 天），失效后重新复制。
+              令牌会过期（一般 7-30 天），失效后重新复制，或者直接用「账号登录」让它自动续期。
             </p>
-            <p class="doc-note">
-              界面致谢：站点卡的版式（渠道卡、分组胶囊、工具栏）参考了
-              <a href="https://github.com/bejix/upstream-ops" target="_blank" rel="noopener">bejix/upstream-ops</a>
-              的设计，只借版式；数据与交互都是本项目自己实现的。
+
+            <h4 class="doc-h4">余额概览</h4>
+            <p>
+              站点页上方那张图，两种看法：<br />
+              · <b>全部站点</b>（默认）—— 折线是各站余额合计，柱子是<b>各站花费堆叠</b>（每站一色）<br />
+              · <b>单站</b> —— 点下方胶囊只看某个站，折线与柱子都换成该站数据，纵轴自动缩放到该站量级
+            </p>
+            <p>
+              <b>为什么不做多线？</b>多个站的余额叠在一起时，小站的线会被压到贴地、互相穿插，五个站就糊成一片。
+              所以只画合计，需要看单站时点胶囊切换。没余额也没花费的站不会出现在胶囊里。
+            </p>
+            <p>
+              <b>花费 · 今天 / 本周 / 本月</b> 只显示一个数字：<b>实际消费</b>。
+              它<b>直接读站点自己的账单</b>（<code>/api/v1/usage</code> 逐条汇总），不是网关侧估算——
+              实测上游约 26% 的 token 不返回 <code>usage</code>、<code>cached_tokens</code> 也不稳定，
+              估算值和真实账单能差 7~10 倍。读不到账单时显示「读不到账单」，不会假装是 0。
+              监控默认每 30 分钟采集一轮，可在探针页附近设置里调间隔或关掉。
             </p>
 
             <h4 class="doc-h4">分组</h4>
@@ -241,6 +256,14 @@
             <p>
               自己调倍率有实际用处：比如站方标的 0.15 你觉得有水分，按「用量核对」算出来实际是 0.18，
               就手动改成 0.18，比价结果才准。
+            </p>
+            <p>
+              <b>分组胶囊的颜色是怎么来的？</b>按这个分组里<b>模型的厂商</b>聚合推断，不是给分组名分配颜色：<br />
+              · 国产厂商（deepseek / glm / qwen / kimi / doubao / minimax 等）统一<b>蓝色</b><br />
+              · 海外主流各自一色：OpenAI 绿、Claude 橙、Gemini 黄<br />
+              · 组内全部免费（倍率 0 或双零价）→ <b>紫色</b>，和站点卡「免费 N」标记同款<br />
+              · 混合了多家厂商、或者<b>组里还没有模型</b> → <b>中性灰</b>（不猜）<br />
+              所以灰胶囊通常意味着这把 Key 还没同步过模型，跑一次「一键同步」就会上色。
             </p>
 
             <h4 class="doc-h4">免费</h4>
@@ -441,6 +464,27 @@
               和探针一起算可用率。一个站探针正常、但连续 3 次真实请求失败，可用率会掉到 63%，
               状态自动变成「不稳定」，下次路由就跳过它。
             </p>
+            <p>
+              网关还会对<b>成功的真实响应</b>做两类客观质量抽样：<b>空回答</b>（200 成功、正常结束却一个字都没有）
+              和<b>计费虚报</b>（上报的 <code>prompt_tokens</code> 超过请求体估算的 4 倍）。
+              指纹和截断需要受控 prompt，真实请求里验不了——那两项只有探针能做。
+              抽样要攒够 5 个样本、异常率超过 20% 才影响评分，不足就只记录。
+            </p>
+
+            <h4 class="doc-h4">⑥ 采集：余额、账单、倍率、公告</h4>
+            <p>
+              比价和探针回答「现在哪家划算」，采集回答「这几天发生了什么」。默认每 30 分钟一轮（可关）。
+              采集只读站点接口、<b>不花 token</b>，所以能比探针勤。一个站一轮采四样，各自独立失败：<br />
+              · <b>余额</b> —— 站点后台接口，需要「令牌」；读不到就显示「无数据」，不猜数字<br />
+              · <b>实际消费</b> —— 站点自己的按天账单，见上面「余额概览」<br />
+              · <b>分组倍率</b> —— <code>/api/v1/channels/available</code>，顺便把模型原价读回来<br />
+              · <b>上游公告</b> —— 按标题 + 发布时间去重
+            </p>
+            <p>
+              <b>告警按「站点 × 类型」冷却</b>：同样的余额过低六小时内只记一条，不然第一次接站就会被刷屏。
+              第一次采集只记基线、不发变动——否则一接入就是满屏「新出现」，那不是变动，那是初始状态。
+              余额告警阈值在设置里按<b>美元</b>填（人民币站按汇率折算后比），填 0 关闭。
+            </p>
 
             <h4 class="doc-h4">几个刻意的取舍</h4>
             <p>
@@ -454,7 +498,16 @@
             <h3 class="doc-h3">常见问题</h3>
             <p>
               <b>余额读不到？</b> 多数站不对 API Key 开放余额接口。可以在站点卡片上点「令牌」填一个后台登录令牌，
-              或者直接手动填余额。<br />
+              或者直接用「账号登录」，再不行就手动填余额。<br />
+              <b>花费显示「读不到账单」？</b> 「实际消费」只认站点自己的账单（<code>/api/v1/usage</code>）。
+              读不到通常是：还没填「令牌」、令牌失效、或这个站没有开放账单接口。工具不会拿估算冒充当账单。<br />
+              <b>花费比我预期的小？</b> 账单只统计经过这个站、且站点自己记了账的部分。
+              如果你在别的客户端直连这个站，那部分不在本工具的采集范围内；反过来，
+              网关侧估算缺约 26% 的 token，所以我们也绝不用估算来当花费。<br />
+              <b>分组胶囊是灰的？</b> 颜色按组内模型的厂商聚合推断：单厂商上色，混合厂商或<b>组内还没有模型</b>是灰色。
+              灰的通常意味着这把 Key 还没同步过模型，跑一次「一键同步」就好。<br />
+              <b>令牌失效了要重新抓吗？</b> 用「账号登录」填过账号密码的站会自动续期（401 触发，10 分钟冷却）；
+              手填的令牌不会被自动覆盖，失效后需要重新抓一个。<br />
               <b>「导入倍率」和「基准价导入」有什么区别？</b> 站点页的导入倍率写的是<b>倍率</b>，
               基准价页的写的是<b>官方价</b>。两边分工：官方价归基准价页，折扣归站点页。<br />
               <b>为什么同一个模型在两个分组里价格不一样？</b> 正常。分组背后是不同的上游渠道，
@@ -508,37 +561,61 @@
 
             <h4 class="doc-h4">Sites</h4>
             <p>
-              Where you record relays and keys — and the monitor page too: balance curve, ratio changes and upstream
+              Where you record relays and keys — and the monitor page too: balance overview, ratio changes and upstream
               announcements on top, site cards below. One site can hold several keys.<br />
               · <b>Name</b> — anything you like, only for your own reference<br />
               · <b>Base URL</b> — the API endpoint the relay gave you, <b>it must end with <code>/v1</code></b>
               (e.g. <code>https://api.example.com/v1</code>)<br />
-              · <b>Type</b> — pick "Not sure" if you do not know; it changes nothing<br />
+              · <b>Type</b> — pick "Not sure" if you do not know; saving a token detects it automatically
+              (one-api / new-api / Sub2API)<br />
               · <b>Key</b> — paste the full <code>sk-...</code>; stored encrypted, only the last digits are shown
             </p>
             <p>Each site card has a row of buttons:</p>
             <p>
+              · <b>Account login</b> — sign in with the site's dashboard credentials; the token is fetched and renewed
+              automatically (on 401, with a 10-minute cooldown). Sites with captcha / 2FA are not supported and say so.<br />
               · <b>One-click sync</b> — models → balance → (with a token) group detection, run in sequence; one failing
               step does not stop the others.<br />
               · <b>Keys</b> — expands this site's key list: add or remove keys, see the group bound to each.<br />
               · <b>Group ratios</b> — expands the ratio rows so you can edit a ratio or restore site values.
               See the Groups section.<br />
               · <b>Import ratios</b> — the manual path when detection fails: list the site's groups and pick one.<br />
-              · <b>Usage check</b> — pulls the site's own recorded spend and compares it with our estimate.<br />
+              · <b>Usage check</b> — pulls the site's per-request usage records for a <b>billing audit</b>:
+              are the unit prices right, do the token counts line up.<br />
               · <b>Export config</b> — generates an OpenAI-compatible snippet you can paste into a client.<br />
-              · <b>Token</b> (on the site card) — the site's login token, used to read balance, usage and groups.
-              One token per backend account; never used for chat.<br />
+              · <b>Token</b> (on the site card) — the site's login token, used to read balance, bills and groups.
+              One token per backend account; never used for chat. Saving it also auto-detects which relay family the site is.<br />
+              · <b>Top-up rate</b> (on the site card) — how much site credit one unit of real money buys. Fill 1 for 1:1
+              top-ups; if ¥100 buys $120 of credit, fill 0.83. Empty = use the market FX rate. "Actual spend" uses it to
+              convert the site's bill into your currency.<br />
               · <b>Group</b> (on the key row) — shows which group this key belongs to; click it to change.
             </p>
             <p>
               <b>Getting the token</b>: log in to the site → F12 → Network → click any <code>/api/v1/</code> request →
               copy the <code>Authorization</code> value from Request Headers (drop the <code>Bearer </code> prefix).
-              Tokens expire in 7–30 days; copy a fresh one when they do.
+              Tokens expire in 7–30 days; copy a fresh one, or use Account login so it renews itself.
             </p>
-            <p class="doc-note">
-              Credit where it is due: the site-card layout (channel cards, group chips, toolbar) is inspired by
-              <a href="https://github.com/bejix/upstream-ops" target="_blank" rel="noopener">bejix/upstream-ops</a>.
-              Only the layout is borrowed; data and interactions are implemented here.
+
+            <h4 class="doc-h4">Balance overview</h4>
+            <p>
+              The chart at the top of Sites has two views:<br />
+              · <b>All sites</b> (default) — the line is total balance across sites, the bars are <b>per-site spend, stacked</b>
+              (one colour each)<br />
+              · <b>Single site</b> — click a chip below to focus one site; both line and bars switch to it and the axis
+              rescales to that site's magnitude
+            </p>
+            <p>
+              <b>Why not multiple lines?</b> Overlay several sites and the small ones flatten against the floor and cross
+              each other — five sites already smear into one band. So only the total is drawn; switch chips to inspect one.
+              Sites with neither balance nor spend are not listed.
+            </p>
+            <p>
+              <b>Spend · today / week / month</b> shows one number: <b>actual spend</b>. It is read
+              <b>straight from the site's own bill</b> (<code>/api/v1/usage</code>, summed per request), not estimated by the
+              gateway — about 26% of upstream tokens arrive without <code>usage</code> and <code>cached_tokens</code> is
+              unstable, which puts estimates anywhere from 7× to 10× off. When the bill cannot be read it says
+              "no bill" instead of pretending it is 0. Collection runs every 30 minutes by default and can be changed
+              or turned off in settings.
             </p>
 
             <h4 class="doc-h4">Groups</h4>
@@ -576,6 +653,15 @@
             <p>
               Custom ratios have a real use: if the site claims 0.15 but a usage check shows you are actually paying
               what 0.18 would cost, set 0.18 so the comparison stays honest.
+            </p>
+            <p>
+              <b>Where do the chip colours come from?</b> They are inferred from the <b>vendors of the models</b> in that group,
+              not assigned to group names:<br />
+              · Domestic vendors (deepseek / glm / qwen / kimi / doubao / minimax …) share <b>blue</b><br />
+              · Major overseas vendors each get a colour: OpenAI green, Claude orange, Gemini yellow<br />
+              · Every model in the group is free (ratio 0 or both prices 0) → <b>purple</b>, same as the "free N" badge<br />
+              · Mixed vendors, or <b>the group has no models yet</b> → <b>neutral grey</b> (no guessing)<br />
+              A grey chip usually means that key has not synced models yet — run One-click sync and it colours in.
             </p>
 
             <h4 class="doc-h4">Free</h4>
@@ -790,6 +876,23 @@
               availability, turns "unstable", and is skipped on the next route.
             </p>
 
+            <h4 class="doc-h4">⑥ Collection: balance, bills, ratios, notices</h4>
+            <p>
+              Comparison and probes answer "which site is best right now"; collection answers "what happened these past
+              days". Every 30 minutes by default (can be turned off). It only reads site APIs and
+              <b>burns no tokens</b>, so it can be more frequent than probing. Four things per site, each failing on its own:<br />
+              · <b>Balance</b> — the site's dashboard API, needs a token; unreadable shows "no data" rather than a guess<br />
+              · <b>Actual spend</b> — the site's own daily bill, see Balance overview above<br />
+              · <b>Group ratios</b> — <code>/api/v1/channels/available</code>, which also brings back base prices<br />
+              · <b>Upstream notices</b> — deduplicated by title + publish time
+            </p>
+            <p>
+              <b>Alerts cool down per "site × type"</b>: the same low balance is recorded once per six hours, otherwise
+              onboarding floods you. The first collection only records a baseline and raises no changes — otherwise you
+              would see a wall of "new" that is really just the initial state. The balance alert threshold is in
+              <b>USD</b> (sites in CNY are converted before comparing); set it to 0 to disable.
+            </p>
+
             <h4 class="doc-h4">Deliberate trade-offs</h4>
             <p>
               <b>Latency does not participate in ranking</b> — it does not share units with price, and fudging it into a
@@ -803,7 +906,19 @@
             <h3 class="doc-h3">FAQ</h3>
             <p>
               <b>Balance cannot be read?</b> Most sites do not expose a balance endpoint to API keys. Click "Token" on the
-              key row and paste a site login token, or just type the balance in.<br />
+              site card and paste a site login token, try Account login, or just type the balance in.<br />
+              <b>Spend shows "no bill"?</b> Actual spend only recognises the site's own bill
+              (<code>/api/v1/usage</code>). It fails when the token is missing or expired, or the site has no billing API.
+              The tool will not pass an estimate off as a bill.<br />
+              <b>Spend looks lower than expected?</b> The bill only covers traffic this site recorded itself. Anything you
+              sent to the site from another client is outside collection; conversely, gateway-side estimates lose about
+              26% of tokens, which is exactly why they are never used as spend.<br />
+              <b>Why is a group chip grey?</b> Colours are inferred from the vendors of the group's models: one vendor
+              colours in, mixed vendors or <b>a group with no models yet</b> stay grey. Grey usually means that key has
+              not synced models — run One-click sync.<br />
+              <b>Do I have to re-copy the token when it expires?</b> Sites you added through Account login renew
+              themselves (triggered by 401, 10-minute cooldown). Manually pasted tokens are never overwritten and must be
+              re-copied.<br />
               <b>Import ratios vs. import official prices?</b> The site page writes <b>ratios</b>; the Benchmarks page
               writes <b>official prices</b>. Prices belong to Benchmarks, discounts belong to the site page.<br />
               <b>Why does the same model cost different amounts in two groups?</b> That is normal. Groups sit on top of
