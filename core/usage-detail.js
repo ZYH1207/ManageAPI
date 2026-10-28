@@ -91,12 +91,24 @@ export function detailRow(entry) {
  *            差异，界面上的汇总以 usage.json 为准、明细以这里为准，两边都标了来源）
  *   limit —— 最多返回多少行（决策日志最多 500 条，默认全给）
  */
-export function detailRows(entries = [], { days = 7, limit = 500, now = Date.now() } = {}) {
-  const sinceMs = now - Math.max(1, days) * DAY_MS
+export function detailRows(
+  entries = [],
+  { days = 7, limit = 500, now = Date.now(), sinceMs: clearedMs = null } = {},
+) {
+  const windowMs = now - Math.max(1, days) * DAY_MS
+  // 清空水位线：清空前发生、日志里还留着的那些请求不再算进明细。
+  // 不这么做的话，汇总（usage.json）已经归零、明细（决策日志）照旧列一大片，
+  // 弹窗上下两个数字必然对不上。
+  const floorMs = Number.isFinite(clearedMs) ? Math.max(windowMs, clearedMs) : windowMs
   const rows = []
+  let clearedDropped = 0
   for (const entry of entries) {
     const row = detailRow(entry)
-    if (!row || row.tsMs < sinceMs) continue
+    if (!row || row.tsMs < windowMs) continue
+    if (row.tsMs < floorMs) {
+      clearedDropped += 1
+      continue
+    }
     rows.push(row)
   }
   rows.sort((a, b) => b.tsMs - a.tsMs)
@@ -104,11 +116,128 @@ export function detailRows(entries = [], { days = 7, limit = 500, now = Date.now
   const shown = rows.slice(0, Math.max(0, limit))
   return {
     rows: shown,
+    // 被清空水位线挡掉的条数（界面要能解释「日志里看着有 500 条，为什么这里更少」）
+    clearedDropped,
     // 区间内一共有多少条明细（可能多于 shown）
     available: rows.length,
     shown: shown.length,
     capped: rows.length > shown.length,
     // 有请求但上游没回 usage：汇总里的 token 数不含它们，界面要能解释差额
     missingUsage: shown.filter((row) => row.prompt === null).length,
+  }
+}
+
+/**
+ * 在**全量聚合桶**上按条件求和（筛选小计的唯一来源）。
+ *
+ * 为什么不从明细行算：明细来自日志/账本，条数有上限（日志 500 条、账本按天封顶），
+ * 拿它求和出来的「小计」和上面那份全量汇总必然对不上——这正是「上面 20 条、
+ * 下面 182 条」的来历。改成在全量桶上过滤，小计永远等于「这段时间真的花了多少」。
+ *
+ * @param {Array} buckets usageSummary 返回的 buckets（{keyId,providerId,group,model,row}）
+ * @param {{providerId?:string, group?:{providerId:string,name:string}|null, model?:string}} filter
+ */
+export function sumBuckets(buckets = [], filter = {}) {
+  const totals = {
+    requests: 0,
+    errors: 0,
+    input: 0,
+    output: 0,
+    cached: 0,
+    cacheCreation: 0,
+    reasoning: 0,
+    latencySum: 0,
+    latencyCount: 0,
+    ttftSum: 0,
+    ttftCount: 0,
+    genSum: 0,
+    genOutput: 0,
+  }
+  for (const bucket of buckets) {
+    if (filter.providerId && bucket.providerId !== filter.providerId) continue
+    if (
+      filter.group &&
+      (bucket.providerId !== filter.group.providerId || (bucket.group || '') !== filter.group.name)
+    ) {
+      continue
+    }
+    if (filter.model && bucket.model !== filter.model) continue
+
+    const row = bucket.row || {}
+    totals.requests += row.requests || 0
+    totals.errors += row.errors || 0
+    totals.input += row.input || 0
+    totals.output += row.output || 0
+    totals.cached += row.cached || 0
+    totals.cacheCreation += row.cacheCreation || 0
+    totals.reasoning += row.reasoning || 0
+    totals.latencySum += row.latencySum || 0
+    totals.latencyCount += row.latencyCount || 0
+    totals.ttftSum += row.ttftSum || 0
+    totals.ttftCount += row.ttftCount || 0
+    totals.genSum += row.genSum || 0
+    totals.genOutput += row.genOutput || 0
+  }
+
+  const billedInput = totals.input + totals.cached + totals.cacheCreation
+  const genSum = totals.genSum > 0 ? totals.genSum : 0
+  return {
+    ...totals,
+    avgLatencyMs: totals.latencyCount ? Math.round(totals.latencySum / totals.latencyCount) : null,
+    avgTtftMs: totals.ttftCount ? Math.round(totals.ttftSum / totals.ttftCount) : null,
+    cacheHitRate: billedInput > 0 ? totals.cached / billedInput : null,
+    avgTps: genSum > 0 ? Math.round((totals.genOutput / (genSum / 1000)) * 10) / 10 : null,
+  }
+}
+
+/**
+ * 三列筛选的下拉选项（站点 / 分组 / 模型），带各自在区间内的请求条数。
+ * 数据来自全量聚合桶，所以「秋（120 次请求）」是这段时间的真实条数，
+ * 不是明细窗口里剩几条。逐级收窄的口径和界面上一致：
+ * 选了站点，分组和模型只列这个站有的；再选分组，模型只列这个分组里的。
+ */
+export function facetOptions(buckets = [], filter = {}) {
+  const providers = new Map()
+  const groups = new Map()
+  const models = new Map()
+
+  const add = (map, key, seed, requests) => {
+    const item = map.get(key) || { ...seed, requests: 0 }
+    item.requests += requests
+    map.set(key, item)
+  }
+
+  for (const bucket of buckets) {
+    const requests = bucket.row?.requests || 0
+    if (bucket.providerId) {
+      add(
+        providers,
+        bucket.providerId,
+        { id: bucket.providerId, name: bucket.providerName || bucket.providerId },
+        requests,
+      )
+    }
+    // 分组只列「当前已选站点」的
+    if (!filter.providerId || bucket.providerId === filter.providerId) {
+      add(
+        groups,
+        `${bucket.providerId}\u0001${bucket.group || ''}`,
+        { providerId: bucket.providerId, name: bucket.group || '' },
+        requests,
+      )
+    }
+    // 模型只列「当前已选站点 + 分组」里的
+    const groupOk =
+      !filter.group ||
+      (bucket.providerId === filter.group.providerId && (bucket.group || '') === filter.group.name)
+    const providerOk = !filter.providerId || bucket.providerId === filter.providerId
+    if (providerOk && groupOk) add(models, bucket.model, { name: bucket.model }, requests)
+  }
+
+  const byName = (a, b) => String(a.name).localeCompare(String(b.name), 'zh')
+  return {
+    providers: [...providers.values()].sort(byName),
+    groups: [...groups.values()].sort(byName),
+    models: [...models.values()].sort(byName),
   }
 }

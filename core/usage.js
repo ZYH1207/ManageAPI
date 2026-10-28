@@ -18,6 +18,26 @@ function filePath() {
   return join(dataDir(), 'usage.json')
 }
 
+/** 复合键分隔符：分组名里可能有 | / 空格 / 中文，只有控制字符是安全的 */
+const SEP = ''
+
+/**
+ * 解析复合键 → { keyId, providerId, group, model }。
+ *
+ * 老数据（这一版之前）是 `keyId|providerId|model` 三段用 | 拼的，没有分组。
+ * 两种格式都要认：老键里没有 SEP，按 | 切三段、分组记 '-'（未知）；新键按 SEP 切。
+ * 不做数据迁移——老行自然老化，反正它们本来也没有分组信息。
+ */
+function parseComposite(composite) {
+  if (composite.includes(SEP)) {
+    const [keyId, providerId, group, ...modelParts] = composite.split(SEP)
+    return { keyId, providerId, group: group || '', model: modelParts.join(SEP) }
+  }
+  // 老键没有分组信息：用空串（界面显示「未指定分组」），不用 '-' 那种假名字
+  const [keyId, providerId, ...modelParts] = composite.split('|')
+  return { keyId, providerId, group: '', model: modelParts.join('|') }
+}
+
 function emptyRow() {
   return {
     requests: 0,
@@ -48,9 +68,14 @@ export async function readUsage() {
   if (cache) return cache
   try {
     const raw = JSON.parse(await readFile(filePath(), 'utf8'))
-    cache = { version: 1, days: raw?.days && typeof raw.days === 'object' ? raw.days : {} }
+    cache = {
+      version: 1,
+      days: raw?.days && typeof raw.days === 'object' ? raw.days : {},
+      // 清空水位线（ISO）：见 resetUsage 的注释。老文件没有这个字段 → null
+      clearedAt: typeof raw?.clearedAt === 'string' ? raw.clearedAt : null,
+    }
   } catch {
-    cache = { version: 1, days: {} }
+    cache = { version: 1, days: {}, clearedAt: null }
   }
   return cache
 }
@@ -97,7 +122,15 @@ export async function recordUsage(entry) {
   const day = todayKey(entry.ts)
   if (!data.days[day]) data.days[day] = {}
   const bucket = data.days[day]
-  const composite = `${entry.keyId || '-'}|${entry.providerId || '-'}|${entry.model || '-'}`
+  // 复合键：keyId、providerId、**分组**、model。分组必须进键——「详细用量」的
+  // 小计要能按分组筛，而小计不能从决策日志（只有最近 500 条）里算，
+  // 只能从这份全量聚合里算。分隔符用 ：分组名里什么都可能有，除它。
+  const composite = [
+    entry.keyId || '-',
+    entry.providerId || '-',
+    entry.group || '',
+    entry.model || '-',
+  ].join(SEP)
   const row = bucket[composite] || emptyRow()
 
   row.requests += 1
@@ -134,6 +167,39 @@ export async function recordUsage(entry) {
 }
 
 /** 最近 n 天的日期键（本地日），从旧到新。 */
+/** 本地日期的偏移副本（自定义区间用，按本地时区算，和 localDayKey 同一口径） */
+function shiftDay(day, offset) {
+  const [y, m, d] = String(day).split('-').map(Number)
+  const base = new Date(y, (m || 1) - 1, d || 1)
+  base.setDate(base.getDate() + offset)
+  return localDayKey(base)
+}
+
+/**
+ * 区间内的日期键（从旧到新）。
+ *
+ * 两种指定方式，from/to 优先：
+ *   days      —— 最近 N 天（含今天）
+ *   from/to   —— 自定义起止日（本地日期键 YYYY-MM-DD，两端都含）。
+ *                起止写反了就自动调正，不让调用方各自兜底
+ */
+function rangeDays({ days, from, to }) {
+  if (from && to) {
+    let start = String(from).slice(0, 10)
+    let end = String(to).slice(0, 10)
+    if (start > end) [start, end] = [end, start]
+    const out = []
+    // 上限 366 天：参数被人手填成十年前时，别把内存撑爆
+    for (let i = 0; i < 366; i += 1) {
+      out.push(start)
+      if (start >= end) break
+      start = shiftDay(start, 1)
+    }
+    return out
+  }
+  return recentDays(days)
+}
+
 function recentDays(count) {
   const days = []
   const now = new Date()
@@ -195,25 +261,36 @@ function finalize(row) {
  * 否则用户会以为用了两个模型，而合并后的比价/决策只显示一个——数字对不上。
  * 传函数而不是别名表：口径（怎么归一）只由调用方那一份实现决定。
  */
-export async function usageSummary({ days = 30, resolveModel = null } = {}) {
+export async function usageSummary({
+  days = 30,
+  from = null,
+  to = null,
+  // 调用方传进来的模型名归一函数（身份键合并，见上面的注释）
+  resolveModel = null,
+} = {}) {
   const data = await readUsage()
-  const range = recentDays(days)
+  const range = rangeDays({ days, from, to })
   const rangeSet = new Set(range)
 
   const totals = emptyRow()
   const byKey = {}
   const byProvider = {}
   const byModel = {}
+  const byGroup = {}
   const byDay = {}
+  // 扁平桶清单：筛选小计要按「站点 + 分组 + 模型」随便组合筛，边际汇总算不出来，
+  // 得让调用方在这份全量桶上自己过滤（一天几十个桶，量很小）
+  const buckets = []
 
   for (const [day, bucket] of Object.entries(data.days)) {
     if (!rangeSet.has(day)) continue
     const dayTotal = byDay[day] || emptyRow()
     for (const [composite, row] of Object.entries(bucket)) {
-      // 复合键是 keyId|providerId|model，model 排最后——模型名里含 | 时
-      // 剩余段重新 join 才能还原（前两段是内部生成的 id，不会含 |）
-      const [keyId, providerId, ...modelParts] = composite.split('|')
-      const rawModel = modelParts.join('|')
+      // 复合键解析收在 parseComposite：新版是 keyIdproviderIdgroupmodel，
+      // 老版是 keyId|providerId|model（没有分组信息）——两种都要认，老行自然老化
+      const parsed = parseComposite(composite)
+      const { keyId, providerId, group } = parsed
+      const rawModel = parsed.model
       // 历史行是按写入时的名字存的，归一后合并——老数据也跟着合，不用改写 usage.json
       const model = (resolveModel && resolveModel(rawModel)) || rawModel
       addRow(totals, row)
@@ -224,6 +301,12 @@ export async function usageSummary({ days = 30, resolveModel = null } = {}) {
       addRow(byProvider[providerId], row)
       if (!byModel[model]) byModel[model] = emptyRow()
       addRow(byModel[model], row)
+      // 分组只在站点内唯一：键要带 providerId
+      if (!byGroup[`${providerId}${SEP}${group}`]) {
+        byGroup[`${providerId}${SEP}${group}`] = { ...emptyRow(), providerId, group }
+      }
+      addRow(byGroup[`${providerId}${SEP}${group}`], row)
+      buckets.push({ day, keyId, providerId, group, model, row })
     }
     byDay[day] = dayTotal
   }
@@ -233,10 +316,20 @@ export async function usageSummary({ days = 30, resolveModel = null } = {}) {
 
   return {
     days: range,
+    // 界面要据此说明「统计从什么时候开始算」——尤其清空过之后
+    clearedAt: data.clearedAt || null,
     totals: finalize(totals),
     byKey: finalizeMap(byKey),
     byProvider: finalizeMap(byProvider),
     byModel: finalizeMap(byModel),
+    byGroup: Object.fromEntries(
+      Object.entries(byGroup).map(([k, v]) => [
+        k,
+        { providerId: v.providerId, group: v.group, ...finalize(v) },
+      ]),
+    ),
+    // 原始桶：筛选小计的唯一来源（见 core/usage-detail.js 的 sumBuckets）
+    buckets,
     byDay: Object.fromEntries(
       range.map((day) => [day, finalize(byDay[day] || emptyRow())]),
     ),
@@ -250,16 +343,30 @@ export async function tokensUsedByKey(keyId, sinceDay) {
   for (const [day, bucket] of Object.entries(data.days)) {
     if (day < sinceDay) continue
     for (const [composite, row] of Object.entries(bucket)) {
-      if (!composite.startsWith(`${keyId}|`)) continue
+      const owner = composite.includes(SEP) ? composite.split(SEP)[0] : composite.split('|')[0]
+      if (owner !== keyId) continue
       total += row.input + row.output
     }
   }
   return total
 }
 
-/** 清空统计（界面上的「重置用量」）。 */
+/**
+ * 清空统计（界面上的「清空统计」）。
+ *
+ * 除了把汇总归零，还要记一条**清空水位线**（clearedAt）。为什么：
+ * 「详细用量」的明细来自决策日志（db.routing），不是 usage.json。只清汇总的话，
+ * 弹窗上面写「0 次请求」、下面照样列出清空前的 200 条明细和小计——两个数字当场打架。
+ * 日志本身要留着排查用，所以不清它，而是让统计（含明细）一律只认水位线之后的请求。
+ */
 export async function resetUsage() {
-  cache = { version: 1, days: {} }
+  cache = { version: 1, days: {}, clearedAt: new Date().toISOString() }
   writeChain = writeChain.then(flush).catch(() => {})
   return writeChain
+}
+
+/** 统计的清空时间（ISO 字符串）或 null。明细接口要按它过滤，和汇总保持同口径。 */
+export async function usageClearedAt() {
+  const data = await readUsage()
+  return data.clearedAt || null
 }

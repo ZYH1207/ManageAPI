@@ -26,7 +26,7 @@ import {
   isTerminalChunk,
   rewriteAppendedChunk,
 } from '../core/wire.js'
-import { detailRows } from '../core/usage-detail.js'
+import { detailRows, detailRow, sumBuckets, facetOptions } from '../core/usage-detail.js'
 import {
   selectCandidates,
   listPublicModels,
@@ -63,6 +63,12 @@ import { splitOffers, isFreeOffer, resolvePool, FREE_PREFIX, FREE_BASE_PATH } fr
 import { rankFreePool } from '../core/rank-free.js'
 import * as platforms from '../core/platforms/index.js'
 import { recordUsage, usageSummary, tokensUsedByKey, resetUsage, readUsage, localMonthStart } from '../core/usage.js'
+import {
+  appendDetail,
+  readDetail,
+  listDetailDays,
+  DETAIL_RETENTION_DAYS,
+} from '../core/usage-ledger.js'
 import { buildMonitorView, markAlertsRead, markAnnouncementsRead, applySnapshot } from '../core/monitor.js'
 import { readProbeSpend, clearProbeSpend, buildProbeSpendView } from '../core/probe-spend.js'
 import { collectProviderSnapshots } from './monitor-runner.js'
@@ -2762,12 +2768,36 @@ route('POST', /^\/api\/failover\/clear$/, async (ctx) => {
   return { ok: true, repick: pick }
 })
 
+/**
+ * 用量区间参数：自定义起止（from / to）优先，否则走 days。
+ * 只接受 YYYY-MM-DD，其他格式一律当没传——宁可回自然区间，也不要拿个
+ * 解析失败的怪日期去查库然后凭空得一个空结果。
+ */
+function usageRangeParams(ctx) {
+  const pick = (key) => {
+    const raw = String(ctx.query.get(key) || '').trim()
+    return /^\d{4}-\d{2}-\d{2}$/.test(raw) ? raw : null
+  }
+  const from = pick('from')
+  const to = pick('to')
+  return from && to ? { from, to } : { from: null, to: null }
+}
+
+/**
+ * 用量汇总。两种区间写法：
+ *   ?days=30                          最近 30 天（含今天）
+ *   ?from=2026-10-01&to=2026-10-20    自定义起止（本地日期，两端都含）
+ */
 route('GET', /^\/api\/usage$/, async (ctx) => {
   const days = Math.min(Math.max(Number(ctx.query.get('days')) || 30, 1), 365)
+  const { from, to } = usageRangeParams(ctx)
+  // 模型名归一：同一个模型在不同站写法不一，用量表里不该出现两行
   const db = await store.readDb()
   return {
     usage: await usageSummary({
       days,
+      from,
+      to,
       resolveModel: (name) => inv.modelIdentityKey(name, db.settings?.modelAliases || {}),
     }),
   }
@@ -2786,20 +2816,97 @@ route('GET', /^\/api\/usage$/, async (ctx) => {
  */
 route('GET', /^\/api\/usage\/detail$/, async (ctx) => {
   const days = Math.min(Math.max(Number(ctx.query.get('days')) || 7, 1), 90)
-  const limit = Math.min(Math.max(Number(ctx.query.get('limit')) || 200, 1), 500)
-  const summary = await usageSummary({ days })
-  const detail = detailRows(await inv.listRouting(500), { days, limit })
+  const limit = Math.min(Math.max(Number(ctx.query.get('limit')) || 200, 1), 2000)
+  const { from, to } = usageRangeParams(ctx)
+  // 与 /api/usage 同一口径（模型身份键归一），否则同一模型两种写法会在两个接口里各算一行
+  const dbForAliases = await store.readDb()
+  const summary = await usageSummary({
+    days,
+    from,
+    to,
+    resolveModel: (name) => inv.modelIdentityKey(name, dbForAliases.settings?.modelAliases || {}),
+  })
+
+  // 筛选：站点 / 分组（带 providerId，同名分组到处都是）/ 模型
+  const filter = {
+    providerId: String(ctx.query.get('providerId') || ''),
+    group: ctx.query.get('group')
+      ? {
+          providerId: String(ctx.query.get('groupProviderId') || ''),
+          name: String(ctx.query.get('group')),
+        }
+      : null,
+    model: String(ctx.query.get('model') || ''),
+  }
+
+  // 小计与下拉选项都从全量聚合算：这样「筛出来的」永远等于「这段时间真的花了多少」
+  const subtotal = sumBuckets(summary.buckets, filter)
+  const facets = facetOptions(summary.buckets, filter)
+
+  const clearedMs = summary.clearedAt ? Date.parse(summary.clearedAt) : null
+  const floorMs = Number.isFinite(clearedMs) ? clearedMs : null
+
+  // 明细：优先逐条账本（保留期内都查得到），没有就退回决策日志
+  const rangeDays = (summary.days || []).slice(-DETAIL_RETENTION_DAYS)
+  let source = 'ledger'
+  let rawRows = await readDetail(rangeDays)
+  if (!rawRows.length) {
+    source = 'log'
+    rawRows = await inv.listRouting(500)
+  }
+
+  const matched = []
+  let scanned = 0
+  let clearedDropped = 0
+  let missingUsage = 0
+  for (const raw of rawRows) {
+    const row = detailRow(raw)
+    if (!row) continue
+    scanned += 1
+    // 清空水位线：清空前的请求不再计入（汇总与明细同时遵守）
+    if (floorMs !== null && row.tsMs < floorMs) {
+      clearedDropped += 1
+      continue
+    }
+    if (filter.providerId && row.providerId !== filter.providerId) continue
+    if (
+      filter.group &&
+      (row.providerId !== filter.group.providerId || (row.group || '') !== filter.group.name)
+    ) {
+      continue
+    }
+    // 桶里的模型名是身份键（同一模型的两种写法合成一行），明细行是原始写法，
+    // 比对前必须过同一份归一函数——否则按模型筛会「选得到、筛出 0 条」
+    if (filter.model) {
+      const rowModel = inv.modelIdentityKey(row.model, dbForAliases.settings?.modelAliases || {})
+      if (rowModel !== filter.model) continue
+    }
+    if (row.prompt === null) missingUsage += 1
+    matched.push(row)
+  }
+  matched.sort((a, b) => b.tsMs - a.tsMs)
+
   return {
     days,
     totals: summary.totals,
-    requests: detail.rows,
+    subtotal,
+    filter,
+    facets,
+    requests: matched.slice(0, limit),
     window: {
-      available: detail.available,
-      shown: detail.shown,
-      capped: detail.capped,
-      // 上游没回 usage 的条数：汇总里的 token 不含它们，页面上必须能解释这个差额
-      missingUsage: detail.missingUsage,
-      logLimit: 500,
+      source,
+      available: matched.length,
+      shown: Math.min(matched.length, limit),
+      capped: matched.length > limit,
+      scanned,
+      missingUsage,
+      // 账本保留天数：过期之后那几天只剩汇总
+      retentionDays: DETAIL_RETENTION_DAYS,
+      ledgerDays: (await listDetailDays()).slice(-DETAIL_RETENTION_DAYS),
+      // 清空水位线：前端据此说明「明细从什么时候开始算」
+      clearedAt: summary.clearedAt || null,
+      clearedDropped,
+      logLimit: source === 'log' ? 500 : null,
     },
   }
 })
@@ -2982,6 +3089,10 @@ function flushRouting() {
   }
   if (!routingBuffer.length) return Promise.resolve()
   const batch = routingBuffer.splice(0, routingBuffer.length)
+  // 顺手写一份逐条明细账本（去掉候选详情，约 300 字节/条）。
+  // 和决策日志并行：日志是「最近发生了什么」的调试窗口（500 条），
+  // 账本是「每一条花了多少」的账（保留 30 天），用途不同别混着用
+  void appendDetail(batch)
   return inv.recordRoutingBatch(batch).catch((error) => {
     // 写失败把本批塞回队头，下个 2 秒周期重试——决策日志是排查依据，
     // 静默丢弃等于让「为什么选了它」永远查不到

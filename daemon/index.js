@@ -7,11 +7,11 @@ import { createAppServer, flushGatewayBuffers } from './server.js'
 import { dataDir, readDb } from '../core/store.js'
 import { ensureGatewayKeys } from '../core/inventory.js'
 import { seedReferenceBenchmarks } from '../core/benchmark.js'
+import { pruneDetail, DETAIL_RETENTION_DAYS } from '../core/usage-ledger.js'
 import { acquireInstanceLock } from './instance-lock.js'
 import { backupKeep, backupNow, backupRoot, startBackupScheduler } from '../core/backup.js'
 import { startProbeScheduler } from './scheduler.js'
 import { runProbes } from './probe-runner.js'
-import { ensureFailoverToken } from '../core/failover.js'
 import { collectProviderSnapshots } from './monitor-runner.js'
 import { runDetourRechecks } from './detour-runner.js'
 import { spawn } from 'node:child_process'
@@ -98,9 +98,6 @@ try {
 }
 
 const gateway = await ensureGatewayKeys()
-// 故障转移上报令牌：给外部监控系统用的身份凭证，启动时自动生成一次（幂等）
-const failoverToken = await ensureFailoverToken()
-console.log(`  故障转移令牌 ${failoverToken}`)
 
 function openBrowser(url) {
   const cmd =
@@ -141,6 +138,15 @@ try {
 }
 
 const stopBackups = startBackupScheduler({ logger: console })
+
+// 用量明细账本：启动时清一次过期文件（保留 30 天）。
+// 明细过期不影响任何总量——总量只从 usage.json 聚合算，这条链路见 core/usage.js
+try {
+  const removed = await pruneDetail()
+  if (removed) console.log(`  用量明细 清掉 ${removed} 天过期文件（保留 ${DETAIL_RETENTION_DAYS} 天）`)
+} catch (error) {
+  console.error('[daemon] 清理用量明细失败（不影响启动）：', error.message)
+}
 
 /**
  * 官方价自动入库（2026-10-28 应作者要求）：启动时把内置参考价补进基准价表，

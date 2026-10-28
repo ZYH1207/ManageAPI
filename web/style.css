@@ -994,6 +994,18 @@ main { flex: 1; min-width: 0; display: flex; flex-direction: column; overflow: h
 .seg { display: inline-flex; gap: 2px; background: var(--hover); padding: 2px; border-radius: 8px; }
 /* 用量页顶部：左边区间切换，右边「详细用量」按钮 */
 .usage-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+/* 区间切换整组（预设胶囊 + 自定义起止）：同一行、同一尺寸，不再占一块面板 */
+.usage-left { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
+.usage-custom { display: inline-flex; align-items: center; gap: 6px; }
+.usage-custom input[type='date'] {
+  width: auto;
+  /* 日期框自带日历图标，别再当普通输入框给一大块内边距 */
+  padding: 3px 6px;
+  font-size: 12px;
+  line-height: 1.4;
+  border-radius: 6px;
+}
+.usage-custom button { padding: 3px 9px; font-size: 12px; line-height: 1.4; }
 .seg button {
   border: none;
   background: none;

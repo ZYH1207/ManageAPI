@@ -4,7 +4,6 @@ import { renderFreeRelayPane, vendorChipClass, vendorOf, vendorLabel } from './f
 import { renderFreePlatformPane } from './free-platform.js'
 import { ensureProtocolView } from './protocol-view.js'
 import { ensureProtocolRecordsView } from './protocol-records-view.js'
-import { facetsOf, matchRow, subtotalOf } from './usage-filter.js'
 
 const $ = (sel, root = document) => root.querySelector(sel)
 
@@ -2549,7 +2548,7 @@ async function refreshState({ silent = false } = {}) {
     state = light && state ? { ...state, ...next } : next
     // 用量页默认 30 天与 state.usage 同口径：清掉旧快照轮询才能生效
     // （此前点过范围按钮后快照永不清空，用量页一直渲染旧数据）
-    if (usageRange === 30) usageData = null
+    if (usageRange === 30 && !usageCustom) usageData = null
     render()
     if (scroller) scroller.scrollTop = scrollTop
   } catch (error) {
@@ -3755,6 +3754,9 @@ function renderGateway() {
           <div class="meta">客户端填这个地址和任意一把 Key，就能访问全部站点</div>
         </div>
         <div class="card-actions">
+          <button class="ghost" data-goto="usage" title="${esc(
+            t('用量面板：按天 / Key / 模型 / 站点统计与清空'),
+          )}">${icon('chart')}${t('用量统计')}</button>
           <button data-act="toggle-gateway">${gateway.enabled ? '关闭网关' : '开启网关'}</button>
         </div>
       </div>
@@ -3850,8 +3852,33 @@ function renderGateway() {
 
 // --------------------------------------------------------------- 用量视图
 
+// 用量区间：'1' / '7' / '30' 天，或 { from, to } 自定义起止（本地日期 YYYY-MM-DD，两端都含）
+const USAGE_PRESETS = [1, 7, 30]
 let usageRange = 30
+// 自定义区间（选了「自定义」才有值）。null 表示走 usageRange
+let usageCustom = null
 let usageData = null
+
+/** 区间参数的查询串：自定义优先 */
+function usageRangeQuery() {
+  if (usageCustom?.from && usageCustom?.to) {
+    return `from=${encodeURIComponent(usageCustom.from)}&to=${encodeURIComponent(usageCustom.to)}`
+  }
+  return `days=${usageRange}`
+}
+
+/** 区间的人话描述（副标题 / 按钮标题共用） */
+function usageRangeLabel() {
+  if (usageCustom?.from && usageCustom?.to) return `${usageCustom.from} 至 ${usageCustom.to}`
+  return `最近 ${usageRange} 天`
+}
+
+/** 本地今天的日期键，给「自定义」的默认起止用 */
+function todayKey() {
+  const d = new Date()
+  const pad = (n) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+}
 
 function tokenTotal(row) {
   return (row?.input || 0) + (row?.output || 0)
@@ -3859,6 +3886,7 @@ function tokenTotal(row) {
 
 function renderUsage() {
   const view = $('#view-usage')
+  if (!view) return
   const usage = usageData || state.usage || {}
   const totals = usage.totals || {}
   const dayEntries = Object.entries(usage.byDay || {}).sort((a, b) => a[0].localeCompare(b[0]))
@@ -3875,14 +3903,39 @@ function renderUsage() {
     return
   }
 
+  const customOpen = Boolean(usageCustom?.open)
+  // 自定义起止：和区间按钮同一行、同一尺寸的一小条，不另占一块面板
+  const customBar = !customOpen
+    ? ''
+    : `<span class="usage-custom" title="${esc(t('两端都包含；起止写反了会自动调正'))}">
+        <input type="date" data-usage-custom="from" value="${esc(usageCustom.from || '')}" max="${esc(todayKey())}" />
+        <span style="color:var(--faint)">—</span>
+        <input type="date" data-usage-custom="to" value="${esc(usageCustom.to || '')}" max="${esc(todayKey())}" />
+        <button class="primary" data-act="usage-custom-apply">${t('查询')}</button>
+        <button class="ghost" data-act="usage-custom-cancel">${t('取消')}</button>
+      </span>`
+
   const seg = `
     <div class="usage-head">
-      <div class="seg">
-        ${[7, 30, 90].map((d) => `<button data-range="${d}" class="${d === usageRange ? 'active' : ''}">${d} 天</button>`).join('')}
+      <div class="usage-left">
+        <div class="seg">
+          ${USAGE_PRESETS.map(
+            (d) =>
+              `<button data-range="${d}" class="${!usageCustom?.from && d === usageRange ? 'active' : ''}">${d} 天</button>`,
+          ).join('')}
+          <button data-act="usage-custom-toggle" class="${usageCustom?.from ? 'active' : ''}"
+            title="${esc(t('自己选起止日期，两端都包含'))}">${t('自定义')}</button>
+        </div>
+        ${customBar}
       </div>
-      <button data-act="open-usage-detail" title="${esc(
-        t('每次请求的 token、缓存读/写、首字、生成速度、换站原因'),
-      )}">${icon('table')}${t('详细用量')}</button>
+      <div style="display:flex;gap:8px">
+        <button data-act="open-usage-detail" title="${esc(
+          t('每次请求的 token、缓存读/写、首字、生成速度、换站原因'),
+        )}">${icon('table')}${t('详细用量')}</button>
+        <button class="ghost danger" data-act="usage-clear" title="${esc(
+          t('清空全部用量统计（按天 / 按 Key / 模型 / 站点），不影响站点与 Key'),
+        )}">${icon('trash')}${t('清空统计')}</button>
+      </div>
     </div>`
 
   const maxTokens = Math.max(1, ...dayEntries.map(([, row]) => tokenTotal(row)))
@@ -3942,11 +3995,19 @@ function renderUsage() {
 
   setPageSubFor(
     'usage',
-    `最近 ${usageRange} 天 · ${totals.requests} 次请求 · ${formatTokens(tokenTotal(totals))} token`,
+    `${usageRangeLabel()} · ${totals.requests} 次请求 · ${formatTokens(tokenTotal(totals))} token`,
   )
+
+
+  const clearedNote = !usage.clearedAt
+    ? ''
+    : `<div class="hint" style="margin-top:6px">${t('统计已于 {time} 清空，更早的请求不再计入。', {
+        time: fmtDateTime(usage.clearedAt),
+      })}</div>`
 
   view.innerHTML = `
     ${seg}
+    ${clearedNote}
     <div class="stats" style="margin-top:16px">
       <div class="stat"><div class="k">请求数</div><div class="v">${totals.requests}</div></div>
       <div class="stat"><div class="k">输入 token</div><div class="v">${formatTokens(totals.input)}</div></div>
@@ -4020,6 +4081,20 @@ function tpsText(value) {
   return Number.isFinite(n) && n > 0 ? n.toFixed(1) : '—'
 }
 
+/** 明细筛选 → 查询串。筛选在服务端算（小计必须和汇总同源，见 sumBuckets） */
+function detailFilterQuery() {
+  const f = usageDetailFilter
+  if (!f.providerId && !f.group && !f.model) return ''
+  const parts = []
+  if (f.providerId) parts.push(`providerId=${encodeURIComponent(f.providerId)}`)
+  if (f.group) {
+    parts.push(`group=${encodeURIComponent(f.group.name)}`)
+    parts.push(`groupProviderId=${encodeURIComponent(f.group.providerId)}`)
+  }
+  if (f.model) parts.push(`model=${encodeURIComponent(f.model)}`)
+  return `&${parts.join('&')}`
+}
+
 async function openUsageDetail(days = usageDetailDays) {
   const sheet = $('#usage-detail')
   if (!sheet) return
@@ -4032,7 +4107,7 @@ async function openUsageDetail(days = usageDetailDays) {
   translateDom(sheet)
   let res = null
   try {
-    res = await api('GET', `/api/usage/detail?days=${days}`)
+    res = await api('GET', `/api/usage/detail?days=${days}${detailFilterQuery()}`)
   } catch (error) {
     if (seq === usageDetailSeq) {
       closeUsageDetail()
@@ -4125,11 +4200,14 @@ function paintUsageDetail() {
     )}
   </div>`
 
-  // ---- 筛选：站点 / 分组 / 模型（与的关系，下级只列上级已经筛出来的那些）
-  // 为什么逐级收窄：先选了站点，分组下拉里就不该出现别的站的分组（同名分组很多），
-  // 模型下拉也只该列这个站真有流量的模型——否则选完是 0 条，看着像坏了。
-  const facets = facetsOf(requests)
-  // 切了区间之后原来的选择可能已经不在这批明细里，留着只会筛出一片空白
+  // ---- 筛选与小计：全部由服务端在全量聚合上算好（见 /api/usage/detail）。
+  // 这里只负责展示。小计永远从全量桶求和，与上面的总计同源。
+  const facets = usageDetail.facets || { providers: [], groups: [], models: [] }
+  const subtotal = usageDetail.subtotal || null
+  const filtering = Boolean(
+    usageDetailFilter.providerId || usageDetailFilter.group || usageDetailFilter.model,
+  )
+
   if (
     usageDetailFilter.providerId &&
     !facets.providers.some((p) => p.id === usageDetailFilter.providerId)
@@ -4137,64 +4215,67 @@ function paintUsageDetail() {
     usageDetailFilter.providerId = ''
     usageDetailFilter.group = null
   }
-  const groupRows = requests.filter(
-    (row) => !usageDetailFilter.providerId || row.providerId === usageDetailFilter.providerId,
-  )
-  const groupOptions = facetsOf(groupRows).groups
-  const groupIndex = usageDetailFilter.group
-    ? groupOptions.findIndex(
-        (g) =>
-          g.providerId === usageDetailFilter.group.providerId &&
-          g.name === usageDetailFilter.group.name,
-      )
-    : -1
-  if (usageDetailFilter.group && groupIndex < 0) usageDetailFilter.group = null
-  usageDetailGroupOptions = groupOptions
-
-  const modelRows = groupRows.filter(
-    (row) =>
-      !usageDetailFilter.group ||
-      (row.providerId === usageDetailFilter.group.providerId &&
-        (row.group || '') === usageDetailFilter.group.name),
-  )
-  const modelOptions = facetsOf(modelRows).models
-  if (usageDetailFilter.model && !modelOptions.some((m) => m.name === usageDetailFilter.model)) {
+  if (
+    usageDetailFilter.group &&
+    !facets.groups.some(
+      (g) =>
+        g.providerId === usageDetailFilter.group.providerId &&
+        g.name === usageDetailFilter.group.name,
+    )
+  ) {
+    usageDetailFilter.group = null
+  }
+  if (usageDetailFilter.model && !facets.models.some((m) => m.name === usageDetailFilter.model)) {
     usageDetailFilter.model = ''
   }
 
-  const filtered = requests.filter((row) => matchRow(row, usageDetailFilter))
-  const filtering = Boolean(
-    usageDetailFilter.providerId || usageDetailFilter.group || usageDetailFilter.model,
-  )
-  const subtotal = filtering ? subtotalOf(filtered) : null
-  const shownRows = filtered.slice(0, UD_ROW_LIMIT)
+  const providerName = (id) =>
+    state.providers.find((p) => p.id === id)?.name || (id === '-' ? '（未成功）' : id)
+  usageDetailGroupOptions = facets.groups
+
+  const shownRows = requests.slice(0, UD_ROW_LIMIT)
 
   const option = (value, label, selected) =>
     `<option value="${esc(value)}"${selected ? ' selected' : ''}>${esc(label)}</option>`
+
   const filters = `<div class="ud-filters">
     <label class="ud-filter">${t('站点')}
       <select data-usage-filter="provider">
-        ${option('', t('全部（{n}）', { n: requests.length }), !usageDetailFilter.providerId)}
+        ${option('', t('全部'), !usageDetailFilter.providerId)}
         ${facets.providers
-          .map((p) => option(p.id, `${p.name}（${p.count}）`, p.id === usageDetailFilter.providerId))
+          .map((p) =>
+            option(
+              p.id,
+              `${providerName(p.id)}（${p.requests} ${t('次请求')}）`,
+              p.id === usageDetailFilter.providerId,
+            ),
+          )
           .join('')}
       </select>
     </label>
     <label class="ud-filter">${t('分组')}
       <select data-usage-filter="group">
-        ${option('', t('全部（{n}）', { n: groupRows.length }), groupIndex < 0)}
-        ${groupOptions
+        ${option('', t('全部'), !usageDetailFilter.group)}
+        ${facets.groups
           .map((g, index) =>
-            option(String(index), `${g.name || t('未指定分组')}（${g.count}）`, index === groupIndex),
+            option(
+              String(index),
+              `${g.name || t('未指定分组')}（${g.requests} ${t('次请求')}）`,
+              Boolean(usageDetailFilter.group) &&
+                g.providerId === usageDetailFilter.group?.providerId &&
+                g.name === usageDetailFilter.group?.name,
+            ),
           )
           .join('')}
       </select>
     </label>
     <label class="ud-filter">${t('模型')}
       <select data-usage-filter="model">
-        ${option('', t('全部（{n}）', { n: modelRows.length }), !usageDetailFilter.model)}
-        ${modelOptions
-          .map((m) => option(m.name, `${m.name}（${m.count}）`, m.name === usageDetailFilter.model))
+        ${option('', t('全部'), !usageDetailFilter.model)}
+        ${facets.models
+          .map((m) =>
+            option(m.name, `${m.name}（${m.requests} ${t('次请求')}）`, m.name === usageDetailFilter.model),
+          )
           .join('')}
       </select>
     </label>
@@ -4208,7 +4289,7 @@ function paintUsageDetail() {
   const subChip = (k, v) => `<span class="ud-sub"><b>${v}</b> ${k}</span>`
   const subtotalHtml = subtotal
     ? `<div class="ud-subtotal">
-        <span class="ud-subtotal-title">${t('筛出 {n} 条的小计', { n: subtotal.requests })}</span>
+        <span class="ud-subtotal-title">${t('筛选命中的流量小计', { n: subtotal.requests })}</span>
         ${subChip(t('输入'), formatTokens(subtotal.input))}
         ${subChip(t('缓存读'), formatTokens(subtotal.cached))}
         ${subChip(t('缓存写'), formatTokens(subtotal.cacheCreation))}
@@ -4222,33 +4303,49 @@ function paintUsageDetail() {
       </div>`
     : ''
 
-  const notes = [
-    t('明细来自决策日志（最多 {limit} 条）：区间内 {available} 条，这里列出最近 {shown} 条。', {
-      limit: win.logLimit || 500,
-      available: win.available || 0,
-      shown: win.shown || 0,
-    }),
+  const notes = []
+  if (win.source === 'ledger') {
+    notes.push(
+      t('明细来自逐条账本（保留 {retention} 天）：区间内 {available} 条，这里列出最近 {shown} 条。', {
+        retention: win.retentionDays || 30,
+        available: win.available || 0,
+        shown: win.shown || 0,
+      }),
+    )
+  } else {
+    notes.push(
+      t('明细暂时来自决策日志（最近 {limit} 条）：区间内 {available} 条。账本从这次更新后开始积累。', {
+        limit: win.logLimit || 500,
+        available: win.available || 0,
+      }),
+    )
+  }
+  notes.push(
     win.missingUsage > 0
       ? t('其中 {n} 条上游没有返回 usage：token 记作「—」，汇总里的 token 也不含它们。', {
           n: win.missingUsage,
         })
       : '',
-    filtering
-      ? t('上面的汇总按 usage.json 全量聚合，不受筛选影响；筛出的小计只看明细窗口里的那几条。')
-      : '',
-    filtering && filtered.length > shownRows.length
-      ? t('匹配 {n} 条，表里只画最近 {shown} 条。', {
-          n: filtered.length,
-          shown: shownRows.length,
+  )
+  notes.push(
+    win.clearedAt
+      ? t('统计已于 {time} 清空：更早的请求不再计入上面的汇总，也不在下面的明细里。', {
+          time: fmtDateTime(win.clearedAt),
         })
       : '',
-    tpsFromWindow
-      ? t('汇总里算不出速度（老数据分不出非流式请求的耗时），上面的速度是下面明细窗口的平均值。')
-      : '',
+  )
+  notes.push(
+    t(
+      '上面的汇总是全量聚合；筛选时中间那行小计也是同一份聚合按条件求和的——两处永远对得上。下面的明细只是逐条展开，条数多少不代表流量大小。',
+    ),
+  )
+  notes.push(
     t(
       '输入为净值（prompt_tokens 减掉缓存读和缓存写）；命中率 = 缓存读 ÷（输入 + 缓存读 + 缓存写）；速度 = 输出 token ÷（总耗时 − 首字），只对流式请求计算。',
     ),
-  ]
+  )
+
+  const notesHtml = notes
     .filter(Boolean)
     .map((line) => `<p class="ud-note">${line}</p>`)
     .join('')
@@ -4299,7 +4396,7 @@ function paintUsageDetail() {
     ? t('没有符合筛选的明细。')
     : t('这段时间没有经过网关的请求。')
 
-  body.innerHTML = `${seg}${stats}${filters}${subtotalHtml}${notes}
+  body.innerHTML = `${seg}${stats}${filters}${subtotalHtml}${notesHtml}
     <div class="table-wrap ud-table">
       <table>
         <thead><tr>
@@ -5800,6 +5897,13 @@ function setTab(name) {
   // 异常诊断页按需拉：数据不塞进 state（空回合记录会一直长，不该每次都随手轮询）
   if (name === 'diagnostics') void loadDiagnostics()
   // 协议探查也是按需拉：目标列表和记录在每次进页时刷新（站点页加的 Key 才能立刻看到）
+  // 用量面板：进页就重画一次，副标题（区间 · 请求数 · token）才跟得上当前区间。
+  // 进度量页时 render() 已经跑过一轮，但那时 activeTab 还不是 'usage'，
+  // setPageSubFor 会把它跳过——副标题会一直停在 TAB_META 的静态文案上
+  if (name === 'usage') {
+    renderUsage()
+    translateDom($('#view-usage') || document.body)
+  }
   if (name === 'protocol') {
     setProtocolViewMode(protocolViewMode, { resetStore: false })
     if (protocolViewMode === 'probe') {
@@ -6108,8 +6212,11 @@ document.addEventListener('click', async (event) => {
   const rangeBtn = event.target.closest('[data-range]')
   if (rangeBtn) {
     const days = Number(rangeBtn.dataset.range)
-    if (days === usageRange && usageData) return
+    // 从自定义切回预设：清掉自定义区间，否则查询串仍走 from/to
+    const wasCustom = Boolean(usageCustom?.from)
+    if (days === usageRange && usageData && !wasCustom) return
     await withBusy(rangeBtn, async () => {
+      usageCustom = null
       const res = await api('GET', `/api/usage?days=${days}`)
       usageData = res.usage
       usageRange = days
@@ -6138,6 +6245,68 @@ document.addEventListener('click', async (event) => {
   const action = actionButton.dataset.act
   const card = actionButton.closest('[data-provider]')
   const providerId = card?.dataset.provider
+
+  // 「自定义」：展开起止日期输入（先只展开，不查；查询按钮再拉数据）
+  if (action === 'usage-custom-toggle') {
+    const today = todayKey()
+    usageCustom = usageCustom?.from
+      ? { from: usageCustom.from, to: usageCustom.to, open: !usageCustom.open }
+      : { from: '', to: today, open: true }
+    renderUsage()
+    translateDom($('#view-usage') || document.body)
+    return
+  }
+
+  if (action === 'usage-custom-cancel') {
+    // 取消：回到原区间。已经用自定义查过就保留那次结果，只收起输入框
+    usageCustom = usageCustom?.from
+      ? { from: usageCustom.from, to: usageCustom.to, open: false }
+      : null
+    renderUsage()
+    translateDom($('#view-usage') || document.body)
+    return
+  }
+
+  if (action === 'usage-custom-apply') {
+    const view = $('#view-usage')
+    const from = view?.querySelector('[data-usage-custom="from"]')?.value || ''
+    const to = view?.querySelector('[data-usage-custom="to"]')?.value || ''
+    if (!from || !to) {
+      toast(t('起止日期都要填'), true)
+      return
+    }
+    await withBusy(actionButton, async () => {
+      usageCustom = { from, to, open: true }
+      try {
+        const res = await api('GET', `/api/usage?${usageRangeQuery()}`)
+        usageData = res.usage
+      } catch (error) {
+        usageCustom = null
+        throw error
+      }
+      renderUsage()
+      translateDom($('#view-usage') || document.body)
+    })
+    return
+  }
+
+  // 清空用量统计：只清 usage.json 的汇总（按天 / Key / 模型 / 站点），
+  // 决策日志（最近请求表）与站点 / Key 都不动。服务端返回重置后的完整 state
+  if (action === 'usage-clear') {
+    if (!confirm(t('清空全部用量统计？此操作不可恢复。'))) return
+    await withBusy(actionButton, async () => {
+      // 必须带个空对象：api() 只有在有 body 时才带 Content-Type，
+      // 裸 POST 会被服务端当「非 JSON 请求体」拒掉
+      state = await api('POST', '/api/usage/reset', {})
+      // 清空后回默认区间：自定义区间是上次看的窗口，留着只会让人以为没清干净
+      usageData = null
+      usageCustom = null
+      usageRange = 30
+      render()
+      toast(t('用量统计已清空'))
+    })
+    return
+  }
 
   if (action === 'overview-issues-toggle') {
     overviewIssuesOpen = !overviewIssuesOpen
@@ -6222,8 +6391,8 @@ document.addEventListener('click', async (event) => {
 
   if (action === 'usage-detail-clear') {
     usageDetailFilter = { providerId: '', group: null, model: '' }
-    paintUsageDetail()
-    translateDom($('#usage-detail') || document.body)
+    // 小计在服务端从全量聚合算，筛选变了必须重拉
+    void openUsageDetail(usageDetailDays)
     return
   }
 
@@ -7608,8 +7777,8 @@ document.addEventListener('change', async (event) => {
     } else if (field === 'model') {
       usageDetailFilter.model = udFilter.value
     }
-    paintUsageDetail()
-    translateDom($('#usage-detail') || document.body)
+    // 小计在服务端从全量聚合算，筛选变了必须重拉（不能只在前端过滤明细）
+    await withBusy(udFilter, () => openUsageDetail(usageDetailDays))
     return
   }
 

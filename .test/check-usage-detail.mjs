@@ -14,7 +14,7 @@
  */
 import { createServer } from 'node:http'
 import { spawn } from 'node:child_process'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -311,6 +311,34 @@ try {
   ok(Math.abs(totals.cacheHitRate - 600 / 1100) < 1e-9, `汇总命中率 600/1100（实际 ${totals.cacheHitRate}）`)
   ok(totals.avgTps > 0, `汇总生成速度有值（实际 ${totals.avgTps} tok/s）`)
 
+  // ★ 用户核心诉求：汇总 / 小计 / 明细三处口径必须能对上
+  ok(
+    detail.subtotal.requests === detail.totals.requests,
+    `不筛选时小计 == 汇总（小计 ${detail.subtotal.requests} / 汇总 ${detail.totals.requests}）`,
+  )
+  ok(detail.window.source === 'ledger', `明细走逐条账本（实际 ${detail.window.source}）`)
+  ok(detail.window.retentionDays === 30, `账本保留 30 天（实际 ${detail.window.retentionDays}）`)
+
+  // 分组维度进了聚合键，否则「按分组」筛选永远空
+  const full = await api('GET', '/api/usage?days=1')
+  const byGroup = full.usage.byGroup || {}
+  ok(Object.keys(byGroup).length >= 1, `汇总有 byGroup 切面（实际 ${Object.keys(byGroup).length} 组）`)
+  ok(
+    Object.values(byGroup).every((g) => typeof g.group === 'string' && 'providerId' in g),
+    'byGroup 的每一项都带 providerId + group（同名分组不会混）',
+  )
+
+  // 筛选后的小计仍然来自全量聚合（按模型筛：命中的那个模型的请求数）
+  const byModel = await api('GET', `/api/usage/detail?days=1&model=${encodeURIComponent('detail-model')}`)
+  ok(
+    byModel.subtotal.requests === 2,
+    `按模型筛小计 = 这个模型的 2 次（实际 ${byModel.subtotal.requests}）`,
+  )
+  ok(
+    byModel.subtotal.requests <= byModel.totals.requests,
+    '筛选后的小计不会超过汇总（从明细行加会出现超过）',
+  )
+
   // 老接口 /api/usage 拿到的也是同一份汇总（页面上的「缓存读/写」卡片吃它）
   const usage = await api('GET', '/api/usage?days=1')
   ok(usage.usage.totals.cacheCreation === 200, '/api/usage 的 totals 也带缓存写')
@@ -382,57 +410,105 @@ console.log('\n[4] 老数据（没有 genSum）也能看到生成速度')
   await rm(legacyHome, { recursive: true, force: true }).catch(() => {})
 }
 
-console.log(`\n结果：${failed ? `失败 ${failed} 项` : '通过'}`)
-// ------------------------------------------ 5. 明细筛选（站点 / 分组 / 模型）
+// ------------------------- 5. 筛选与小计：口径统一在服务端（sumBuckets / facetOptions）
 console.log('')
-console.log('[5] 筛选：三个维度 + 筛出的小计')
+console.log('[5] 筛选小计：从全量聚合桶求和（不再从明细行加）')
 {
-  const { facetsOf, matchRow, subtotalOf } = await import('../web/usage-filter.js')
-  const rows = [
-    // 有 usage 的流式请求
-    { providerId: 'p1', providerName: '秋', group: '国模', model: 'm-a', input: 100, cached: 300, cacheCreation: 0, output: 50, ttftMs: 1000, genMs: 2000, latencyMs: 3000 },
-    // 上游没回 usage：只该计请求数
-    { providerId: 'p1', providerName: '秋', group: '国模', model: 'm-b', input: null, output: null, cached: null, cacheCreation: null, ttftMs: 800, genMs: null, latencyMs: 800 },
-    // 另一个站的同名分组 + 同名模型，非流式（没有首字 / 生成窗口）
-    { providerId: 'p2', providerName: '绿萝', group: '国模', model: 'm-a', input: 200, cached: 0, cacheCreation: 100, output: 10, ttftMs: null, genMs: null, latencyMs: 5000 },
+  const { sumBuckets, facetOptions } = await import('../core/usage-detail.js')
+
+  // 聚合桶的形状就是 usageSummary 的 buckets。三条桶模拟三种真实情况：
+  // 有 usage 的流式、上游没回 usage（只有请求数）、另一个站的同名分组 + 同名模型（非流式）
+  const bucket = (providerId, group, model, row) => ({
+    day: '2026-10-28',
+    keyId: 'k1',
+    providerId,
+    group,
+    model,
+    row,
+  })
+  const buckets = [
+    bucket('p1', '国模', 'm-a', {
+      requests: 1, errors: 0, input: 100, cached: 300, cacheCreation: 0, output: 50,
+      latencySum: 3000, latencyCount: 1, ttftSum: 1000, ttftCount: 1,
+      genSum: 2000, genOutput: 50,
+    }),
+    bucket('p1', '国模', 'm-b', {
+      requests: 1, errors: 0, input: 0, cached: 0, cacheCreation: 0, output: 0,
+      latencySum: 800, latencyCount: 1, ttftSum: 800, ttftCount: 1,
+      genSum: 0, genOutput: 0,
+    }),
+    bucket('p2', '国模', 'm-a', {
+      requests: 1, errors: 0, input: 200, cached: 0, cacheCreation: 100, output: 10,
+      latencySum: 5000, latencyCount: 1, ttftSum: 0, ttftCount: 0,
+      genSum: 0, genOutput: 0,
+    }),
   ]
-  const facets = facetsOf(rows)
+
+  const facets = facetOptions(buckets)
   ok(facets.providers.length === 2, `两个站点（实际 ${facets.providers.length}）`)
   ok(
     facets.groups.length === 2,
     `同名分组按站点分开算：两个「国模」而不是一个（实际 ${facets.groups.length}）`,
   )
-  ok(facets.models.find((m) => m.name === 'm-a')?.count === 2, '模型 m-a 在两个站各有 1 条 → 2')
+  ok(facets.models.find((m) => m.name === 'm-a')?.requests === 2, '模型 m-a 在两个站各有 1 条 → 2 次请求')
 
-  const onlyP1 = rows.filter((r) => matchRow(r, { providerId: 'p1' }))
-  ok(onlyP1.length === 2, `按站点筛出 2 条（实际 ${onlyP1.length}）`)
-  const onlyP2Group = rows.filter((r) => matchRow(r, { group: { providerId: 'p2', name: '国模' } }))
+  // 逐级收窄：选了站点，分组和模型只列这个站的
+  const narrowed = facetOptions(buckets, { providerId: 'p1' })
+  ok(narrowed.groups.length === 1, `选了站点 p1 后只剩 1 个分组（实际 ${narrowed.groups.length}）`)
   ok(
-    onlyP2Group.length === 1 && onlyP2Group[0].providerId === 'p2',
-    '按分组筛不会把另一个站的同名分组带进来',
+    narrowed.groups[0].providerId === 'p1',
+    '收窄后的分组属于已选站点，不会混进别站的同名分组',
   )
-  ok(rows.filter((r) => matchRow(r, { model: 'm-a' })).length === 2, '按模型筛（跨站点）2 条')
-  ok(
-    rows.filter((r) => matchRow(r, { providerId: 'p1', model: 'm-b' })).length === 1,
-    '站点 + 模型是「与」的关系',
-  )
+  ok(narrowed.models.length === 2, `站点 p1 下有 2 个模型（实际 ${narrowed.models.length}）`)
 
-  const sub = subtotalOf(rows.filter((r) => matchRow(r, { providerId: 'p1' })))
-  ok(
-    sub.requests === 2 && sub.missingUsage === 1,
-    `小计 2 条、其中 1 条缺 usage（实际 ${sub.requests} / ${sub.missingUsage}）`,
-  )
-  ok(sub.input === 100 && sub.cached === 300 && sub.output === 50, '缺 usage 的行不贡献 token')
-  ok(Math.abs(sub.cacheHitRate - 0.75) < 1e-9, `命中率 300/(100+300)=0.75（实际 ${sub.cacheHitRate}）`)
-  ok(sub.avgTps === 25, `速度 50 ÷ 2s = 25 tok/s（实际 ${sub.avgTps}）`)
-  ok(sub.avgTtftMs === 900, `平均首字 (1000+800)/2 = 900（实际 ${sub.avgTtftMs}）`)
+  const byGroup = facetOptions(buckets, { providerId: 'p2', group: { providerId: 'p2', name: '国模' } })
+  ok(byGroup.models.length === 1 && byGroup.models[0].name === 'm-a', '再选分组后模型只剩这个分组里的')
 
-  const all = subtotalOf(rows)
-  ok(all.avgTps === 25, `非流式行（没有生成窗口）不参与速度平均（实际 ${all.avgTps}）`)
+  const p1 = sumBuckets(buckets, { providerId: 'p1' })
+  ok(p1.requests === 2, `按站点筛出 2 次请求（实际 ${p1.requests}）`)
+  ok(p1.input === 100 && p1.cached === 300 && p1.output === 50, '缺 usage 的桶不贡献 token')
+  ok(Math.abs(p1.cacheHitRate - 300 / 400) < 1e-9, `命中率 300/(100+300)=0.75（实际 ${p1.cacheHitRate}）`)
+  ok(p1.avgTps === 25, `速度 50 ÷ 2s = 25 tok/s（实际 ${p1.avgTps}）`)
+  ok(p1.avgTtftMs === 900, `平均首字 (1000+800)/2 = 900（实际 ${p1.avgTtftMs}）`)
+
+  const p2 = sumBuckets(buckets, { group: { providerId: 'p2', name: '国模' } })
+  ok(p2.requests === 1 && p2.cacheCreation === 100, '按分组筛不会把另一个站的同名分组算进来')
+
+  ok(sumBuckets(buckets, { model: 'm-a' }).requests === 2, '按模型筛（跨站点）2 次')
+
+  const both = sumBuckets(buckets, { providerId: 'p1', model: 'm-b' })
+  ok(both.requests === 1, '站点 + 模型是「与」的关系')
+
+  const all = sumBuckets(buckets)
+  ok(all.requests === 3, `全量 3 次（实际 ${all.requests}）`)
+  ok(all.avgTps === 25, `非流式 / 无生成窗口的桶不参与速度平均（实际 ${all.avgTps}）`)
   ok(
     Math.abs(all.cacheHitRate - 300 / 700) < 1e-9,
     `全量命中率 300/(输入 300 + 缓存读 300 + 缓存写 100)=300/700（实际 ${all.cacheHitRate}）`,
   )
 }
 
+// --------------------------- 6. 筛选下拉的标签：不许把「明细条数」当成「站点个数」
+console.log('')
+console.log('[6] 筛选下拉的标签口径')
+{
+  const app = await readFile(new URL('../web/app.js', import.meta.url), 'utf8')
+  const filters = app.slice(app.indexOf('const filters = '), app.indexOf('const subChip ='))
+
+  // 现场：三个下拉都写「全部（200）」，那个 200 是明细条数（窗口上限），
+  // 读起来像「有 200 个站点 / 分组 / 模型」。维度名后面不能挂条数。
+  ok(!/t\('全部（\{n\}）'/.test(app), '没有「全部（{n}）」这种把条数挂在维度名后的写法')
+  ok((filters.match(/t\('全部'\)/g) || []).length === 3, '三个下拉的首项都是「全部」（不带数字）')
+  ok(!/n: (requests|groupRows|modelRows)\.length/.test(filters), '下拉里的数字不是明细条数')
+
+  // 每个选项后面的数字必须写明它数的是什么（请求条数），否则一样会被读成个数
+  ok(
+    (filters.match(/\$\{t\('次请求'\)\}/g) || []).length === 3,
+    '站点 / 分组 / 模型三个选项的数字都带「次请求」单位',
+  )
+  ok(/\.requests\} \$\{t\('次请求'\)\}/.test(filters), '选项里的数字来自全量聚合的请求条数')
+}
+
+console.log(`
+结果：${failed ? `失败 ${failed} 项` : '通过'}`)
 process.exit(failed ? 1 : 0)

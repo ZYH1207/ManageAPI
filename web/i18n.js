@@ -288,6 +288,19 @@ const EN = {
   '指纹 / 截断 / 计费 / 缓存': 'Fingerprint / truncation / billing / cache',
   '一个入口接管全部流量': 'One endpoint for all traffic',
   '按 Key / 模型 / 站点统计': 'By key / model / site',
+  '用量统计': 'Usage stats',
+  '用量面板：按天 / Key / 模型 / 站点统计与清空': 'Usage panel: by day / key / model / site, with reset',
+  '清空统计': 'Reset stats',
+  '清空全部用量统计？此操作不可恢复。': 'Clear all usage stats? This cannot be undone.',
+  '用量统计已清空': 'Usage stats cleared',
+  '清空全部用量统计（按天 / 按 Key / 模型 / 站点），不影响站点与 Key':
+    'Clear all usage stats (by day / key / model / site). Sites and keys are untouched.',
+  '自定义': 'Custom',
+  '自己选起止日期，两端都包含': 'Pick your own start and end dates, both inclusive',
+  '起止日期': 'Date range',
+  '查询': 'Apply',
+  '起止日期都要填': 'Fill in both dates',
+  '两端都包含；起止写反了会自动调正': 'Both ends inclusive; reversed dates are auto-corrected',
   '倍率换算的参照物': 'The baseline for ratio conversion',
 
   // ---- 通用
@@ -547,6 +560,17 @@ const EN = {
   '全部': 'All',
   '全部（{n}）': 'All ({n})',
   '清除筛选': 'Clear filter',
+  '次请求': 'requests',
+  '筛选命中的流量小计': 'Filtered traffic subtotal',
+  '明细来自逐条账本（保留 {retention} 天）：区间内 {available} 条，这里列出最近 {shown} 条。':
+    'Rows come from the per-request ledger ({retention}-day retention): {available} in range, newest {shown} listed.',
+  '明细暂时来自决策日志（最近 {limit} 条）：区间内 {available} 条。账本从这次更新后开始积累。':
+    'Rows temporarily come from the routing log (last {limit}): {available} in range. The ledger accumulates from this update on.',
+  '上面的汇总是全量聚合；筛选时中间那行小计也是同一份聚合按条件求和的——两处永远对得上。下面的明细只是逐条展开，条数多少不代表流量大小。':
+    'The summary above is the full aggregate; the subtotal is the same aggregate filtered — the two always agree. The rows below are just a per-request view; their count does not measure volume.',
+  '统计已于 {time} 清空，更早的请求不再计入。': 'Stats were cleared at {time}; earlier requests no longer count.',
+  '统计已于 {time} 清空：更早的请求不再计入上面的汇总，也不在下面的明细里。':
+    'Stats were cleared at {time}: earlier requests are excluded from the summary above and from the detail below.',
   '筛出 {n} 条的小计': 'Subtotal of {n} matched',
   '匹配 {n} 条，表里只画最近 {shown} 条。': '{n} matched — only the newest {shown} are drawn.',
   '上面的汇总按 usage.json 全量聚合，不受筛选影响；筛出的小计只看明细窗口里的那几条。':
