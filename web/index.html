@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>ManageAPI · 个人专属API网关</title>
   <link rel="stylesheet" href="/style.css" />
+  <link rel="stylesheet" href="/protocol.css" />
 </head>
 <body>
   <div class="shell">
@@ -46,7 +47,7 @@
           <svg viewBox="0 0 24 24"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
           <span class="nav-text"><span class="nav-title" data-i18n="探针">探针</span><span class="nav-desc" data-i18n="检测是否偷工">检测是否偷工</span></span>
         </button>
-        <button data-act="open-protocol" title="表面协议 · 真实协议 · 原生能力差异">
+        <button data-tab="protocol">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16"/><path d="M4 12h10"/><path d="M4 17h7"/><circle cx="19" cy="12" r="2.5"/><circle cx="14" cy="17" r="2.5"/></svg>
           <span class="nav-text"><span class="nav-title" data-i18n="协议探查">协议探查</span><span class="nav-desc" data-i18n="表面协议与真实协议">表面协议与真实协议</span></span>
         </button>
@@ -144,6 +145,7 @@
         <section id="view-pricing" class="view wide" hidden></section>
         <section id="view-decision" class="view wide" hidden></section>
         <section id="view-probes" class="view wide" hidden></section>
+        <section id="view-protocol" class="view wide" hidden></section>
         <section id="view-gateway" class="view" hidden></section>
         <section id="view-usage" class="view" hidden></section>
         <section id="view-free" class="view" hidden></section>

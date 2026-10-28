@@ -2,6 +2,7 @@
 import { getLang, onLangChange, restoreDom, setLang, t, translateDom } from './i18n.js'
 import { renderFreeRelayPane, vendorChipClass, vendorOf, vendorLabel } from './free-relay.js'
 import { renderFreePlatformPane } from './free-platform.js'
+import { ensureProtocolView } from './protocol-view.js'
 import { facetsOf, matchRow, subtotalOf } from './usage-filter.js'
 
 const $ = (sel, root = document) => root.querySelector(sel)
@@ -4853,7 +4854,7 @@ const SIDEBAR_KEY = 'manageapi.sidebarCollapsed'
   }
 })()
 
-const TABS = ['overview', 'monitor', 'free', 'pricing', 'decision', 'probes', 'gateway', 'usage', 'benchmark']
+const TABS = ['overview', 'monitor', 'free', 'pricing', 'decision', 'probes', 'protocol', 'gateway', 'usage', 'benchmark']
 
 /** 折叠状态：'provider:xxx' / 'pricing:模型名' / 'probe:站点id' */
 const collapsedPanels = new Set()
@@ -4894,6 +4895,7 @@ const TAB_META = {
   pricing: { title: '比价', sub: '同一模型跨站对比' },
   decision: { title: '智能决策', sub: '候选排序与手动调整' },
   probes: { title: '探针', sub: '指纹 / 截断 / 计费 / 缓存' },
+  protocol: { title: '协议探查', sub: '表面协议 · 真实协议 · 原生能力差异' },
   gateway: { title: '网关', sub: '一个入口接管全部流量' },
   usage: { title: '用量', sub: '按 Key / 模型 / 站点统计' },
   benchmark: { title: '基准价', sub: '倍率换算的参照物' },
@@ -4963,6 +4965,11 @@ function setTab(name) {
   }
   // 监控数据比 state 重，按需拉：第一次进这个页才请求
   if (name === 'monitor' && !monitorData) void loadMonitor(monitorDays)
+  // 协议探查也是按需拉：目标列表和记录在每次进页时刷新（站点页加的 Key 才能立刻看到）
+  if (name === 'protocol') {
+    ensureProtocolView($(`#view-protocol`))
+    translateDom($('#view-protocol') || document.body)
+  }
 }
 
 // 浏览器前进/后退只改 hash，不会触发任何渲染——没有这条监听，地址变了页面不动
@@ -5285,12 +5292,6 @@ document.addEventListener('click', async (event) => {
   const action = actionButton.dataset.act
   const card = actionButton.closest('[data-provider]')
   const providerId = card?.dataset.provider
-
-  // 协议探查是独立页（web/protocol.html），不并入 tab 逻辑：跳过去，页面里自带返回管理台
-  if (action === 'open-protocol') {
-    location.href = '/protocol.html'
-    return
-  }
 
   if (action === 'overview-issues-toggle') {
     overviewIssuesOpen = !overviewIssuesOpen
