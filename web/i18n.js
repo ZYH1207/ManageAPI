@@ -281,16 +281,24 @@ const EN = {
 
   // ---- 通用
   '保存': 'Save',
-  '站点地址': 'Site addresses',
   '网站地址': 'Site URL',
   'API 端点': 'API endpoint',
-  '地址': 'Addresses',
   '只用于卡片上的「打开站点」按钮，填后台网址即可': 'Only used by the card\u2019s "open site" button — paste the dashboard URL',
   '程序真正请求的地址，一般形如 https://站点域名/v1': 'The address the app actually calls, usually https://your-site/v1',
-  '整站填一次即可，所有 Key 共用。站点地址（卡片上「打开站点」用的那个）在「地址」里改。':
-    'Set once per site — every key shares it. The site URL (used by the card\u2019s "open site" button) is edited under "Addresses".',
+  '整站填一次即可，所有 Key 共用。': 'Set once per site — every key shares it.',
   '程序真正请求的地址，整站共用一份；没写 /v1 会自动补':
     'The address the app actually calls; one per site. /v1 is appended automatically',
+  '站点信息': 'Site details',
+  '名称': 'Name',
+  '备注': 'Note',
+  '可选': 'optional',
+  '例如：XX 中转站': 'e.g. My Relay',
+  '编辑': 'Edit',
+  '编辑站点信息：名称、网站地址、API 端点、备注': 'Edit site details: name, site URL, API endpoint, note',
+  '网站地址是卡片上「打开站点」跳的页面；API 端点是程序请求的地址。':
+    'The site URL is what the card\u2019s "open site" button opens; the API endpoint is what the app calls.',
+  '站点信息已保存': 'Site details saved',
+  '站点名称不能为空': 'Site name cannot be empty',
   '取消': 'Cancel',
   '删除': 'Delete',
   '关闭': 'Close',

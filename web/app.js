@@ -440,6 +440,7 @@ const ICONS = {
   refresh: '<path d="M20 12a8 8 0 1 1-2.6-5.9"/><path d="M20 4v5h-5"/>',
   download: '<path d="M12 4v10"/><path d="M8 11l4 4 4-4"/><path d="M4 19h16"/>',
   search: '<circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/>',
+  edit: '<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/>',
 }
 
 // 站点系别徽章：vendor（厂商直连）与三系中转各一档，unknown 不显示（没信息不标）。
@@ -1108,6 +1109,7 @@ function providersHtml({ withForm = true, panel = '', actions = '' } = {}) {
               <span class="prov-pri-no">${rank}</span>
               <span class="prov-pri-grip">${icon('grip')}</span>
             </span>
+            <button class="icon-btn prov-edit" data-act="prov-panel" data-panel="settings" title="${t('编辑站点信息：名称、网站地址、API 端点、备注')}">${icon('edit')}</button>
             <button class="icon-btn prov-pause" data-act="prov-toggle-pause" data-provider="${esc(p.id)}" title="${p.paused ? t('恢复这个站点') : t('暂停这个站点：不进比价、决策、探针和同步')}">${p.paused ? icon('play') : icon('pause')}</button>
             <button class="icon-btn prov-del-icon" data-act="del-provider" title="${t('删除站点')}">${icon('trash')}</button>
           </div>
@@ -1172,7 +1174,6 @@ function providersHtml({ withForm = true, panel = '', actions = '' } = {}) {
           <button data-act="open-login" title="用站点后台的账号密码登录，自动获取并续期令牌——令牌过期不再需要手动换">${icon('key')}账号登录</button>
           <button data-act="prov-sync-all" title="同步模型 + 读余额 + 识别分组，一次跑完">${icon('refresh')}一键同步</button>
           <button data-act="prov-panel" data-panel="keys">${icon('key')}密钥</button>
-          <button data-act="prov-panel" data-panel="settings" title="改网站地址和 API 端点">${icon('servers')}${t('地址')}</button>
           <button data-act="prov-panel" data-panel="rates">${icon('columns')}分组倍率</button>
           <button data-act="open-group-picker" title="从站点读分组，选你买的那个，倍率自动填到下面所有模型">${icon('columns')}导入倍率</button>
           <button data-act="usage-check" title="用管理令牌拉站方用量，和我们的估算对比">${icon('receipt')}用量核对</button>
@@ -1189,7 +1190,7 @@ function providersHtml({ withForm = true, panel = '', actions = '' } = {}) {
             <button type="submit" class="ghost tiny">${t('保存')}</button>
           </form>
           <div class="hint" style="margin:0 0 6px">
-            ${t('整站填一次即可，所有 Key 共用。站点地址（卡片上「打开站点」用的那个）在「地址」里改。')}
+            ${t('整站填一次即可，所有 Key 共用。')}
           </div>
           ${keys.length === 0 ? '<div class="hint">还没有 Key，加一个才能拉模型。</div>' : keys.map((k) => {
             const keyOffers = offers.filter((o) => o.credentialId === k.id)
@@ -1237,9 +1238,14 @@ function providersHtml({ withForm = true, panel = '', actions = '' } = {}) {
         <div data-pane="settings">
           <form class="keylist" data-form="provider-endpoints" style="border-top:1px solid var(--border);padding-top:10px">
             <div class="keyrow" style="border:none;padding-bottom:2px">
-              <span style="color:var(--muted);font-size:12px">${t('站点地址')}</span>
+              <span style="color:var(--muted);font-size:12px">${t('站点信息')}</span>
               <span class="grow"></span>
             </div>
+            <label class="keyrow" style="border:none;gap:8px">
+              <span style="min-width:76px">${t('名称')}</span>
+              <input name="name" value="${esc(p.name || '')}" placeholder="${t('例如：XX 中转站')}"
+                style="flex:1" required />
+            </label>
             <label class="keyrow" style="border:none;gap:8px">
               <span style="min-width:76px">${t('网站地址')}</span>
               <input name="siteUrl" value="${esc(p.siteUrl || '')}" placeholder="https://example.com"
@@ -1250,9 +1256,13 @@ function providersHtml({ withForm = true, panel = '', actions = '' } = {}) {
               <input name="baseUrl" value="${esc(p.baseUrl || '')}" placeholder="https://api.example.com/v1"
                 style="flex:1" title="${t('程序真正请求的地址，一般形如 https://站点域名/v1')}" />
             </label>
+            <label class="keyrow" style="border:none;gap:8px">
+              <span style="min-width:76px">${t('备注')}</span>
+              <input name="note" value="${esc(p.note || '')}" placeholder="${t('可选')}" style="flex:1" />
+            </label>
             <div class="keyrow" style="border:none;padding-top:4px">
               <span class="hint" style="margin:0">
-                ${t('网站地址用于卡片链接；API 端点也可以直接在「密钥」里随 Key 一起填。')}
+                ${t('网站地址是卡片上「打开站点」跳的页面；API 端点是程序请求的地址。')}
               </span>
               <span class="grow"></span>
               <button type="submit" class="primary tiny">${t('保存')}</button>
@@ -1487,7 +1497,7 @@ function openProvPanel(button, pane) {
   }
   body.innerHTML = ''
   body.appendChild(fragment)
-  const paneTitle = { keys: '密钥', rates: '分组倍率', usage: '用量核对', settings: '地址' }[pane] || '详情'
+  const paneTitle = { keys: '密钥', rates: '分组倍率', usage: '用量核对', settings: '编辑' }[pane] || '详情'
   if (title) title.textContent = `${name} · ${paneTitle}`
   modal.hidden = false
   translateDom(modal)
@@ -5036,24 +5046,31 @@ document.addEventListener('submit', async (event) => {
     return
   }
 
-// 站点地址面板：网站地址（卡片链接用）与 API 端点（真正请求用）分开存
+// 编辑站点信息：名称 / 网站地址 / API 端点 / 备注
 const endpointForm = event.target.closest('[data-form="provider-endpoints"]')
 if (endpointForm) {
   event.preventDefault()
   const providerId = endpointForm.closest('[data-provider]')?.dataset.provider
   if (!providerId) return
   const data = Object.fromEntries(new FormData(endpointForm))
+  const name = String(data.name || '').trim()
+  if (!name) {
+    toast('站点名称不能为空', true)
+    return
+  }
   const submitBtn = endpointForm.querySelector('button[type="submit"]')
   if (submitBtn?.disabled) return
   if (submitBtn) submitBtn.disabled = true
   try {
     state = await api('PATCH', `/api/providers/${providerId}`, {
+      name,
       siteUrl: String(data.siteUrl || '').trim(),
       baseUrl: String(data.baseUrl || '').trim(),
+      note: String(data.note || '').trim(),
     })
     render()
     reopenProvPanel(endpointForm, 'settings')
-    toast('地址已保存')
+    toast('站点信息已保存')
   } catch (error) {
     toast(error.message, true)
     if (submitBtn) submitBtn.disabled = false
