@@ -6035,34 +6035,8 @@ function renderMonitor() {
       </div>
     </div>`
 
-  // ---------------------------------------------------------- 同步记录
-  const runRows = (data.runs || [])
-    .map(
-      (run) => `<tr>
-        <td>${agoText(run.at)}</td>
-        <td>${esc(run.providerName || '')}</td>
-        <td class="num">${run.ms}ms</td>
-        <td>${run.ok ? '<span class="badge ok">成功</span>' : `<span class="badge danger">失败</span> <span class="hint">${esc(run.error || '')}</span>`}</td>
-      </tr>`,
-    )
-    .join('')
-
   // 同步设置不单独占一行，挂在「站点余额与分组」的卡片头上——
   // 它和下面那排站点卡是同一件事：改完间隔/阈值，顺手就在这儿点「立即同步」。
-
-  const runsCard = runRows
-    ? `<div class="card">
-        <div class="card-head"><h3>同步记录</h3><span class="hint">最近 ${data.runs.length} 次</span></div>
-        <div class="table-wrap"><table>
-          <thead><tr><th>时间</th><th>站点</th><th class="num">耗时</th><th>结果</th></tr></thead>
-          <tbody>${runRows}</tbody>
-        </table></div>
-        <p class="hint">
-          同步只读站点公开/后台数据，不打真实对话请求，所以可以比探针勤。
-          余额要走站点后台接口，需要先在「站点」页填「令牌」。
-        </p>
-      </div>`
-    : ''
 
   setPageSubFor(
     'monitor',
@@ -6073,8 +6047,7 @@ function renderMonitor() {
     ${balanceAlarmHtml}
     <div class="monitor-cols">${chartCard}${changesCard}</div>
     ${sitesCard}
-    <div class="monitor-cols monitor-cols--feed">${alertsCard}${announcementsCard}</div>
-    ${runsCard}`
+    <div class="monitor-cols monitor-cols--feed">${alertsCard}${announcementsCard}</div>`
 
   // 站点卡与「添加站点」表单复用站点页的那一套，避免两处各写一份
   const sitesHost = $('#monitor-sites-host')

@@ -22,7 +22,6 @@ const KEEP = {
   rates: 800,
   announcements: 300,
   alerts: 300,
-  runs: 40,
 }
 
 /** 同一个（站点 × 告警类型）在这个窗口内只报一次。 */
@@ -44,8 +43,6 @@ export function defaultMonitor() {
     snapshot: {},
     // 告警冷却水位：`<providerId>:<code>` → 毫秒时间戳
     cooldowns: {},
-    // 最近几次采集的结果，用于「上次采集 N 分钟前 / 失败原因」
-    runs: [],
     lastRunAt: null,
     // 站点自己的按天账单：providerId → { 'YYYY-MM-DD': { actualCost, totalCost, requests, at } }
     // 「实际消费」的唯一数据源；读不到账单的站没有这个条目
@@ -304,11 +301,9 @@ export function applySnapshot(db, snap) {
   return { changes, newAnnouncements, alerts: addedAlerts }
 }
 
-/** 记一次采集（成功或失败都记），供页面显示「上次采集」与失败原因。 */
-export function recordRun(db, { providerId, at, ok, ms, error = '' }) {
+/** 记一次采集时间戳，并修剪告警冷却水位。 */
+export function recordRun(db, { at }) {
   const m = ensureMonitor(db)
-  m.runs.push({ providerId, at, ok: Boolean(ok), ms: Number(ms) || 0, error: error ? String(error).slice(0, 300) : '' })
-  trim(m.runs, KEEP.runs)
   m.lastRunAt = at
   // 冷却水位只留 7 天，否则会无限增长
   const cutoff = Date.now() - 7 * 86400000
@@ -729,7 +724,6 @@ export function buildMonitorView(db, { usageData = null, benchmarks = {}, days =
     changes,
     announcements,
     alerts,
-    runs: m.runs.slice(-10).reverse().map((run) => ({ ...run, providerName: nameOf(run.providerId) })),
     settings: {
       monitorIntervalMinutes: Number(settings.monitorIntervalMinutes) || 0,
       // 阈值口径统一是美元；老字段留着给还没迁移的前端兜底

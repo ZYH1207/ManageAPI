@@ -1501,7 +1501,6 @@ Object.assign(EN, {
   '去配置网关': 'Set up the gateway',
   '还没有基准价': 'No benchmark prices yet',
   '新增站点': 'Add site',
-  '同步记录': 'Sync log',
   '指纹不符': 'fingerprint mismatch',
   '身份自述': 'self-claimed identity',
   '首字节之前失败': 'failed before first byte',

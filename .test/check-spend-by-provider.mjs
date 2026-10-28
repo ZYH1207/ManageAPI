@@ -29,7 +29,7 @@ const db = {
     { id: 'oa', providerId: 'pa', modelKey: 'm', upstreamName: 'm', pricingMode: 'manual', inPrice: 2, outPrice: 8, priceUnit: 'per_mtok', currency: 'CNY' },
     { id: 'ob', providerId: 'pb', modelKey: 'm', upstreamName: 'm', pricingMode: 'manual', inPrice: 2, outPrice: 8, priceUnit: 'per_mtok', currency: 'CNY' },
   ],
-  monitor: { balance: [], rates: [], announcements: [], alerts: [], runs: [], snapshot: {} },
+  monitor: { balance: [], rates: [], announcements: [], alerts: [], snapshot: {} },
   credentials: [],
   manualOrder: {},
 }

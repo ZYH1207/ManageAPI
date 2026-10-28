@@ -126,11 +126,9 @@ try {
   const annRead = await call('POST', '/api/monitor/announcements/read', {})
   check('公告也能标记已读', annRead.kpi.unreadAnnouncements === 0)
 
-  console.log('\n天数参数与采集记录')
+  console.log('\n天数参数')
   const three = await call('GET', '/api/monitor?days=3')
   check('days=3 返回 3 个点', three.balanceSeries.length === 3, `len=${three.balanceSeries.length}`)
-  check('采集记录有 2 轮', three.runs.length === 2, `runs=${three.runs.length}`)
-  check('记录里没有失败', three.runs.every((r) => r.ok), JSON.stringify(three.runs))
 
   console.log('')
   if (failures.length > 0) {

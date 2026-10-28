@@ -6,7 +6,7 @@
  *   2. 公告      —— 公共接口，拿不到就算了，不打扰用户
  *   3. 倍率/价格 —— 需要站点后台令牌（adminToken），没有就跳过
  *
- * 全程不发 HttpError：调度器里没人接异常，网络错误必须被消化成 runs 里的一行。
+ * 全程不发 HttpError：调度器里没人接异常，网络错误必须被消化成告警或快照里的 error 字段。
  */
 import * as store from '../core/store.js'
 import * as inv from '../core/inventory.js'
@@ -150,13 +150,7 @@ export async function collectProviderSnapshots({ providerId = null, logger = con
         const target = current.providers.find((p) => p.id === provider.id)
         inv.applyBalanceResult(target, snap.balance, at)
       }
-      recordRun(current, {
-        providerId: provider.id,
-        at,
-        ok: !snap.error,
-        ms,
-        error: snap.error || '',
-      })
+      recordRun(current, { at })
       return out
     })
 

@@ -188,7 +188,7 @@ for (let i = 0; i < 9; i += 1) {
  * 监控：余额曲线、倍率变动、公告、告警。
  * 云雀/星链/极光 有余额（苍穹 故意留空，好让页面显示「无数据」这条分支）。
  */
-const monitor = { balance: [], rates: [], announcements: [], alerts: [], snapshot: {}, cooldowns: {}, runs: [] }
+const monitor = { balance: [], rates: [], announcements: [], alerts: [], snapshot: {}, cooldowns: {} }
 
 const GROUPS_BY_PROVIDER = {
   p_show01: [
@@ -318,16 +318,6 @@ monitor.alerts = [
 ]
 
 monitor.lastRunAt = iso(20 * MIN)
-for (const run of [
-  { providerId: 'p_show01', ok: true, ms: 412 },
-  { providerId: 'p_show02', ok: true, ms: 388 },
-  { providerId: 'p_show03', ok: true, ms: 356 },
-  { providerId: 'p_show04', ok: true, ms: 174 },
-  { providerId: 'p_show01', ok: true, ms: 430 },
-  { providerId: 'p_show02', ok: true, ms: 405 },
-]) {
-  monitor.runs.push({ ...run, at: iso(20 * MIN), error: '' })
-}
 
 const db = {
   version: 1,
