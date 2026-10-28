@@ -25,6 +25,7 @@ import {
 } from '../core/wire.js'
 import { selectCandidates, listPublicModels, explain, admissionFailure } from '../core/router.js'
 import { snapTtftMs, ttftTierTable, describeTtftLimit } from '../core/latency.js'
+import { pauseStatus, normalizeWindows, isTime, MAX_WINDOWS } from '../core/schedule.js'
 import { splitOffers, isFreeOffer, resolvePool, FREE_PREFIX, FREE_BASE_PATH } from '../core/free.js'
 import { rankFreePool } from '../core/rank-free.js'
 import * as platforms from '../core/platforms/index.js'
@@ -335,6 +336,9 @@ async function buildState({ light = false } = {}) {
 
   const result = {
     settings: db.settings,
+    // 「定时关闭检测」当前状态：暂停中 / 几点恢复 / 下次几点开始。
+    // 由服务端算（core/schedule.js 是唯一实现），前端只负责显示，避免两边各写一套跨夜判断
+    probePause: pauseStatus(db.settings.probePauseWindows),
     // 首字门槛的 20 档 + 速度等级：前端直接照着渲染，不在浏览器里另算一份
     ttftTiers: ttftTierTable(),
     ttftLimitText: describeTtftLimit(db.settings.maxTtftMs),
@@ -490,6 +494,25 @@ route('PATCH', /^\/api\/settings$/, async (ctx) => {
       const v = Number(ctx.body.scoreMaxAgeHours)
       if (!Number.isFinite(v) || v <= 0) throw new HttpError(400, '评分有效期必须大于 0')
       db.settings.scoreMaxAgeHours = v
+    }
+    // 定时关闭检测：整表替换，校验收口在 core/schedule.js。
+    // 起止相同直接拒：既不是「不暂停」也不是「全天」，写进库里只会让调度器行为变得靠猜
+    if (ctx.body.probePauseWindows !== undefined) {
+      const list = ctx.body.probePauseWindows
+      if (!Array.isArray(list)) throw new HttpError(400, '暂停时段必须是数组')
+      if (list.length > MAX_WINDOWS) throw new HttpError(400, `暂停时段最多 ${MAX_WINDOWS} 段`)
+      const windows = []
+      for (const item of list) {
+        const start = String(item?.start ?? '').trim()
+        const end = String(item?.end ?? '').trim()
+        if (!isTime(start) || !isTime(end)) {
+          throw new HttpError(400, `时段 ${start || '（空）'}~${end || '（空）'} 格式不对，应为 HH:MM`)
+        }
+        if (start === end) throw new HttpError(400, `时段 ${start}~${end} 起止时间相同，没意义`)
+        windows.push({ id: String(item?.id || `${start}-${end}`), start, end })
+      }
+      // 归一化会顺手去掉重复段（同一段时间存两遍没有意义，只会让「有几段」数不清）
+      db.settings.probePauseWindows = normalizeWindows(windows)
     }
     // 两个时钟必须自洽：有效期是「允许错过几轮探测」，间隔比有效期还长的话，
     // 每条供给都会在两次探测之间整段过期（之前踩过：间隔和有效期都是 6 小时，

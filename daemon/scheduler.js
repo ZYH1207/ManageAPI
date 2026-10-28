@@ -8,10 +8,13 @@
  * 间隔是自适应的：健康站按用户设定的基础间隔，其它站（不健康 / 证据不足 /
  * 过期 / 从没探过）按 1/3 间隔（最少 10 分钟）补测——问题站点应该尽快拿到
  * 新证据，而不是等一整轮。冷却中的供给（额度不足/限流）直接跳过，探了也是白探。
+ *
+ * 暂停时段（core/schedule.js）优先于上面一切：窗口内一个请求都不发，到点自动恢复。
  */
 import * as store from '../core/store.js'
 import * as inv from '../core/inventory.js'
 import * as fxLib from '../core/fx.js'
+import { pauseStatus } from '../core/schedule.js'
 import { scoreOffers } from '../core/score.js'
 
 const MAX_PER_TICK = 10
@@ -19,10 +22,19 @@ const CHECK_INTERVAL_MS = 60000
 const FIRST_RUN_DELAY_MS = 5000
 const RETRY_INTERVAL_FLOOR_MIN = 10
 
-export function startProbeScheduler({ runProbes, collectMonitor = null, logger = console }) {
+export function startProbeScheduler({
+  runProbes,
+  collectMonitor = null,
+  logger = console,
+  // 测试用：e2e 要把「60 秒一轮」压到亚秒级才验得出「到点关、到点开」
+  tickMs = Number(process.env.MANAGE_API_PROBE_TICK_MS) || CHECK_INTERVAL_MS,
+  firstDelayMs = Number(process.env.MANAGE_API_PROBE_FIRST_DELAY_MS) || FIRST_RUN_DELAY_MS,
+}) {
   let running = false
   let collecting = false
   let refreshingFx = false
+  // 暂停状态只在「翻转」时打一条日志：每分钟刷一条会把日志淹掉
+  let pausedLogged = false
 
   async function tick() {
     if (running) return
@@ -73,6 +85,24 @@ export function startProbeScheduler({ runProbes, collectMonitor = null, logger =
 
     const intervalMinutes = Number(db.settings.probeIntervalMinutes) || 0
     if (intervalMinutes <= 0) return
+
+    // --------------------------------------------------------------- 暂停时段
+    // 放在到期判断之前：窗口内连「谁该探」都不用算，一个请求都不发。
+    // 注意只暂停探针，监控采集照常——采集是读站方后台，不烧额度。
+    const pause = pauseStatus(db.settings.probePauseWindows)
+    if (pause.paused) {
+      if (!pausedLogged) {
+        logger.info?.(
+          `[定时探测] 进入暂停时段，${pause.until ? `${pause.until} 自动恢复` : '全天暂停，等配置改动'}`,
+        )
+        pausedLogged = true
+      }
+      return
+    }
+    if (pausedLogged) {
+      logger.info?.('[定时探测] 暂停时段结束，恢复探测')
+      pausedLogged = false
+    }
     // 不健康 / 证据不足 / 过期的供给加密补测，让问题站点尽快拿到新证据
     const retryMinutes = Math.max(RETRY_INTERVAL_FLOOR_MIN, Math.round(intervalMinutes / 3))
     // 到期候选只用「在役」供给（未下线/站点未暂停/未忽略）——与 runProbes 同口径。
@@ -116,8 +146,8 @@ export function startProbeScheduler({ runProbes, collectMonitor = null, logger =
     }
   }
 
-  const timer = setInterval(tick, CHECK_INTERVAL_MS)
-  setTimeout(tick, FIRST_RUN_DELAY_MS)
+  const timer = setInterval(tick, tickMs)
+  setTimeout(tick, firstDelayMs)
 
   return () => clearInterval(timer)
 }

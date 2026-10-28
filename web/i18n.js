@@ -450,6 +450,18 @@ const EN = {
   '探测全部': 'Probe all',
   '自动探测': 'Auto probe',
   '评分有效期': 'Score TTL',
+  '定时关闭检测': 'Scheduled pause',
+  '添加时段': 'Add window',
+  '暂停中': 'Paused',
+  '探测中': 'Probing',
+  '无时段': 'No window',
+  '暂停开始': 'Pause starts',
+  '恢复时间（不含）': 'Resume at (exclusive)',
+  '删除这一段': 'Remove this window',
+  '定时探测全天运行': 'Scheduled probing runs all day',
+  '全天运行': 'All day',
+  '到点自动停、到点自动恢复；跨夜直接填大的那个时间':
+    'Stops and resumes automatically; for an overnight window enter the later time first',
   '首字上限': 'TTFT limit',
   '小时': 'hours',
   '指纹': 'Fingerprint',
@@ -658,6 +670,11 @@ Object.assign(EN, {
   '余额已更新': 'Balance updated',
   '分组已更新': 'Group updated',
   '已保存': 'Saved',
+  '已删除这段': 'Window removed',
+  '时间请填 HH:MM': 'Enter a time as HH:MM',
+  '已取消定时关闭，探测全天运行': 'Scheduled pause cleared — probing runs all day',
+  '已保存：全天暂停': 'Saved — paused all day',
+  '最多 12 段，够覆盖一整天的作息了': 'Up to 12 windows',
   '正在应用中…': 'Applying…',
 })
 
@@ -671,6 +688,11 @@ const PATTERNS_MORE = [
   [/^探测 (\d[\d,]*) 个，成功 (\d[\d,]*)$/, 'Probed $1, $2 succeeded'],
   [/^探测失败：(.+)$/, 'Probe failed: $1'],
   [/^评分有效期改为 (\d+) 小时$/, 'Score TTL set to $1 hours'],
+  [/^将于 (\d\d:\d\d) 自动恢复探测$/, 'Resumes automatically at $1'],
+  [/^下次暂停 (\d\d:\d\d)$/, 'Next pause at $1'],
+  [/^已加一段 (\d\d:\d\d) 至 (\d\d:\d\d)，点时间就能改$/, 'Added $1 to $2 — click a time to change it'],
+  [/^已保存：现在暂停中，(\d\d:\d\d) 恢复$/, 'Saved — paused until $1'],
+  [/^已保存：现在照常探测，(\d\d:\d\d) 起暂停$/, 'Saved — probing now, pausing at $1'],
   [/^复制失败，手动复制：(.+)$/, 'Copy failed — copy manually: $1'],
 ]
 for (const row of PATTERNS_MORE) PATTERNS.push(row)

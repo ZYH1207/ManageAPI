@@ -62,6 +62,9 @@ export function emptyDb() {
       probeIntervalMinutes: 60,
       // 超过这个小时数的探测结果视为过期，不再参与路由
       scoreMaxAgeHours: 6,
+      // 定时关闭检测：每天若干段「暂停探测」的窗口（见 core/schedule.js）。
+      // 空数组 = 全天都跑；每段 { id, start: 'HH:MM', end: 'HH:MM' }
+      probePauseWindows: [],
       // 首字门槛（毫秒），0 = 不限。只会是 1000~20000 的整档：
       // 取档口径在 core/latency.js#snapTtftMs，写入侧（PATCH）负责归一
       maxTtftMs: 0,

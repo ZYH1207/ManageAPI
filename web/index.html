@@ -339,6 +339,9 @@
               · <b>自动探测</b> —— 设间隔后后台定时跑。默认 1 小时，可以关掉。模型多的话建议设长一点，
               每次探测都要花一点 token。<br />
               · <b>评分有效期</b> —— 超过这个时间没重新探测，评分就作废。（作废不等于不能用：详见下面的「决策」）<br />
+              · <b>定时关闭检测</b> —— 每天可以配好几段「暂停探测」的时段（如 23:00 至 07:00，
+              直接填大的那个时间就是跨夜），到点自动停、到点自动恢复。人睡了没人看评分，
+              探针还在一小时一轮地打真实请求，纯烧额度。只停探针，监控采集照常跑。<br />
               · <b>放行可疑供给</b> —— 默认关闭。关闭时，探针判定可疑（指纹不符 / 截断 / 虚报）的站
               不登场；打开后它们按有效成本正常参与竞争。
             </p>
@@ -712,6 +715,10 @@
               · <b>Auto probe</b> — runs in the background on an interval. Default 1 hour; can be turned off. With many
               models, set it longer — every probe costs a few tokens.<br />
               · <b>Score TTL</b> — a score older than this is discarded and no longer used for routing.<br />
+              · <b>Scheduled pause</b> — add several pause windows per day (e.g. 23:00 to 07:00 — enter the later
+              time first for an overnight window). Probing stops and resumes automatically. Nobody reads scores at
+              night while the probes keep firing real requests every hour, which just burns quota. Only probing
+              pauses; monitor collection keeps running.<br />
               · <b>TTFT limit</b> — supplies slower than this are excluded from routing. 0 means no limit.<br />
               · <b>Allow suspicious supplies</b> — off by default. When off, sites the probes flagged
               (fingerprint mismatch / truncated / inflated / expired score) are only a last resort; when on,

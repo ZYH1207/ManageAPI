@@ -2607,6 +2607,13 @@ function probeDetailHtml(score) {
     </div>`
 }
 
+/** 改完暂停时段后的一句反馈：现在到底停不停、几点翻转 */
+function pauseToast(pause) {
+  if (!pause || !pause.count) return '已取消定时关闭，探测全天运行'
+  if (pause.paused) return pause.until ? `已保存：现在暂停中，${pause.until} 恢复` : '已保存：全天暂停'
+  return pause.next ? `已保存：现在照常探测，${pause.next} 起暂停` : '已保存'
+}
+
 function renderProbes() {
   const view = $('#view-probes')
   const providersWithOffers = state.providers.filter((p) => state.offers.some((o) => o.providerId === p.id))
@@ -2631,6 +2638,30 @@ function renderProbes() {
     [360, '6 小时'],
   ]
 
+  // 定时关闭检测：暂停状态由服务端算（state.probePause），这里只管显示，
+  // 跨夜 / 多段重叠的判断不在浏览器里再写一遍。控件和「自动探测 / 评分有效期」同一行，
+  // 这三个本来就是一套东西：什么时候探、证据活多久、什么时候不探。
+  const pause = state.probePause || { paused: false, until: null, next: null, count: 0 }
+  const pauseWindows = Array.isArray(state.settings.probePauseWindows) ? state.settings.probePauseWindows : []
+  const pauseBadge = pause.paused
+    ? `<span class="badge warn">暂停中</span><span class="pause-note">${
+        pause.until ? `将于 ${pause.until} 自动恢复探测` : '全天暂停，改配置才会恢复'
+      }</span>`
+    : pause.next
+      ? `<span class="badge ok">探测中</span><span class="pause-note">下次暂停 ${pause.next}</span>`
+      : `<span class="badge">无时段</span><span class="pause-note">全天运行</span>`
+  const pauseRows = pauseWindows
+    .map(
+      (w) => `
+        <span class="pause-row" data-pause="${esc(w.id)}">
+          <input type="time" data-pause-field="start" value="${esc(w.start)}" title="${esc(t('暂停开始'))}" />
+          <span class="sep">–</span>
+          <input type="time" data-pause-field="end" value="${esc(w.end)}" title="${esc(t('恢复时间（不含）'))}" />
+          <button class="ghost tiny danger" data-act="del-pause-window" title="${esc(t('删除这一段'))}">×</button>
+        </span>`,
+    )
+    .join('')
+
   const intro = `
     <div class="card">
       <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap">
@@ -2651,10 +2682,12 @@ function renderProbes() {
         <label class="field-inline">评分有效期
           <input id="score-age" type="number" min="1" max="72" value="${maxAge}" style="width:68px" /> 小时
         </label>
-      </div>
-      <div class="hint" style="margin-top:8px">
-        有效期决定「允许错过几轮探测」：最近一次有效证据（探针或真实调用）超过它就判过期。
-        探测间隔不能超过有效期的一半，否则供给会在两轮探测之间整段过期。
+        <div class="field-inline pause-inline" title="${esc(t('到点自动停、到点自动恢复；跨夜直接填大的那个时间'))}">
+          <span class="pause-title">定时关闭检测</span>
+          ${pauseBadge}
+          ${pauseRows}
+          <button class="ghost tiny" data-act="add-pause-window">${icon('plus')}${t('添加时段')}</button>
+        </div>
       </div>
       <div class="switch-row">
         <label class="switch">
@@ -5133,6 +5166,37 @@ document.addEventListener('click', async (event) => {
     return
   }
 
+  if (action === 'add-pause-window') {
+    const windows = Array.isArray(state.settings.probePauseWindows) ? state.settings.probePauseWindows : []
+    if (windows.length >= 12) {
+      toast('最多 12 段，够覆盖一整天的作息了', true)
+      return
+    }
+    // 默认「晚上 11 点到早上 7 点」：最常见的场景就是睡觉这段
+    const next = [...windows, { id: `w${Date.now().toString(36)}`, start: '23:00', end: '07:00' }]
+    try {
+      state = await api('PATCH', '/api/settings', { probePauseWindows: next })
+      render()
+      toast('已加一段 23:00 至 07:00，点时间就能改')
+    } catch (error) {
+      toast(error.message, true)
+    }
+    return
+  }
+
+  if (action === 'del-pause-window') {
+    const id = actionButton.closest('[data-pause]')?.dataset.pause
+    const next = (state.settings.probePauseWindows || []).filter((w) => w.id !== id)
+    try {
+      state = await api('PATCH', '/api/settings', { probePauseWindows: next })
+      render()
+      toast('已删除这段')
+    } catch (error) {
+      toast(error.message, true)
+    }
+    return
+  }
+
   if (action === 'probe-all') {
     toast('正在探测，需要几秒到几十秒…')
     await withBusy(actionButton, async () => {
@@ -5519,6 +5583,29 @@ document.addEventListener('change', async (event) => {
     const opt = input.selectedOptions?.[0]
     const labelInput = $('#pf-label')
     if (labelInput && opt?.value) labelInput.value = opt.dataset.label || ''
+    return
+  }
+
+  if (input.dataset.pauseField) {
+    const row = input.closest('[data-pause]')
+    const id = row?.dataset.pause
+    const value = String(input.value || '')
+    const windows = Array.isArray(state.settings.probePauseWindows) ? state.settings.probePauseWindows : []
+    // 清空 / 半截输入不写库：input[type=time] 中途会给出空串，直接存就成了「全天暂停」
+    if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(value)) {
+      render()
+      toast('时间请填 HH:MM', true)
+      return
+    }
+    const next = windows.map((w) => (w.id === id ? { ...w, [input.dataset.pauseField]: value } : w))
+    try {
+      state = await api('PATCH', '/api/settings', { probePauseWindows: next })
+      render()
+      toast(pauseToast(state.probePause))
+    } catch (error) {
+      toast(error.message, true)
+      render()
+    }
     return
   }
 
