@@ -1797,6 +1797,7 @@ function providersHtml({ withForm = true, panel = '', actions = '' } = {}) {
             <b>${esc(p.name)}</b>
             ${p.baseUrl ? `<a class="icon-btn prov-open" href="${esc(p.baseUrl)}" target="_blank" rel="noreferrer" title="${t('打开站点后台')}">${icon('external')}</a>` : ''}
             ${kindText ? `<span class="badge ${kindMeta.cls}" title="${esc(p.kindSource === 'manual' ? t('系别由用户手动设置') : t('系别由添加站点/登录时自动探测得出'))}">${esc(kindText)}</span>` : ''}
+            <button class="ghost tiny" data-act="detect-kind" data-provider="${esc(p.id)}" title="${t('用站点令牌探测这个站是哪一系（one-api / new-api / Sub2API）。匿名探测不出的站，带令牌再试一次往往就能识别')}">${icon('search')}${t('识别系别')}</button>
             ${
               freeNames.length
                 ? `<span class="badge prov-free" title="${esc(t('免费模型：{list}', { list: freeNames.join('、') }))}">${icon('gift')}${t('免费 {n}', { n: freeNames.length })}</span>`
@@ -1902,13 +1903,8 @@ function providersHtml({ withForm = true, panel = '', actions = '' } = {}) {
             <input name="group" placeholder="分组（可选）" style="width:118px" title="这把 Key 属于站点的哪个分组，同步模型时会自动带上" />
             <button type="submit">添加 Key</button>
           </form>
-          ${
-            p.hasAdminToken
-              ? `<div class="keyrow" style="border:none;padding-top:2px">
-                  <button class="ghost tiny" data-act="detect-kind" data-provider="${esc(p.id)}" title="${t('用站点令牌探测这个站是哪一系（one-api / new-api / Sub2API）。匿名探测不出的站，带令牌再试一次往往就能识别')}">${icon('search')}${t('识别系别')}</button>
-                </div>`
-              : `<div class="hint" style="margin-top:2px">
-            ${t('「令牌」在站点卡片上（不在 Key 上）——它是站点后台的登录凭证，一个后台账号填一次，整站通用。获取：登录后台 → F12 → Network → 点任意 <code>/api/v1/</code> 请求 → 复制 Request Headers 里的 <code>Authorization</code>（去掉 <code>Bearer </code> 前缀）。令牌会过期，失效后重新复制。填了令牌还能识别这个站是哪一系。')}
+          ${p.hasAdminToken ? '' : `<div class="hint" style="margin-top:2px">
+            ${t('「令牌」在站点卡片上（不在 Key 上）——它是站点后台的登录凭证，一个后台账号填一次，整站通用。获取：登录后台 → F12 → Network → 点任意 <code>/api/v1/</code> 请求 → 复制 Request Headers 里的 <code>Authorization</code>（去掉 <code>Bearer </code> 前缀）。令牌会过期，失效后重新复制。')}
           </div>`
           }
         </div>

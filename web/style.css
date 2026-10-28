@@ -1207,6 +1207,7 @@ button.sm { padding: 4px 9px; font-size: 12px; }
 .prov-head .hint { white-space: nowrap; }
 .prov-head { display: flex; align-items: center; gap: 10px; }
 .prov-id { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.prov-id > .ghost.tiny { white-space: nowrap; flex: none; }
 /* 站点卡第二排瓦片变三列（多了「站点单价」）：列宽按内容分配，
    阈值那一列最宽，单价和令牌窄一些，避免文字被压成三行 */
 .prov-tiles--3 { grid-template-columns: 1.25fr 0.85fr 0.9fr !important; }
