@@ -1288,6 +1288,8 @@ route('POST', /^\/api\/providers\/([\w-]+)\/usage-check$/, async (ctx) => {
         modelKey: r.modelKey,
         local: r.localTokens,
         reported: r.reportedPrompt,
+        // 缓存命中量：界面用「上报 − 缓存」和本地估算比，否则缓存率高时必然显示虚高
+        reportedCached: Number(r.reportedCached) || 0,
         suspicious: Boolean(r.suspicious),
       })),
     ]

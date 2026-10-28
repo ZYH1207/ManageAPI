@@ -821,26 +821,45 @@ function renderUsageCheck(providerId) {
   const samples = verify.samples || []
   const suspicious = samples.filter((x) => x.suspicious)
 
+  // 站点上报的 prompt_tokens 含缓存命中部分，直接和「按请求体数的全文」比会虚高
+  // （实测同一批请求缓存占 99% 时会显示 +100%，其实是站点按缓存价少收了）。
+  // 真正可比的是「上报 − 缓存」。短请求（<800 token）的启发式误差按比例放大后毫无意义，
+  // 一律不判定，和 core/quality-signals.js 的 BILLING_MIN_TOKENS 同口径。
+  const MIN_COMPARE_TOKENS = 800
+  const netOf = (x) => {
+    if (typeof x.reported !== 'number') return null
+    const cached = typeof x.reportedCached === 'number' ? x.reportedCached : 0
+    return Math.max(0, x.reported - cached)
+  }
   const pct = (reported, local) => {
-    if (!local || !reported) return ''
+    if (!local || reported === null) return ''
+    // 短请求的字符启发式误差极大（"hi" 估 1、实际计费 5~8），百分比在小分母上
+    // 会被放大成 +200% 这种无意义的值，直接不显示数值
+    if (local < MIN_COMPARE_TOKENS) return '样本太小'
     const diff = (reported / local - 1) * 100
     return `${diff > 0 ? '+' : ''}${diff.toFixed(0)}%`
   }
   const toneOf = (reported, local) => {
-    if (!local || !reported) return ''
+    if (!local || reported === null) return ''
+    if (local < MIN_COMPARE_TOKENS) return '' // 短请求不判定
     const ratio = reported / local
     return ratio > 2 ? 'danger' : ratio > 1.5 ? 'warn' : ''
   }
 
   const comparable = samples.filter((x) => typeof x.local === 'number' && x.local > 0)
-  const sampleRows = comparable.slice(0, 8).map((x) => `
+  const sampleRows = comparable.slice(0, 8).map((x) => {
+    const net = netOf(x)
+    const cached = typeof x.reportedCached === 'number' ? x.reportedCached : 0
+    return `
     <tr>
       <td class="mono" style="font-size:11px">${fmtDateTime(x.at)}</td>
       <td class="mono" style="font-size:11px">${esc(x.modelKey || '—')}</td>
       <td class="num">${x.local === null ? '—' : formatTokens(x.local)}</td>
       <td class="num">${x.reported === null ? '—' : formatTokens(x.reported)}</td>
-      <td class="num ${toneOf(x.reported, x.local)}">${pct(x.reported, x.local) || '—'}</td>
-    </tr>`).join('')
+      <td class="num" style="color:var(--faint)">${cached ? formatTokens(cached) : '—'}</td>
+      <td class="num ${toneOf(net, x.local)}">${pct(net, x.local) || '—'}</td>
+    </tr>`
+  }).join('')
 
   return `
     <div class="keylist" style="border-top:1px solid var(--border);padding-top:10px">
@@ -858,16 +877,23 @@ function renderUsageCheck(providerId) {
         <div>我们记录的网关用量：<b>${priceText(est.cost)}</b>
           <span style="color:var(--faint)">（${est.requests || 0} 次 · 输入 ${formatTokens(est.input)} / 输出 ${formatTokens(est.output)}）</span></div>
         ${site ? `<div style="color:var(--muted)">站点全站账单：<b>${site.actualCost === null ? '—' : priceText(site.actualCost * rateCny())}</b>
-          <span style="color:var(--faint)">（${site.requests ?? '—'} 次请求，含不经网关的直连流量）</span></div>` : ''}
+          <span style="color:var(--faint)">（${site.requests ?? '—'} 次请求）</span></div>` : ''}
       </div>
+      ${site ? `<div class="hint" style="margin:2px 0 6px;line-height:1.7">
+        两个数不是一回事，不该相等：上面只算<b>经过网关的业务请求</b>，且单价用本地存的、token 靠上游上报
+        （上游不返回 usage 时只能记 0）；下面含<b>探针自检</b>（每个模型每次 5 个请求，真实扣费）和其他未经网关的调用，
+        且每个数字都是站点自己算的。对账请看下面的单价与样本，不要拿两个总额相减。
+      </div>` : ''}
       ${comparable.length ? `
       <table class="mini-table" style="margin-top:6px">
-        <thead><tr><th>时间</th><th>模型</th><th class="num">本地估算</th><th class="num">站点上报</th><th class="num">偏差</th></tr></thead>
+        <thead><tr><th>时间</th><th>模型</th><th class="num">本地估算</th><th class="num">站点上报</th><th class="num">其中缓存</th><th class="num">差值</th></tr></thead>
         <tbody>${sampleRows}</tbody>
       </table>
       <div class="hint" style="margin:6px 0 0">
-        本地估算 = 按请求体重新数的 token；站点上报 = 上游返回的 prompt_tokens。
-        偏差超过 +100% 会标红——那说明站点在多算你的输入。缓存命中多时本地估算偏高是正常的（本地数不出缓存）。
+        本地估算 = 按请求体重新数的 token；站点上报 = 上游返回的 prompt_tokens（<b>含命中缓存的部分</b>）。
+        「差值」比较的是 <b>上报 − 缓存</b> 与本地估算：缓存命中率高时这会是很大的负数，
+        因为本地按全文数、而站点只对未命中的部分收全价——<b>负数才是正常</b>，
+        明显为正才说明站点多算了输入。少于 800 token 的短请求不判定（启发式误差太大）。
       </div>` : '<div class="hint" style="padding:2px 0 6px">还没有样本：网关转发 20 次成功请求后会开始抽样。</div>'}
       <details style="margin-top:6px">
         <summary style="cursor:pointer;font-size:11px;color:var(--faint)">站点原始返回</summary>
@@ -3085,7 +3111,15 @@ function spendStat(range) {
   const actualHtml = hasSite
     ? `<b class="spend-actual">${priceSym()}${money(dispPrice(siteCny))}</b>`
     : `<b class="spend-actual spend-muted">${t('读不到账单')}</b>`
-  const hint = hasSite ? t('{n} 个站点账单', { n: site.providers }) : t('站点未提供账单接口或令牌无效')
+  // 截止时刻：今天的账单还在涨，采集每 30 分钟一轮，不标「截至」会被当成实时值。
+  // 只在「今天」这一档显示——本周/本月是历史区间，不存在滞后问题。
+  const fetchedAt = range === 'today' ? latestSiteFetchedAt() : null
+  const asOf = fetchedAt ? t('截至 {time}', { time: fmtTimeOnly(fetchedAt) }) : ''
+  const truncated = range === 'today' && site?.anyTruncated
+  const parts = [hasSite ? t('{n} 个站点账单', { n: site.providers }) : t('站点未提供账单接口或令牌无效')]
+  if (asOf) parts.push(asOf)
+  if (truncated) parts.push(t('有明细未拉全'))
+  const hint = parts.join(' · ')
 
   return {
     k: `${t('花费')} · ${t(label)}`,
@@ -3109,6 +3143,25 @@ function siteUnitPriceForTotal() {
   const explicit = Number(state?.settings?.defaultUnitPrice)
   if (Number.isFinite(explicit) && explicit > 0) return explicit
   return 1
+}
+
+/** 当天账单里最晚的一次拉取时刻，用于「截至 HH:mm」 */
+function latestSiteFetchedAt() {
+  const byProvider = monitorData?.siteSpend?.byProvider || {}
+  let latest = null
+  for (const row of Object.values(byProvider)) {
+    const t = row?.todayFetchedAt
+    if (t && (!latest || String(t) > String(latest))) latest = t
+  }
+  return latest
+}
+
+/** 只显示时分（HH:mm），日期在同一屏里没有意义 */
+function fmtTimeOnly(iso) {
+  const d = new Date(iso)
+  if (!Number.isFinite(d.getTime())) return '—'
+  const pad = (n) => String(n).padStart(2, '0')
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}`
 }
 
 function renderMonitor() {

@@ -734,6 +734,8 @@ Object.assign(EN, {
   '读不到账单': 'No bill',
   '{n} 个站点账单': 'Bills from {n} sites',
   '站点未提供账单接口或令牌无效': 'Site has no billing API or the token is invalid',
+  '截至 {time}': 'as of {time}',
+  '有明细未拉全': 'some records not fetched',
   '花费合计': 'Total spend',
   '余额': 'Balance',
   '全部站点': 'All sites',

@@ -899,8 +899,14 @@ export async function recordBillingSample(offerId, entry) {
       reportedPrompt: Number(entry.reportedPrompt) || 0,
       reportedCached: Number(entry.reportedCached) || 0,
     }
-    // 离谱的样本单独标出来：上报值超过本地估算 2 倍（且绝对量不小）就值得报警
-    row.suspicious = row.localTokens >= 200 && row.reportedPrompt > row.localTokens * 2
+    // 离谱的样本单独标出来：比的是「上报 − 缓存命中」而不是 raw 上报值。
+    // 站点上报的 prompt_tokens 含缓存部分，缓存命中 99% 时 raw 值必然远超本地
+    // 估算，但那部分按缓存价（通常 1/10 价）收，不是多算钱——拿 raw 比会全是假阳性。
+    // 绝对值下限与 quality-signals.js 的 BILLING_MIN_TOKENS 一致：短请求的
+    // 字符启发式误差按比例放大后没有判定意义。
+    const billedInput = Math.max(0, row.reportedPrompt - row.reportedCached)
+    row.billedInput = billedInput
+    row.suspicious = billedInput >= 800 && billedInput > row.localTokens * 2
     db.billingSamples.push(row)
     if (db.billingSamples.length > BILLING_SAMPLE_KEEP) {
       db.billingSamples = db.billingSamples.slice(-BILLING_SAMPLE_KEEP)

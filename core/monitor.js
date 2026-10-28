@@ -192,6 +192,10 @@ function applySiteSpendDays(m, providerId, snap, at) {
       actualCost: Number(spend.actualCost) || 0,
       totalCost: Number(spend.totalCost) || 0,
       requests: Number(spend.requests) || 0,
+      // 拉取时刻与完整性：当天账单仍在增长，界面据此标「截至 HH:mm」；
+      // truncated = 站点那边还有没拉到的明细，数字偏小要提示
+      fetchedAt: spend.fetchedAt || at,
+      truncated: Boolean(spend.truncated),
       at,
     }
   }
@@ -575,16 +579,29 @@ function buildSiteSpendSummary(m, settings) {
     let week = 0
     let month = 0
     let todayRequests = 0
+    // 今天的账单还在增长：把最后一次拉取时刻和完整性透出去，界面标「截至 HH:mm」
+    let todayFetchedAt = null
+    let todayTruncated = false
     for (const [day, row] of Object.entries(days || {})) {
       const cost = Number(row.actualCost) || 0
       if (day === todayKey) {
         today += cost
         todayRequests += Number(row.requests) || 0
+        todayFetchedAt = row.fetchedAt || row.at || null
+        todayTruncated = Boolean(row.truncated)
       }
       if (day >= weekStart) week += cost
       if (day >= monthStart) month += cost
     }
-    byProvider[providerId] = { today, week, month, todayRequests, days: Object.keys(days || {}).length }
+    byProvider[providerId] = {
+      today,
+      week,
+      month,
+      todayRequests,
+      days: Object.keys(days || {}).length,
+      todayFetchedAt,
+      todayTruncated,
+    }
     totals.today.actual += today
     totals.today.requests += todayRequests
     totals.week.actual += week
@@ -597,11 +614,14 @@ function buildSiteSpendSummary(m, settings) {
   }
 
   const round = (v) => Math.round(v * 1e4) / 1e4
+  // 任一站点今天有小拉不全的明细，整体就标「有明细未拉全」
+  const anyTruncated = Object.values(byProvider).some((row) => row.todayTruncated)
   return {
     // 站点账单是站点货币单位；按 1:1 的充值口径，它同时就是人民币近似值。
     // 真正的换算留给前端（站点单价），这里只给原始数值。
     fx,
     byProvider,
+    anyTruncated,
     today: { actual: round(totals.today.actual), requests: totals.today.requests, providers: totals.today.providers },
     week: { actual: round(totals.week.actual), providers: totals.week.providers },
     month: { actual: round(totals.month.actual), providers: totals.month.providers },

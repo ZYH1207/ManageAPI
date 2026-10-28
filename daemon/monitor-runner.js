@@ -62,15 +62,21 @@ export async function collectProviderSnapshots({ providerId = null, logger = con
     // 字段也不可靠，拿它算钱必然对不上。sub2api 系的 /api/v1/usage 有逐条明细，
     // 按天取一次即可（当天累计值会随使用增长，每次采集覆盖写入）。
     if (adminToken && (provider.kind === 'sub2api' || provider.kind === 'unknown')) {
-      // 今天每次采集都覆盖（当天累计值在增长）；最近 6 天只在缺记录时回填，
-      // 否则「本周/本月」永远只有今天一个数
+      // 今天每次采集都覆盖（当天累计值在增长）；最近 6 天在「缺记录」或
+      // 「记录不可信」时回填，否则「本周/本月」永远只有今天一个数。
+      //
+      // 「记录不可信」有两种，都必须重拉：
+      //   truncated    —— 上次翻页没拉全（单页上限 1000，高峰期一天能到 995+）
+      //   legacy       —— 分页修复前写入的老记录没带 fetchedAt 字段，
+      //                   无法判断是否完整，按不可信处理（重拉一次就带上了）
       const known = db.monitor?.siteSpend?.[provider.id] || {}
       const today = new Date()
+      const needsRefetch = (row) => !row || row.truncated === true || !row.fetchedAt
       const wanted = [0]
       for (let i = 1; i <= 6; i += 1) {
         const d = new Date(today)
         d.setDate(d.getDate() - i)
-        if (!known[localDayKey(d)]) wanted.push(i)
+        if (needsRefetch(known[localDayKey(d)])) wanted.push(i)
       }
       // 并发拉：逐天串行时 7 天要 7 个往返，慢站会把整轮采集拖超时
       const dayList = wanted.map((offset) => {

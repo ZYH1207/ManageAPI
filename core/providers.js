@@ -454,8 +454,13 @@ export async function fetchAnnouncements({ baseUrl, apiKey, adminToken, kind, ti
  *     有时报 553216、有时报 128），拿它做减法还原净值不可信
  * 站点账单是它自己算的账，不会错——「实际消费」就该用它。
  *
- * @returns {Promise<{actualCost:number, totalCost:number, requests:number,
- *                    inputTokens:number, cacheReadTokens:number, outputTokens:number}>}
+ * **必须翻页拉全**：单页上限 1000 条，而高峰期一天能到 995+ 条，只读第一页
+ * 会静默少算（实测 10-27 漏了 192 次 / $0.76）。分页上限兜底 20 页（2 万条），
+ * 防止站点忽略 page 参数时死循环。
+ *
+ * @returns {{actualCost:number, totalCost:number, requests:number,
+ *            inputTokens:number, cacheReadTokens:number, outputTokens:number,
+ *            fetchedAt:string, truncated:boolean}}
  */
 export async function fetchSiteDailySpend({ baseUrl, adminToken, date, timeoutMs = TIMEOUTS.siteSpend }) {
   const origin = originOf(baseUrl, { stripApiPrefix: true })
@@ -463,10 +468,28 @@ export async function fetchSiteDailySpend({ baseUrl, adminToken, date, timeoutMs
   const day = String(date || '').slice(0, 10)
   if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) throw new Error(`日期格式不对：${date}`)
 
-  const url = `${origin}/api/v1/usage?start_date=${day}&end_date=${day}&page=1&page_size=1000`
-  const payload = await requestJson(url, { apiKey: adminToken, timeoutMs })
-  const items = payload?.data?.items
-  if (!Array.isArray(items)) throw new Error('站点返回里没有 usage 明细')
+  const PAGE_SIZE = 1000
+  const MAX_PAGES = 20
+  const items = []
+  let truncated = false
+  let seenTotal = null
+
+  for (let page = 1; page <= MAX_PAGES; page += 1) {
+    const url = `${origin}/api/v1/usage?start_date=${day}&end_date=${day}&page=${page}&page_size=${PAGE_SIZE}`
+    const payload = await requestJson(url, { apiKey: adminToken, timeoutMs })
+    const batch = payload?.data?.items
+    if (!Array.isArray(batch)) throw new Error('站点返回里没有 usage 明细')
+    if (seenTotal === null && Number.isFinite(Number(payload?.data?.total))) {
+      seenTotal = Number(payload.data.total)
+    }
+    items.push(...batch)
+    // 不足一页 = 已到末尾；或已取满站点声明的 total
+    if (batch.length < PAGE_SIZE) break
+    if (seenTotal !== null && items.length >= seenTotal) break
+    if (page === MAX_PAGES) truncated = true
+  }
+  // 站点声明了总数却拿不够，也标成不完整，界面据此提示
+  if (seenTotal !== null && items.length < seenTotal) truncated = true
 
   let actualCost = 0
   let totalCost = 0
@@ -483,10 +506,15 @@ export async function fetchSiteDailySpend({ baseUrl, adminToken, date, timeoutMs
   return {
     actualCost: Math.round(actualCost * 1e6) / 1e6,
     totalCost: Math.round(totalCost * 1e4) / 1e4,
-    requests: Number(payload?.data?.total) || items.length,
+    // 条数以实际拉到的明细为准：站点的 total 字段可能是「当前筛选下的总数」，
+    // 翻页没拉全时两者不一致，用 items.length 才不会虚报
+    requests: items.length,
     inputTokens,
     cacheReadTokens,
     outputTokens,
+    // 拉取时刻：当天账单还在增长，界面要标「截至 HH:mm」，否则会被当成实时值
+    fetchedAt: new Date().toISOString(),
+    truncated,
   }
 }
 
