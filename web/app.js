@@ -42,14 +42,15 @@ function money(value) {
 }
 
 /**
- * 显示币种：后端算出来的一律是人民币（$ = ¥ ÷ 汇率），这里按设置换成美元展示。
- * 只影响渲染，不参与任何比较——比较走的是 core/pricing.js 的美元口径。
+ * 显示币种：'CNY' / 'USD'（站内美元，与人民币 1:1）/ 'RUSD'（真实美元，按汇率折算）。
+ * 只影响渲染，不参与任何比较——比较口径走的是 core/pricing.js。
  */
-function showUsd() {
-  return state?.settings?.displayCurrency === 'USD'
+function displayCur() {
+  const v = String(state?.settings?.displayCurrency || 'USD').toUpperCase()
+  return v === 'CNY' || v === 'RUSD' ? v : 'USD'
 }
 function priceSym() {
-  return showUsd() ? '$' : '¥'
+  return displayCur() === 'CNY' ? '¥' : displayCur() === 'RUSD' ? 'R$' : '$'
 }
 /** 1 USD = ? CNY。真源是 settings.fx.rates.CNY，fxUsdCny 只是兼容镜像 */
 function rateCny() {
@@ -58,10 +59,10 @@ function rateCny() {
   const legacy = Number(state?.settings?.fxUsdCny)
   return Number.isFinite(legacy) && legacy > 0 ? legacy : 7.2
 }
+/** 显示值：站内美元/CNY 与人民币 1:1，同一数值只换符号；真实美元按汇率折算 */
 function dispPrice(cny) {
   if (cny === null || cny === undefined || !Number.isFinite(cny)) return null
-  if (!showUsd()) return cny
-  return cny / rateCny()
+  return displayCur() === 'RUSD' ? cny / rateCny() : cny
 }
 /** 价格文本，例：¥0.29 或 $0.041 */
 function priceText(cny) {
@@ -179,9 +180,10 @@ function groupChipOf(providerId, groupName) {
 function currencyCell(offer, width = 70) {
   const custom = offer.currencySource === 'custom'
   return `
-    <select data-field="currency" style="width:${width}px">
+    <select data-field="currency" style="width:${width}px" title="${t('真实美元 R.Dollar：国外模型专用，按汇率换算；站内美元与人民币 1:1')}">
       <option value="USD" ${offer.currency === 'USD' ? 'selected' : ''}>USD</option>
       <option value="CNY" ${offer.currency === 'CNY' ? 'selected' : ''}>CNY</option>
+      <option value="RUSD" ${offer.currency === 'RUSD' ? 'selected' : ''}>R.Dollar</option>
     </select>
     ${custom
       ? `<button class="badge currency-custom" data-act="reset-currency" data-offer="${esc(offer.id)}" title="${t('币种是你手选的，同步不会改它。点一下恢复跟随站点声明')}">${t('手选')}</button>`
@@ -1862,7 +1864,7 @@ function paintGroupModels() {
   // （语言、显示币种、汇率也算进签名，它们一变价格文字就该跟着变。）
   const sig = JSON.stringify([
     getLang(),
-    showUsd(),
+    displayCur(),
     rateCny(),
     siteText,
     view.title,
@@ -2112,6 +2114,36 @@ function renderFree() {
 
 // --------------------------------------------------------------- 比价视图
 
+/** 官方有效成本的混合权重（与 offerCost 同一默认与限幅） */
+function blendWeight() {
+  const raw = Number(state?.settings?.blendInputWeight)
+  return Number.isFinite(raw) ? Math.min(Math.max(raw, 0), 1) : 0.25
+}
+
+/**
+ * 官方参照胶囊：基准价表里没有这个模型就不显示（不硬凑）。
+ * 有效成本口径与站内供给一致（offerCost 同一算法，质量按 1），只是来源是官方价。
+ */
+function officialChipHtml(official) {
+  if (!official || official.blendedCnyPerMtok === null) return ''
+  // 先官方原价（含币种与单位），后有效成本；缺哪个价用 — 占位
+  // 币种符号：¥ = 官方人民币价，$ = 站内美元，R$ = 真实美元（国外官方价）
+  const cur = official.currency === 'CNY' ? '¥' : official.currency === 'RUSD' ? 'R$' : '$'
+  const detail = `${t('官方价')} ${t('输入')} ${cur}${official.in ?? '—'} · ${t('输出')} ${cur}${official.out ?? '—'}（${t('每百万 token')}）`
+  const w = Math.round(blendWeight() * 100)
+  const title = t('{detail} · 官方有效成本 = 输入按 {w}%、输出按 {ow}% 加权；在「基准价」页可改', {
+    detail,
+    w,
+    ow: 100 - w,
+  })
+  // 填了峰谷价（如 DeepSeek 空闲时段减半）：分「峰 / 谷」展示两个有效成本
+  const hasPeak = official.hasOffPeak && official.offPeakBlendedCnyPerMtok !== null
+  const eff = hasPeak
+    ? `${t('峰')}${priceText(official.blendedCnyPerMtok)} / ${t('谷')}${priceText(official.offPeakBlendedCnyPerMtok)}`
+    : priceText(official.blendedCnyPerMtok)
+  return `<span class="official-chip" title="${esc(title)}">${t('官方')} ${cur}${official.in ?? '—'}/${cur}${official.out ?? '—'} /M → ${t('有效')} ${eff}/M</span>`
+}
+
 function renderPricing() {
   const view = $('#view-pricing')
 
@@ -2214,13 +2246,27 @@ function renderPricing() {
       // 切成「倍率」但还没填倍率时 ratio 是 null，会被误判成手动
       const mode = row.pricingMode === 'ratio' ? 'ratio' : 'manual'
       const perCall = Boolean(row.perCall)
-      // 综合成本列：按次行显示「/次」，按 token 行显示「/百万 token」
+      // 综合成本列：按次行显示「/次」，按 token 行显示「/百万 token」；
+      // 下面的小字是本行有效成本占官方的百分比（波峰口径），一眼看出是官方的几折
+      const officialPct =
+        !perCall &&
+        group.official &&
+        group.official.blendedCnyPerMtok > 0 &&
+        row.blendedCnyPerMtok !== null
+          ? (row.blendedCnyPerMtok / group.official.blendedCnyPerMtok) * 100
+          : null
+      const officialPctText =
+        officialPct === null ? '' : officialPct < 1 ? '<1%' : `${Math.round(officialPct)}%`
       const costCell = perCall
         ? row.callPriceCny === null
           ? '—'
           : `<div>¥${money(row.callPriceCny)}<span class="sub">/次</span></div>`
         : `${row.blendedCnyPerMtok === null ? '—' : priceText(row.blendedCnyPerMtok)}${
             row.hasOffPeak && row.offPeakBlendedCnyPerMtok !== null ? `<div class="sub">空闲 ${priceText(row.offPeakBlendedCnyPerMtok)}</div>` : ''
+          }${
+            officialPctText
+              ? `<div class="sub" title="${esc(t('本行有效成本为官方有效成本的 {pct}（按波峰口径）', { pct: officialPctText }))}">${t('官方')} ${officialPctText}</div>`
+              : ''
           }`
       // 计费单位是站点声明、识别出来的（模型广场 billing_mode），不是每行手选的
       // 配置项——所以只读展示。真要手动改（比如站点没开广场识别不到），去「站点」页
@@ -2267,6 +2313,7 @@ function renderPricing() {
         <div class="group-head">
           <button class="ghost tiny" data-act="toggle-panel" data-panel="${esc(panelKey)}">${isCollapsed ? '▸' : '▾'}</button>
           <span class="model mono">${esc(group.modelKey)}</span>
+          ${officialChipHtml(group.official)}
           ${group.spreadPct === null ? '' : `<span class="spread">价差 ${group.spreadPct}%</span>`}
           <span class="count">${group.providerCount} 个站 · ${shownRows.length === group.rows.length ? `${group.rows.length} 条供给` : `${shownRows.length} / ${group.rows.length} 条供给`}</span>
         </div>
@@ -2306,7 +2353,7 @@ function renderPricing() {
         ${icon('eye-off')}${t('忽略模型')}${ignoredCount ? ` ${ignoredCount}` : ''}
       </button>
     </div>
-    <p class="hint">${t('价格直接改，失焦即保存。「{sym}/百万 token」是综合成本：输入按 25%、输出按 75% 加权。人民币标价的站按「基准价」页里的汇率折算成美元比较。', { sym: priceSym() })}</p>
+    <p class="hint">${t('价格直接改，失焦即保存。「{sym}/百万 token」是综合成本：输入按 25%、输出按 75% 加权。中转站按美元标价、实际按人民币 1:1 扣费，所以这里的 $ 和 ¥ 是同一个数。', { sym: priceSym() })}</p>
     <p class="hint">${t('倍率模式下，输入 / 输出价填的是「原价」：实际价 = 原价 × 倍率。基准价只是导入时自动填进这两个框的默认值，手改过就以手改的为准。')}</p>
     ${ignoredCount ? `<p class="hint">已忽略 ${ignoredCount} 个模型：它们不出现在比价、智能决策、探针和网关里。<button class="ghost tiny" data-act="ignored-models">管理</button></p>` : ''}
     ${groups ||
@@ -2330,7 +2377,7 @@ function paintAutoRefresh() {
 function paintCurrencySwitch() {
   const box = $('#cur-switch')
   if (!box) return
-  const cur = showUsd() ? 'USD' : 'CNY'
+  const cur = displayCur()
   for (const button of box.querySelectorAll('button')) {
     const on = button.dataset.cur === cur
     button.classList.toggle('is-on', on)
@@ -2345,9 +2392,83 @@ function paintCurrencySwitch() {
  *   scores 保留——概览/探针/网关页和通知中心都靠它，停在这些页时评分才会跟着轮询更新）
  * - 重绘后恢复滚动位置
  */
+// --------------------------------------------- 改价暂存（2 秒去抖）
+
+/**
+ * 比价页改价的烦恼：填完输入价，表格歋地就重排了，还没来得及改输出价就找不到行了。
+ *
+ * 规矩：输入价 / 输出价 / 倍率 / 单位 / 币种都算「改价行为」。改一下先落本地、
+ * 不提交不重排；停手 2 秒才一次性提交，然后才计入真实价格变动（重排）。
+ * 2 秒内接着改同一行，计时器重置——直到改完为止整张表纹丝不动。
+ */
+const PRICE_EDIT_DEBOUNCE_MS = 2000
+const pendingPriceEdits = new Map() // offerId → { fields, timer }
+let pendingSortRender = false
+
+/** 把一次改动暂存起来：本地先生效（界面反映你输的值），提交和重排都推迟 */
+function stagePriceEdit(offerId, field, value) {
+  // 本地先生效：任何原因触发重绘（另一行 flush、切页）都不会丢你刚输的值
+  const local = state.offers?.find((o) => o.id === offerId) || state.unpriced?.find((o) => o.id === offerId)
+  if (local) local[field] = value
+  const entry = pendingPriceEdits.get(offerId) || { fields: {}, timer: null }
+  clearTimeout(entry.timer)
+  entry.fields[field] = value
+  entry.timer = setTimeout(() => void flushPriceEdits(offerId), PRICE_EDIT_DEBOUNCE_MS)
+  pendingPriceEdits.set(offerId, entry)
+}
+
+/** 停手 2 秒：把这一行的所有暂存改动一次性提交，然后才重排 */
+async function flushPriceEdits(offerId) {
+  const entry = pendingPriceEdits.get(offerId)
+  if (!entry) return
+  pendingPriceEdits.delete(offerId)
+  clearTimeout(entry.timer)
+  try {
+    state = await api('PATCH', `/api/offers/${offerId}`, entry.fields)
+    scheduleSortRender()
+  } catch (error) {
+    toast(error.message, true)
+  }
+}
+
+/** 暂存改动落库后要重排上屏；但焦点还在比价表里就先等它离开，别把正在编辑的下一行打飞 */
+function scheduleSortRender() {
+  pendingSortRender = true
+  trySortRender()
+}
+function trySortRender() {
+  if (!pendingSortRender) return
+  const el = document.activeElement
+  if (el && el.closest && el.closest('.pricing-table')) return
+  pendingSortRender = false
+  render()
+}
+// 焦点一离开比价表就把欠着的重排补上（点别处、切页都会触发 focusout）
+document.addEventListener('focusout', () => setTimeout(trySortRender, 0))
+
+// 关页面前的兜底：暂存中（还没到 2 秒）的改价用 keepalive 补发，尽力而为
+window.addEventListener('beforeunload', () => {
+  for (const [offerId, entry] of pendingPriceEdits) {
+    clearTimeout(entry.timer)
+    try {
+      fetch(`/api/offers/${offerId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(entry.fields),
+        keepalive: true,
+      })
+    } catch {
+      /* 尽力而为，失败就丢这最后 2 秒内的改动 */
+    }
+  }
+})
+
 async function refreshState({ silent = false } = {}) {
   const focused = document.activeElement
   if (focused && /^(INPUT|TEXTAREA|SELECT)$/.test(focused.tagName)) return
+  // 改价暂存中：轮询拿回的是没含暂存改动的服务端状态，会把正在编辑的值冲掉；
+  // 停手 2 秒后 flushPriceEdits 自己会拉新状态并重排
+  if (pendingPriceEdits.size > 0) return
   const scroller = $('.content')
   const scrollTop = scroller ? scroller.scrollTop : 0
   const light = !HEAVY_TABS.has(activeTab)
@@ -3785,9 +3906,10 @@ function renderBenchmark() {
         <input type="number" step="0.001" placeholder="出" value="${entry.offPeakOut ?? ''}" data-field="offPeakOut" style="width:62px" title="空闲时段输出价" />
       </td>
       <td>
-        <select data-field="currency" style="width:70px">
-          <option value="USD" ${entry.currency !== 'CNY' ? 'selected' : ''}>USD</option>
+        <select data-field="currency" style="width:88px">
+          <option value="USD" ${entry.currency !== 'CNY' && entry.currency !== 'RUSD' ? 'selected' : ''}>USD</option>
           <option value="CNY" ${entry.currency === 'CNY' ? 'selected' : ''}>CNY</option>
+          <option value="RUSD" ${entry.currency === 'RUSD' ? 'selected' : ''}>R.Dollar</option>
         </select>
       </td>
       <td class="num"><button class="ghost danger" data-act="del-benchmark">删除</button></td>
@@ -3796,6 +3918,15 @@ function renderBenchmark() {
 
   const providerOptions = state.providers
     .map((p) => `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join('')
+
+  // 官方成本表单的候选：站内已有模型（比价 + 未定价）+ 已有基准价 key。
+  // datalist 只是提示不是限制：直接输入新名字就是新条目 —— 导了站内没有的
+  // 模型时，在这里填官方输入/输出就能算出它的有效成本
+  const modelCandidates = [...new Set([
+    ...(state.ranked || []).map((g) => g.modelKey),
+    ...(state.unpriced || []).map((o) => o.modelKey || o.upstreamName).filter(Boolean),
+    ...Object.keys(state.benchmarks),
+  ])].sort((a, b) => a.localeCompare(b))
 
   view.innerHTML = `
     <p class="hint">基准价是「倍率」的换算参照。三条路：从站点导入官方价、以此站已填价为准、或载入内置参考价。</p>
@@ -3815,18 +3946,44 @@ function renderBenchmark() {
         })}
       </p>
     </div>
+    <div class="card" id="bench-official-card">
+      <h3>${t('官方有效成本')}</h3>
+      <p class="hint" style="margin:6px 0 0">${t('由于中转站模板原因，1 美元 = 1 人民币。为了站内比价方便，特增加单位「真实美元 R.Dollar」：国外模型的官方价用它填，按汇率折算；常规情况不使用 CNY。')}</p>
+      <p class="hint" style="margin:4px 0 0">${t('选一个站内模型（也可以直接输入站内还没有的模型名），填官方输入 / 输出价。保存后比价页的每个分组头部会显示它的官方有效成本，供各站实际价做参照。')}</p>
+      <div class="inline-form" style="border-top:none;margin-top:8px;padding-top:0">
+        <input id="bench-add-model" list="bench-model-list" placeholder="${t('模型名（如 gpt-5.5）')}" style="min-width:220px" spellcheck="false" />
+        <datalist id="bench-model-list">${modelCandidates.map((k) => `<option value="${esc(k)}"></option>`).join('')}</datalist>
+        <span class="hint" style="margin:0">${t('波峰')}</span>
+        <input id="bench-add-in" type="number" step="0.001" min="0" placeholder="${t('官方输入价')}" style="width:110px" />
+        <input id="bench-add-out" type="number" step="0.001" min="0" placeholder="${t('官方输出价')}" style="width:110px" />
+        <select id="bench-add-currency" style="width:88px" title="${t('真实美元 R.Dollar = 国外模型官方价专用，按汇率换算；站内美元与人民币 1:1')}">
+          <option value="USD">USD</option>
+          <option value="RUSD">R.Dollar</option>
+          <option value="CNY">CNY</option>
+        </select>
+        <span id="bench-add-preview" class="hint" style="margin:0"></span>
+        <button id="btn-bench-add" class="primary" disabled>${t('保存官方价')}</button>
+      </div>
+      <div class="inline-form" style="border-top:none;margin-top:4px;padding-top:0">
+        <span class="hint" style="margin:0 0 0 0">${t('波谷')}</span>
+        <input id="bench-add-offin" type="number" step="0.001" min="0" placeholder="${t('波谷输入价')}" style="width:110px" />
+        <input id="bench-add-offout" type="number" step="0.001" min="0" placeholder="${t('波谷输出价')}" style="width:110px" />
+        <span class="hint" style="margin:0">${t('两格都留空 = 默认计价（无峰谷）；填了则比价组头分「峰 / 谷」展示两个有效成本。通用字段，任何模型都能用。')}</span>
+      </div>
+    </div>
     <div class="toolbar" style="margin:18px 0 10px">
       <input id="benchmark-search" class="search" type="search" placeholder="搜索模型名…" value="${esc(filters.benchmark)}" />
       <span class="hint" style="margin:0">${layering ? `${matching.length} 条与本地供给相关 · 共 ${entries.length} 条` : `共 ${entries.length} 条`}</span>
       <span style="flex:1"></span>
-      <label class="field-inline" title="${t('只影响价格显示，不影响比较口径（比较一律按美元）')}">
+      <label class="field-inline" title="${t('只影响价格显示的符号；站内美元与人民币 1:1，数值不变')}">
         <span>${t('显示币种')}</span>
-        <select id="display-currency" data-act="display-currency" style="width:78px">
-          <option value="USD" ${state.settings.displayCurrency === 'USD' ? 'selected' : ''}>USD $</option>
+        <select id="display-currency" data-act="display-currency" style="width:110px">
+          <option value="USD" ${state.settings.displayCurrency !== 'CNY' && state.settings.displayCurrency !== 'RUSD' ? 'selected' : ''}>USD $</option>
           <option value="CNY" ${state.settings.displayCurrency === 'CNY' ? 'selected' : ''}>CNY ¥</option>
+          <option value="RUSD" ${state.settings.displayCurrency === 'RUSD' ? 'selected' : ''}>R$ R.Dollar</option>
         </select>
       </label>
-      <label class="field-inline" title="${t('只影响人民币标价/展示的折算')}">
+      <label class="field-inline" title="${t('只用于「真实美元 R.Dollar」的换算（国外模型官方价）；站内价格不受影响')}">
         <span data-i18n="汇率 USD→CNY">汇率 USD→CNY</span>
         <input id="fx-input" data-act="fx" type="number" step="0.0001" min="1" value="${esc(rateCny())}" style="width:96px" />
       </label>
@@ -3859,6 +4016,77 @@ function renderBenchmark() {
       </table>
     </div>`
 }
+
+// --------------------------------------------- 官方有效成本表单（基准价页）
+
+/** 表单数字框读值：空/非法 → null */
+function benchAddNum(id) {
+  const raw = $(id)?.value
+  if (raw === undefined || raw === '') return null
+  const n = Number(raw)
+  return Number.isFinite(n) ? n : null
+}
+
+/**
+ * 现场预览有效成本：与 core/pricing.js#officialCost 同一口径
+ * （混合权重 + 汇率），纯前端估算，保存后以后端算的为准。
+ */
+function paintBenchAddPreview() {
+  const preview = $('#bench-add-preview')
+  const saveBtn = $('#btn-bench-add')
+  if (!preview || !saveBtn) return
+  const modelKey = $('#bench-add-model')?.value.trim() || ''
+  const inP = benchAddNum('#bench-add-in')
+  const outP = benchAddNum('#bench-add-out')
+  saveBtn.disabled = !modelKey || (inP === null && outP === null)
+  if (!modelKey || (inP === null && outP === null)) {
+    preview.textContent = ''
+    return
+  }
+  const w = blendWeight()
+  // 缺一侧回落到另一侧（与 offerCost 同一回落）
+  const blend = (a, b) =>
+    a !== null && b !== null ? a * w + b * (1 - w) : a !== null ? a : b
+  const currency = $('#bench-add-currency')?.value === 'RUSD'
+    ? 'RUSD'
+    : $('#bench-add-currency')?.value === 'CNY' ? 'CNY' : 'USD'
+  // 与 offerCost 同一条换算：只有真实美元乘汇率，站内美元/CNY 1:1
+  const rate = currency === 'RUSD' ? rateCny() : 1
+  const peak = blend(inP, outP) * rate
+  // 波谷行：两格都空 = 默认计价；缺一格回落用波峰值
+  const offIn = benchAddNum('#bench-add-offin')
+  const offOut = benchAddNum('#bench-add-offout')
+  const hasOff = offIn !== null || offOut !== null
+  const off = hasOff ? blend(offIn ?? inP, offOut ?? outP) * rate : null
+  preview.textContent = hasOff
+    ? `${t('有效成本')} ${t('峰')}${priceText(peak)} / ${t('谷')}${priceText(off)}/M`
+    : `${t('有效成本')} ${priceText(peak)}/M`
+}
+
+/** 选中的是已有基准价条目时，把它的官方价带回表单（只填空框，不覆盖已输的） */
+function benchAddPrefill() {
+  const modelKey = $('#bench-add-model')?.value.trim() || ''
+  const entry = modelKey ? state.benchmarks[modelKey] : null
+  if (!entry) return
+  const set = (id, v) => {
+    const el = $(id)
+    if (el && el.value === '' && v !== null && v !== undefined) el.value = v
+  }
+  set('#bench-add-in', entry.in)
+  set('#bench-add-out', entry.out)
+  set('#bench-add-offin', entry.offPeakIn)
+  set('#bench-add-offout', entry.offPeakOut)
+  const cur = $('#bench-add-currency')
+  if (cur && (entry.currency === 'CNY' || entry.currency === 'RUSD')) cur.value = entry.currency
+}
+
+// 官方有效成本表单：现场预览 + 选中已有条目回填（事件委托，表单随页面重画）
+document.addEventListener('input', (event) => {
+  const box = document.getElementById('bench-official-card')
+  if (!box || !box.contains(event.target)) return
+  if (event.target.id === 'bench-add-model') benchAddPrefill()
+  paintBenchAddPreview()
+})
 
 // --------------------------------------------------------------- 监控视图
 
@@ -4184,11 +4412,11 @@ function renderMonitor() {
       v: latestBalance?.total == null
         ? '—'
         : `${priceSym()}${money(dispPrice(latestBalance.total))}`,
-      // 副标题给「另一个币种」的等值，方便对账；没有总额时才退回「最低」
+      // 副标题给另一个口径的等值，方便对账；没有总额时才退回「最低」
       sub: latestBalance?.total != null
-        ? (showUsd()
-            ? `≈ ¥${money(latestBalance.total)}（按汇率折算）`
-            : `≈ $${money(latestBalance.total / rateCny())}（按汇率折算）`)
+        ? (displayCur() === 'RUSD'
+            ? `≈ ¥${money(latestBalance.total)}（站内美元与人民币 1:1）`
+            : `≈ R$${money(latestBalance.total / rateCny())}（按汇率折算）`)
         : (kpi.lowest
             ? t('最低：{name} {amount}', {
                 name: kpi.lowest.name,
@@ -5271,7 +5499,8 @@ document.addEventListener('click', async (event) => {
   }
 
   if (action === 'set-currency') {
-    const next = actionButton.dataset.cur === 'CNY' ? 'CNY' : 'USD'
+    const raw = String(actionButton.dataset.cur || '').toUpperCase()
+    const next = raw === 'CNY' || raw === 'RUSD' ? raw : 'USD'
     if ((state.settings.displayCurrency || 'USD') === next) return
     try {
       state = await api('PATCH', '/api/settings', { displayCurrency: next })
@@ -5642,6 +5871,8 @@ document.addEventListener('click', async (event) => {
     const offerId = actionButton.closest('[data-offer]').dataset.offer
     const mode = actionButton.dataset.mode === 'ratio' ? 'ratio' : 'manual'
     await withBusy(actionButton, async () => {
+      // 这行还有暂存中的改价：先把它们落库，免得被模式切换的响应冲掉
+      if (pendingPriceEdits.has(offerId)) await flushPriceEdits(offerId)
       // PATCH 的返回值就是完整 state，直接用它重绘
       state = await api('PATCH', `/api/offers/${offerId}`, { pricingMode: mode })
       render()
@@ -5864,6 +6095,8 @@ document.addEventListener('click', async (event) => {
     const offerId = actionButton.dataset.offer
     await withBusy(actionButton, async () => {
       try {
+        // 这行还有暂存中的改价：先落库再覆盖，免得被冲掉
+        if (pendingPriceEdits.has(offerId)) await flushPriceEdits(offerId)
         // 免费池的判据是「实际价 = 0」，不是分组名里带「免费」两个字。
         // 价格留空是 null（没填），和 0 不是一回事，所以这里显式写 0。
         const result = await api('PATCH', `/api/offers/${offerId}`, {
@@ -6671,12 +6904,7 @@ document.addEventListener('change', async (event) => {
   if (offerRow) {
     const offerId = offerRow.dataset.offer
     const value = input.value === '' ? null : input.value
-    try {
-      state = await api('PATCH', `/api/offers/${offerId}`, { [field]: value })
-      render()
-    } catch (error) {
-      toast(error.message, true)
-    }
+    stagePriceEdit(offerId, field, value)
     return
   }
 
@@ -6773,6 +7001,40 @@ document.addEventListener('click', async (event) => {
             : `没有新增（都已有基准价，或${via}没给官方价）`,
           r.added === 0,
         )
+      } catch (error) {
+        toast(error.message, true)
+      }
+    })
+    return
+  }
+
+  if (event.target.id === 'btn-bench-add') {
+    const modelKey = $('#bench-add-model')?.value.trim() || ''
+    if (!modelKey) {
+      toast('先填模型名', true)
+      return
+    }
+    const inV = $('#bench-add-in').value
+    const outV = $('#bench-add-out').value
+    if (inV === '' && outV === '') {
+      toast('波峰行至少填一个官方价', true)
+      return
+    }
+    const offInV = $('#bench-add-offin')?.value ?? ''
+    const offOutV = $('#bench-add-offout')?.value ?? ''
+    await withBusy(event.target, async () => {
+      try {
+        state = await api('PUT', '/api/benchmarks', {
+          modelKey,
+          display: modelKey,
+          in: inV === '' ? null : Number(inV),
+          out: outV === '' ? null : Number(outV),
+          offPeakIn: offInV === '' ? null : Number(offInV),
+          offPeakOut: offOutV === '' ? null : Number(offOutV),
+          currency: $('#bench-add-currency').value,
+        })
+        render()
+        toast(t('已保存 {name} 的官方价，比价页组头会显示官方有效成本', { name: modelKey }))
       } catch (error) {
         toast(error.message, true)
       }

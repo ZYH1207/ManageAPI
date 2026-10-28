@@ -23,12 +23,15 @@ function filePath() {
 /**
  * 种子数据：只放价格长期稳定的经典模型，用来让新用户第一眼看到比价效果。
  * 2026 年的新模型一律留空，由用户自行导入——宁可空着，也不给错数。
+ *
+ * 国外模型的官方价是真美元 → 用 R.Dollar（RUSD）标注；
+ * 站内美元与人民币 1:1，所以作为倍率参照时数值不受影响。
  */
 const SEED = {
-  'gpt-4o': { display: 'GPT-4o', in: 2.5, out: 10, currency: 'USD', source: 'seed' },
-  'gpt-4o-mini': { display: 'GPT-4o mini', in: 0.15, out: 0.6, currency: 'USD', source: 'seed' },
-  'claude-3-5-sonnet': { display: 'Claude 3.5 Sonnet', in: 3, out: 15, currency: 'USD', source: 'seed' },
-  'deepseek-chat': { display: 'DeepSeek Chat', in: 0.27, out: 1.1, currency: 'USD', source: 'seed' },
+  'gpt-4o': { display: 'GPT-4o', in: 2.5, out: 10, currency: 'RUSD', source: 'seed' },
+  'gpt-4o-mini': { display: 'GPT-4o mini', in: 0.15, out: 0.6, currency: 'RUSD', source: 'seed' },
+  'claude-3-5-sonnet': { display: 'Claude 3.5 Sonnet', in: 3, out: 15, currency: 'RUSD', source: 'seed' },
+  'deepseek-chat': { display: 'DeepSeek Chat', in: 0.27, out: 1.1, currency: 'RUSD', source: 'seed' },
 }
 
 export async function readBenchmarks() {
@@ -69,10 +72,11 @@ export function mutateBenchmarks(mutate) {
   return job
 }
 
-/** 单条写入/覆盖一个基准价。 */
+/** 单条写入/覆盖一个基准价。币种只认 USD / CNY / RUSD（真实美元）。 */
 export function setBenchmark(modelKey, entry) {
   return mutateBenchmarks((table) => {
     const num = (v) => (v === null || v === undefined || v === '' ? null : Number(v))
+    const currency = String(entry.currency || '').toUpperCase()
     table[modelKey] = {
       display: entry.display || modelKey,
       in: num(entry.in),
@@ -80,7 +84,7 @@ export function setBenchmark(modelKey, entry) {
       // 峰谷：留空表示该模型没有分时段定价
       offPeakIn: num(entry.offPeakIn),
       offPeakOut: num(entry.offPeakOut),
-      currency: entry.currency === 'CNY' ? 'CNY' : 'USD',
+      currency: currency === 'CNY' || currency === 'RUSD' ? currency : 'USD',
       source: entry.source || 'manual',
       updatedAt: new Date().toISOString(),
     }
@@ -106,8 +110,10 @@ export function seedReferenceBenchmarks(modelKeys) {
     for (const key of modelKeys) {
       if (!key) continue
       const existing = table[key]
-      // 用户手填或从站导入的，绝不覆盖；只刷新之前由参考价写入的条目
-      if (existing && !String(existing.source || '').startsWith('reference:')) {
+      // 用户手填或从站导入的，绝不覆盖；自家写入的（seed / reference）可以刷新，
+      // 否则参考价库更新后旧条目（含币种口径）永远停留在老版本上
+      const source = String(existing?.source || '')
+      if (existing && source !== 'seed' && !source.startsWith('reference:')) {
         skipped.push(key)
         continue
       }

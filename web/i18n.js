@@ -1454,3 +1454,60 @@ Object.assign(EN, {
   '已恢复跟随站点：下次同步按站方声明的币种落价':
     'Following the site again — the next sync applies the currency the site declares.',
 })
+
+// 比价组头的官方有效成本参照 + 基准价页「官方有效成本」表单
+Object.assign(EN, {
+  '官方': 'Official',
+  '官方价': 'Official price',
+  '{detail} · 官方有效成本 = 输入按 {w}%、输出按 {ow}% 加权；在「基准价」页可改':
+    '{detail} · Official effective cost = input × {w}% + output × {ow}%; edit it on the Benchmark page',
+  '官方有效成本': 'Official effective cost',
+  '选一个站内模型（也可以直接输入站内还没有的模型名），填官方输入 / 输出价。保存后比价页的每个分组头部会显示它的官方有效成本，供各站实际价做参照。':
+    'Pick a site model (or type a name that is not on any site yet) and enter the official input / output price. Each group header on the Pricing page then shows its official effective cost as a reference.',
+  '模型名（如 gpt-5.5）': 'Model name (e.g. gpt-5.5)',
+  '官方输入价': 'Official input price',
+  '官方输出价': 'Official output price',
+  '官方价用什么币种标': 'Currency the official price is quoted in',
+  '保存官方价': 'Save official price',
+  '先填模型名': 'Enter a model name first',
+  '至少填一个官方价': 'Enter at least one official price',
+  '已保存 {name} 的官方价，比价页组头会显示官方有效成本':
+    'Saved the official price of {name}; its official effective cost now shows on the Pricing page',
+})
+
+// 官方胶囊：先原价（入/出 + 单位），后有效成本
+Object.assign(EN, {
+  '每百万 token': 'per Mtok',
+  '有效': 'effective',
+})
+
+// 币种口径（1 站内美元 = 1 人民币；R.Dollar = 真实美元）+ 官方胶囊峰谷/占比
+Object.assign(EN, {
+  '峰': 'peak ',
+  '谷': '/off-peak ',
+  '本行有效成本为官方有效成本的 {pct}（按波峰口径）':
+    'This row costs {pct} of the official effective cost (peak basis)',
+  '由于中转站模板原因，1 美元 = 1 人民币。为了站内比价方便，特增加单位「真实美元 R.Dollar」：国外模型的官方价用它填，按汇率折算；常规情况不使用 CNY。':
+    'Relay templates quote in "dollars" but actually charge the same number in CNY (1 dollar = 1 CNY). For easier comparison we add the unit "Real Dollar (R.Dollar)": use it for official prices of foreign models, converted by the FX rate. Avoid CNY in normal cases.',
+  '真实美元 R.Dollar = 国外模型官方价专用，按汇率换算；站内美元与人民币 1:1':
+    'Real Dollar (R.Dollar) is for official prices of foreign models, converted by the FX rate; site dollars equal CNY 1:1',
+  '只用于「真实美元 R.Dollar」的换算（国外模型官方价）；站内价格不受影响':
+    'Only used to convert Real Dollars (R.Dollar, official prices of foreign models); site prices are unaffected',
+  '只影响价格显示的符号；站内美元与人民币 1:1，数值不变':
+    'Only switches the displayed symbol; site dollars equal CNY 1:1, the number stays the same',
+  '价格直接改，失焦即保存。「{sym}/百万 token」是综合成本：输入按 25%、输出按 75% 加权。中转站按美元标价、实际按人民币 1:1 扣费，所以这里的 $ 和 ¥ 是同一个数。':
+    'Edit inline, saved on blur. "{sym}/Mtok" is the blended cost: input 25% + output 75%. Relays quote in dollars but charge the same number in CNY, so $ and ¥ mean the same number here.',
+})
+
+// 币种三选项（CNY / USD / R.Dollar）+ 官方成本表单两行（波峰/波谷）
+Object.assign(EN, {
+  '波峰': 'Peak',
+  '波谷': 'Off-peak',
+  '波谷输入价': 'Off-peak input price',
+  '波谷输出价': 'Off-peak output price',
+  '波峰行至少填一个官方价': 'Fill at least one official price in the peak row',
+  '两格都留空 = 默认计价（无峰谷）；填了则比价组头分「峰 / 谷」展示两个有效成本。通用字段，任何模型都能用。':
+    'Leave both empty for flat pricing (no peak/off-peak). Fill them and the pricing header shows two effective costs, peak / off-peak. Generic field — works for any model.',
+  '真实美元 R.Dollar：国外模型专用，按汇率换算；站内美元与人民币 1:1':
+    'Real Dollar (R.Dollar): for foreign models, converted by the FX rate; site dollars equal CNY 1:1',
+})

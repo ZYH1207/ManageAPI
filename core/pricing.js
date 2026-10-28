@@ -19,8 +19,27 @@ const UNIT_MULTIPLIER = {
 /** priceUnit 的合法值域（per_call 走独立的按次分支，不吃倍率换算） */
 export const PRICE_UNITS = ['per_mtok', 'per_1k', 'per_call']
 
-/** 人民币展示用的默认汇率；只在「把美元显示成人民币」时用到，不参与排序 */
+/** 人民币展示用的默认汇率；只在「真实美元 R.Dollar」换算时用到 */
 export const DISPLAY_FX_DEFAULT = 7.2
+
+/**
+ * 币种口径（2026-10-28 与作者定的规矩）：
+ *
+ *   - USD  = 中转站标价用的「美元」。这些站模板按美元标价、实际按人民币 1:1 扣费，
+ *          所以站内美元数值 = 人民币数值，换算不乘汇率。
+ *   - CNY  = 真实人民币。因为 1:1，数值与 USD 相同；常规情况不用，仅作语义标注。
+ *   - RUSD = 「真实美元 R.Dollar」，国外模型官方价的专用单位。换算按真实汇率：
+ *          1 R.Dollar = fx 个站内美元/人民币。基准价页手动填国外官方价时用它。
+ *
+ * 内部比较口径（*UsdPerMtok 字段，名字沿用历史）的数值 = 站内美元 = 人民币数值；
+ * *CnyPerMtok 与之相等（1:1）。换算只发生在 RUSD 入口这一处。
+ */
+export function normalizeCurrency(value) {
+  const v = String(value || '').toUpperCase()
+  if (v === 'CNY') return 'CNY'
+  if (v === 'RUSD' || v === 'R.DOLLAR' || v === 'R$') return 'RUSD'
+  return 'USD'
+}
 
 function finiteOrNull(value) {
   if (value === null || value === undefined || value === '') return null
@@ -54,7 +73,9 @@ export function resolveOfferPrice(offer, benchmarks = {}) {
   const ratio = hasRatio ? Number(offer.ratio) : NaN
 
   if (wantsRatio && Number.isFinite(ratio) && ratio >= 0) {
-    // 被乘数 = 输入框里的原价；空着才用基准价补位
+    // 被乘数 = 输入框里的原价；空着才用基准价补位。
+    // 基准价的数值与站点标价同构（站点模板就是抄官方价的数字），永远按 1:1 用，
+    // 不做任何币种换算 —— 换算只发生在 officialCost（官方有效成本）那一处。
     const boxIn = finiteOrNull(offer.inPrice)
     const boxOut = finiteOrNull(offer.outPrice)
     const fromBox = boxIn !== null || boxOut !== null
@@ -71,10 +92,8 @@ export function resolveOfferPrice(offer, benchmarks = {}) {
         // 峰谷只存在于基准价表，输入框没有这一档；仅供展示，不参与排序
         offPeakInPrice: fromBox ? null : scale(finiteOrNull(bench?.offPeakIn)),
         offPeakOutPrice: fromBox ? null : scale(finiteOrNull(bench?.offPeakOut)),
-        // 币种跟着「原价是从哪来的」走，别把人民币原价按美元算
-        currency: fromBox
-          ? (offer.currency === 'CNY' ? 'CNY' : 'USD')
-          : (bench.currency === 'CNY' ? 'CNY' : 'USD'),
+        // 实际价是站点收的钱，币种跟站点走（默认 USD）；基准价只是数字参照
+        currency: normalizeCurrency(offer.currency),
         source: 'ratio',
       }
     }
@@ -85,7 +104,7 @@ export function resolveOfferPrice(offer, benchmarks = {}) {
     outPrice: finiteOrNull(offer.outPrice),
     offPeakInPrice: null,
     offPeakOutPrice: null,
-    currency: offer.currency === 'CNY' ? 'CNY' : 'USD',
+    currency: normalizeCurrency(offer.currency),
     source: 'manual',
   }
 }
@@ -93,9 +112,12 @@ export function resolveOfferPrice(offer, benchmarks = {}) {
 /**
  * 单个模型供给的实际成本。
  *
- * 基准口径是 **美元 / 每百万 token** —— 绝大多数中转站按美元标价，用美元比较
- * 不需要经过汇率，汇率一变也不会让历史结论跟着变。人民币只是展示口径
- * （`*CnyPerMtok` 由美元乘汇率得出），不参与任何排序。
+ * 比较口径是**站内美元/每百万 token**：中转站按美元标价、实际按人民币 1:1 扣费，
+ * 所以站内美元数值 = 人民币数值，换算不需要汇率。人民币只是同一数值的另一读法
+ * （`*CnyPerMtok` 恒等于 `*UsdPerMtok`，字段名沿用历史）。
+ *
+ * 唯一的例外是「真实美元 R.Dollar」：国外模型的官方价用它标注，
+ * 按 `fx.rates.CNY` 换算成站内口径（见 normalizeCurrency 的口径说明）。
  *
  * @returns {{inUsdPerMtok:number|null, outUsdPerMtok:number|null, blendedUsdPerMtok:number|null,
  *            inCnyPerMtok:number|null, outCnyPerMtok:number|null, blendedCnyPerMtok:number|null,
@@ -126,18 +148,11 @@ export function offerCost(offer, settings = {}, benchmarks = {}) {
   // 前端按「/次」显示；免费判定走 free.js 的 per_call 分支。
   if (offer.priceUnit === 'per_call') {
     const raw = resolved.inPrice
+    // R.Dollar 按真实汇率折站内口径；站内美元/CNY 与人民币 1:1，数值原样
+    const siteRate = resolved.currency === 'RUSD' ? fx : 1
     const callUsd =
-      raw === null || !Number.isFinite(Number(raw))
-        ? null
-        : resolved.currency === 'CNY'
-          ? Number(raw) / fx
-          : Number(raw)
-    const callCny =
-      raw === null || !Number.isFinite(Number(raw))
-        ? null
-        : resolved.currency === 'CNY'
-          ? Number(raw)
-          : Number(raw) * fx
+      raw === null || !Number.isFinite(Number(raw)) ? null : Number(raw) * siteRate
+    const callCny = callUsd // 1:1，同一数值的另一种读法
     return {
       perCall: true,
       callPriceUsd: callUsd,
@@ -157,11 +172,11 @@ export function offerCost(offer, settings = {}, benchmarks = {}) {
     }
   }
 
-  // 人民币标价的供给按汇率折成美元，参与比较的一律是美元
+  // 换算收口在这一行：只有 R.Dollar 乘真实汇率，站内美元/CNY 都是 1:1
+  const siteRate = resolved.currency === 'RUSD' ? fx : 1
   const toUsd = (price) => {
     if (price === null || !Number.isFinite(price)) return null
-    const perMtok = price * mult
-    return resolved.currency === 'CNY' ? perMtok / fx : perMtok
+    return price * mult * siteRate
   }
 
   const inUsdPerMtok = toUsd(resolved.inPrice)
@@ -184,31 +199,33 @@ export function offerCost(offer, settings = {}, benchmarks = {}) {
     if (i !== null && o !== null) offPeakBlendedUsdPerMtok = i * weight + o * (1 - weight)
   }
 
-  const toCny = (usd) => (usd === null ? null : usd * fx)
+  // 站内美元与人民币 1:1，两个口径是同一个数值（字段名沿用历史）
+  const toCny = (usd) => usd
 
   // 缓存读价：命中缓存的部分按它计费，通常远低于输入价。站点没给就退回输入价
-  // （保守，不假装有折扣），但要把「是不是真的给了」标出来，界面上能区分
+  // （保守，不假装有折扣），但要把「是不是真的给了」标出来，界面上能区分。
+  // 币种换算与主价同一条规则（只有 R.Dollar 乘汇率）
   const cacheReadRaw = offer.cacheReadPrice
   const cacheReadCny =
     cacheReadRaw === null || cacheReadRaw === undefined || !Number.isFinite(Number(cacheReadRaw))
       ? null
-      : Number(cacheReadRaw) * mult
+      : Number(cacheReadRaw) * mult * siteRate
   // 缓存写价同理：站点按它收「写入缓存」的钱（通常 1.25× 输入价）
   const cacheWriteRaw = offer.cacheWritePrice
   const cacheWriteCny =
     cacheWriteRaw === null || cacheWriteRaw === undefined || !Number.isFinite(Number(cacheWriteRaw))
       ? null
-      : Number(cacheWriteRaw) * mult
+      : Number(cacheWriteRaw) * mult * siteRate
 
   return {
     inUsdPerMtok,
     outUsdPerMtok,
     blendedUsdPerMtok,
-    // 缓存读价（人民币/百万 token）；站点没公布时为 null，调用方退回输入价
+    // 缓存读价（站内口径，= 人民币/百万 token）；站点没公布时为 null，调用方退回输入价
     cacheReadCnyPerMtok: cacheReadCny,
-    cacheReadUsdPerMtok: cacheReadCny === null ? null : cacheReadCny / fx,
+    cacheReadUsdPerMtok: cacheReadCny,
     cacheWriteCnyPerMtok: cacheWriteCny,
-    cacheWriteUsdPerMtok: cacheWriteCny === null ? null : cacheWriteCny / fx,
+    cacheWriteUsdPerMtok: cacheWriteCny,
     offPeakInUsdPerMtok: offPeakInUsd,
     offPeakOutUsdPerMtok: offPeakOutUsd,
     offPeakBlendedUsdPerMtok,
@@ -219,6 +236,57 @@ export function offerCost(offer, settings = {}, benchmarks = {}) {
     offPeakBlendedCnyPerMtok: toCny(offPeakBlendedUsdPerMtok),
     hasOffPeak,
     complete,
+  }
+}
+
+/**
+ * 官方有效成本：拿基准价表当「官方价」，走 offerCost 同一条算法。
+ *
+ * 口径与站内供给完全一致：
+ *   - 混合权重 settings.blendInputWeight（默认输入 25% / 输出 75%）
+ *   - 币种换算同一条规则：真实美元 R.Dollar 乘汇率，站内美元/CNY 1:1
+ *   - 质量无数据按 1 —— 官方价不存在降智，有效成本就是综合成本
+ *
+ * 基准价填了峰谷价（如 DeepSeek 空闲时段减半）时，同时返回
+ * offPeakBlendedCnyPerMtok，比价组头分「峰 / 谷」展示。
+ *
+ * @param {{in:number|null, out:number|null, offPeakIn:number|null, offPeakOut:number|null,
+ *            currency:string}|undefined} bench 基准价条目
+ * @returns {{in:number|null, out:number|null, currency:string,
+ *            blendedUsdPerMtok:number|null, blendedCnyPerMtok:number|null,
+ *            offPeakBlendedCnyPerMtok:number|null, hasOffPeak:boolean}|null}
+ *   bench 缺失或两个价都空时返回 null（没官方价，不硬凑）
+ */
+export function officialCost(bench, settings = {}) {
+  if (!bench) return null
+  const inPrice = finiteOrNull(bench.in)
+  const outPrice = finiteOrNull(bench.out)
+  if (inPrice === null && outPrice === null) return null
+  const currency = normalizeCurrency(bench.currency)
+  const pseudo = { currency, priceUnit: 'per_mtok', pricingMode: 'manual' }
+  const peak = offerCost({ ...pseudo, inPrice, outPrice }, settings, {})
+  // 峰谷价（如 DeepSeek 空闲时段减半）：缺一侧回落到高峰价，与 offerCost 同一回落；
+  // offerCost 的峰谷只从基准价分支来，这里直接把谷价当主价再算一次，同一算法
+  const hasOffPeak = finiteOrNull(bench.offPeakIn) !== null || finiteOrNull(bench.offPeakOut) !== null
+  const offPeak = hasOffPeak
+    ? offerCost(
+        {
+          ...pseudo,
+          inPrice: finiteOrNull(bench.offPeakIn) ?? inPrice,
+          outPrice: finiteOrNull(bench.offPeakOut) ?? outPrice,
+        },
+        settings,
+        {},
+      )
+    : null
+  return {
+    in: inPrice,
+    out: outPrice,
+    currency,
+    blendedUsdPerMtok: peak.blendedUsdPerMtok,
+    blendedCnyPerMtok: peak.blendedCnyPerMtok,
+    offPeakBlendedCnyPerMtok: offPeak ? offPeak.blendedCnyPerMtok : null,
+    hasOffPeak,
   }
 }
 

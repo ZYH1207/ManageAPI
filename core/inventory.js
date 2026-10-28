@@ -500,9 +500,11 @@ export async function updateOfferPrice(
     if (ratio !== undefined) offer.ratio = num(ratio)
     if (benchmarkKey !== undefined) offer.benchmarkKey = benchmarkKey || null
     if (pricingMode !== undefined) offer.pricingMode = pricingMode === 'ratio' ? 'ratio' : 'manual'
-    // 只有「真的改了」才算用户手选：值没变不算表态
+    // 只有「真的改了」才算用户手选：值没变不算表态。
+    // R.Dollar（RUSD）也允许手选：真遇到按真实美元计价的站用它
     if (currency && currency !== offer.currency) {
-      offer.currency = currency === 'USD' ? 'USD' : 'CNY'
+      const c = String(currency).toUpperCase()
+      offer.currency = c === 'USD' || c === 'CNY' || c === 'RUSD' ? c : 'USD'
       offer.currencySource = 'custom'
     }
     if (priceUnit) offer.priceUnit = priceUnit
@@ -759,7 +761,10 @@ export async function listProbes(limit = 100) {
  */
 function currencyOf(offer) {
   if (offer.currencySource === 'custom') {
-    return String(offer.currency || '').toUpperCase() === 'CNY' ? 'CNY' : 'USD'
+    const c = String(offer.currency || '').toUpperCase()
+    // 用户手选过的就保留（含 RUSD）；站点声明永远不会是 RUSD
+    if (c === 'CNY' || c === 'RUSD') return c
+    return 'USD'
   }
   return 'USD'
 }

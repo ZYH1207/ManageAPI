@@ -325,9 +325,11 @@ async function buildState({ light = false } = {}) {
     }
   }
 
-  // 把缓存命中率与延迟挂到比价行上，供前端展示
+  // 把缓存命中率与延迟挂到比价行上，供前端展示；
+  // official 是官方有效成本（基准价表 + offerCost 同一算法），供比价组头做参照
   const rankedWithCache = ranked.map((group) => ({
     ...group,
+    official: pricing.officialCost(benchmarks[group.modelKey], db.settings),
     rows: group.rows.map((row) => {
       const score = scoreMap.get(row.offerId)
       return {
@@ -654,7 +656,7 @@ route('PATCH', /^\/api\/settings$/, async (ctx) => {
     }
     if (ctx.body.displayCurrency !== undefined) {
       const v = String(ctx.body.displayCurrency).toUpperCase()
-      if (v !== 'CNY' && v !== 'USD') throw new HttpError(400, '显示币种只能是 CNY 或 USD')
+      if (v !== 'CNY' && v !== 'USD' && v !== 'RUSD') throw new HttpError(400, '显示币种只能是 CNY / USD / RUSD')
       db.settings.displayCurrency = v
     }
     if (ctx.body.balanceWarnUsd !== undefined || ctx.body.balanceWarnCny !== undefined) {
@@ -1680,8 +1682,9 @@ route('PATCH', /^\/api\/offers\/([\w-]+)$/, async (ctx) => {
     if (b.outPrice !== undefined) offer.outPrice = nonNegative(b.outPrice, '输出单价')
     // 币种：用户改了才记成手选（currencySource='custom'），同步就不会再覆盖它。
     // 值没变不算表态——界面点一下下拉又选回原值不该把这一行冻住。
+    // 认三个：USD / CNY / RUSD（真实美元，真按美元计价的站用）
     if (b.currency !== undefined) {
-      const next = b.currency === 'CNY' ? 'CNY' : 'USD'
+      const next = b.currency === 'CNY' || b.currency === 'RUSD' ? b.currency : 'USD'
       if (next !== offer.currency) {
         offer.currency = next
         offer.currencySource = 'custom'

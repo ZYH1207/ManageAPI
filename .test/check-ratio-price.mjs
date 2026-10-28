@@ -53,10 +53,11 @@ console.log('[2] 基准价表不再是更高优先级的来源，不能盖掉输
   const typed = resolveOfferPrice(base({ inPrice: 30 }), bench)
   ok(typed.inPrice === 1.35, `手输 30 优先于基准价 28（30 × 0.045 = ${typed.inPrice}）`)
 
-  // 输入框空着时才回落到基准价，币种跟着基准价走
+  // 输入框空着时才回落到基准价；实际价是站点收的钱，币种跟站点走 ——
+  // 基准价只是数值参照（站点模板就是抄官方价的数字，1:1 用，不换算）
   const empty = resolveOfferPrice(base({ inPrice: null, outPrice: null }), bench)
   ok(empty.inPrice === 1.26, `盒空 → 用基准价 28 × 0.045 = ${empty.inPrice}`)
-  ok(empty.currency === 'CNY', `币种跟基准价走（${empty.currency}）`)
+  ok(empty.currency === 'USD', `币种跟站点走，不跟基准价（${empty.currency}）`)
 }
 
 console.log('[3] 盒空且无基准价 → 未定价，不能拿别的字段凑数')
