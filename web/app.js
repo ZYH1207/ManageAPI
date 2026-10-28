@@ -565,6 +565,10 @@ function openHelpModal() {
 let diagnosisPane = 'none'
 
 let diagnosisData = null
+/** 长期评价数据（站点/模型/分组三维聚合，按需拉取） */
+let longTermData = null
+/** 长期评价当前维度：'byProvider' | 'byModel' | 'byGroup' */
+let longTermDim = 'byProvider'
 let diagnosisHours = 48
 /** 诊断引擎输出：{ findings, summary } */
 let diagnosisFindings = null
@@ -708,14 +712,17 @@ const DIAG_KIND_LABEL = {
 
 async function loadDiagnosis() {
   try {
-    const [ledger, findings, faults] = await Promise.all([
+    const [ledger, findings, faults, longTerm] = await Promise.all([
       api('GET', `/api/diagnosis/ledger?hours=${diagnosisHours}`),
       api('GET', '/api/diagnosis'),
       api('GET', '/api/faults'),
+      // 长期评价：聚合 30 天小时桶，失败只让这张卡空着，不影响诊断主结论
+      api('GET', '/api/diagnosis/longterm').catch(() => null),
     ])
     diagnosisData = ledger
     diagnosisFindings = findings
     faultData = faults
+    longTermData = longTerm
   } catch {
     diagnosisData = null
     diagnosisFindings = null
@@ -730,6 +737,169 @@ function diagKindBadge(kind) {
   const label = DIAG_KIND_LABEL[kind] || kind || '未知'
   const cls = kind === 'outage' ? 'danger' : kind === 'quota' || kind === 'rate-limit' ? 'warn' : 'info'
   return `<span class="badge ${cls}">${esc(label)}</span>`
+}
+
+/**
+ * 漂移监视卡（诊断页）：真实速度漂移的现况 + 参数 + 算法说明。
+ *
+ * 为什么放这儿：这一页是「系统怎么判断、现在判断成什么样」的总台账，
+ * 漂移监视是自动路由的眼睛，它的阈值、冷却、试跑窗必须和它的读数放在一起，
+ * 否则用户只能看到结论看不到旋钮。
+ */
+function driftMonitorCard() {
+  const snap = state.drift
+  const st = state.settings || {}
+  const enabled = st.driftEnabled !== false
+  const threshold = Number(st.driftThresholdPct) || 30
+  const cooldown = Number(st.driftCooldownMinutes) || 10
+  const trial = Number(st.driftTrialSamples) || 10
+  const e = snap?.evaluation
+  const pct = (v) => (Number.isFinite(v) ? `${v >= 0 ? '+' : ''}${Math.round(v * 100)}%` : '—')
+  const ms = (v) => (Number.isFinite(v) ? `${(v / 1000).toFixed(1)}s` : '—')
+  const verdictBadge =
+    !e
+      ? '<span class="badge">未判定</span>'
+      : e.verdict === 'drifted'
+        ? `<span class="badge warn">漂移 ${pct(e.drift)}</span>`
+        : e.verdict === 'ok'
+          ? `<span class="badge ok">正常 ${pct(e.drift)}</span>`
+          : `<span class="badge">样本不足 ${e.samples}/5</span>`
+  const demoted = Array.isArray(snap?.demoted) ? snap.demoted : []
+  const offerName = (id) => {
+    const o = (state.offers || []).find((x) => x.id === id)
+    if (!o) return id
+    const p = (state.providers || []).find((x) => x.id === o.providerId)
+    return `${p ? p.name : '?'} · ${o.modelKey || o.upstreamName || '?'}`
+  }
+  const lastSwitch = snap?.lastSwitch
+  const trialInfo = snap?.trial
+    ? `<span class="desc">试跑中：${esc(offerName(snap.trial.offerId))}（已 ${snap.trial.samples} 单，攒满 ${trial} 单或 5 分钟后才判它）</span>`
+    : ''
+  return `
+    <div class="card">
+      <div class="card-head">
+        <h3>漂移监视${enabled ? '' : '（已关闭）'}</h3>
+        <span class="meta">真实流量算分 · 每分钟判一次 · ${verdictBadge}</span>
+      </div>
+      <div style="display:flex;gap:18px;flex-wrap:wrap;margin-bottom:10px">
+        <div class="stat" style="flex:1;min-width:150px">
+          <div class="stat-main"><div class="k">现值总耗时</div><div class="v">${e ? ms(e.current) : '—'}</div></div>
+        </div>
+        <div class="stat" style="flex:1;min-width:150px">
+          <div class="stat-main"><div class="k">6 小时基线</div><div class="v">${e ? ms(e.baseline) : '—'}</div></div>
+        </div>
+        <div class="stat" style="flex:1;min-width:150px">
+          <div class="stat-main"><div class="k">首字分项</div><div class="v">${e ? pct(e.ttftDrift) : '—'}</div></div>
+        </div>
+        <div class="stat" style="flex:1;min-width:150px">
+          <div class="stat-main"><div class="k">吐字分项</div><div class="v">${e ? pct(e.tpsDrift) : '—'}</div></div>
+        </div>
+      </div>
+      <div class="desc" style="margin-bottom:8px">
+        在岗供给：${e ? esc(offerName(e.offerId)) : '—'} · 样本 ${e?.samples ?? 0} 单（10 分钟窗口，至少 5 单才判）
+        ${demoted.length ? ` · 降级 ${demoted.length} 条：${esc(demoted.map(offerName).join('、'))}` : ''}
+        ${lastSwitch ? ` · 最近转移：${esc(offerName(lastSwitch.fromOfferId))} → ${esc(offerName(lastSwitch.toOfferId))}（${pct(lastSwitch.drift)}）` : ''}
+        ${trialInfo}
+      </div>
+      <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:center">
+        <label class="field-inline">漂移检测
+          <select data-drift="enabled">
+            <option value="1" ${enabled ? 'selected' : ''}>开启</option>
+            <option value="0" ${enabled ? '' : 'selected'}>关闭</option>
+          </select>
+        </label>
+        <label class="field-inline">阈值
+          <input type="number" min="5" max="90" step="5" value="${threshold}" data-drift="threshold" style="width:64px" /> %
+        </label>
+        <label class="field-inline">冷却
+          <input type="number" min="1" max="120" step="1" value="${cooldown}" data-drift="cooldown" style="width:64px" /> 分钟
+        </label>
+        <label class="field-inline">试跑窗
+          <input type="number" min="1" max="100" step="1" value="${trial}" data-drift="trial" style="width:64px" /> 单
+        </label>
+      </div>
+      <details style="margin-top:10px">
+        <summary class="desc" style="cursor:pointer">算法说明（怎么算的、为什么这么定）</summary>
+        <div class="desc" style="margin-top:6px;line-height:1.7">
+          ① <b>现值</b>：最近 10 分钟真实请求的平均总耗时（首字 + 吐字，网关实测），至少 5 单才下结论。<br />
+          ② <b>基线</b>：该供给在 offerStats 里最近 6 小时的小时桶加权均值；优先用历史桶（排除正在写入的当前桶，
+          防止自己跟自己比），每天头一个小时没有历史桶时退回当前桶（只会低估漂移，不会误报）。<br />
+          ③ <b>判定</b>：现值比基线慢出阈值（默认 30%）即为漂移。用总耗时而不是「成本 ÷ 耗时」——
+          后者会把「吐字被抽慢但价格没变」判成「每秒更便宜 = 变好」，方向是反的。<br />
+          ④ <b>动作</b>：把漂移的供给降级（本轮周期内不当「最优」），自动路由改派探针价速比最优的备选；
+          冷却期内不重复转移，新现役要先过试跑窗。<br />
+          ⑤ <b>逃生舱</b>：备选挨个试完仍不达标 → 踢一轮 Lite 探针刷新基础分，清空降级名单开新周期。<br />
+          ⑥ <b>分项</b>：首字 / 吐字各自和基线比，只用于定位是哪半边烂，不单独触发。
+        </div>
+      </details>
+    </div>`
+}
+
+/**
+ * 长期评价卡（诊断页）：站点 / 模型 / 分组三个维度的 30 天长期表现。
+ *
+ * 数据全部来自 offerStats 小时桶（网关每单顺路记的账），没有额外请求。
+ * 这一卡就是作者要的「站内各个站、各个模型、各个分组的长期评价」的起点：
+ * 现在给的是可核对的原始指标，后续要加综合评分时从这里取数即可。
+ */
+function longTermCard() {
+  const data = longTermData
+  if (!data) {
+    return `
+      <div class="card">
+        <div class="card-head"><h3>长期评价</h3><span class="meta">正在加载…</span></div>
+      </div>`
+  }
+  const dim = longTermDim
+  const rows = data[dim] || []
+  const tabs = [
+    ['byProvider', '站点'],
+    ['byModel', '模型'],
+    ['byGroup', '分组'],
+  ]
+  const pct = (v) => (Number.isFinite(v) ? `${Math.round(v * 100)}%` : '—')
+  const ms = (v) => (Number.isFinite(v) ? `${(v / 1000).toFixed(1)}s` : '—')
+  const tps = (v) => (Number.isFinite(v) ? (v * 1000).toFixed(1) : '—')
+  const body = rows.length
+    ? rows
+        .map(
+          (r) => `
+      <tr>
+        <td style="max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(r.label)}">${esc(r.label)}</td>
+        <td class="mono">${r.requests}</td>
+        <td class="mono">${pct(r.okRate)}</td>
+        <td class="mono">${ms(r.avgTtftMs)}</td>
+        <td class="mono">${ms(r.avgLatencyMs)}</td>
+        <td class="mono">${tps(r.tps)}</td>
+        <td class="mono">${pct(r.cacheHitPct)}</td>
+        <td class="mono">¥${r.estCostCny.toFixed(2)}</td>
+        <td class="mono">${r.errors}</td>
+        <td class="mono">${r.hours}</td>
+        <td class="desc mono">${esc(String(r.lastHour || '').slice(5, 13).replace('-', '/').replace('T', ' '))}</td>
+      </tr>`,
+        )
+        .join('')
+    : '<tr><td colspan="11" class="desc">还没有真实流量——用起来之后这里会自动积累（保留 30 天）</td></tr>'
+  return `
+    <div class="card">
+      <div class="card-head">
+        <h3>长期评价</h3>
+        <span class="meta">近 30 天 · 按 ${tabs.find(([k]) => k === dim)?.[1] || '站点'} 聚合 · 来自真实流量的逐小时账本</span>
+      </div>
+      <div style="display:flex;gap:6px;margin-bottom:10px">
+        ${tabs
+          .map(
+            ([key, label]) =>
+              `<button class="ghost tiny" data-act="longterm-dim" data-dim="${key}" style="${dim === key ? 'background:var(--hover);border-radius:6px' : ''}">${label}</button>`,
+          )
+          .join('')}
+      </div>
+      <table class="table">
+        <thead><tr><th>${tabs.find(([k]) => k === dim)?.[1] || '对象'}</th><th>请求</th><th>成功率</th><th>首字</th><th>总耗时</th><th>吐字/s</th><th>缓存命中</th><th>费用</th><th>错误</th><th>覆盖小时</th><th>最近</th></tr></thead>
+        <tbody>${body}</tbody>
+      </table>
+      <div class="desc" style="margin-top:8px">成功率 = 成功 / 已提交请求；总耗时与首字是真实请求实测；费用按当前报价估算（诊断级口径，非对账）。</div>
+    </div>`
 }
 
 function renderDiagnosis() {
@@ -927,6 +1097,9 @@ function renderDiagnosis() {
             )
       }
     </div>
+
+    ${driftMonitorCard()}
+    ${longTermCard()}
 
     <div style="display:flex;align-items:center;gap:8px;margin:18px 0 10px;flex-wrap:wrap">
       <button class="primary" data-act="checkup-run" ${checkupRunning ? 'disabled' : ''}>
@@ -7442,6 +7615,15 @@ document.addEventListener('click', async (event) => {
     return
   }
 
+  // 长期评价切维度（纯前端重渲染，不重新拉数据）
+  if (action === 'longterm-dim') {
+    longTermDim = actionButton.dataset.dim || 'byProvider'
+    renderDiagnosis()
+    renderDiagnostics()
+    translateDom($('#view-diagnosis') || document.body)
+    return
+  }
+
   // 调试数据面板：错误账本 / 供给表现（默认收起，互斥展开）
   if (action === 'diagnosis-pane') {
     const pane = actionButton.dataset.pane || 'none'
@@ -8482,6 +8664,36 @@ document.addEventListener('change', async (event) => {
         isSite
           ? `「${group || '未指定分组'}」${updated} 个模型已更新，和站点值一致`
           : `「${group || '未指定分组'}」${updated} 个模型已改为自定义倍率${siteRatio !== null && siteRatio !== undefined ? `（站点值 ×${siteRatio}，可随时恢复）` : ''}`,
+      )
+    } catch (error) {
+      toast(error.message, true)
+    }
+    return
+  }
+
+  // 漂移监视参数（诊断页）：存设置，服务端 tick 每次读，改完立即生效
+  const driftField = input.dataset.drift
+  if (driftField) {
+    const v = input.value
+    const patch =
+      driftField === 'enabled'
+        ? { driftEnabled: v === '1' }
+        : driftField === 'threshold'
+          ? { driftThresholdPct: Number(v) }
+          : driftField === 'cooldown'
+            ? { driftCooldownMinutes: Number(v) }
+            : { driftTrialSamples: Number(v) }
+    try {
+      state = await api('PATCH', '/api/settings', patch)
+      renderDiagnosis()
+      renderDiagnostics()
+      translateDom($('#view-diagnosis') || document.body)
+      toast(
+        driftField === 'enabled'
+          ? v === '1'
+            ? '漂移检测已开启'
+            : '漂移检测已关闭（自动路由仍按探针分工作）'
+          : '已保存，下一轮判定开始生效',
       )
     } catch (error) {
       toast(error.message, true)
