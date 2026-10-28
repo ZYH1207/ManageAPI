@@ -65,6 +65,27 @@ const servers = [
   await mock(5204, {}),
 ]
 
+// 5205 需要登录的站：匿名一律 401，带令牌才通（验证「带令牌再识别一次」）
+const authServer = await new Promise((resolve) => {
+  const server = createServer((req, res) => {
+    if (req.headers.authorization !== 'Bearer tok') {
+      res.writeHead(401, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: 'unauthorized' }))
+      return
+    }
+    const url = new URL(req.url, 'http://x')
+    if (url.pathname === '/api/status') {
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ data: { version: 'v2.0.0', quota_per_unit: 500000 } }))
+      return
+    }
+    res.writeHead(404, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify({ error: 'not found' }))
+  })
+  server.listen(5205, '127.0.0.1', () => resolve(server))
+})
+servers.push(authServer)
+
 try {
   console.log('[1] 系别判定')
   for (const [port, want, label] of [
@@ -76,6 +97,22 @@ try {
     const r = await detectProviderKind({ baseUrl: `http://127.0.0.1:${port}/v1`, timeoutMs: 3000 })
     ok(r.kind === want, `${label}（实际 ${r.kind}）`)
   }
+
+  // 部分站的特征接口要求登录：匿名 401 只能判 unknown，带令牌再试一次才认得出来
+  const anon = await detectProviderKind({ baseUrl: 'http://127.0.0.1:5205/v1', timeoutMs: 3000 })
+  ok(anon.kind === 'unknown', `匿名探测 401 → unknown（实际 ${anon.kind}）`)
+  const withToken = await detectProviderKind({
+    baseUrl: 'http://127.0.0.1:5205/v1',
+    timeoutMs: 3000,
+    adminToken: 'tok',
+  })
+  ok(withToken.kind === 'new-api', `带令牌 → new-api（实际 ${withToken.kind}）`)
+  const wrongToken = await detectProviderKind({
+    baseUrl: 'http://127.0.0.1:5205/v1',
+    timeoutMs: 3000,
+    adminToken: 'bad',
+  })
+  ok(wrongToken.kind === 'unknown', `令牌无效 → 仍 unknown（实际 ${wrongToken.kind}）`)
 
   console.log('[2] 余额按系别走确定性路径')
   balanceRequests = []

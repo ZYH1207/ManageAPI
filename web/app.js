@@ -1246,9 +1246,11 @@ function providersHtml({ withForm = true, panel = '', actions = '' } = {}) {
           </form>
           ${
             p.hasAdminToken
-              ? ''
+              ? `<div class="keyrow" style="border:none;padding-top:2px">
+                  <button class="ghost tiny" data-act="detect-kind" data-provider="${esc(p.id)}" title="${t('用站点令牌探测这个站是哪一系（one-api / new-api / Sub2API）。匿名探测不出的站，带令牌再试一次往往就能识别')}">${icon('search')}${t('识别系别')}</button>
+                </div>`
               : `<div class="hint" style="margin-top:2px">
-            ${t('「令牌」在站点卡片上（不在 Key 上）——它是站点后台的登录凭证，一个后台账号填一次，整站通用。获取：登录后台 → F12 → Network → 点任意 <code>/api/v1/</code> 请求 → 复制 Request Headers 里的 <code>Authorization</code>（去掉 <code>Bearer </code> 前缀）。令牌会过期，失效后重新复制。')}
+            ${t('「令牌」在站点卡片上（不在 Key 上）——它是站点后台的登录凭证，一个后台账号填一次，整站通用。获取：登录后台 → F12 → Network → 点任意 <code>/api/v1/</code> 请求 → 复制 Request Headers 里的 <code>Authorization</code>（去掉 <code>Bearer </code> 前缀）。令牌会过期，失效后重新复制。填了令牌还能识别这个站是哪一系。')}
           </div>`
           }
         </div>
@@ -4159,6 +4161,25 @@ document.addEventListener('click', async (event) => {
     closeAddProvider()
     return
   }
+  // 识别系别：带令牌探测（匿名不通的站，带令牌再试一次往往就能识别）
+  if (event.target.closest('[data-act="detect-kind"]')) {
+    const providerId = event.target.closest('[data-provider]')?.dataset.provider
+      || event.target.closest('[data-chart-ctx]')?.dataset.provider
+      || (event.target.closest('.prov-card')?.dataset.provider)
+    if (!providerId) return
+    await withBusy(event.target.closest('[data-act="detect-kind"]'), async () => {
+      state = await api('POST', `/api/providers/${providerId}/detect-kind`, {})
+      render()
+      const r = state.kindResult
+      if (r?.kind === 'unknown') {
+        toast(`没能识别系别：${r.evidence}`, true)
+      } else {
+        toast(`识别为 ${r.kind} 系（${r.evidence}）`)
+      }
+    })
+    return
+  }
+
   const provPanelBtn = event.target.closest('[data-act="prov-panel"]')
   if (provPanelBtn) {
     openProvPanel(provPanelBtn, provPanelBtn.dataset.panel === 'rates' ? 'rates' : 'keys')
