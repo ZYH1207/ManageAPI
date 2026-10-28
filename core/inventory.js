@@ -515,16 +515,21 @@ export async function deleteOffer(id) {
  * 又换回来，价格就白填了。所以只打 `delistedAt` 标记，读的时候过滤掉；
  * 下次它再出现，标记清掉、价格还在。
  *
- * 只按 credentialId 处理，不碰别的 Key 的行。
+ * 只按 credentialId 处理，不碰别的 Key 的行。分组也参与判断：同一把 Key 换过
+ * 分组之后，同名模型可能同时挂在两个分组下，只按 upstreamName 会把
+ * 「A 分组还在用、B 分组已下线」的两边一起标记/复活。
  */
-export async function markDelisted(providerId, credentialId, keepNames) {
+export async function markDelisted(providerId, credentialId, keepNames, group = '') {
   const keep = new Set(keepNames)
+  // 不传 group 时保持旧行为（按 credentialId 全覆盖），兼容其它调用点
+  const wantGroup = group ? normalizeGroup(group) : null
   return mutate((db) => {
     let delisted = 0
     let revived = 0
     for (const offer of db.offers) {
       if (offer.providerId !== providerId) continue
       if (credentialId && offer.credentialId !== credentialId) continue
+      if (wantGroup !== null && normalizeGroup(offer.group) !== wantGroup) continue
       const alive = keep.has(offer.upstreamName)
       if (!alive && !offer.delistedAt) {
         offer.delistedAt = nowIso()

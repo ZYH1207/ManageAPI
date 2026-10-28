@@ -131,6 +131,27 @@ try {
   ok(migrated.version === 4, '版本号升到 4')
   await rm(dupHome, { recursive: true, force: true })
 
+  console.log('[6] markDelisted 只看自己那个分组')
+  // 同一把 Key 换过分组后，同名模型会同时挂在两个分组下。同步 A 分组时不能把
+  // B 分组的行也一起标下线（否则 B 组的模型会「凭空消失」）。
+  const before6 = (await store.readDb()).offers.filter((o) => o.providerId === provider.id)
+  await inv.markDelisted(provider.id, cred.id, [], '特价池')
+  const after6 = (await store.readDb()).offers.filter((o) => o.providerId === provider.id)
+  ok(
+    after6.filter((o) => o.group === '特价池').every((o) => o.delistedAt),
+    '特价池的行全部标记下线',
+  )
+  ok(
+    after6.filter((o) => o.group === '国模-0045 p哥').every((o) => !o.delistedAt),
+    '同名的另一分组行不受影响',
+  )
+  await inv.markDelisted(provider.id, cred.id, models, '特价池')
+  const revived6 = (await store.readDb()).offers.filter((o) => o.providerId === provider.id)
+  ok(
+    revived6.every((o) => !o.delistedAt) && revived6.length === before6.length,
+    '再同步回来能复活，行数不变',
+  )
+
   console.log('')
   if (failed === 0) console.log('全部通过 ✓')
   else {
