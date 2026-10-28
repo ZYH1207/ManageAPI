@@ -2,8 +2,9 @@
  * 准入门禁自检（纯函数，不联网）：
  *   1. 什么算「不登场」：慢速 / 可疑 / 不稳定 / 没有可信样本
  *   2. 什么是「能登场但只兜底」：评分过期 / 未探测——真实调用本身就是证据，不拦
- *   3. 排序：能登场的在前，不登场的永远排在后面
+ *   3. 排序：默认能登场的在前，不登场的排在后面
  *   4. 全部不登场时的报错文案：慢速和不可用分开报，且用 400
+ *   5. 手动顺序（决策页拖拽）：整张表都参与，排到前面不改变准入判定
  *
  * 背景：以前网关「所有候选都不健康」时仍然按价格挨个试，决策页却显示
  * 「没有可用供给」——两处口径不一致。现在准入收口在 admissionOf，
@@ -121,7 +122,7 @@ const settings = (patch = {}) => ({
   allowUntrusted: false,
   ...patch,
 })
-const run = (scores, settingPatch = {}) =>
+const run = (scores, settingPatch = {}, order = null) =>
   selectCandidates({
     offers: Object.keys(scores).map((id) => offer(id, id)),
     providers,
@@ -130,6 +131,7 @@ const run = (scores, settingPatch = {}) =>
     benchmarks: {},
     settings: settings(settingPatch),
     model: 'm',
+    order,
   })
 
 console.log('[4] 排序：能登场的在前，不登场的永远在后面')
@@ -175,6 +177,28 @@ console.log('[6] 门槛为 0（不限）时不因速度报错')
 {
   const rows = run({ s1: score({ ttftMs: 19300 }) }, { maxTtftMs: 0 })
   ok(rows[0].admission.ok === true, '不限 = 19.3 秒也登场')
+}
+
+console.log('[7] 手动顺序：整张表都能拖，准入不受影响')
+{
+  // 决策页把慢速的 c 拖到第一、过期的 b 第二、健康的 a 最后
+  const scores = {
+    a: score({ ttftMs: 2000 }),
+    b: score({ status: 'stale', stale: true }),
+    c: score({ ttftMs: 16522 }),
+  }
+  const rows = run(scores, {}, ['c', 'b', 'a'])
+  ok(rows.map((r) => r.offer.id).join('>') === 'c>b>a', `拖动后顺序就是保存的顺序：${rows.map((r) => r.offer.id).join('>')}`)
+  ok(rows[0].admission.ok === false, '慢速行摆到第一，admission.ok 仍是 false（不会被派活）')
+  ok(rows[1].admission.ok === true && rows[2].admission.ok === true, '能登场的两条仍然能登场')
+
+  // 没进手动顺序的新供给（比如新加了一个站）排在后面，按原来的规则兜底
+  const withNew = run({ ...scores, d: score({ ttftMs: 2000 }) }, {}, ['c', 'b', 'a'])
+  ok(withNew[withNew.length - 1].offer.id === 'd', `不在顺序里的排最后：${withNew.map((r) => r.offer.id).join('>')}`)
+
+  // 空数组 = 恢复自动，排序回到默认规则
+  const auto = run(scores, {}, [])
+  ok(auto.map((r) => r.offer.id).join('>') === 'a>b>c', `恢复自动：${auto.map((r) => r.offer.id).join('>')}`)
 }
 
 console.log(failed === 0 ? '\n全部通过' : `\n${failed} 项失败`)

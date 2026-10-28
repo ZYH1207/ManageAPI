@@ -2498,12 +2498,11 @@ function renderDecision() {
     const rows = decision.candidates.map((candidate, index) => {
       const badge = decisionState(candidate)
       const isChosen = candidate.offerId === decision.chosenOfferId
-      const arrows = candidate.routable
-        ? `<button class="ghost tiny" data-act="move-up" title="上移">↑</button><button class="ghost tiny" data-act="move-down" title="下移">↓</button>`
-        : ''
+      // 整行都能拖（指针事件，见下面的 rowDrag）：顺序覆盖自动排序，不分「可用」与否——
+      // 位置随用户定，但能不能被派活仍由准入门禁说话（网关只认 admission.ok）
       return `
-        <tr class="${isChosen ? 'cheapest' : ''}" data-offer="${esc(candidate.offerId)}">
-          <td style="white-space:nowrap">${arrows}</td>
+        <tr class="dec-row${isChosen ? ' cheapest' : ''}" data-offer="${esc(candidate.offerId)}">
+          <td class="dec-grip-cell"><span class="dec-grip" title="${t('拖动调整顺序')}">${icon('grip')}</span></td>
           <td class="num" style="color:var(--faint)">${index + 1}</td>
           <td>${esc(candidate.providerName || '—')}${isChosen ? ' <span class="badge ok">当前</span>' : ''}${
             candidate.upstreamName && candidate.upstreamName !== decision.modelKey
@@ -2534,7 +2533,7 @@ function renderDecision() {
         ${isCollapsed ? '' : `
         <table>
           <thead><tr>
-            <th style="width:66px"></th><th class="num">#</th><th>站点</th><th>分组</th>
+            <th style="width:30px"></th><th class="num">#</th><th>站点</th><th>分组</th>
             <th class="num${sortMark('price')}">价格</th><th class="num">质量</th>
             <th class="num${sortMark('value')}">有效成本</th><th class="num${sortMark('speed')}">首字</th><th>状态</th>
           </tr></thead>
@@ -2550,7 +2549,8 @@ function renderDecision() {
       <input id="decision-search" class="search" type="search" placeholder="搜索模型名…" value="${esc(filters.decision)}" />
       <span class="hint" style="margin:0">${visibleDecisions.length} / ${decisions.length} 个模型</span>
     </div>
-    ${blocks}`
+    <p class="hint">排序按上面的「决策侧重」。拖动任意一行都能改先后，包括暂时不会登场的那几条——位置随你定，但不会登场的站仍然不会被派活。</p>
+    <p class="hint">${t('注意：<b>同一个模型在不同站的状态是各自独立的</b>（A 站健康、B 站掉包很正常），所以这里按「站 × 模型」逐条评估，状态下方会写明具体原因。')}</p>    ${blocks}`
 }
 
 /**
@@ -5107,31 +5107,6 @@ document.addEventListener('click', async (event) => {
     return
   }
 
-  if (action === 'move-up' || action === 'move-down') {
-    const row = actionButton.closest('[data-offer]')
-    const container = actionButton.closest('[data-model]')
-    if (!row || !container) return
-    const modelKey = container.dataset.model
-    const offerId = row.dataset.offer
-    const decision = state.decisions.find((d) => d.modelKey === modelKey)
-    if (!decision) return
-
-    // 只在「可用」的候选之间调换，不可信的不参与
-    const ids = decision.candidates.filter((c) => c.routable).map((c) => c.offerId)
-    const index = ids.indexOf(offerId)
-    const target = action === 'move-up' ? index - 1 : index + 1
-    if (index === -1 || target < 0 || target >= ids.length) return
-    ;[ids[index], ids[target]] = [ids[target], ids[index]]
-
-    try {
-      state = await api('PUT', `/api/decisions/${encodeURIComponent(modelKey)}/order`, { order: ids })
-      render()
-    } catch (error) {
-      toast(error.message, true)
-    }
-    return
-  }
-
   if (action === 'reset-order') {
     const container = actionButton.closest('[data-model]')
     const modelKey = container?.dataset.model
@@ -5655,6 +5630,120 @@ async function persistOrder(order, dragged) {
     render()
     const name = (state.providers || []).find((p) => p.id === dragged)?.name || '站点'
     toast(`「${name}」已移到第 ${order.indexOf(dragged) + 1} 位`)
+  } catch (error) {
+    toast(error.message, true)
+  }
+}
+
+// --------------------------------------------------- 决策页候选行拖拽排序
+// 整行都能拖，不分「可用」与否：保存的是这一行在表里的完整顺序（含暂时不登场的），
+// 站点恢复健康后位置也还在。能不能真的被派活仍由准入门禁管（网关只认 admission.ok），
+// 所以把不会登场的行拖到前面只是「摆在前面」，不会偷偷把流量引过去。
+//
+// 刻意不用 HTML5 draggable：<tr draggable> 在部分浏览器里根本起不了拖，
+// 用户看到的就是「拖不动」（站点卡能用是因为它的把手是个 span）。这里用指针事件
+// 自己做，按住整行任意位置都能拖，指针越过相邻行的中线就把行原地挪过去。
+let rowDrag = null // { row, tbody, container, startX, startY, pointerId, dragging, fromOrder }
+
+/** 靠边自动滚动：长表格里靠后的行否则永远拖不到第一行 */
+function autoScrollWhileDragging(clientY) {
+  const scroller = document.querySelector('.content')
+  if (!scroller) return
+  const box = scroller.getBoundingClientRect()
+  const edge = 72
+  if (clientY < box.top + edge) scroller.scrollTop -= 18
+  else if (clientY > box.bottom - edge) scroller.scrollTop += 18
+}
+
+function endRowDrag() {
+  const drag = rowDrag
+  rowDrag = null
+  if (!drag) return null
+  drag.row.classList.remove('dragging')
+  document.body.classList.remove('row-dragging')
+  return drag
+}
+
+document.addEventListener('pointerdown', (event) => {
+  if (event.button !== 0) return
+  const row = event.target.closest?.('tr.dec-row')
+  if (!row) return
+  const container = row.closest('[data-model]')
+  const tbody = row.parentElement
+  if (!container || !tbody) return
+  rowDrag = {
+    row,
+    tbody,
+    container,
+    startX: event.clientX,
+    startY: event.clientY,
+    pointerId: event.pointerId,
+    dragging: false,
+    fromOrder: [...tbody.querySelectorAll('tr.dec-row')].map((tr) => tr.dataset.offer),
+  }
+})
+
+document.addEventListener('pointermove', (event) => {
+  const drag = rowDrag
+  if (!drag || event.pointerId !== drag.pointerId) return
+  // 移动超过 4px 才算拖，否则点一下也会被当成拖拽
+  if (!drag.dragging) {
+    if (Math.abs(event.clientY - drag.startY) < 4 && Math.abs(event.clientX - drag.startX) < 4) return
+    drag.dragging = true
+    drag.row.classList.add('dragging')
+    document.body.classList.add('row-dragging')
+  }
+  event.preventDefault()
+  autoScrollWhileDragging(event.clientY)
+
+  const rows = [...drag.tbody.querySelectorAll('tr.dec-row')]
+  const last = rows[rows.length - 1]
+  if (last && last !== drag.row && event.clientY > last.getBoundingClientRect().bottom) {
+    // 拖到最后一行下面：直接挪到末尾
+    drag.tbody.appendChild(drag.row)
+    return
+  }
+  for (const tr of rows) {
+    if (tr === drag.row) continue
+    const rect = tr.getBoundingClientRect()
+    if (event.clientY < rect.top || event.clientY > rect.bottom) continue
+    const ref = event.clientY < rect.top + rect.height / 2 ? tr : tr.nextElementSibling
+    if (drag.row.nextElementSibling !== ref) drag.tbody.insertBefore(drag.row, ref)
+    break
+  }
+})
+
+document.addEventListener('pointerup', async (event) => {
+  const drag = rowDrag
+  if (!drag || event.pointerId !== drag.pointerId) return
+  endRowDrag()
+  if (!drag.dragging) return
+  const order = [...drag.tbody.querySelectorAll('tr.dec-row')].map((tr) => tr.dataset.offer)
+  if (order.join() === drag.fromOrder.join()) return
+  await persistDecisionOrder(drag.container.dataset.model, order)
+})
+
+// 拖到一半被打断（触摸滚动、系统手势）：把行放回服务端记着的顺序
+document.addEventListener('pointercancel', () => {
+  const drag = endRowDrag()
+  if (drag?.dragging) render()
+})
+
+document.addEventListener('keydown', (event) => {
+  if (event.key !== 'Escape' || !rowDrag?.dragging) return
+  endRowDrag()
+  render()
+})
+
+/** 落位后提交整表顺序：重画会丢滚动位置，自己存一下 */
+async function persistDecisionOrder(modelKey, order) {
+  const scroller = document.querySelector('.content')
+  const scrollTop = scroller ? scroller.scrollTop : 0
+  try {
+    state = await api('PUT', `/api/decisions/${encodeURIComponent(modelKey)}/order`, { order })
+    render()
+    if (scroller) scroller.scrollTop = scrollTop
+    toast(t('「{model}」已保存手动顺序', { model: modelKey }))
   } catch (error) {
     toast(error.message, true)
   }

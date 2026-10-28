@@ -294,8 +294,6 @@ const EN = {
   '收起': 'Collapse',
   '添加': 'Add',
   '恢复': 'Restore',
-  '上移': 'Move up',
-  '下移': 'Move down',
   '未探测': 'Not probed',
   '未录入': 'Not set',
   '未指定分组': 'No group',
@@ -570,8 +568,10 @@ Object.assign(EN, {
   '网关已关闭': 'Gateway off',
 
   // 概览 / 决策 / 探针的状态说明
-  '默认按「有效成本 = 价格 ÷ 质量」排序，用 ↑↓ 手动调整「可用」那几条的先后——不可信的站不会因为你拖它而排到前面。':
-    'Sorted by effective cost (price ÷ quality). Use ↑↓ to reorder the available ones — an untrusted site will not move up just because you drag it.',
+  '默认按「有效成本 = 价格 ÷ 质量」排序。拖动任意一行都能改先后，包括暂时不会登场的那几条——位置随你定，但不会登场的站仍然不会被派活。':
+    'Sorted by effective cost (price ÷ quality). Drag any row to reorder — including ones that currently cannot be used: their position is yours to set, but they still never receive traffic.',
+  '拖动调整顺序': 'Drag to reorder',
+  '「{model}」已保存手动顺序': 'Manual order saved for {model}',
   '注意：同一个模型在不同站的状态是各自独立的（A 站掉包，B 站却完全正常），所以这里按「站 × 模型」逐条评估，状态下方会写明具体原因。':
     'Note: the same model can be fine on one site and swapped on another, so each site × model is judged on its own. The reason is shown under the status.',
 
@@ -1240,8 +1240,6 @@ Object.assign(EN, {
   '标签': 'Tags',
   '搜索模型名…': 'Search models…',
   // 页面词
-  '上移': 'Up',
-  '下移': 'Down',
   '刷新': 'Refresh',
   '只同步这个站': 'Sync this site only',
   '只采这个站': 'Collect this site only',

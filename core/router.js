@@ -6,6 +6,7 @@
  *   2. 排序：剩下的人按 settings.decisionMode 选定的口径升序
  *      性价比（默认）→ 有效成本；价格 → 名义单价；首字速度 → 首字延迟
  *      三档都只改「谁排前面」，准入规则完全不看这个开关
+ *   3. 手动顺序（决策页拖拽）：只改「先试谁」，准入仍然是硬门槛
  *
  * 「不登场」是真的不登场：selectCandidates 把不可用的候选也留在表里（决策页要
  * 能看出「为什么没选它」），但网关只会在 admission.ok 的候选里派活；一条都没有
@@ -118,7 +119,8 @@ export function admissionFailure(candidates, { model = '', maxTtftMs = 0 } = {})
 
 /**
  * @param {{offers, providers, credentials, scores, benchmarks, settings, model, order?}} input
- *   order —— 用户手动调过的 offerId 顺序；只影响可用的那几条，不影响可用性判定
+ *   order —— 用户手动调过的 offerId 顺序；整张表都参与（包括暂时不会登场的），
+ *            但能不能真的登场仍由 admissionOf 判定——排在前面只是位置，不是通行证
  * @returns {Array<{offer,provider,credential,price,quality,routable,effective,status,ttftMs}>}
  */
 export function selectCandidates({ offers, providers, credentials, scores, benchmarks, settings, model, order }) {
@@ -217,15 +219,20 @@ export function selectCandidates({ offers, providers, credentials, scores, bench
   return rows
     .filter((row) => row.provider && row.credential)
     .sort((a, b) => {
-      // 可用性永远优先：手动排序不能把不可信的站提到前面
-      if (a.routable !== b.routable) return a.routable ? -1 : 1
+      // 手动顺序优先于一切：决策页整张表都能拖，用户摆的位置就是他要的顺序。
+      // 这里刻意不再「可用性永远排前面」——那会让拖到前面的不可用行自己弹回去，
+      // 看起来像坏了。安全由准入把关：网关只在 admission.ok 的候选里派活，
+      // 把不会登场的行拖到第一位也只是摆在第一位，不会把流量引过去。
       if (manualIndex) {
         const ia = manualIndex.has(a.offer.id) ? manualIndex.get(a.offer.id) : Number.MAX_SAFE_INTEGER
         const ib = manualIndex.has(b.offer.id) ? manualIndex.get(b.offer.id) : Number.MAX_SAFE_INTEGER
         if (ia !== ib) return ia - ib
       }
-      // 排序口径由决策侧重决定（性价比 / 价格 / 首字速度）。
-      // 比较逻辑收在 core/decision-mode.js#compareByBasis——看板结论句也用同一份
+      // 没手动调过（或两条都不在手动顺序里）：能优先考虑的在前，再按当前决策侧重排。
+      // 比较逻辑收在 core/decision-mode.js#compareByBasis——看板结论句也用同一份。
+      // 「能优先考虑的在前」这条只在自动排序里成立：手动顺序优先于一切（见上），
+      // 否则把一条不可用的行拖到前面会自己弹回去，看起来像坏了。
+      if (a.routable !== b.routable) return a.routable ? -1 : 1
       return compareByBasis(a, b, decisionMode)
     })
 }

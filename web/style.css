@@ -1528,6 +1528,14 @@ tbody tr:last-child td { border-bottom: none; }
 tbody tr:hover { background: var(--surface-2); }
 tbody tr.cheapest { background: var(--success-soft); }
 tbody tr.cheapest:hover { background: var(--row-cheapest-hover); }
+/* 决策页候选行拖拽：整行按住就能拖，把手只是提示（沿用站点卡的 grip 图标） */
+tr.dec-row { cursor: grab; user-select: none; }
+tr.dec-row.dragging { opacity: .5; cursor: grabbing; }
+body.row-dragging { user-select: none; cursor: grabbing; }
+.dec-grip-cell { width: 30px; padding-right: 0 !important; }
+.dec-grip { display: inline-flex; color: var(--faint); }
+.dec-grip svg { width: 14px; height: 14px; }
+tr.dec-row:hover .dec-grip { color: var(--muted); }
 td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 td input { width: 74px; padding: 3px 7px; font-size: 12px; }
 td input.ratio { width: 64px; }

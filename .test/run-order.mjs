@@ -1,4 +1,10 @@
-/** 验证手动排序：上移/下移覆盖自动顺序，但可用性仍是硬约束。 */
+/**
+ * 验证决策页拖拽排序（整张表都能拖）：
+ *   1. 没拖过时按「有效成本 = 价格 ÷ 质量」自动排
+ *   2. 拖动后保存的就是页面顺序，网关照这个先后派活
+ *   3. 把「不会登场」的行拖到第一，位置照摆，但网关仍然跳过它（准入是硬门槛）
+ *   4. 传空数组 = 恢复自动
+ */
 const BASE = 'http://127.0.0.1:4399'
 
 async function api(method, path, body) {
@@ -15,11 +21,18 @@ async function api(method, path, body) {
 let state = await api('GET', '/api/state')
 const key = state.gateway.keys[0].key
 
+const nameOf = (offerId) => {
+  const offer = state.offers.find((o) => o.id === offerId)
+  const provider = state.providers.find((p) => p.id === offer.providerId)
+  return `${provider?.name}/${offer.upstreamName}`
+}
+
 function show(label) {
   const d = state.decisions.find((x) => x.modelKey === 'test-model-a')
   console.log(`\n${label}${d.manual ? '（手动）' : '（自动）'}`)
   for (const c of d.candidates) {
-    console.log(`  #${c.rank} ${String(c.providerName).padEnd(8)} 可路由=${c.routable} 有效成本=${c.effective?.toFixed(2)}`)
+    const tag = c.admission?.ok ? '' : `  ← ${c.admission?.kind || '不登场'}`
+    console.log(`  #${c.rank} ${String(c.providerName).padEnd(8)} 有效成本=${c.effective?.toFixed(2)}${tag}`)
   }
   console.log(`  → 选：${d.chosenProviderName || '无'}`)
 }
@@ -34,20 +47,39 @@ async function hit() {
   return decodeURIComponent(res.headers.get('x-manageapi-provider') || '无')
 }
 
+const order = () => state.decisions.find((x) => x.modelKey === 'test-model-a').candidates.map((c) => c.offerId)
+const drag = async (ids) => {
+  state = await api('PUT', '/api/decisions/test-model-a/order', { order: ids })
+}
+
 show('默认顺序')
 console.log('实际请求 →', await hit())
 
-// 手动把云雀移到第一位（模拟点击两次「上移」）
-const d = state.decisions.find((x) => x.modelKey === 'test-model-a')
-const ids = d.candidates.filter((c) => c.routable).map((c) => c.offerId)
-console.log('\n手动顺序（原始）：', ids.map((id) => state.offers.find((o) => o.id === id).upstreamName + '@' + (state.providers.find((p) => p.id === state.offers.find((o) => o.id === id).providerId)?.name)).join(' → '))
+// 1) 把最便宜但不健康的那条（星链 degraded）拖到第一：位置照摆，但不会被派活
+const all = order()
+const dead = state.decisions
+  .find((x) => x.modelKey === 'test-model-a')
+  .candidates.find((c) => !c.admission?.ok)
+if (dead) {
+  await drag([dead.offerId, ...all.filter((id) => id !== dead.offerId)])
+  show(`把「不会登场」的 ${nameOf(dead.offerId)} 拖到第一`)
+  const served = await hit()
+  console.log('实际请求 →', served)
+  console.log(served === dead.providerName ? '  ✗ 不该派给不会登场的站' : '  ✓ 仍然跳过了不会登场的站')
+}
 
-const reordered = [...ids].reverse()
-state = await api('PUT', '/api/decisions/test-model-a/order', { order: reordered })
-show('手动把云雀挪到第一')
-console.log('实际请求 →', await hit())
+// 2) 把健康但不便宜的那条拖到第一：这次真的会改变派活
+const healthy = state.decisions
+  .find((x) => x.modelKey === 'test-model-a')
+  .candidates.filter((c) => c.admission?.ok)
+const last = healthy[healthy.length - 1]
+await drag([last.offerId, ...order().filter((id) => id !== last.offerId)])
+show(`把能登场的 ${nameOf(last.offerId)} 拖到第一`)
+const served2 = await hit()
+console.log('实际请求 →', served2)
+console.log(served2 === last.providerName ? '  ✓ 手动顺序生效' : `  ✗ 期望 ${last.providerName}，实际 ${served2}`)
 
-// 恢复自动
-state = await api('PUT', '/api/decisions/test-model-a/order', { order: [] })
+// 3) 恢复自动
+await drag([])
 show('恢复自动')
 console.log('实际请求 →', await hit())
