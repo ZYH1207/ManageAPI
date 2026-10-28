@@ -19,6 +19,10 @@ let refreshTimer = null
 // 比价页「只显示允许放行」：纯前端过滤，本地记住开关。默认关（保持原来的全表视图）
 const ONLY_ADMITTED_KEY = 'manageapi.pricingOnlyAdmitted'
 let onlyAdmitted = localStorage.getItem(ONLY_ADMITTED_KEY) === '1'
+// 决策页「只显示可使用」：同款纯前端过滤，本地记住开关。默认关（保持原来的全表视图）。
+// 只改展示不改派活：网关仍按 admission.ok 派活，手动顺序也照旧整表参与
+const DECISION_ONLY_ADMITTED_KEY = 'manageapi.decisionOnlyAdmitted'
+let decisionOnlyAdmitted = localStorage.getItem(DECISION_ONLY_ADMITTED_KEY) === '1'
 // 这两个页签要看评分/候选明细，轮询时走完整 state；其它页只要轻量那份省带宽
 const HEAVY_TABS = new Set(['pricing', 'decision'])
 
@@ -2586,9 +2590,26 @@ function renderDecision() {
   }
 
   const filterText = filters.decision.trim().toLowerCase()
-  const visibleDecisions = decisions.filter(
+  const matchedDecisions = decisions.filter(
     (decision) => !filterText || decision.modelKey.toLowerCase().includes(filterText),
   )
+  // 「只显示可使用」按服务端下发的 admission 过滤：门禁结论只有
+  // core/router.js#admissionOf 一份，前端不自己再拼一遍「什么算不可用」。
+  // admission 缺失时（旧后端）不隐藏：宁可多显示，也不要静默吞掉供给。
+  let hiddenCandidates = 0
+  let visibleDecisions = matchedDecisions
+  if (decisionOnlyAdmitted) {
+    visibleDecisions = []
+    for (const decision of matchedDecisions) {
+      const candidates = decision.candidates.filter((candidate) => {
+        const ok = candidate.admission?.ok !== false
+        if (!ok) hiddenCandidates += 1
+        return ok
+      })
+      // 候选全被隐藏的模型整块收起，不然满屏都是「没有可用供给」的空壳
+      if (candidates.length > 0) visibleDecisions.push({ ...decision, candidates })
+    }
+  }
   // 当前决策侧重：三档只改排序口径，准入规则不跟着变（见 core/decision-mode.js）
   const mode = state.decisionMode || state.settings?.decisionMode || 'value'
   const sortMark = (key) => (mode === key ? ' sort-by' : '')
@@ -2652,10 +2673,26 @@ function renderDecision() {
     ${gateCard()}
     <div class="toolbar">
       <input id="decision-search" class="search" type="search" placeholder="搜索模型名…" value="${esc(filters.decision)}" />
-      <span class="hint" style="margin:0">${visibleDecisions.length} / ${decisions.length} 个模型</span>
+      <span class="hint" style="margin:0">${
+        decisionOnlyAdmitted && hiddenCandidates
+          ? t('{shown} / {total} 个模型 · 已隐藏 {n} 条供给', {
+              shown: visibleDecisions.length,
+              total: decisions.length,
+              n: hiddenCandidates,
+            })
+          : t('{shown} / {total} 个模型', { shown: visibleDecisions.length, total: decisions.length })
+      }</span>
+      <label class="switch switch-inline" title="${t('打开后只显示准入通过的供给：慢速 / 结果可疑 / 不稳定 / 没有可信样本 / 冷却中（额度不足、限流）整行隐藏；评分过期、未探测的仍然显示（它们不是坏站）。只是展示筛选，不影响网关派活和手动顺序。随时可切。')}">
+        <input type="checkbox" id="decision-only-admitted" ${decisionOnlyAdmitted ? 'checked' : ''} />
+        <span class="switch-track"><span class="switch-knob"></span></span>
+        <span class="switch-text"><b>${t('只显示可使用')}</b></span>
+      </label>
     </div>
     <p class="hint">排序按上面的「决策侧重」。拖动任意一行都能改先后，包括暂时不会登场的那几条——位置随你定，但不会登场的站仍然不会被派活。</p>
-    <p class="hint">${t('注意：<b>同一个模型在不同站的状态是各自独立的</b>（A 站健康、B 站掉包很正常），所以这里按「站 × 模型」逐条评估，状态下方会写明具体原因。')}</p>    ${blocks}`
+    <p class="hint">${t('注意：<b>同一个模型在不同站的状态是各自独立的</b>（A 站健康、B 站掉包很正常），所以这里按「站 × 模型」逐条评估，状态下方会写明具体原因。')}</p>    ${blocks ||
+    (decisionOnlyAdmitted && hiddenCandidates
+      ? `<div class="empty"><h3>${t('没有允许放行的供给')}</h3><p>${t('当前范围内有 {n} 条供给被这个开关隐藏了：慢速、结果可疑、不稳定、没有可信样本或冷却中。关掉开关就能看到它们。', { n: hiddenCandidates })}</p></div>`
+      : '')}`
 }
 
 /**
@@ -6246,8 +6283,15 @@ document.addEventListener('pointerup', async (event) => {
   if (!drag || event.pointerId !== drag.pointerId) return
   endRowDrag()
   if (!drag.dragging) return
-  const order = [...drag.tbody.querySelectorAll('tr.dec-row')].map((tr) => tr.dataset.offer)
-  if (order.join() === drag.fromOrder.join()) return
+  const visibleOrder = [...drag.tbody.querySelectorAll('tr.dec-row')].map((tr) => tr.dataset.offer)
+  if (visibleOrder.join() === drag.fromOrder.join()) return
+  // 「只显示可使用」开着时 DOM 里只有可见行：提交前把被隐藏的供给塞回它原来的
+  // 槽位，否则一次拖动就会把它们从手动顺序里挤掉（服务端是整表覆盖，见 setManualOrder）
+  const decision = state.decisions?.find((d) => d.modelKey === drag.container.dataset.model)
+  const full = decision ? decision.candidates.map((c) => c.offerId) : []
+  const visibleSet = new Set(visibleOrder)
+  const order = full.map((id) => (visibleSet.has(id) ? visibleOrder.shift() : id))
+  while (visibleOrder.length > 0) order.push(visibleOrder.shift())
   await persistDecisionOrder(drag.container.dataset.model, order)
 })
 
@@ -6457,6 +6501,18 @@ document.addEventListener('change', async (event) => {
       /* 隐私模式下 localStorage 可能不可用 */
     }
     renderPricing()
+    return
+  }
+
+  if (input.id === 'decision-only-admitted') {
+    // 同比价页「只显示允许放行」：纯本地开关，只改视图，不往服务端存
+    decisionOnlyAdmitted = input.checked
+    try {
+      localStorage.setItem(DECISION_ONLY_ADMITTED_KEY, decisionOnlyAdmitted ? '1' : '0')
+    } catch {
+      /* 隐私模式下 localStorage 可能不可用 */
+    }
+    renderDecision()
     return
   }
 

@@ -775,6 +775,13 @@ Object.assign(EN, {
     '{n} supplies in this view are hidden by the switch: slow, suspicious, unstable, without usable samples or cooling down. Turn it off to see them.',
 })
 
+// 决策页「只显示可使用」开关：和比价页同一份 admission 过滤，只是位置不同
+Object.assign(EN, {
+  '只显示可使用': 'Usable only',
+  '打开后只显示准入通过的供给：慢速 / 结果可疑 / 不稳定 / 没有可信样本 / 冷却中（额度不足、限流）整行隐藏；评分过期、未探测的仍然显示（它们不是坏站）。只是展示筛选，不影响网关派活和手动顺序。随时可切。':
+    'Show only supplies that pass admission: rows flagged slow, suspicious, unstable, without usable samples or cooling down (out of credit, rate limited) are hidden; stale and never-probed rows stay visible (they are not bad sites). Display-only filter: routing and manual order are unaffected. Toggle any time.',
+})
+
 // 放行可疑供给（开关）
 Object.assign(EN, {
   '太慢': 'Too slow',
