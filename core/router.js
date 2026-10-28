@@ -18,7 +18,7 @@
  * 首字门槛是独立的显式设置，不受这个开关影响。
  */
 import { offerCost } from './pricing.js'
-import { isRoutable, effectiveCost, THRESHOLDS } from './score.js'
+import { isRoutable, effectiveCost, THRESHOLDS, MIN_SAMPLES_FOR_VERDICT } from './score.js'
 import { normalizeModelKey } from './inventory.js'
 import { normalizeDecisionMode, compareByBasis } from './decision-mode.js'
 
@@ -79,6 +79,53 @@ export function admissionOf(row) {
     }
   }
   return { ok: true, kind: null, text: null }
+}
+
+/**
+ * 一条候选身上「同时成立」的全部状态标签，只给界面用。
+ *
+ * admissionOf 是门禁，只回答「能不能登场」，所以取第一个不通过的类别就够；
+ * 但人看决策页要知道全部：一条又慢又掉包的供给只标「慢速」，会让人以为
+ * 把门槛放宽就能用。所以另给一份清单。
+ *
+ * 它不参与任何派活判定（网关只认 admission.ok），也不改 admissionOf 的结论，
+ * 纯粹是「这条供给现在有哪些毛病」的完整陈列。
+ *
+ * 返回的是 kind 而不是文案：翻译和配色归前端（web/app.js 的 STATUS_TAG），
+ * 判定只留这一份——两个页面（比价、决策）都从这里取，免得各写一套「什么算可疑」。
+ *
+ * @param {object} row 与 admissionOf 同一份行（offer 候选）
+ * @returns {string[]} 例：['slow','degraded','unstable']
+ */
+export function admissionTags(row) {
+  if (!row) return []
+  const tags = []
+  const faults = Array.isArray(row.integrityFaults) ? row.integrityFaults : []
+  const availability = row.availability
+  const samples = Number(row.samples) || 0
+  // 慢速：用户自己设的线
+  if (row.tooSlow) tags.push('slow')
+  // 结果可疑：指纹不符 / 输出截断 / 用量虚报，单次即可定性（同 score.js 的 degraded）
+  if (row.status === 'degraded' || faults.length > 0) tags.push('degraded')
+  if (typeof availability === 'number' && availability < THRESHOLDS.availability) {
+    // 样本不够时不下「不稳定」的结论，只标证据不足——和 score.js 的
+    // MIN_SAMPLES_FOR_VERDICT 同一口径，否则一次失败就挂红
+    tags.push(samples >= MIN_SAMPLES_FOR_VERDICT ? 'unstable' : 'inconclusive')
+  } else if (
+    (availability === null || availability === undefined) &&
+    samples > 0 &&
+    row.status !== 'stale' &&
+    !row.blocked
+  ) {
+    // 有样本、可用率却没有分母：探针全被额度/限流挡住
+    tags.push('no-evidence')
+  }
+  // 冷却中不是「坏」：额度/限流/模型不在分组，恢复后自动回来
+  if (row.blocked) tags.push('blocked')
+  // 没有任何毛病时才谈「靠什么撑着」——否则「兜底」会盖住真正的问题
+  if (tags.length === 0 && (row.status === 'stale' || row.status === 'unknown')) tags.push('fallback')
+  if (tags.length === 0) tags.push('ok')
+  return tags
 }
 
 /**
@@ -272,6 +319,8 @@ export function explain(candidates) {
     // 能不能真的登场（网关只用 admission.ok 的候选）；
     // routable 是「优先考虑」，过期/未探测的 routable 为 false 但仍然能登场兜底
     admission: c.admission || null,
+    // 全部状态标签（慢速 / 可疑 / 不稳定 / 冷却中…可以同时出现），决策页直接照着画
+    tags: admissionTags(c),
     probeOk: c.probeOk,
     tooSlow: Boolean(c.tooSlow),
     ttftMs: c.ttftMs,

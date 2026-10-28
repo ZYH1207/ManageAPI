@@ -2120,14 +2120,9 @@ function renderPricing() {
     const isCollapsed = collapsedPanels.has(panelKey)
     const rows = group.rows.map((row) => {
       const score = state.scores[row.offerId]
-      const maxTtft = Number(state.settings.maxTtftMs) || 0
-      const tooSlow =
-        maxTtft > 0 && typeof score?.ttftMs === 'number' && score.ttftMs > maxTtft
-      const badge = tooSlow
-        ? ' <span class="badge danger">慢速</span>'
-        : score?.probeTrusted === false
-          ? ' <span class="badge warn">可疑</span>'
-          : ''
+      // 状态标签由服务端按 core/router.js#admissionTags 下发：慢速 / 可疑 / 不稳定
+      // 可以同时成立，全都标出来。价目表里只标「毛病」：可用是默认、兜底是决策页的概念
+      const badges = statusBadges(score?.tags, { blocked: score?.blocked, hide: ['ok', 'fallback'] })
       const cacheCell =
         row.cacheHitRate === null || row.cacheHitRate === undefined
           ? '—'
@@ -2157,7 +2152,11 @@ function renderPricing() {
       return `
       <tr class="${row.isCheapest ? 'cheapest' : ''}" data-offer="${esc(row.offerId)}">
         <td>${esc(providerName(row.providerId))}</td>
-        <td class="mono">${esc(row.upstreamName)}${badge}${perCall ? ' <span class="badge">按次</span>' : ''}</td>
+        <td class="mono"><span class="offer-name" title="${esc(row.upstreamName)}">${esc(row.upstreamName)}</span>${
+          badges || perCall
+            ? `<span class="offer-tags">${badges}${perCall ? '<span class="badge">按次</span>' : ''}</span>`
+            : ''
+        }</td>
         <td class="num sub-cell">${cacheCell}</td>
         <td><span class="group-chip-cell">${row.group ? `<span class="badge ${groupChipOf(row.providerId, row.group)}" title="${esc(row.group)}"><span class="gc-name">${esc(row.group)}</span>${
           orphanGroups.has(`${row.providerId}::${row.group}`)
@@ -2453,29 +2452,43 @@ function blockedLabel(blocked) {
   return `${t(label)} · ${t('冷却中')}`
 }
 
-function decisionState(candidate) {
-  const admission = candidate.admission || { ok: true }
-  // 「放行可疑供给」开着时，探针说可疑的也会准入：标出来，别让人误以为是健康的
-  const passed = admission.ok && candidate.probeOk === false
-  const tag = (label, cls) => ({
-    label: passed ? `${label} · ${t('已放行')}` : label,
-    cls: passed ? 'warn' : cls,
-  })
+// 状态标签的文案与配色。kind 由 core/router.js#admissionTags 判定，这里只负责画——
+// 判定不留第二份，否则两个页面迟早对不上。
+// 一条供给可能同时有好几条毛病（又慢又掉包），所以状态是一串标签，不是单选。
+const STATUS_TAG = {
+  slow: { label: '慢速', cls: 'danger' },
+  degraded: { label: '结果可疑', cls: 'warn' },
+  unstable: { label: '不稳定', cls: 'danger' },
+  'no-evidence': { label: '没有可信样本', cls: 'warn' },
+  inconclusive: { label: '证据不足', cls: '' },
+  blocked: { label: '冷却中', cls: 'warn' },
+  fallback: { label: '兜底', cls: '' },
+  ok: { label: '可用', cls: 'ok' },
+}
 
-  // 准入不过：真的不登场，网关会直接报错。红标 + 理由，别写得像「只是慢了点」
-  if (!admission.ok) {
-    if (admission.kind === 'slow') return { label: t('慢速'), cls: 'danger' }
-    if (admission.kind === 'unstable') return { label: t('不稳定'), cls: 'danger' }
-    if (admission.kind === 'degraded') return { label: t('结果可疑'), cls: 'warn' }
-    return { label: t('不会登场'), cls: 'warn' }
-  }
-
-  if (candidate.blocked) return tag(blockedLabel(candidate.blocked), 'warn')
-  // 过期 / 未探测：能登场，但只在没有更好的供给时才派活——真实调用本身就是证据，
-  // 不拦它，下一轮评分就自愈了
-  if (candidate.status === 'stale' || candidate.status === 'unknown') return tag(t('兜底'), '')
-  if (candidate.status === 'inconclusive') return tag(t('证据不足'), '')
-  return tag(t('可用'), 'ok')
+/**
+ * 把服务端给的标签清单画成一串徽章：该标的都标，不是挑一个。
+ *
+ * @param {string[]} tags core/router.js#admissionTags 的返回
+ * @param {{blocked?:object, released?:boolean, hide?:string[]}} options
+ *   blocked  —— 冷却中的具体原因（额度不足 / 限流中…），措辞统一走 blockedLabel
+ *   released —— 「放行可疑供给」开着、准入放行了的可疑站，末尾补一个「已放行」，
+ *               不往每一条问题上重复挂后缀
+ *   hide     —— 不画的标签。比价页那种价格表里「可用」是默认状态、「兜底」是
+ *               决策页的概念（谁先派活），标在价目表上只是噪声
+ */
+function statusBadges(tags, { blocked = null, released = false, hide = [] } = {}) {
+  const kinds = Array.isArray(tags) ? tags : []
+  const html = kinds
+    .filter((kind) => !hide.includes(kind))
+    .map((kind) => {
+      const spec = STATUS_TAG[kind]
+      if (!spec) return `<span class="badge">${esc(kind)}</span>`
+      const label = kind === 'blocked' && blocked ? blockedLabel(blocked) : t(spec.label)
+      return `<span class="badge${spec.cls ? ` ${spec.cls}` : ''}">${label}</span>`
+    })
+  if (released) html.push(`<span class="badge warn">${t('已放行')}</span>`)
+  return html.join(' ')
 }
 
 function renderDecision() {
@@ -2510,7 +2523,11 @@ function renderDecision() {
     const panelKey = `decision:${decision.modelKey}`
     const isCollapsed = collapsedPanels.has(panelKey)
     const rows = decision.candidates.map((candidate, index) => {
-      const badge = decisionState(candidate)
+      const badges = statusBadges(candidate.tags, {
+        blocked: candidate.blocked,
+        // 准入放行了、探针却判它不可信：只可能是「放行可疑供给」开着，标出来
+        released: Boolean(candidate.admission?.ok) && candidate.probeOk === false,
+      })
       const isChosen = candidate.offerId === decision.chosenOfferId
       // 整行都能拖（指针事件，见下面的 rowDrag）：顺序覆盖自动排序，不分「可用」与否——
       // 位置随用户定，但能不能被派活仍由准入门禁说话（网关只认 admission.ok）
@@ -2532,7 +2549,7 @@ function renderDecision() {
           }</td>
           <td class="num${sortMark('value')}">${candidate.effective === null ? '—' : priceText(candidate.effective)}</td>
           <td class="num${sortMark('speed')}">${candidate.ttftMs === null ? '—' : `${candidate.ttftMs}ms`}</td>
-          <td><span class="badge ${badge.cls}">${badge.label}</span>${candidate.statusReason ? `<div class="sub">${esc(candidate.statusReason)}</div>` : ''}</td>
+          <td>${badges}${candidate.statusReason ? `<div class="sub">${esc(candidate.statusReason)}</div>` : ''}</td>
         </tr>`
     }).join('')
 

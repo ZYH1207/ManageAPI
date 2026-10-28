@@ -1720,7 +1720,15 @@ button.group-chip:hover { color: var(--accent); }
 
 /* 模型名与分组超长时省略号：分组列曾把整张表撑到 270px+，
    把右侧的成本/价差直接挤出可视区。全名放在 title 里，悬停可见 */
-.pricing-table td.mono, .pricing-table td.mono .badge {
+/* 上游模型名 + 状态标签：标签可能有好几枚（又慢又可疑又不稳），所以名字单独一行
+   走省略号，标签换到第二行——以前标签和名字挤在同一行，被 max-width 一起裁掉，
+   一条供给同时有三个毛病时后两个根本看不见 */
+.pricing-table td.mono { max-width: 220px; overflow: hidden; }
+.pricing-table td.mono .offer-name {
+  display: block; max-width: 190px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.pricing-table td.mono .offer-tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 3px; }
+.pricing-table td.mono .badge {
   max-width: 190px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 /* 分组徽章里可能挂一枚删除键（复制出来的分组），省略号只能加在名字上——
