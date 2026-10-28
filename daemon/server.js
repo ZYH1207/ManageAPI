@@ -395,6 +395,8 @@ async function buildState({ light = false } = {}) {
     // 看板结论句的档位：与 decisionMode 分开存，概览页自己那条三档条改的就是它
     headlineMode: normalizeDecisionMode(db.settings.headlineMode),
     headlineModeText: describeDecisionMode(db.settings.headlineMode),
+    // 看板第二句（全场冠军行）的档位：与 headlineMode 分开存
+    championMode: normalizeDecisionMode(db.settings.championMode),
     dataDir: store.dataDir(),
     // 令牌与余额挂在站点上：它们是「一个后台账号一套」，跟下面挂几个 Key 无关
     // 顺序按 sortOrder（站点卡上的上移/下移），没设过的按创建时间兜底
@@ -477,6 +479,8 @@ async function buildState({ light = false } = {}) {
     decisions,
     summary,
     headline: topLine,
+    // 全场冠军：全部模型各自「能登场」的牌合在一起按 championMode 比出的第一名
+    champion: pricing.decisionChampion({ decisions, settings: db.settings }),
     // 结论句里可点的模型下拉：本机未忽略且填了价格的模型，带可用供给数
     headlineModels,
     siteRanking,
@@ -598,14 +602,13 @@ route('PATCH', /^\/api\/settings$/, async (ctx) => {
     // 两个档位，同一个校验口径：decisionMode 管路由派活，headlineMode 管看板那句话。
     // 非法值直接 400，不静默回落：一个拼错的档位名若被当成「性价比」，用户会以为
     // 自己在按速度排、实际却在按价格排——静默错配置比报错危险得多。
-    for (const key of ['decisionMode', 'headlineMode']) {
+    for (const key of ['decisionMode', 'headlineMode', 'championMode']) {
       if (ctx.body[key] === undefined) continue
       const v = String(ctx.body[key])
       if (!DECISION_MODES.some((mode) => mode.key === v)) {
-        throw new HttpError(
-          400,
-          `${key === 'decisionMode' ? '决策侧重' : '看板档位'}只能是 ${DECISION_MODES.map((mode) => mode.key).join(' / ')}`,
-        )
+        const label =
+          key === 'decisionMode' ? '决策侧重' : key === 'headlineMode' ? '看板结论句档位' : '全场冠军档位'
+        throw new HttpError(400, `${label}只能是 ${DECISION_MODES.map((mode) => mode.key).join(' / ')}`)
       }
       db.settings[key] = v
     }

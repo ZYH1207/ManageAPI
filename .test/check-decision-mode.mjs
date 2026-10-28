@@ -21,7 +21,7 @@ import {
   normalizeDecisionMode,
 } from '../core/decision-mode.js'
 import { selectCandidates } from '../core/router.js'
-import { decisionHeadline } from '../core/pricing.js'
+import { decisionChampion, decisionHeadline } from '../core/pricing.js'
 
 let failed = 0
 const ok = (cond, msg) => {
@@ -268,6 +268,69 @@ console.log('[8] 看板顶部结论句：自己的档位，只在这批「能登
     settings: { headlineMode: 'speed' },
   })
   ok(mixed.ttftMs === 7000, `没探过针的排在有数据之后：${mixed.ttftMs}`)
+}
+
+console.log('[9] 全场冠军行：全部模型合在一起比，只看能登场的牌，档位独立')
+{
+  const candidate = (offerId, providerName, patch = {}) => ({
+    offerId,
+    providerName,
+    group: '',
+    price: 10,
+    effective: 12,
+    ttftMs: 3000,
+    admission: { ok: true },
+    ...patch,
+  })
+  const decision = (modelKey, candidates) => ({
+    modelKey,
+    candidates,
+    chosenOfferId: candidates[0]?.offerId ?? null,
+    chosenProviderName: candidates[0]?.providerName ?? null,
+  })
+  // m-a：最便宜的是 x1（5 元）；m-b：全体里最快的 y2（500ms）但贵
+  const d1 = decision('m-a', [
+    candidate('x1', '甲站', { effective: 5, price: 5, ttftMs: 9000 }),
+    candidate('x2', '甲站', { effective: 12, price: 12, ttftMs: 3000 }),
+  ])
+  const d2 = decision('m-b', [
+    candidate('y1', '乙站', { effective: 15, price: 15, ttftMs: 1200 }),
+    candidate('y2', '乙站', { effective: 30, price: 30, ttftMs: 500 }),
+  ])
+  const dead = decision('m-dead', [
+    candidate('z1', '丙站', { effective: 0.01, price: 0.01, ttftMs: 10, admission: { ok: false, kind: 'degraded' } }),
+  ])
+
+  const champ = decisionChampion({ decisions: [d1, d2], settings: {} })
+  ok(champ.modelKey === 'm-a' && champ.effectiveCny === 5, `性价比档全场第一是 m-a 的 x1：${champ.modelKey}/${champ.effectiveCny}`)
+  ok(champ.providerName === '甲站', `冠军带站名：${champ.providerName}`)
+  ok(champ.mode === 'value', `默认档 ${champ.mode}`)
+
+  const fastest = decisionChampion({ decisions: [d1, d2], settings: { championMode: 'speed' } })
+  ok(fastest.modelKey === 'm-b' && fastest.ttftMs === 500, `速度档全场第一是 m-b 的 y2：${fastest.ttftMs}ms`)
+
+  const cheapest = decisionChampion({ decisions: [d1, d2], settings: { championMode: 'price' } })
+  ok(cheapest.modelKey === 'm-a' && cheapest.priceCny === 5, `价格档全场第一还是 x1：${cheapest.priceCny}`)
+
+  // 与第一句互不干扰：headlineMode 管上面，championMode 管下面
+  const both = decisionChampion({ decisions: [d1, d2], settings: { headlineMode: 'speed', championMode: 'price' } })
+  ok(both.mode === 'price', `冠军用自己的档位，不吃 headlineMode：${both.mode}`)
+  const head = decisionHeadline({ decisions: [d1], settings: { headlineMode: 'speed', championMode: 'price' } })
+  ok(head.mode === 'speed', `第一句照旧用 headlineMode：${head.mode}`)
+
+  // 不登场的牌再便宜再快也夺不了冠
+  const withDead = decisionChampion({ decisions: [dead, d2], settings: { championMode: 'speed' } })
+  ok(withDead.modelKey === 'm-b', `不可用的 z1（10ms）不进池子：${withDead.modelKey}`)
+
+  // 全部不可用 → null，前端不画
+  ok(decisionChampion({ decisions: [dead], settings: {} }) === null, '一张能登场的牌都没有 → null')
+
+  // 缺数据不冒充最快：没探过针的排在有数据之后
+  const noTtft = decisionChampion({
+    decisions: [decision('m-nt', [candidate('n1', '甲站', { ttftMs: null })]), d2],
+    settings: { championMode: 'speed' },
+  })
+  ok(noTtft.modelKey === 'm-b' && noTtft.ttftMs === 500, `没探过针的不冒充最快：${noTtft.ttftMs}ms`)
 }
 
 console.log(failed === 0 ? '\n全部通过' : `\n${failed} 项失败`)

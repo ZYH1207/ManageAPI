@@ -748,6 +748,16 @@ main { flex: 1; min-width: 0; display: flex; flex-direction: column; overflow: h
 .headline .line strong { color: var(--text); font-weight: 600; }
 .headline .line strong:last-of-type { color: var(--accent); }
 
+/* 第二句（全场冠军行）：同一套句式，但刻意低半头——主角永远是上面那句。
+   字号小一档、颜色再淡一档，三档开关照常用同一套 .headline-basis 尺度 */
+.headline .line.sub {
+  font-size: 12.5px;
+  color: var(--faint);
+  margin-top: 3px;
+}
+.headline .line.sub strong { color: var(--muted); }
+.headline .line.sub strong:last-of-type { color: var(--accent); }
+
 /* 结论句里的模型名：看着像句子的一部分，但下面有虚线，点得出来 */
 .headline-model {
   padding: 0;

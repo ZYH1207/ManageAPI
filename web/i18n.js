@@ -830,6 +830,11 @@ Object.assign(EN, {
   '{n} 条可用': '{n} usable',
   '只改这句结论的算法，不改网关派活': 'Changes only how this sentence is computed — routing is untouched',
   '看板结论句改按「{mode}」算（网关派活没变）': 'Headline now uses "{mode}" (routing unchanged)',
+  // 看板顶部第二句：全场冠军行
+  '在全部模型中，{provider}的 {model} 按{basis}算{verdict}：{metric}':
+    'Across all models — {verdict} on {basis}: {provider} for {model}, {metric}',
+  '只改这句全场冠军的算法，不影响上面那句': 'Changes only this champion line — the sentence above is untouched',
+  '全场冠军改按「{mode}」算': 'Champion line now uses "{mode}"',
 })
 
 // 免费页

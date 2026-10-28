@@ -459,6 +459,47 @@ function headlineMetric(line, mode) {
  * 句子中间那个三档小开关只改这句话怎么看，不改网关派活（那是智能决策页的事）。
  * 点模型名可以换一个模型看结论，选择落库在 settings.focusModel。
  */
+/**
+ * 三档开关的公共画法：两行结论句共用一套样式，只是 data-act / 当前档不同。
+ * action 区分「上面那句的档位」和「下面那句全场冠军的档位」——各自独立落库，互不牵连。
+ */
+function headlineBasisHtml(mode, action, title) {
+  return `<span class="headline-basis" role="tablist" title="${esc(title)}">${(
+    state.decisionModes || []
+  )
+    .map(
+      (item) => `<button class="headline-basis-item${item.key === mode ? ' active' : ''}" role="tab"
+      aria-selected="${item.key === mode}" data-act="${esc(action)}" data-mode="${esc(item.key)}"
+      title="${esc(item.desc || item.hint || '')}">${esc(item.label)}</button>`,
+    )
+    .join('')}</span>`
+}
+
+/**
+ * 看板顶部第二句：全场冠军行。
+ *
+ * 上面那句是「你关注的模型谁当家」；这句把口径放大到全部模型——全站未被忽略的
+ * 模型各自「能登场」的牌合在一起，按档位比出真正的第一名（数据由服务端算好放在
+ * state.champion，排序口径和准入判定与路由同源）。和上面那句的区别：这里
+ * **没有模型下拉**，你能选的只有 性价比 / 价格 / 首字速度 三档
+ * （settings.championMode，与上面那句的 headlineMode 各存各的）。
+ */
+function championLineHtml() {
+  const champ = state.champion
+  if (!champ) return ''
+  const mode = HEADLINE_WORDS[champ.mode] ? champ.mode : 'value'
+  const words = HEADLINE_WORDS[mode]
+  const basis = headlineBasisHtml(mode, 'set-champion-mode', t('只改这句全场冠军的算法，不影响上面那句'))
+  const sentence = t('在全部模型中，{provider}的 {model} 按{basis}算{verdict}：{metric}', {
+    provider: `<strong>${esc(champ.providerName || '—')}</strong>`,
+    model: `<strong class="mono">${esc(champ.modelKey)}</strong>`,
+    basis,
+    verdict: `<strong>${t(words.verdict)}</strong>`,
+    metric: `${t(words.metric)} <strong>${headlineMetric(champ, mode)}</strong>`,
+  })
+  return `<div class="line sub">${sentence}</div>`
+}
+
 function headlineHtml() {
   const line = state.headline
   if (!line) return ''
@@ -468,15 +509,7 @@ function headlineHtml() {
 
   // 三档直接长在句子里（「按[性价比|价格|速度]算…」）：
   // 省掉右边那条独立控件，一句话自己就是全部操作面；点它只改这句话的算法
-  const basis = `<span class="headline-basis" role="tablist" title="${esc(t('只改这句结论的算法，不改网关派活'))}">${(
-    state.decisionModes || []
-  )
-    .map(
-      (item) => `<button class="headline-basis-item${item.key === mode ? ' active' : ''}" role="tab"
-      aria-selected="${item.key === mode}" data-act="set-headline-mode" data-mode="${esc(item.key)}"
-      title="${esc(item.desc || item.hint || '')}">${esc(item.label)}</button>`,
-    )
-    .join('')}</span>`
+  const basis = headlineBasisHtml(mode, 'set-headline-mode', t('只改这句结论的算法，不改网关派活'))
 
   const sentence = t('选用{provider}的 {model}，按{basis}算{verdict}：{metric}', {
     provider: `<strong>${esc(line.providerName || '—')}</strong>`,
@@ -508,6 +541,7 @@ function headlineHtml() {
   return `
     <div class="headline">
       <div class="line">${sentence}</div>
+      ${championLineHtml()}
       ${menu}
     </div>`
 }
@@ -5046,6 +5080,21 @@ document.addEventListener('click', async (event) => {
       render()
       const label = (state.decisionModes || []).find((item) => item.key === mode)?.label || mode
       toast(t('看板结论句改按「{mode}」算（网关派活没变）', { mode: t(label) }))
+    } catch (error) {
+      toast(error.message, true)
+    }
+    return
+  }
+
+  // 全场冠军行的档位：只改第二句按什么比，上面那句和路由一概不动
+  if (action === 'set-champion-mode') {
+    const mode = actionButton.dataset.mode || ''
+    if (!mode || mode === state.championMode) return
+    try {
+      state = await api('PATCH', '/api/settings', { championMode: mode })
+      render()
+      const label = (state.decisionModes || []).find((item) => item.key === mode)?.label || mode
+      toast(t('全场冠军改按「{mode}」算', { mode: t(label) }))
     } catch (error) {
       toast(error.message, true)
     }

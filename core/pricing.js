@@ -364,6 +364,44 @@ export function summarize(offers, settings = {}, benchmarks = {}, isTrusted = ()
 }
 
 /**
+ * 全场冠军行——看板顶部第二句。
+ *
+ * 第一句（decisionHeadline）回答「你关注的这个模型，谁给它当家」；这一句把口径
+ * 放大到全部模型：每家模型各自「能登场」的牌先放着，全站合在一起按档位比一次，
+ * 挑出那一张真正的全场第一——回答「全站未被忽略的模型里，谁家谁是尖子」。
+ * 数据仍然只吃 decisions（未忽略、填了价的模型），和第一句同一批原料：
+ * 没填价的模型三档里两档没法比，放进来只会让冠军名次没法解释。
+ *
+ * 档位是自己的（settings.championMode），和第一句的 headlineMode 分开存：
+ * 上面看某个模型的速度，下面看全场谁最便宜，两句话各看各的互不带偏。
+ * 排序口径仍然是 compareByBasis（唯一实现），不许在这里另写一份。
+ *
+ * @returns {{modelKey, providerName, group, mode, effectiveCny, priceCny, ttftMs}|null}
+ */
+export function decisionChampion({ decisions = [], settings = {} } = {}) {
+  const mode = normalizeDecisionMode(settings.championMode)
+  const pool = []
+  for (const d of decisions) {
+    for (const c of d.candidates) {
+      if (c.admission?.ok) pool.push({ ...c, modelKey: d.modelKey })
+    }
+  }
+  // 不登场的牌不进池子，所以排序结果天然没有「脏牌夺冠」；空池返回 null，前端不画
+  const champion = pool.sort((a, b) => compareByBasis(a, b, mode))[0] || null
+  if (!champion) return null
+  return {
+    modelKey: champion.modelKey,
+    providerName: champion.providerName ?? null,
+    group: champion.group || '',
+    mode,
+    // 三档各自的关键数字（人民币口径，前端按显示币种格式化）；拿不到就是 null
+    effectiveCny: champion.effective ?? null,
+    priceCny: champion.price ?? null,
+    ttftMs: typeof champion.ttftMs === 'number' ? champion.ttftMs : null,
+  }
+}
+
+/**
  * 生成一句人话结论——看板页顶部那一句。
  *
  * 数据来自 `decisions`（决策页「当前选」和网关派活用的那份），但**排序口径独立**：

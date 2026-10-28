@@ -75,6 +75,9 @@ export function emptyDb() {
       // 看板顶部结论句自己的档位：和 decisionMode 分开——路由按策略派活，
       // 看板只是换一个角度看同一批「能登场」的站，两边互不干扰
       headlineMode: 'value',
+      // 看板顶部第二句（全场冠军行）自己的档位：口径同上，但和 headlineMode 分开存——
+      // 上面看某个模型的速度、下面看全场谁最便宜，两句话各看各的
+      championMode: 'value',
       // 看板顶部结论句里选中的模型（归一化 key）；null = 自动挑（用量 > 手动排序 > 探过）
       focusModel: null,
       // 放行可疑供给：默认 false，探针判定不可信/过期的会被排到后面。
