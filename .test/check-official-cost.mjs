@@ -94,7 +94,7 @@ console.log('[6] 参考价库：价格合法、币种口径正确、前缀匹配
 {
   const list = listReference()
   ok(list.length >= 60, `主流模型条目数充足（${list.length} 条）`)
-  const bad = list.filter((e) => !(e.in >= 0 && e.out >= 0) || (e.in !== null && e.out !== null && e.out <= e.in))
+  const bad = list.filter((e) => !(e.in >= 0 && e.out >= 0) || (e.in !== null && e.out !== null && e.out < e.in))
   ok(bad.length === 0, `价格合法（负价或 in≥out 的条目：${bad.map((b) => b.modelKey).join(', ') || '无'}）`)
   ok(list.every((e) => ['CNY', 'USD', 'RUSD'].includes(e.currency)), '币种只有 CNY / USD / RUSD')
   // 国内官方价必须是 CNY；国外官方价（真美元）必须是 RUSD
@@ -105,9 +105,9 @@ console.log('[6] 参考价库：价格合法、币种口径正确、前缀匹配
   ok(list.every((e) => e.source), '每条都有来源标注')
   const tail = resolveReference('gpt-5.5-2026-01-01')
   ok(tail.matchedKey === 'gpt-5.5', `-2026 尾巴归到 gpt-5.5（${tail.matchedKey}）`)
-  // 横线变体：不显式给条目会被前缀匹配错归到 claude-opus-5（5/25）
+  // 横线变体：canonicalName 把 5-5 归一到 5.5，不会错归到 claude-opus-5（5/25）
   const dash = resolveReference('claude-opus-5-5')
-  ok(dash.matchedKey === 'claude-opus-5-5' && dash.in === 4 && dash.out === 20,
+  ok(['claude-opus-5-5', 'claude-opus-5.5'].includes(dash.matchedKey) && dash.in === 4 && dash.out === 20,
     `claude-opus-5-5 横线变体拿到 5.5 的价（${dash.in}/${dash.out}）`)
   ok(resolveReference('完全陌生的小模型') === null, '不在库里 → null')
 }

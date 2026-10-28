@@ -683,8 +683,8 @@ Object.assign(EN, {
     '<b>Import official prices</b>: reads the site\u2019s available channels with a token (richest data, no plaza needed), falling back to the model plaza. Only fills gaps, never overwrites.<br />',
   '<b>以此站已填价为准</b>：把这个站已经填好的实际价整体设为基准，适合你确信它没虚标的情况。<br />':
     '<b>Use this site\u2019s prices</b>: takes this site\u2019s existing prices as the baseline — use it when you trust the site.<br />',
-  '<b>载入内置参考价</b>：用工具内置的一份官方价（截至 {asOf}），价格常变，务必核对。':
-    '<b>Load built-in prices</b>: uses the bundled official price list (as of {asOf}). Prices change often — verify before relying on it.',
+  '<b>载入内置参考价</b>：用工具内置的一份官方价（截至 {asOf}）。启动时已自动补过一次，这个按钮只补新出现的空缺，不覆盖你手填或从站导入的。价格常变，务必核对。':
+    '<b>Load built-in prices</b>: uses the bundled official price list (as of {asOf}). This already runs once at startup; the button only fills new gaps and never overwrites your manual or imported entries. Prices change often — verify before relying on it.',
 })
 
 Object.assign(EN, {

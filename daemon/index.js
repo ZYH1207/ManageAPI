@@ -4,8 +4,9 @@
  * 用法：node daemon/index.js [--port 4319] [--open]
  */
 import { createAppServer, flushGatewayBuffers } from './server.js'
-import { dataDir } from '../core/store.js'
+import { dataDir, readDb } from '../core/store.js'
 import { ensureGatewayKeys } from '../core/inventory.js'
+import { seedReferenceBenchmarks } from '../core/benchmark.js'
 import { acquireInstanceLock } from './instance-lock.js'
 import { backupKeep, backupNow, backupRoot, startBackupScheduler } from '../core/backup.js'
 import { startProbeScheduler } from './scheduler.js'
@@ -135,6 +136,22 @@ try {
 }
 
 const stopBackups = startBackupScheduler({ logger: console })
+
+/**
+ * 官方价自动入库（2026-10-28 应作者要求）：启动时把内置参考价补进基准价表，
+ * 只补空缺——用户手填（manual）或从站导入（imported:/广场）的条目绝不动，
+ * 自己写的（seed / reference:）可以刷新。失败不挡启动，下次启动再补。
+ */
+try {
+  const db = await readDb()
+  const keys = [...new Set(db.offers.map((o) => o.modelKey || o.upstreamName).filter(Boolean))]
+  const seeded = await seedReferenceBenchmarks(keys)
+  if (seeded.added.length) {
+    console.log(`  基准价  自动补入 ${seeded.added.length} 条官方参考价（共 ${seeded.total} 条；手填/导入的未动）`)
+  }
+} catch (error) {
+  console.error('[daemon] 自动补入官方参考价失败（不影响启动）：', error.message)
+}
 
 /**
  * 兜底：定时器、探针、监控采集里漏掉的 rejection 不该让整个守护进程消失。

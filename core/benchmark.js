@@ -102,6 +102,8 @@ export function deleteBenchmark(modelKey) {
 /**
  * 把内置参考价里能匹配上的模型写入基准价表。
  * 只补缺失的，不覆盖已有条目——用户手填或从站导入的更可信。
+ * daemon 启动时会自动跑一次（这是「默认录进系统」的唯一入口），
+ * 基准价页的「载入内置参考价」按钮也走这里。
  */
 export function seedReferenceBenchmarks(modelKeys) {
   return mutateBenchmarks((table) => {
