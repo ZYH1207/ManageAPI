@@ -5286,6 +5286,12 @@ document.addEventListener('click', async (event) => {
   const card = actionButton.closest('[data-provider]')
   const providerId = card?.dataset.provider
 
+  // 协议探查是独立页（web/protocol.html），不并入 tab 逻辑：跳过去，页面里自带返回管理台
+  if (action === 'open-protocol') {
+    location.href = '/protocol.html'
+    return
+  }
+
   if (action === 'overview-issues-toggle') {
     overviewIssuesOpen = !overviewIssuesOpen
     renderOverview()

@@ -252,6 +252,8 @@ const EN = {
   '选站与手动调整': 'Auto pick & manual order',
   '探针': 'Probes',
   '检测是否偷工': 'Quality checks',
+  '协议探查': 'Protocols',
+  '表面协议与真实协议': 'Surface vs real protocol',
   '网关': 'Gateway',
   '一个入口接管': 'One endpoint',
   '用量': 'Usage',
