@@ -469,6 +469,401 @@ function openHelpModal() {
   if (modal) modal.hidden = false
 }
 
+// --------------------------------------------------------------- 诊断系统
+// v1：把错误指纹账本 + 供给表现时间序列摊开给人看；归因规则/异常判定后续逐步加。
+// 数据源 /api/diagnosis/ledger，与决策日志同源，跟着真实流量自动长。
+
+/** 诊断页当前展开的调试面板：'none'（默认收起）| 'book'（错误账本）| 'stats'（供给表现） */
+let diagnosisPane = 'none'
+
+let diagnosisData = null
+let diagnosisHours = 48
+/** 诊断引擎输出：{ findings, summary } */
+let diagnosisFindings = null
+/** 一键体检：正在跑 / 最近一次报告 */
+let checkupRunning = false
+let checkupReport = null
+/** 故障处理状态（/api/faults）：截流/上报计数与最近事件 */
+let faultData = null
+
+/**
+ * 故障处理卡：告诉用户「出错时系统替你挡了多少」——这是自动路由体验的底牌，
+ * 不展示的话用户只会觉得「今天挺顺」，不知道背后发生了什么。
+ */
+function faultHtml() {
+  if (!faultData) {
+    return `<div class="card"><div class="notice calm"><span class="name">加载中…</span></div></div>`
+  }
+  const { stats = {}, config = {}, tokenReady, autoRouteTokenPresent, events = [] } = faultData
+  const KIND_LABEL = {
+    'stream-broken': '断流',
+    'all-candidates-failed': '全部失败',
+    'truncated-output': '输出截断',
+    'degraded-quality': '降智',
+    'thinking-stolen': '偷思考',
+    slow: '变慢',
+    degraded: '降质',
+    'connectivity-test': '连通性测试',
+  }
+  const rows = events
+    .slice(0, 12)
+    .map(
+      (e) => `
+      <tr>
+        <td class="mono">${esc(String(e.at).slice(5, 19).replace('T', ' '))}</td>
+        <td><span class="badge ${e.status === 'sent' ? 'warn' : e.status === 'absorbed' ? 'ok' : 'danger'}">${
+          e.status === 'sent' ? '已上报' : e.status === 'absorbed' ? '已截流' : e.status === 'skipped' ? '未上报' : '上报失败'
+        }</span></td>
+        <td>${esc(KIND_LABEL[e.kind] || e.kind || '—')}</td>
+        <td class="desc" style="max-width:360px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(e.detail || e.message || e.error || '')}">${esc(e.detail || e.message || e.error || '—')}</td>
+      </tr>`,
+    )
+    .join('')
+
+  // 上报通道自检：自动路由那边没生成令牌、或开关关着，都会让故障永远报不上去
+  const channelOk = config.enabled && tokenReady
+  return `
+    <div class="card">
+      <div class="card-head">
+        <h3>故障处理</h3>
+        <span class="meta">出错时先把错误截流，再判断该不该叫自动路由换人</span>
+      </div>
+      <div class="stats" style="margin:12px 0 4px">
+        <div class="stat">
+          <div class="stat-main"><div class="k">已截流</div><div class="v">${stats.absorbed || 0}</div></div>
+          <div class="stat-icon tint-accent">${icon('swap')}</div>
+        </div>
+        <div class="stat">
+          <div class="stat-main"><div class="k">已上报</div><div class="v">${stats.sent || 0}</div></div>
+          <div class="stat-icon ${stats.sent ? 'tint-warn' : 'tint-muted'}">${icon('alert')}</div>
+        </div>
+        <div class="stat">
+          <div class="stat-main"><div class="k">上报失败</div><div class="v">${stats.failed || 0}</div></div>
+          <div class="stat-icon ${stats.failed ? 'tint-warn' : 'tint-muted'}">${icon('alert')}</div>
+        </div>
+        <div class="stat">
+          <div class="stat-main"><div class="k">上报通道</div><div class="v" style="font-size:15px">${channelOk ? '畅通' : '未就绪'}</div></div>
+          <div class="stat-icon ${channelOk ? 'tint-muted' : 'tint-warn'}">${icon('external')}</div>
+        </div>
+      </div>
+      <p class="hint" style="margin:8px 0 12px">
+        用户完全无感的失败（换站后成功）只记一笔、<b>不打扰自动路由</b>——否则它会为了无关痛痒的小问题在健康供给之间反复折腾。
+        只有「真的没拿到东西」或「反复降质」才上报，让它做故障转移。
+        ${!autoRouteTokenPresent ? '<br /><b>提示：</b>自动路由还没生成上报令牌，故障现在报不上去。' : ''}
+      </p>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <button class="ghost tiny" data-act="fault-test">测试上报通道</button>
+        <span class="desc">${esc(config.url || '')} · 开关${config.enabled ? '已开' : '已关'}</span>
+      </div>
+      ${
+        events.length
+          ? `<table class="table" style="margin-top:12px">
+              <thead><tr><th>时间</th><th>处置</th><th>类型</th><th>说明</th></tr></thead>
+              <tbody>${rows}</tbody>
+            </table>`
+          : '<p class="hint">还没有故障记录——一切正常。</p>'
+      }
+    </div>`
+}
+
+async function loadFaults() {
+  try {
+    faultData = await api('GET', '/api/faults')
+  } catch {
+    faultData = null
+  }
+}
+/** 诊断结论里「被折叠的派生症状」哪几条已展开（key = `rel:<findingId>`） */
+const expandedFindings = new Set()
+
+function checkupHtml() {
+  if (checkupRunning) {
+    return `<div class="card"><div class="notice calm"><span class="name">正在体检…</span><span class="grow"></span><span class="desc">对每条供给跑探针 + 拉模型列表 + 读余额，大约 30 秒</span></div></div>`
+  }
+  const r = checkupReport
+  if (!r) return ''
+  const VERDICT_CLASS = { ok: 'calm', warn: 'warn', bad: 'danger' }
+  const rows = (r.rows || [])
+    .map(
+      (x) => `
+      <tr>
+        <td><span class="badge ${VERDICT_CLASS[x.verdict] === 'calm' ? 'ok' : VERDICT_CLASS[x.verdict]}">${esc(x.verdictLabel || x.verdict)}</span></td>
+        <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(x.label)}">${esc(x.label)}</td>
+        <td class="mono">${x.ttftMs ? `${(x.ttftMs / 1000).toFixed(1)}s` : '—'}</td>
+        <td class="desc" style="max-width:420px">${esc((x.reasons || []).join('；') || x.speedNote || '—')}</td>
+      </tr>`,
+    )
+    .join('')
+  return `
+    <div class="card">
+      <div class="card-head">
+        <h3>体检报告${r.modelKey ? ` · ${esc(r.modelKey)}` : ''}</h3>
+        <span class="meta">${esc(String(r.at).slice(5, 19).replace('T', ' '))} UTC · 正常 ${r.summary.ok} / 隐患 ${r.summary.warn} / 不可用 ${r.summary.bad}</span>
+      </div>
+      <table class="table">
+        <thead><tr><th>结论</th><th>供给</th><th>首字</th><th>依据</th></tr></thead>
+        <tbody>${rows || '<tr><td colspan="4" class="desc">没有可体检的供给</td></tr>'}</tbody>
+      </table>
+      ${r.findings && r.findings.length ? `<div class="notice-list" style="margin-top:12px">${r.findings.map((f) => `<div class="notice ${f.severity === 'danger' ? 'danger' : 'warn'} has-detail"><span class="name">${esc(f.title)}</span><span class="grow"></span><span class="desc">${esc(f.detail || '')}</span><div class="desc" style="flex-basis:100%;margin-top:4px">→ ${esc(f.action || '')}</div></div>`).join('')}</div>` : ''}
+    </div>`
+}
+
+const DIAG_KIND_LABEL = {
+  quota: '额度不足',
+  budget: '单次预算超限',
+  'rate-limit': '限流中',
+  'model-missing': '模型不可用',
+  'protocol-unsupported': '不支持该协议',
+  outage: '未归类故障',
+  slow: '慢速/超时',
+}
+
+async function loadDiagnosis() {
+  try {
+    const [ledger, findings, faults] = await Promise.all([
+      api('GET', `/api/diagnosis/ledger?hours=${diagnosisHours}`),
+      api('GET', '/api/diagnosis'),
+      api('GET', '/api/faults'),
+    ])
+    diagnosisData = ledger
+    diagnosisFindings = findings
+    faultData = faults
+  } catch {
+    diagnosisData = null
+    diagnosisFindings = null
+  }
+  renderDiagnosis()
+  // renderDiagnosis 会重写整页 innerHTML（含守卫插槽），所以要把守卫重画一遍
+  renderDiagnostics()
+  translateDom($('#view-diagnosis') || document.body)
+}
+
+function diagKindBadge(kind) {
+  const label = DIAG_KIND_LABEL[kind] || kind || '未知'
+  const cls = kind === 'outage' ? 'danger' : kind === 'quota' || kind === 'rate-limit' ? 'warn' : 'info'
+  return `<span class="badge ${cls}">${esc(label)}</span>`
+}
+
+function renderDiagnosis() {
+  const view = $('#view-diagnosis')
+  if (!view) return
+  if (!diagnosisData) {
+    view.innerHTML = `
+      <div class="card"><div class="notice calm"><span class="name">正在加载…</span></div></div>`
+    return
+  }
+  const { errorbook, offerStats, totals } = diagnosisData
+
+  // offerId → 「站点 · 模型」，给时间序列表加人话列
+  const offerLabel = new Map()
+  for (const o of state.offers || []) {
+    const p = (state.providers || []).find((x) => x.id === o.providerId)
+    offerLabel.set(o.id, `${p ? p.name : '?'} · ${o.modelKey || o.upstreamName || '?'}`)
+  }
+
+  const fmtTps = (b) =>
+    b.genTimeSum > 0 && b.genOutSum > 0 ? `${(b.genOutSum / (b.genTimeSum / 1000)).toFixed(1)}` : '—'
+  const fmtTtft = (b) => (b.ttftCount ? `${Math.round(b.ttftSum / b.ttftCount / 100) / 10}s` : '—')
+  const fmtCache = (b) =>
+    b.inputTokens > 0 ? `${Math.round((b.cachedTokens / b.inputTokens) * 100)}%` : '—'
+  const fmtCost = (b) => (b.estCostCount ? `¥${b.estCostSum.toFixed(3)}` : '—')
+  const fmtHour = (h) => `${h.slice(5, 10).replace('-', '/')} ${h.slice(11, 13)}时`
+
+  // ---- 调试面板（默认收起）：错误账本 / 供给表现，给以后做准备
+  const paneBtn = (pane, label, count) => `
+    <button class="ghost" data-act="diagnosis-pane" data-pane="${pane}" style="${diagnosisPane === pane ? 'color:var(--text);background:var(--hover);border-radius:6px;' : ''}">
+      ${label}${count !== null ? ` <small class="desc">${count}</small>` : ''}
+    </button>`
+
+  const errRows = errorbook
+    .map(
+      (e) => `
+      <tr title="${esc(e.sample || e.template)}">
+        <td>${diagKindBadge(e.kind)}</td>
+        <td class="mono">${e.code ? `HTTP ${e.code}` : '—'}</td>
+        <td class="mono" style="max-width:380px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(e.template)}</td>
+        <td class="mono">${e.count}</td>
+        <td>${esc(Object.entries(e.providers).map(([p, c]) => `${p}×${c}`).join('、') || '—')}</td>
+        <td class="mono">${esc(e.lastAt.slice(5, 19).replace('T', ' '))}</td>
+      </tr>`,
+    )
+    .join('')
+
+  const statRows = offerStats
+    .slice(0, 60)
+    .map((b) => {
+      const label = offerLabel.get(b.offerId) || b.offerId
+      const topErr = Object.entries(b.errors)
+        .sort((a, c) => c[1] - a[1])
+        .slice(0, 2)
+        .map(([k, v]) => `${DIAG_KIND_LABEL[k.split('/')[0]] || k}×${v}`)
+        .join('、')
+      return `
+      <tr>
+        <td class="mono">${esc(fmtHour(b.hour))} <span class="desc">UTC</span></td>
+        <td style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(label)}">${esc(label)}</td>
+        <td class="mono">${b.requests}</td>
+        <td class="mono">${b.ok}</td>
+        <td class="mono">${b.broken || ''}</td>
+        <td class="mono">${b.failed || ''}</td>
+        <td class="mono">${fmtTtft(b)}</td>
+        <td class="mono">${fmtTps(b)}</td>
+        <td class="mono">${fmtCache(b)}</td>
+        <td class="mono">${fmtCost(b)}</td>
+        <td class="desc">${esc(topErr || '—')}</td>
+      </tr>`
+    })
+    .join('')
+
+  const bookPane = `
+    <div class="card">
+      <div class="card-head"><h3>错误指纹账本</h3><span class="meta">报错原文归一化后永久沉淀，不受决策日志滚动窗口影响</span></div>
+      <table class="table">
+        <thead><tr><th>归类</th><th>状态码</th><th>错误模板（悬停看原文）</th><th>次数</th><th>涉及站点</th><th>最近一次</th></tr></thead>
+        <tbody>${errRows || '<tr><td colspan="6" class="desc">还没有失败记录——网关遇到报错会自动归一化沉淀，无需手动操作</td></tr>'}</tbody>
+      </table>
+    </div>`
+
+  const statsPane = `
+    <div class="card">
+      <div class="card-head"><h3>供给表现</h3><span class="meta">近 ${diagnosisHours} 小时 · 按小时聚合 · UTC · 估算费用为诊断级非对账口径</span></div>
+      <table class="table">
+        <thead><tr><th>小时</th><th>供给</th><th>请求</th><th>成功</th><th>断流</th><th>失败</th><th>首字</th><th>吐字/s</th><th>缓存命中</th><th>估算费用</th><th>错误</th></tr></thead>
+        <tbody>${statRows || '<tr><td colspan="11" class="desc">暂无流量</td></tr>'}</tbody>
+      </table>
+    </div>`
+
+  // ---- 主卡：系统自动诊断的结论（core/diagnosis.js 的规则输出，按严重度排序）
+  const findings = diagnosisFindings?.findings || []
+  const errFindings = findings.filter((f) => (f.category || 'error') === 'error')
+  const anomalyFindings = findings.filter((f) => f.category === 'anomaly')
+  const hasFindings = findings.length > 0
+
+  const LAYER_LABEL = {
+    client: '客户端',
+    network: '本机网络',
+    gateway: '网关自身',
+    site: '站点',
+    upstream: '站点上游',
+  }
+  const FIND_CLASS = { danger: 'danger', warn: 'warn', info: 'calm' }
+
+  const findingRows = (list) =>
+    list
+      .map((f) => {
+        // 被归因收敛进来的派生症状：默认收起，点一下展开。收起来是因为它们
+        // 都是同一个病的表象，展开看得到细节就够，不该跟根因抢注意力
+        const related = Array.isArray(f.related) ? f.related : []
+        const relKey = `rel:${f.id}`
+        const relOpen = expandedFindings.has(relKey)
+        return `
+      <div class="notice ${FIND_CLASS[f.severity] || 'calm'} has-detail">
+        <span class="name">${esc(f.title)}</span>
+        <span class="grow"></span>
+        <span class="desc">${esc(LAYER_LABEL[f.layer] || f.layer)}</span>
+        ${
+          f.detail || f.action
+            ? `<div class="desc" style="flex-basis:100%;margin-top:4px">${esc(f.detail || '')}${
+                f.action ? `　→ ${esc(f.action)}` : ''
+              }</div>`
+            : ''
+        }
+        ${
+          related.length
+            ? `<button class="notice-more inline" data-act="finding-related" data-key="${esc(relKey)}" style="flex-basis:100%;text-align:left">${
+                relOpen ? '收起' : `展开看这 ${related.length} 项症状`
+              }</button>
+            ${
+              relOpen
+                ? `<div style="flex-basis:100%;margin-top:4px;padding-left:10px;border-left:2px solid var(--divider)">${related
+                    .map(
+                      (r) =>
+                        `<div class="desc" style="margin-top:3px">· ${esc(r.title)}${r.detail ? `<span style="opacity:.75"> — ${esc(String(r.detail).slice(0, 80))}</span>` : ''}</div>`,
+                    )
+                    .join('')}</div>`
+                : ''
+            }`
+            : ''
+        }
+      </div>`
+      })
+      .join('')
+
+  const calmRow = (text, hint) => `
+    <div class="notice calm">
+      <span class="name">${esc(text)}</span>
+      <span class="grow"></span>
+      <span class="desc">${esc(hint)}</span>
+    </div>`
+
+  view.innerHTML = `
+    <div class="stats">
+      <div class="stat">
+        <div class="stat-main"><div class="k">自动诊断</div><div class="v">${hasFindings ? `${findings.length} 项结论` : '一切正常'}</div></div>
+        <div class="stat-icon ${hasFindings && diagnosisFindings.summary.counts.danger > 0 ? 'tint-warn' : 'tint-accent'}">${icon('alert')}</div>
+      </div>
+      <div class="stat">
+        <div class="stat-main"><div class="k">需处理</div><div class="v">${hasFindings ? diagnosisFindings.summary.counts.danger : 0}</div></div>
+        <div class="stat-icon tint-warn">${icon('alert')}</div>
+      </div>
+      <div class="stat">
+        <div class="stat-main"><div class="k">异常项</div><div class="v">${anomalyFindings.length}</div></div>
+        <div class="stat-icon ${anomalyFindings.length ? 'tint-warn' : 'tint-muted'}">${icon('trend')}</div>
+      </div>
+      <div class="stat">
+        <div class="stat-main"><div class="k">已自动诊断</div><div class="v">${totals.diagnosed}</div></div>
+        <div class="stat-icon tint-muted">${icon('search')}</div>
+      </div>
+    </div>
+
+    <h3 class="section-title"><span class="s-icon">${icon('alert')}</span>报错诊断${errFindings.length ? `（${errFindings.length}）` : ''}</h3>
+    <div class="notice-list">
+      ${
+        errFindings.length
+          ? findingRows(errFindings)
+          : calmRow(
+              '没有需要处理的报错',
+              '网关报错时自动归因：是不是并发、该不该充值、是不是站点挂了，都会直接给结论',
+            )
+      }
+    </div>
+
+    <h3 class="section-title"><span class="s-icon">${icon('trend')}</span>异常诊断${anomalyFindings.length ? `（${anomalyFindings.length}）` : ''}</h3>
+    <div class="notice-list">
+      ${
+        anomalyFindings.length
+          ? findingRows(anomalyFindings)
+          : calmRow(
+              '表现没有异常波动',
+              '没报错也可能在变差：变慢、偷思考、关缓存、输出变短、时好时坏，都拿它自己的历史基线比出来',
+            )
+      }
+    </div>
+
+    <div style="display:flex;align-items:center;gap:8px;margin:18px 0 10px;flex-wrap:wrap">
+      <button class="primary" data-act="checkup-run" ${checkupRunning ? 'disabled' : ''}>
+        ${checkupRunning ? '体检中…' : '一键体检'}
+      </button>
+      <span class="desc">对当前模型的全部供给当场核实一遍（指纹/截断/计费/缓存/在售/余额）——会真的打上游，只在你点的时候跑</span>
+    </div>
+    ${checkupRunning || checkupReport ? checkupHtml() : ''}
+
+    <h3 class="section-title"><span class="s-icon">${icon('swap')}</span>故障处理</h3>
+    ${faultHtml()}
+
+    <h3 class="section-title"><span class="s-icon">${icon('layers')}</span>空回合守卫</h3>
+    <div id="diag-guard-slot"></div>
+
+    <div style="display:flex;align-items:center;gap:8px;margin:18px 0 10px">
+      <span class="desc">调试数据（给以后做准备）</span>
+      ${paneBtn('book', '错误账本', totals.fingerprints)}
+      ${paneBtn('stats', '供给表现', offerStats.length)}
+    </div>
+    ${diagnosisPane === 'book' ? bookPane : ''}
+    ${diagnosisPane === 'stats' ? statsPane : ''}
+  `
+}
+
 function render() {
   renderOverview()
   renderMonitor()
@@ -479,6 +874,7 @@ function render() {
   renderGateway()
   renderUsage()
   renderBenchmark()
+  renderDiagnosis()
   renderDiagnostics()
   // 分组抽屉挂在 body 上，不在任何 view 里；一键同步 / 改倍率 / 自动轮询改了 state，
   // 它得跟着重画（paintGroupModels 会保留滚动位置，不然 15 秒一跳回到顶部）
@@ -4662,7 +5058,7 @@ async function loadDiagnostics() {
     diagnosticsData = { error: error.message }
   }
   renderDiagnostics()
-  translateDom($('#view-diagnostics') || document.body)
+  translateDom($('#diag-guard-slot') || document.body)
 }
 
 function fmtAgo(iso) {
@@ -4699,7 +5095,8 @@ const EMPTY_ACTION_TEXT = {
 }
 
 function renderDiagnostics() {
-  const view = $('#view-diagnostics')
+  // 空回合守卫是诊断系统的一个分段：渲染进诊断页里的插槽，不再单独占一个 tab
+  const view = $('#diag-guard-slot')
   if (!view) return
   const data = diagnosticsData
   if (!data) {
@@ -5752,7 +6149,11 @@ const SIDEBAR_KEY = 'manageapi.sidebarCollapsed'
   }
 })()
 
-const TABS = ['overview', 'monitor', 'free', 'pricing', 'decision', 'probes', 'protocol', 'gateway', 'usage', 'benchmark', 'diagnostics']
+const TABS = ['overview', 'monitor', 'pricing', 'decision', 'probes', 'protocol', 'gateway', 'usage', 'benchmark', 'diagnosis']
+
+/** 暂时隐藏但代码全部保留的 tab：恢复 = index.html 取消导航注释 + 从这里移除。
+ *  隐藏视图的循环必须包含它们，否则切页时 #view-free 不会被动收起来。 */
+const HIDDEN_TABS = ['free']
 
 /** 折叠状态：'provider:xxx' / 'pricing:模型名' / 'probe:站点id' */
 const collapsedPanels = new Set()
@@ -5823,7 +6224,9 @@ const TAB_META = {
   gateway: { title: '网关', sub: '一个入口接管全部流量' },
   usage: { title: '用量', sub: '按 Key / 模型 / 站点统计' },
   benchmark: { title: '基准价', sub: '倍率换算的参照物' },
-  diagnostics: { title: '异常诊断', sub: '空回合守卫：上游把工具调用吞了怎么办' },
+  // 诊断系统 = 报错归因 + 异常诊断 + 一键体检 + 空回合守卫（同一件事的四个视角，
+  // 不分两个侧边栏入口：它们是同一份台账的不同切面，分开了用户要在两页来回对）
+  diagnosis: { title: '诊断系统', sub: '报错归因 · 异常体检 · 空回合守卫 · 故障上报' },
 }
 
 function setPageSub(text) {
@@ -5850,7 +6253,7 @@ function setTab(name) {
   if (name === 'help') {
     activeTab = 'help'
     document.querySelectorAll('#nav button').forEach((b) => b.classList.remove('active'))
-    for (const tabName of TABS) {
+    for (const tabName of [...TABS, ...HIDDEN_TABS]) {
       const el = $(`#view-${tabName}`)
       if (el) el.hidden = true
     }
@@ -5871,7 +6274,7 @@ function setTab(name) {
   const topSeg = $('#protocol-top-seg')
   if (topSeg) topSeg.hidden = name !== 'protocol'
   document.querySelectorAll('#nav button').forEach((b) => b.classList.toggle('active', b.dataset.tab === name))
-  for (const tabName of TABS) {
+  for (const tabName of [...TABS, ...HIDDEN_TABS]) {
     const el = $(`#view-${tabName}`)
     if (el) el.hidden = tabName !== name
   }
@@ -5894,8 +6297,11 @@ function setTab(name) {
   }
   // 监控数据比 state 重，按需拉：第一次进这个页才请求
   if (name === 'monitor' && !monitorData) void loadMonitor(monitorDays)
-  // 异常诊断页按需拉：数据不塞进 state（空回合记录会一直长，不该每次都随手轮询）
-  if (name === 'diagnostics') void loadDiagnostics()
+  // 诊断系统页按需拉：结论、账本、故障上报、空回合守卫四份数据
+  if (name === 'diagnosis') {
+    void loadDiagnosis()
+    void loadDiagnostics()
+  }
   // 协议探查也是按需拉：目标列表和记录在每次进页时刷新（站点页加的 Key 才能立刻看到）
   // 用量面板：进页就重画一次，副标题（区间 · 请求数 · token）才跟得上当前区间。
   // 进度量页时 render() 已经跑过一轮，但那时 activeTab 还不是 'usage'，
@@ -5916,6 +6322,11 @@ function setTab(name) {
 // 浏览器前进/后退只改 hash，不会触发任何渲染——没有这条监听，地址变了页面不动
 window.addEventListener('hashchange', () => {
   const next = location.hash.replace('#', '') || 'providers'
+  // 免费页暂藏：#free/xxx 是历史书签，落到概览（别停在原页，也别报错）
+  if ((next === 'free' || next.startsWith('free/')) && !TABS.includes('free')) {
+    setTab('overview')
+    return
+  }
   if (next !== activeTab && next !== `free/${freePane}`) setTab(next)
 })
 
@@ -7104,6 +7515,68 @@ document.addEventListener('click', async (event) => {
   if (action === 'toggle-autorefresh') {
     setAutoRefresh(!autoRefresh)
     toast(autoRefresh ? t('自动刷新已打开（15 秒）') : t('自动刷新已关闭'))
+    return
+  }
+
+  // ---------------------------------------------------- 诊断系统 · 结论与体检
+  // 一键体检：用户亲手点才真的打上游（会花 token，所以只在这里触发）
+  if (action === 'checkup-run') {
+    if (checkupRunning) return
+    checkupRunning = true
+    checkupReport = null
+    renderDiagnosis()
+    translateDom($('#view-diagnosis') || document.body)
+    try {
+      // 优先体检「当前决策聚焦的模型」，没选就由后端挑前几条供给
+      const modelKey = state.settings?.focusModel || state.headline?.model || null
+      checkupReport = await api('POST', '/api/diagnosis/checkup', { modelKey })
+      // 体检后的新证据要反映到诊断结论里
+      await loadDiagnosis()
+    } catch (error) {
+      toast(`体检失败：${error.message}`)
+    } finally {
+      checkupRunning = false
+      renderDiagnosis()
+      renderDiagnostics()
+      translateDom($('#view-diagnosis') || document.body)
+    }
+    return
+  }
+
+  // 测试故障上报通道（真发一条，验证自动路由能收到）
+  if (action === 'fault-test') {
+    try {
+      const r = await api('POST', '/api/faults/test', {})
+      toast(r.hint || (r.ok ? '上报通道畅通' : '上报失败'))
+      await loadDiagnosis()
+      renderDiagnostics()
+      translateDom($('#view-diagnosis') || document.body)
+    } catch (error) {
+      toast(`测试失败：${error.message}`)
+    }
+    return
+  }
+
+  // 展开/收起某条结论下被归因收敛进来的派生症状
+  if (action === 'finding-related') {
+    const key = actionButton.dataset.key
+    if (key) {
+      if (expandedFindings.has(key)) expandedFindings.delete(key)
+      else expandedFindings.add(key)
+      renderDiagnosis()
+      renderDiagnostics()
+      translateDom($('#view-diagnosis') || document.body)
+    }
+    return
+  }
+
+  // 调试数据面板：错误账本 / 供给表现（默认收起，互斥展开）
+  if (action === 'diagnosis-pane') {
+    const pane = actionButton.dataset.pane || 'none'
+    diagnosisPane = diagnosisPane === pane ? 'none' : pane
+    renderDiagnosis()
+    renderDiagnostics()
+    translateDom($('#view-diagnosis') || document.body)
     return
   }
 

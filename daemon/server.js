@@ -115,6 +115,16 @@ import {
   applyFaultToFailover,
   FAULT_WINDOW_MS,
 } from '../core/fault-signal.js'
+import * as diag from '../core/diagnosis.js'
+import { runCheckup } from './checkup-runner.js'
+import {
+  assessRequestImpact,
+  shouldEscalate,
+  faultKindOf,
+  holdMinutesFor,
+  IMPACT,
+} from '../core/fault-triage.js'
+import * as faultReporter from '../core/fault-reporter.js'
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url))
 const WEB_DIR = resolve(__dirname, '../web')
@@ -2928,6 +2938,77 @@ route('GET', /^\/api\/gateway\/routing$/, async (ctx) => {
 
 // ------------------------------------------------------- 异常诊断 · 空回合守卫
 
+/**
+ * 诊断引擎：账本信号 → 说人话的结论（规则在 core/diagnosis.js、core/anomaly.js）。
+ *
+ * 和上面 /api/diagnostics（空回合守卫的页面数据）是两个视角：
+ *   本接口回答「现在哪里不对劲、哪层问题、你该做什么」
+ *   /api/diagnostics 回答「空回合守卫自己干了什么」
+ * 两边数据源有重叠（都读 errorbook / offerStats），但结论不重复：
+ * 空回合守卫的「救回来了」只进它自己的记录，不在这里变成告警。
+ */
+route('GET', /^\/api\/diagnosis$/, async () => {
+  const db = await store.readDb()
+  const providerName = new Map((db.providers || []).map((p) => [p.id, p.name]))
+  const offerMeta = new Map()
+  for (const o of db.offers || []) {
+    offerMeta.set(o.id, {
+      label: `${providerName.get(o.providerId) || '?'} · ${o.modelKey || o.upstreamName || '?'}`,
+      modelKey: o.modelKey || o.upstreamName || null,
+      providerName: providerName.get(o.providerId) || null,
+      providerId: o.providerId || null,
+    })
+  }
+  const scoreMap = scoresFor(db)
+  return diag.diagnose({
+    errorbook: db.errorbook || {},
+    offerStats: db.offerStats || {},
+    providers: db.providers || [],
+    monitorBalance: db.monitor?.balance || [],
+    offerMeta,
+    scores: Object.fromEntries([...scoreMap].map(([id, s]) => [id, { status: s.status, routable: s.routable }])),
+  })
+})
+
+/** 账本查询：错误指纹 + 供给表现小时桶（调试数据面板用） */
+route('GET', /^\/api\/diagnosis\/ledger$/, async (ctx) => {
+  const db = await store.readDb()
+  const hours = Number(ctx.query.get('hours'))
+  const kind = ctx.query.get('kind') || null
+
+  const book = Object.values(db.errorbook || {})
+    .filter((e) => (kind ? e.kind === kind : true))
+    .sort((a, b) => String(b.lastAt).localeCompare(String(a.lastAt)))
+
+  let stats = Object.values(db.offerStats || {})
+  if (Number.isFinite(hours) && hours > 0) {
+    const cutoff = new Date(Date.now() - hours * 3600000)
+    const cutoffKey = `${cutoff.getUTCFullYear()}-${String(cutoff.getUTCMonth() + 1).padStart(2, '0')}-${String(cutoff.getUTCDate()).padStart(2, '0')}T${String(cutoff.getUTCHours()).padStart(2, '0')}`
+    stats = stats.filter((b) => String(b.hour).slice(0, 13) >= cutoffKey)
+  }
+  stats.sort((a, b) => String(b.hour).localeCompare(String(a.hour)))
+
+  return {
+    errorbook: book,
+    offerStats: stats,
+    totals: {
+      fingerprints: book.length,
+      errorCount: book.reduce((a, e) => a + e.count, 0),
+      buckets: stats.length,
+      diagnosed: book.filter((e) => e.lastDiagnosis).length,
+    },
+  }
+})
+
+/** 一键体检：用户亲手点才跑（会真的打上游、花 token，不做定时） */
+route('POST', /^\/api\/diagnosis\/checkup$/, async (ctx) => {
+  const body = ctx.body || {}
+  return runCheckup({
+    modelKey: body.modelKey || null,
+    offerIds: Array.isArray(body.offerIds) ? body.offerIds : null,
+  })
+})
+
 /** 诊断页的全部数据：开关、档位表、发生记录、当前改道 */
 route('GET', /^\/api\/diagnostics$/, async () => {
   const db = await store.readDb()
@@ -2986,6 +3067,11 @@ route('PATCH', /^\/api\/diagnostics$/, async (ctx) => {
 route('GET', /^\/api\/faults$/, async (ctx) => {
   const db = await store.readDb()
   const snapshot = combineWithDetours(db, activeFaultSignals(db))
+  // 上报事件账（截流/已报/上报失败）。和上面的 faultSignals 是两个层次：
+  //   faultSignals —— 诊断发现的「这家现在不行」（影响路由选站）
+  //   faultEvents  —— 我们向外报告的动作与结果（影响自动路由换人）
+  // 放同一接口是因为页面上它们就是一张卡的两半，分开取反而容易漏读
+  const events = (db.faultEvents || []).slice(-80).reverse()
   return {
     // 生效中的故障：自动路由挑优时按 offerId 过滤即可
     active: [...snapshot.values()],
@@ -2994,6 +3080,62 @@ route('GET', /^\/api\/faults$/, async (ctx) => {
     // 否则用户会以为自动路由已经知道这件事了，其实没人听
     subscribers: faultSubscriberCount(),
     history: (db.faultSignals || []).slice(-50).reverse(),
+    // ---- 上报通道（自动路由的故障转移）
+    config: faultReporter.normalizeFaultReport(db.settings?.faultReport),
+    // 令牌只回是否就绪，不回明文（这个页面不需要看令牌）
+    tokenReady: Boolean(faultReporter.resolveToken(db)),
+    autoRouteTokenPresent:
+      typeof db.settings?.failoverToken === 'string' && Boolean(db.settings.failoverToken),
+    events,
+    stats: {
+      observed: events.length,
+      absorbed: events.filter((e) => e.status === 'absorbed').length,
+      sent: events.filter((e) => e.status === 'sent').length,
+      failed: events.filter((e) => e.status === 'failed').length,
+      skipped: events.filter((e) => e.status === 'skipped').length,
+    },
+  }
+})
+
+/** 上报通道配置：开关 / 地址 / 令牌（默认复用本库的 failoverToken，不用手抄） */
+route('PATCH', /^\/api\/faults\/config$/, async (ctx) => {
+  const body = ctx.body || {}
+  await store.mutate((db) => {
+    const cur = faultReporter.normalizeFaultReport(db.settings.faultReport)
+    db.settings.faultReport = faultReporter.normalizeFaultReport({
+      ...cur,
+      enabled: body.enabled === undefined ? cur.enabled : Boolean(body.enabled),
+      url: body.url === undefined ? cur.url : String(body.url),
+      token: body.token === undefined ? cur.token : String(body.token),
+      useOwnToken: body.useOwnToken === undefined ? cur.useOwnToken : Boolean(body.useOwnToken),
+    })
+  })
+  return { ok: true }
+})
+
+/** 手动试一下上报通不通（用户点「测试上报通道」）：真发一条，但不影响任何供给 */
+route('POST', /^\/api\/faults\/test$/, async () => {
+  const db = await store.readDb()
+  // 挑一条在役供给当目标：自动路由拒收「没有目标的报表」，所以测试必须带真的
+  const offer = inv.routeableOffers(db)[0] || null
+  if (!offer) {
+    return { ok: false, skipped: '没有可测试的供给（先去站点页同步一个站）' }
+  }
+  const result = await faultReporter.reportFault({
+    offerId: offer.id,
+    modelKey: offer.modelKey || null,
+    kind: 'connectivity-test',
+    message: '来自 ManageAPI 诊断系统的连通性测试（可忽略，1 分钟后自动失效）',
+    holdMinutes: 1,
+    impact: { impact: 'none', reason: '连通性测试' },
+  })
+  return {
+    ...result,
+    hint: result.ok
+      ? '上报通道畅通'
+      : result.skipped
+        ? `没发出去：${result.skipped}`
+        : `上报失败：${result.error}`,
   }
 })
 
@@ -3900,6 +4042,78 @@ async function forwardToUpstream({
     }
   }
 }
+/**
+ * 故障研判 + 上报（网关请求结束后异步跑，绝不阻塞用户）。
+ *
+ * 三道门：
+ *   1. assessRequestImpact —— 用户到底受没受影响（无感的不许上报）
+ *   2. shouldEscalate     —— 降质要攒够次数、且冷却期内不重复
+ *   3. reportFault         —— 推给自动路由，失败只记账不抛错
+ *
+ * 和空回合守卫的关系（两边不重复干活）：
+ *   空回合守卫负责「这一轮空了，能不能自己救回来」（本地重建 / 补问 / 改道）；
+ *   救回来了它只落 notice，不进路由视野（见 core/fault-signal.js 的规矩）。
+ *   本函数只处理「守卫没教回来 / 本来就不是空回合」的其余失败：断流、全候选失败。
+ *   也就是：能救的它救，救不了的才轮到上报自动路由。
+ */
+async function handleFaultSignals({
+  offerId = null,
+  modelKey = null,
+  attemptCount = 1,
+  outcome = 'ok',
+  deliveredChars = 0,
+  degradation = null,
+  streamError = null,
+} = {}) {
+  const impact = assessRequestImpact({ outcome, attempts: attemptCount, deliveredChars, degradation })
+  // 用户完全无感且没换过站：什么都不记（不然每单都写库）
+  if (impact.impact === IMPACT.NONE && attemptCount <= 1) return
+
+  try {
+    const db = await store.readDb()
+    const history = (db.faultEvents || [])
+      .filter((e) => e.offerId === offerId && e.impact && e.status !== 'sent')
+      .slice(-20)
+
+    const { escalate, reason } = shouldEscalate({
+      impact,
+      history,
+      alreadyReported: faultReporter.recentlyReported(db.faultEvents || [], {
+        offerId,
+        modelKey,
+        kind: faultKindOf(impact),
+      }),
+    })
+
+    if (!escalate) {
+      // 截流/未达门槛：只记一笔（诊断页能看到「截了多少次、为什么没报」）
+      await faultReporter.recordFaultEvent({
+        offerId,
+        modelKey,
+        kind: faultKindOf(impact),
+        impact: impact.impact,
+        impactReason: impact.reason,
+        status: 'absorbed',
+        detail: `${reason}${streamError ? ` · ${String(streamError).slice(0, 80)}` : ''}`,
+        attempts: attemptCount,
+        deliveredChars,
+      })
+      return
+    }
+
+    await faultReporter.reportFault({
+      offerId,
+      modelKey,
+      kind: faultKindOf(impact),
+      message: `${impact.reason || '故障'}：${impact.detail || ''}${reason ? `（${reason}）` : ''}`.slice(0, 200),
+      holdMinutes: holdMinutesFor(impact),
+      impact,
+    })
+  } catch {
+    // 故障处理链自身出错绝不能影响用户请求——静默吞掉（事件账里无记录）
+  }
+}
+
 async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = false, protocol = 'chat') {
   const body = await readBody(req, { maxBytes: MAX_GATEWAY_BODY })
   // 客户端关闭连接时立刻取消上游请求：否则上游会继续生成，白烧额度还占着连接。
@@ -4343,6 +4557,19 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
             (Number(result.usage?.prompt_tokens) || 0) + (Number(result.usage?.completion_tokens) || 0)
           await inv.consumeFreeQuota(candidate.offer.id, { tokens, requests: 1 }).catch(() => {})
         }
+        // 故障研判：判定用户到底受没受影响，真影响才上报自动路由。
+        // 不 await：用户已经拿到响应了，绝不能让它等故障处理。
+        //
+        // 注意与空回合守卫的分工：「这一轮空了但救回来了」由守卫自己落 notice，
+        // 不进路由视野；这里只看剩下的——换站次数（截流了几次）与断流吐了多少字。
+        void handleFaultSignals({
+          offerId: candidate.offer.id,
+          modelKey: candidate.offer.modelKey || null,
+          attemptCount: index + 1,
+          outcome: result.streamError ? 'stream-broken' : 'ok',
+          deliveredChars: result.realCheck?.textChars || 0,
+          streamError: result.streamError || null,
+        })
         return
       }
       // 客户端断开导致的失败不是站的错，不进失败名单、不计流量
@@ -4388,10 +4615,24 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
     latencyMs: Date.now() - started,
     ok: false,
   })
+  // 故障截流：用户看到的必须是一句中性人话，而不是内部分站报错
+  // （「所有候选站都失败了：绿萝: HTTP 403 insufficient balance | 秋: 429…」）。
+  // 真实原因全在决策日志 + 错误账本里，排查时一样查得到，但用户端不该被
+  // 这类内部信息干扰——尤其是客户端会把整串原文贴给模型或展示给用户时。
+  //
+  // 和空回合守卫的关系：能走到这里说明守卫也没救回来（它会把没提交的空回合
+  // 交回上层换站，全部换完才落这里）。所以这里是「真的没拿到东西」，
+  // 够得上上报自动路由的级别。
+  void handleFaultSignals({
+    offerId: failures[0]?.offerId || null,
+    modelKey: candidates[0]?.offer?.modelKey || null,
+    attemptCount: failures.length,
+    outcome: 'failed',
+  })
   return openaiError(
     res,
     502,
-    `所有候选站都失败了：${failures.map((f) => `${f.providerName}: ${f.error}`).join(' | ')}`,
+    '上游暂时不可用，请稍后重试（网关已记录并提供应商）',
     'upstream_error',
   )
 }

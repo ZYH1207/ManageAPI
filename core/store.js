@@ -16,12 +16,16 @@ import { ensureMonitor, defaultMonitor } from './monitor.js'
 import { ensureProtocolRecords } from './protocol-records.js'
 import { ensureEmptyEvents } from './empty-guard.js'
 import { ensureFaultSignals } from './fault-signal.js'
+import { ensureDiagnosisKeys } from './offer-stats.js'
+import { ensureFaultKeys } from './fault-reporter.js'
 import { writeJsonAtomic } from './fsx.js'
 // 模型身份键（零依赖文件，不会与 store 成环）
 import { identityKey } from './model-name.js'
 
-// v5 = 协议探查记录 / 空回合记录 / 故障信号；v6 = 模型名身份归一（别名表）
-export const DB_VERSION = 6
+// v5 = 协议探查记录 / 空回合记录 / 故障信号
+// v6 = 模型名身份归一（别名表）
+// v7 = 诊断地基（错误指纹账本 / 供给表现时序 / 故障上报配置）
+export const DB_VERSION = 7
 
 /**
  * 归一化分组名。定义在存储层（零依赖），台账层再导出——两边共用同一份，
@@ -380,6 +384,8 @@ function migrate(db) {
     ensureProtocolRecords(db)
     ensureEmptyEvents(db)
     ensureFaultSignals(db)
+    ensureDiagnosisKeys(db)
+    ensureFaultKeys(db)
     return db
   }
 
@@ -423,6 +429,10 @@ function migrate(db) {
   // 手动排序的键要跟着换成身份键：读的时候按身份键查，不迁移就会「拖过的顺序全丢」。
   // 两条老键归到同一个身份时按出现顺序合并去重——排序本来就是相对次序
   db.manualOrder = remapManualOrderKeys(db.manualOrder, db.offers, settings.modelAliases)
+  // v7：诊断地基——错误账本、供给表现时序、故障上报配置（幂等）。
+  // 与 v6 各自独立、都幂等，跨级升上来两条都会跑
+  ensureDiagnosisKeys(db)
+  ensureFaultKeys(db)
   db.version = DB_VERSION
   ensureMonitor(db)
   return db

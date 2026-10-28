@@ -144,6 +144,7 @@ export function offerCost(offer, settings = {}, benchmarks = {}) {
       inCnyPerMtok: null,
       outCnyPerMtok: null,
       blendedCnyPerMtok: null,
+      cacheReadCnyPerMtok: null,
       complete: false,
     }
   }

@@ -31,10 +31,12 @@
           <svg viewBox="0 0 24 24"><path d="M3 3v18h18"/><polyline points="7 14 11 8 15 12 20 4"/></svg>
           <span class="nav-text"><span class="nav-title" data-i18n="站点">站点</span><span class="nav-desc" data-i18n="余额与分组">余额与分组</span></span>
         </button>
+        <!-- 免费页暂藏（代码全部保留，恢复 = 取消注释 + app.js 里 HIDDEN_TABS 移除 'free'）
         <button data-tab="free">
           <svg viewBox="0 0 24 24"><polyline points="20 12 20 22 4 22 4 12"/><rect x="2" y="7" width="20" height="5"/><line x1="12" y1="22" x2="12" y2="7"/><path d="M12 7H7.5a2.5 2.5 0 0 1 0-5C11 2 12 7 12 7z"/><path d="M12 7h4.5a2.5 2.5 0 0 0 0-5C13 2 12 7 12 7z"/></svg>
           <span class="nav-text"><span class="nav-title" data-i18n="免费">免费</span><span class="nav-desc" data-i18n="额度与积分">额度与积分</span></span>
         </button>
+        -->
         <button data-tab="pricing">
           <svg viewBox="0 0 24 24"><line x1="6" y1="20" x2="6" y2="13"/><line x1="12" y1="20" x2="12" y2="6"/><line x1="18" y1="20" x2="18" y2="10"/></svg>
           <span class="nav-text"><span class="nav-title" data-i18n="比价">比价</span><span class="nav-desc" data-i18n="同一模型对比">同一模型对比</span></span>
@@ -59,9 +61,9 @@
           <svg viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>
           <span class="nav-text"><span class="nav-title" data-i18n="基准价">基准价</span><span class="nav-desc" data-i18n="官方价参照">官方价参照</span></span>
         </button>
-        <button data-tab="diagnostics">
-          <svg viewBox="0 0 24 24"><path d="M12 9v4"/><path d="M12 17h.01"/><path d="M10.3 3.9 2.4 17.6A2 2 0 0 0 4.1 20.6h15.8a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/></svg>
-          <span class="nav-text"><span class="nav-title" data-i18n="异常诊断">异常诊断</span><span class="nav-desc" data-i18n="空回合守卫">空回合守卫</span></span>
+        <button data-tab="diagnosis">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v6"/><path d="M8.5 9h7l3 12h-13z"/><path d="M10 13h4"/><path d="M12 11v6"/></svg>
+          <span class="nav-text"><span class="nav-title" data-i18n="诊断系统">诊断系统</span><span class="nav-desc" data-i18n="报错归因与异常体检">报错归因与异常体检</span></span>
         </button>
       </nav>
 
@@ -157,7 +159,7 @@
         <section id="view-free" class="view" hidden></section>
 
         <section id="view-benchmark" class="view wide" hidden></section>
-        <section id="view-diagnostics" class="view wide" hidden></section>
+        <section id="view-diagnosis" class="view wide" hidden></section>
 
         <section id="view-help" class="view" hidden>
           <div class="doc" data-lang-block="zh">

@@ -39,6 +39,9 @@ import {
   SPLIT_PREFIX,
   mergeOverview as modelNamesOverview,
 } from './model-name.js'
+// 诊断地基：决策日志顺路更新的两份聚合（错误账本 + 供给表现时序）
+import { fingerprintError, applyErrorToBook, pruneErrorbook } from './error-fingerprint.js'
+import { applyRoutingToStats, pruneOfferStats } from './offer-stats.js'
 
 export function newId(prefix) {
   return `${prefix}_${randomUUID().slice(0, 8)}`
@@ -1446,14 +1449,54 @@ export async function noteEmptyDetourCheck(offerId, { ok } = {}) {
  *
  * 每个网关请求都单独 mutate 一次的话，等于每请求把 1MB 的 db.json 读一遍再整份重写，
  * 高峰期写放大非常吓人。调用方（server.js）攒几秒再一起写，语义不变。
+ *
+ * 顺路更新两份诊断聚合（与决策日志同源，不额外发任何请求）：
+ *   - db.errorbook  错误指纹账本：failures[] 与断流原因归一化后沉淀，不受 500 条滚动窗口影响
+ *   - db.offerStats 供给表现时间序列：按供给×小时聚合成功/失败/TTFT/TPS/估算费用等，
+ *     这是将来「站点综合评判（速度/稳定性/置信度）」直接消费的数据
  */
 export async function recordRoutingBatch(entries = []) {
   if (!entries.length) return []
   return mutate((db) => {
     if (!Array.isArray(db.routing)) db.routing = []
+    if (!db.errorbook || typeof db.errorbook !== 'object') db.errorbook = {}
+    if (!db.offerStats || typeof db.offerStats !== 'object') db.offerStats = {}
     const records = entries.map((entry) => ({ id: newId('g'), ts: nowIso(), ...entry }))
     db.routing.push(...records)
     if (db.routing.length > 500) db.routing = db.routing.slice(-500)
+
+    // ---- 诊断聚合：只在有供给的批次才去碰价格表（offerCost 不便宜）
+    const needStats = records.some((r) => r.chosenOfferId)
+    let offerById = null
+    if (needStats) {
+      offerById = new Map((db.offers || []).map((o) => [o.id, o]))
+    }
+    for (const record of records) {
+      // 错误账本：被试供给的失败原文 + 断流原因，都要沉淀
+      for (const f of record.failures || []) {
+        const fp = fingerprintError(f.error)
+        if (fp) applyErrorToBook(db.errorbook, fp, { providerName: f.providerName, offerId: f.offerId, at: record.ts })
+      }
+      if (record.outcome === 'stream-broken' && record.streamError) {
+        const fp = fingerprintError(record.streamError)
+        if (fp) applyErrorToBook(db.errorbook, fp, { providerName: record.chosenProviderName, offerId: record.chosenOfferId, at: record.ts })
+      }
+      // 供给表现时间序列
+      if (needStats) {
+        applyRoutingToStats(db.offerStats, record, {
+          offerById,
+          settings: db.settings || {},
+          benchmarks: db.benchmarks || {},
+        })
+      }
+    }
+    // 瘦身按天做一次就够：批次里随便挑一条的时间戳当「今天」
+    const today = records[records.length - 1].ts
+    if (!db._diagPrunedAt || today.slice(0, 10) !== String(db._diagPrunedAt).slice(0, 10)) {
+      pruneErrorbook(db.errorbook, Date.parse(today) || Date.now())
+      pruneOfferStats(db.offerStats, Date.parse(today) || Date.now())
+      db._diagPrunedAt = today
+    }
     return records
   })
 }

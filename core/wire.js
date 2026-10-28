@@ -334,6 +334,16 @@ export function createStreamInspector(protocol, { clientWantsUsage = false } = {
         parsed && Array.isArray(parsed.choices) && parsed.choices.length === 0 && parsed.usage
       if (usageOnly && !clientWantsUsage) return { drop: true }
 
+      // 「还没吐东西就别急着提交」。
+      //
+      // 为什么要 hold：Chat 流的第一个 chunk 通常只是一个 role 声明，没有任何正文。
+      // 以前这个 chunk 一过就 commit（向客户端发响应头 + 开头），于是上游
+      // 即使一个字都没吐就断流，用户也已经吃了一个空开头——只能报错，不能换站。
+      // 现在把「无正文、无工具调用、无终止原因」的 chunk 先攒着，等真有内容
+      // 再一起补发：中间断流时这一轮就还没提交，可以静默换下一条供给重放。
+      // 客户端看到的东西一模一样（顺序不变、一个 chunk 不少），但失败被截流了。
+      if (!state.contentChars && !state.hasToolCalls && !state.finishReason) return { hold: true }
+
       return {}
     },
   }
