@@ -151,12 +151,13 @@ function emptySums() {
  * 漂移判定：真实总耗时现值比基线慢出 DRIFT_THRESHOLD 就是漂移。
  * 分项漂移（首字/吐字）一并返回供 UI 定位，但不参与触发——解耦型劣化
  * 在总耗时里体现得清清楚楚，不需要单独触发。
+ * @param {number} [threshold] 漂移阈值（settings.driftThresholdPct/100），缺省 30%
  * @returns {{verdict:'drifted'|'ok'|'insufficient', drift:number|null,
  *            ttftDrift:number|null, tpsDrift:number|null,
  *            current:number|null, baseline:number|null, samples:number}}
  *   current/baseline = 平均总耗时（毫秒）
  */
-export function evaluateDrift(samples, offerStats, offerId, now = Date.now()) {
+export function evaluateDrift(samples, offerStats, offerId, now = Date.now(), threshold = DRIFT_THRESHOLD) {
   const cur = fastCurrent(samples, now)
   const base = baselineRatio(offerStats, offerId, now)
   if (cur.avgLatencyMs === null || base.avgLatencyMs === null) {
@@ -181,7 +182,7 @@ export function evaluateDrift(samples, offerStats, offerId, now = Date.now()) {
       ? (base.tps - cur.tps) / base.tps
       : null
   return {
-    verdict: drift >= DRIFT_THRESHOLD ? 'drifted' : 'ok',
+    verdict: drift >= threshold ? 'drifted' : 'ok',
     drift,
     ttftDrift,
     tpsDrift,

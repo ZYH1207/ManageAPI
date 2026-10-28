@@ -55,8 +55,6 @@ const RING_CAP = 200
  *  下一轮从现在起算满一小时，避免一小时内重复拍）
  */
 export function createDriftWatcher({ runProbes, onProbesRan = null, logger = console } = {}) {
-  const cooldownMs = envMs('MANAGE_API_DRIFT_COOLDOWN_MS', DRIFT_COOLDOWN_MS)
-  const trialSamples = envMs('MANAGE_API_TRIAL_SAMPLES', TRIAL_SAMPLES)
   const trialMaxMs = envMs('MANAGE_API_TRIAL_MAX_MS', TRIAL_MAX_MS)
   const exhaustLimit = envMs('MANAGE_API_DRIFT_EXHAUST_LIMIT', EXHAUST_LIMIT)
   // offerId → 样本环 { at, ttftMs, usage }。时间乱序无所谓，聚合只看窗口；
@@ -135,7 +133,25 @@ export function createDriftWatcher({ runProbes, onProbesRan = null, logger = con
    */
   async function tick() {
     const db = await store.readDb()
-    const record = normalizeAutoRoute(db.settings.autoRoute)
+    const settings = db.settings || {}
+    const record = normalizeAutoRoute(settings.autoRoute)
+    // 总开关：用户可以在诊断页关掉漂移检测（自动路由仍然工作，只是不靠真实分转移）
+    if (settings.driftEnabled === false) {
+      resetCycle()
+      lastEvaluation = null
+      return
+    }
+    // 可调参数：环境变量 > 设置 > 默认（环境变量是测试压节奏用的）
+    const threshold =
+      Number.isFinite(Number(settings.driftThresholdPct)) && Number(settings.driftThresholdPct) > 0
+        ? Number(settings.driftThresholdPct) / 100
+        : undefined
+    const cooldownMs =
+      envMs('MANAGE_API_DRIFT_COOLDOWN_MS', 0) ||
+      (Number(settings.driftCooldownMinutes) > 0 ? Number(settings.driftCooldownMinutes) * 60_000 : DRIFT_COOLDOWN_MS)
+    const trialSamples =
+      envMs('MANAGE_API_TRIAL_SAMPLES', 0) ||
+      (Number(settings.driftTrialSamples) > 0 ? Number(settings.driftTrialSamples) : TRIAL_SAMPLES)
     if (!record.enabled || !record.offerId) {
       resetCycle()
       lastEvaluation = null
@@ -147,7 +163,7 @@ export function createDriftWatcher({ runProbes, onProbesRan = null, logger = con
     const converted = convert(rings.get(record.offerId), offer, db.settings, benchmarks, now)
 
     // 快窗口现值 + 慢基线 → 漂移判定（UI 缓存这份结果）
-    const evaluation = evaluateDrift(converted, db.offerStats, record.offerId, now)
+    const evaluation = evaluateDrift(converted, db.offerStats, record.offerId, now, threshold)
     lastEvaluation = { offerId: record.offerId, at: now, ...evaluation }
 
     if (evaluation.verdict !== 'drifted') {
