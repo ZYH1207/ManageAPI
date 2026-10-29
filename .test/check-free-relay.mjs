@@ -7,6 +7,10 @@ const inHalfDay = new Date(now + 0.5 * 86400000).toISOString()
 
 const okScore = (extra = {}) => ({
   samples: 5,
+  // 闸门现在也看可用率（与付费侧 isRoutable 同口径），健康样本要给满
+  availability: 1,
+  blocked: null,
+  integrityFaults: [],
   fingerprintRate: 1,
   truncationRate: 1,
   billingRate: 1,

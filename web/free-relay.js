@@ -161,6 +161,30 @@ function judge(offer, score, t) {
   if (score.stale === true) {
     return { quota, gate: { label: '评分过期', why: t('上次探测太久远，先重新探测再放行') } }
   }
+  // 可用率与证据门槛：与付费侧 isRoutable 同口径。
+  // 之前这里只查指纹/截断，完全不看 status——实测连续 503 的供给（unstable）
+  // 和限流中的（unknown）都显示成绿色「可用」，免费池会把最不该派的派出去。
+  // 冷却中（额度不足/限流/模型不在分组）不是坏站，但此刻派过去只会失败。
+  if (score.blocked) {
+    return { quota, gate: { label: '冷却中', why: t(score.blockedLabel || '额度不足 / 限流中，稍后再试') } }
+  }
+  // 一条可靠性样本都没有（探针全是额度/限流失败，归因后不进分母）时不能放行：
+  // 等于纯按价格把最没证据的那条排到最前
+  if (score.availability === null || score.availability === undefined) {
+    return { quota, gate: { label: '证据不足', why: t('探针多次失败（额度/限流），还没有可靠性证据') } }
+  }
+  if (typeof score.availability === 'number' && score.availability < MIN_RATE) {
+    return {
+      quota,
+      gate: {
+        label: '不稳定',
+        why: `${t('可用率')} ${Math.round(score.availability * 100)}% · ${t('低于门槛')} 80%`,
+      },
+    }
+  }
+  if (Array.isArray(score.integrityFaults) && score.integrityFaults.length > 0) {
+    return { quota, gate: { label: '结果可疑', why: t(String(score.integrityFaults.join('、'))) } }
+  }
   if (typeof score.fingerprintRate === 'number' && score.fingerprintRate < MIN_RATE) {
     return {
       quota,

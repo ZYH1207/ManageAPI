@@ -12,6 +12,9 @@ import { normalizeQuota, resetIfDue, remaining, daysLeft as daysLeftOf, WINDOW_M
 
 const MIN_FINGERPRINT = 0.8
 const MIN_TRUNCATION = 0.8
+// 与付费侧 score.js 的 THRESHOLDS.availability 同一门槛：免费池不能比付费池松，
+// 免费站的掉包和没容量本来就更多
+const MIN_AVAILABILITY = 0.8
 
 /** score 可能是 Map（服务端）或裸对象（前端塞在 offer.score 上） */
 function scoreOf(offer, scores) {
@@ -54,6 +57,19 @@ function gateOf(score, quota) {
   // 没探测过就不算可用：免费站的掉包率远高于付费站，不能靠「看着像真的」放行
   if (!score || !score.samples) return { code: 'probing', label: '未探测' }
   if (score.stale === true) return { code: 'stale', label: '评分过期' }
+  // 可用率与证据门槛：与付费侧 isRoutable 同口径。
+  // 之前这里只查指纹/截断，完全不看可用率——实测连续 503 的供给（status=unstable）
+  // 和限流中的（availability=null）都通过闸门，被当成「可用」排在首选。
+  if (score.blocked) return { code: 'blocked', label: '冷却中' }
+  if (score.availability === null || score.availability === undefined) {
+    return { code: 'no_evidence', label: '证据不足' }
+  }
+  if (typeof score.availability === 'number' && score.availability < MIN_AVAILABILITY) {
+    return { code: 'unstable', label: '不稳定' }
+  }
+  if (Array.isArray(score.integrityFaults) && score.integrityFaults.length > 0) {
+    return { code: 'integrity', label: '结果可疑' }
+  }
   if (typeof score.fingerprintRate === 'number' && score.fingerprintRate < MIN_FINGERPRINT) {
     return { code: 'fingerprint', label: '指纹不符' }
   }
