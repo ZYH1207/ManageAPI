@@ -211,8 +211,27 @@ try {
   ok((await evaluate(`document.querySelector('#page-title').textContent`)) === '诊断系统', '页标题=诊断系统')
 
   // 3. UI 化：stats 瓷砖 + 诊断结论卡，账本/供给表默认收起
-  // 诊断结论 4 块 + 故障处理 5 块（已截流 / 不予处理 / 已上报 / 上报失败 / 上报通道）
-  ok((await evaluate(`document.querySelectorAll('#view-diagnosis .stat').length`)) === 9, '九块状态瓷砖（诊断 4 + 故障处理 5，复用 .stat 组件）')
+  //
+  // 只数「诊断结论」和「故障处理」两段的瓷砖，**不数整页 .stat**：
+  // 漂移监视卡的瓷砖数量随它的迭代在变（4 块 → 5 块），把它算进来会让这条断言
+  // 每次都在别人改漂移卡时变红，而它想钉的其实是「这两段有没有渲染出来」。
+  // 按「标题 + 紧跟其后的那一组 .stats」定位，不依赖卡片包裹结构
+  const statCount = (heading) =>
+    evaluate(`(() => {
+      const titles = [...document.querySelectorAll('#view-diagnosis .section-title, #view-diagnosis h3')]
+      const h = titles.find((x) => x.textContent.trim().startsWith('${heading}'))
+      if (!h) return -1
+      // 故障处理的 .stats 在 <div class="card"> 里面（标题也在卡内），
+      // 所以先看自己是不是在卡里，再往下找第一个 .stats
+      let n = h.nextElementSibling
+      while (n && !n.querySelector?.('.stats') && !n.classList.contains('stats')) n = n.nextElementSibling
+      if (!n) return -1
+      const group = n.classList.contains('stats') ? n : n.querySelector('.stats')
+      return group ? group.querySelectorAll('.stat').length : -1
+    })()`)
+  // 诊断结论卡在最顶上，没有 section-title，它直接就是第一个 .stats
+  ok((await evaluate(`document.querySelector('#view-diagnosis .stats').querySelectorAll('.stat').length`)) === 4, '诊断结论卡 4 块瓷砖')
+  ok((await statCount('故障处理')) === 5, `故障处理卡 5 块瓷砖（实际 ${await statCount('故障处理')}）`)
   ok((await evaluate(`document.querySelector('#view-diagnosis').innerHTML`)).includes('故障处理'), '故障处理卡渲染')
   ok((await evaluate(`document.querySelector('#view-diagnosis').innerHTML`)).includes('已截流'), '故障处理卡有「已截流」计数')
   // 客户端自己断开的：状态写「不予处理」、类型写「客户端断开」，
@@ -233,7 +252,10 @@ try {
   ok(body0.includes('充值'), '结论给出处理方式')
   ok((await evaluate(`document.querySelector('#view-diagnosis').innerText.includes('需处理')`)), '瓷砖显示「需处理」数')
   ok(!body0.includes('错误模板（悬停看原文）'), '账本原始表格默认不露（不该轻易看到）')
-  ok(!body0.includes('吐字/s'), '供给表现表默认不露')
+  // 注意：「吐字/s」现在也是漂移监视卡的分项瓷砖名，不能拿它当供给表的标志。
+  // 改用供给表独有的表头（按小时聚合 / 客户端断开列）。
+  ok(!body0.includes('按小时聚合'), '供给表现表默认不露')
+  ok(!body0.includes('<th>客户端断开</th>'), '供给表现表的「客户端断开」列也默认不露')
   ok(body0.includes('首字变慢'), '异常诊断报出「首字变慢」')
   ok(body0.includes('慢 3.0 倍'), '结论带倍数')
   ok((await evaluate(`document.querySelectorAll('#view-diagnosis .notice').length`)) >= 2, '两段各有结论')
@@ -247,7 +269,7 @@ try {
   ok(body1.includes('insufficient balance'), '展开后账本数据可见')
   ok(body1.includes('余额不足'), 'kind=quota 显示为「余额不足」（账单问题，不叫冷却）')
   ok(body1.includes('42'), '失败次数显示')
-  ok(!body1.includes('供给表现</h3>') && !body1.includes('吐字/s'), '另一块仍收起')
+  ok(!body1.includes('供给表现</h3>') && !body1.includes('按小时聚合'), '另一块仍收起')
 
   // 5. 切到供给表现
   await evaluate(`document.querySelector('[data-act="diagnosis-pane"][data-pane="stats"]').click()`)
