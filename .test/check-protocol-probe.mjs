@@ -280,6 +280,56 @@ try {
     check('结论也标成无法判定', Object.values(dead.protocols).every((p) => p.verdict.level === 'unknown'))
   }
 
+  console.log('\n记录：结论与建议要能落库（记录页点开才看得到「缺什么、怎么用」）')
+  {
+    await setMode('translated')
+    const { buildProtocolRecord, pruneProtocolRecords, ensureProtocolRecords, saveProtocolRecord } = await import(
+      '../core/protocol-records.js'
+    )
+    const r = await runOnce({ mode: 'lite' })
+    const record = buildProtocolRecord({
+      result: r,
+      target: {
+        mode: 'gateway',
+        offerId: 'o_test',
+        providerId: 'p_test',
+        providerName: '测试站',
+        group: 'g1',
+        label: '测试站 / test-model-a',
+      },
+      statusTags: ['ok'],
+      badStatus: false,
+    })
+    check('记录带上总建议', typeof record.advice === 'string' && record.advice.length > 0, String(record.advice))
+    check('记录里每个协议都留了结论', PROTOCOL_ORDER.every((id) => Boolean(record.protocols[id]?.verdict?.headline)))
+    check(
+      '记录里留了能力明细（记录页要能点开看哪项缺失）',
+      PROTOCOL_ORDER.every((id) => (record.protocols[id]?.capabilities || []).length > 0),
+    )
+    check('记录里砍掉了大字段 requests/evidence', !('requests' in record) && !JSON.stringify(record).includes('"evidence"'))
+    check(
+      '记录自带身份：站点/分组/模型',
+      record.providerName === '测试站' && record.group === 'g1' && record.model === 'test-model-a',
+      `${record.providerName}/${record.group}/${record.model}`,
+    )
+    check('记录带 mode/repeat', record.mode === 'lite' && record.repeat === 1)
+
+    // 落库再读回来：记录页走 /api/protocol/records/:id，靠的就是这份
+    const db = ensureProtocolRecords({})
+    saveProtocolRecord(db, record)
+    check(
+      '落库后按 id 读回结论不变',
+      db.protocolProbes.find((row) => row.id === record.id)?.protocols.responses?.verdict?.headline ===
+        record.protocols.responses.verdict.headline,
+    )
+
+    // Plus 版之前的旧记录：verdict/advice 全 null，不能因此被清理误删、也不能让记录页崩
+    db.protocolProbes.unshift({ id: 'pp_legacy', ts: record.ts, advice: null, protocols: { chat: { surface: {}, real: null } } })
+    check('自动清理关闭（0 天）时一条都不删', pruneProtocolRecords(db, 0) === 0 && db.protocolProbes.length === 2)
+    check('按天清理只按时间算，新记录不会被误删', pruneProtocolRecords(db, 1) === 0)
+    await setMode('native')
+  }
+
   console.log('\n边界：进度回调与取消')
   {
     const events = []
