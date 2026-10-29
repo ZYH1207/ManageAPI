@@ -80,6 +80,26 @@ export function normalizeSiteUrl(input) {
   return url.replace(/\/+$/, '')
 }
 
+/**
+ * 实际请求用的 API 端点。
+ *
+ * baseUrl 可以为空（新建站点时只要求填网站地址，端点在加 Key 时才填），
+ * 但识别系别、登录、探测、采集这些都要发请求。为空时回落到 siteUrl 的源站：
+ *   https://foxapi.xin/dashboard → https://foxapi.xin/v1
+ * 否则会拼出 `/api/v1/auth/login` 这种没有主机的地址，报 ERR_INVALID_URL。
+ *
+ * 注意只回落到「源站 + /v1」：siteUrl 可能带 /dashboard 这类后台路径，
+ * 不能直接拿来拼接口。
+ */
+export function apiBaseOf(provider) {
+  const explicit = String(provider?.baseUrl || '').trim()
+  if (explicit) return explicit
+  const site = String(provider?.siteUrl || '').trim()
+  const m = site.match(/^(https?):\/\/([^/]+)/i)
+  if (!m) return ''
+  return `${m[1].toLowerCase()}://${m[2]}/v1`
+}
+
 // ---------------------------------------------------------------- providers
 
 export async function createProvider({ name, baseUrl = '', siteUrl = '', kind = 'unknown', note = '' }) {
@@ -1079,7 +1099,7 @@ export async function loginWithCredentials(providerId, { user, password, confirm
   if (!kind) {
     // 只读探测：/api/status、/api/v1/settings/public 等，不产生任何写操作
     detected = await providers
-      .detectProviderKind({ baseUrl: provider.baseUrl, timeoutMs: 5000 })
+      .detectProviderKind({ baseUrl: apiBaseOf(provider), timeoutMs: 5000 })
       .catch(() => ({ kind: 'unknown', evidence: '探测失败' }))
     if (AUTH_KINDS.includes(detected.kind)) kind = detected.kind
   }
@@ -1098,7 +1118,7 @@ export async function loginWithCredentials(providerId, { user, password, confirm
   }
 
   const result = await providers.loginProvider({
-    baseUrl: provider.baseUrl,
+    baseUrl: apiBaseOf(provider),
     kind,
     user,
     password,
@@ -1152,7 +1172,7 @@ export async function autoRelogin(providerId) {
   try {
     const plain = JSON.parse(await decryptSecret(provider.loginCred))
     const result = await providers.loginProvider({
-      baseUrl: provider.baseUrl,
+      baseUrl: apiBaseOf(provider),
       kind: provider.kind === 'relay' ? undefined : provider.kind,
       user: plain.user,
       password: plain.password,

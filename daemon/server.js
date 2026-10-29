@@ -650,7 +650,7 @@ route('POST', /^\/api\/providers\/([\w-]+)\/detect-kind$/, async (ctx) => {
     )
   ).filter(Boolean)
   const auth = adminToken || apiKeys[0] || ''
-  const detected = await providers.detectProviderKind({ baseUrl: provider.baseUrl, adminToken: auth })
+  const detected = await providers.detectProviderKind({ baseUrl: inv.apiBaseOf(provider), adminToken: auth })
   await inv.updateProvider(provider.id, { kind: detected.kind, kindSource: 'auto' })
   return {
     ...(await buildState()),
@@ -723,7 +723,7 @@ route('POST', /^\/api\/providers\/([\w-]+)\/sync$/, async (ctx) => {
       }
       try {
         const result = await providers.listModels({
-          baseUrl: provider.baseUrl,
+          baseUrl: inv.apiBaseOf(provider),
           apiKey,
           timeoutMs: syncTimeoutMs,
         })
@@ -847,7 +847,7 @@ async function loadProviderPricing(providerId, { fresh = false } = {}) {
     try {
       const adminToken = await inv.revealAdminToken(provider.id)
       pricing = await providers.fetchProviderPricing({
-        baseUrl: provider.baseUrl,
+        baseUrl: inv.apiBaseOf(provider),
         adminToken,
       })
       pricingCache.set(providerId, { at: Date.now(), data: pricing })
@@ -861,7 +861,7 @@ async function loadProviderPricing(providerId, { fresh = false } = {}) {
         if (relogin.ok) {
           invalidatePricing(provider.id)
           const retried = await providers.fetchProviderPricing({
-            baseUrl: provider.baseUrl,
+            baseUrl: inv.apiBaseOf(provider),
             adminToken: relogin.token,
           })
           pricingCache.set(providerId, { at: Date.now(), data: retried })
@@ -1099,7 +1099,7 @@ route('POST', /^\/api\/providers\/([\w-]+)\/detect-groups$/, async (ctx) => {
   let source = null
   try {
     const fetched = await providers.fetchTokenList({
-      baseUrl: provider.baseUrl,
+      baseUrl: inv.apiBaseOf(provider),
       adminToken,
       timeoutMs: TOKEN_LIST_TIMEOUT_MS,
     })
@@ -1232,7 +1232,7 @@ route('POST', /^\/api\/providers\/([\w-]+)\/usage-check$/, async (ctx) => {
     throw new HttpError(400, '需要先在站点卡片上点「令牌」，填一个站点后台的登录令牌')
   }
 
-  const raw = await providers.fetchSiteUsage({ baseUrl: provider.baseUrl, adminToken })
+  const raw = await providers.fetchSiteUsage({ baseUrl: inv.apiBaseOf(provider), adminToken })
 
   // 我们这边的估算：usage 记录里的 token × 当前价格
   const usageData = await readUsage()
@@ -1325,13 +1325,17 @@ route('POST', /^\/api\/providers\/([\w-]+)\/balance$/, async (ctx) => {
   const provider = db.providers.find((p) => p.id === ctx.params[0])
   if (!provider) throw new HttpError(404, '站点不存在')
   const credentials = db.credentials.filter((c) => c.providerId === provider.id)
-  if (credentials.length === 0) throw new HttpError(400, '该站点还没有 Key')
+  // 只要「有一把 Key」或「有令牌」就能读：令牌本身就够走后台账户接口，
+  // 以前强制要求 Key，导致先填令牌、还没加 Key 的站读不到余额
+  if (credentials.length === 0 && !provider.adminToken) {
+    throw new HttpError(400, '该站点还没有 Key，也没有令牌——填一个才能读余额')
+  }
 
   // 所有 Key 都试（与 sync 同口径）：旧 Key 过期、新 Key 可用时也能读到余额
   const apiKeys = (await Promise.all(credentials.map((c) => inv.revealSecret(c.id)))).filter(Boolean)
   const adminToken = await inv.revealAdminToken(provider.id)
   const result = await providers.tryBalanceWithKeys({
-    baseUrl: provider.baseUrl,
+    baseUrl: inv.apiBaseOf(provider),
     apiKeys,
     adminToken,
     kind: provider.kind,
@@ -1342,7 +1346,7 @@ route('POST', /^\/api\/providers\/([\w-]+)\/balance$/, async (ctx) => {
     const relogin = await inv.autoRelogin(provider.id)
     if (relogin.ok) {
       const retried = await providers.tryBalanceWithKeys({
-        baseUrl: provider.baseUrl,
+        baseUrl: inv.apiBaseOf(provider),
         apiKeys,
         adminToken: relogin.token,
         kind: provider.kind,
@@ -1789,7 +1793,7 @@ route('POST', /^\/api\/benchmarks\/import-plaza$/, async (ctx) => {
   if (!provider) throw new HttpError(404, '站点不存在')
 
   const adminToken = await inv.revealAdminToken(provider.id)
-  const pricing = await providers.fetchProviderPricing({ baseUrl: provider.baseUrl, adminToken })
+  const pricing = await providers.fetchProviderPricing({ baseUrl: inv.apiBaseOf(provider), adminToken })
 
   // 读-改-写走 benchmark.js 的串行队列，与手动改价 / 载入参考价 / 从站导入互斥，
   // 并发到达时不再互相覆盖
@@ -1888,17 +1892,17 @@ route('GET', /^\/api\/export\/config$/, async (ctx) => {
   const apiKey = includeKey && credential ? await inv.revealSecret(credential.id) : 'sk-********'
 
   const openaiCompatible = {
-    baseURL: provider.baseUrl,
+    baseURL: inv.apiBaseOf(provider),
     apiKey,
     models,
   }
   const envBlock = [
     `# ${provider.name}`,
-    `export OPENAI_BASE_URL="${provider.baseUrl}"`,
+    `export OPENAI_BASE_URL="${inv.apiBaseOf(provider)}"`,
     `export OPENAI_API_KEY="${apiKey}"`,
   ].join('\n')
 
-  return { provider: { id: provider.id, name: provider.name, baseUrl: provider.baseUrl }, openaiCompatible, envBlock, modelCount: models.length }
+  return { provider: { id: provider.id, name: provider.name, baseUrl: inv.apiBaseOf(provider) }, openaiCompatible, envBlock, modelCount: models.length }
 })
 
 // ------------------------------------------------------------------ 网关
@@ -2077,7 +2081,7 @@ async function forwardToUpstream({ candidate, body, res, attemptIndex, pool = 'p
 
   let upstreamRes
   try {
-    upstreamRes = await fetch(`${candidate.provider.baseUrl.replace(/\/+$/, '')}/chat/completions`, {
+    upstreamRes = await fetch(`${inv.apiBaseOf(candidate.provider).replace(/\/+$/, '')}/chat/completions`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',

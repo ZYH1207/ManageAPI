@@ -51,7 +51,7 @@ export async function runProbes({ providerId, offerId, offerIds, limit = 5 } = {
         continue
       }
       const record = await probeModel({
-        baseUrl: provider.baseUrl,
+        baseUrl: inv.apiBaseOf(provider),
         apiKey,
         model: offer.upstreamName,
         timeoutMs: db.settings.probeTimeoutMs || 45000,

@@ -45,7 +45,7 @@ export async function collectProviderSnapshots({ providerId = null, logger = con
     if (apiKey || adminToken) {
       try {
         snap.balance = await providers.tryBalanceWithKeys({
-          baseUrl: provider.baseUrl,
+          baseUrl: inv.apiBaseOf(provider),
           apiKeys,
           adminToken,
           kind: provider.kind,
@@ -88,7 +88,7 @@ export async function collectProviderSnapshots({ providerId = null, logger = con
         dayList.map(async ({ day }) => {
           try {
             const spend = await providers.fetchSiteDailySpend({
-              baseUrl: provider.baseUrl,
+              baseUrl: inv.apiBaseOf(provider),
               adminToken,
               date: day,
               timeoutMs: 12000,
@@ -107,7 +107,7 @@ export async function collectProviderSnapshots({ providerId = null, logger = con
     // ---------------------------------------------------------------- 公告
     try {
       snap.announcements = await providers.fetchAnnouncements({
-        baseUrl: provider.baseUrl,
+        baseUrl: inv.apiBaseOf(provider),
         apiKey,
         adminToken,
         kind: provider.kind,
@@ -123,7 +123,7 @@ export async function collectProviderSnapshots({ providerId = null, logger = con
     if (adminToken) {
       try {
         const pricing = await providers.fetchAvailableChannels({
-          baseUrl: provider.baseUrl,
+          baseUrl: inv.apiBaseOf(provider),
           adminToken,
         })
         snap.groups = pricing.groups

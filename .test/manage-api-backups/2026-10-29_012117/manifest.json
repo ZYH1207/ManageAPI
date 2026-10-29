@@ -1,0 +1,15 @@
+{
+  "createdAt": "2026-10-28T17:21:17.596Z",
+  "reason": "startup",
+  "source": "D:/AgentWorkPlace/DSH/ManageAPI/.test/tmp-rev",
+  "files": [
+    {
+      "name": "db.json",
+      "size": 7641998
+    },
+    {
+      "name": "master.key",
+      "size": 64
+    }
+  ]
+}
