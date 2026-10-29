@@ -2244,11 +2244,37 @@ function renderDecision() {
       </div>`
   }).join('')
 
+  // 「放行可疑供给」放在这一页：它直接决定下面这张表里谁能被选，
+  // 放在探针页时要跨页才能改，改完还得回来看效果
+  const allowUntrusted = Boolean(state.settings.allowUntrusted)
+  const untrustedSwitch = `
+    <div class="switch-row" style="margin-bottom:12px">
+      <label class="switch">
+        <input type="checkbox" id="allow-untrusted" ${allowUntrusted ? 'checked' : ''} />
+        <span class="switch-track"><span class="switch-knob"></span></span>
+        <span class="switch-text">
+          <b>放行可疑供给</b>
+          <span>探针判定可疑（指纹不符 / 输出截断 / 用量虚报 / 评分过期）的站，也按有效成本正常参与选站</span>
+        </span>
+      </label>
+      ${
+        allowUntrusted
+          ? `<div class="alert" style="margin-top:10px;background:var(--warn-soft);border-color:var(--warn-border)">
+               <div>
+                 <div class="name">已放行：可疑的站会正常参与选站</div>
+                 <div class="desc">它们仍然按「价格 ÷ 质量」排序——质量差一半，成本就翻倍，只有便宜到足够多才会被选中。首字上限仍然独立生效。如果你更在意输出是否可信，把这个开关关掉。</div>
+               </div>
+             </div>`
+          : ''
+      }
+    </div>`
+
   view.innerHTML = `
     <div class="toolbar">
       <input id="decision-search" class="search" type="search" placeholder="搜索模型名…" value="${esc(filters.decision)}" />
       <span class="hint" style="margin:0">${visibleDecisions.length} / ${decisions.length} 个模型</span>
     </div>
+    ${untrustedSwitch}
     <p class="hint">默认按「有效成本 = 价格 ÷ 质量」排序，用 ↑↓ 手动调整「可用」那几条的先后——不可信的站不会因为你拖它而排到前面。</p>
     <p class="hint">${t('注意：<b>同一个模型在不同站的状态是各自独立的</b>（A 站健康、B 站掉包很正常），所以这里按「站 × 模型」逐条评估，状态下方会写明具体原因。')}</p>
     ${blocks}`
@@ -2351,7 +2377,6 @@ function renderProbes() {
   const interval = Number(state.settings.probeIntervalMinutes) || 0
   const maxAge = Number(state.settings.scoreMaxAgeHours) || 6
   const maxTtft = Number(state.settings.maxTtftMs) || 0
-  const allowUntrusted = Boolean(state.settings.allowUntrusted)
   const intervalOptions = [
     [0, '关闭'],
     [30, '30 分钟'],
@@ -2388,26 +2413,6 @@ function renderProbes() {
       <div class="hint" style="margin-top:8px">
         有效期决定「允许错过几轮探测」：最近一次有效证据（探针或真实调用）超过它就判过期。
         探测间隔不能超过有效期的一半，否则供给会在两轮探测之间整段过期。
-      </div>
-      <div class="switch-row">
-        <label class="switch">
-          <input type="checkbox" id="allow-untrusted" ${allowUntrusted ? 'checked' : ''} />
-          <span class="switch-track"><span class="switch-knob"></span></span>
-          <span class="switch-text">
-            <b>放行可疑供给</b>
-            <span>探针判定可疑（指纹不符 / 输出截断 / 用量虚报 / 评分过期）的站，也按有效成本正常参与路由</span>
-          </span>
-        </label>
-        ${
-          allowUntrusted
-            ? `<div class="alert" style="margin-top:10px;background:var(--warn-soft);border-color:var(--warn-border)">
-                 <div>
-                   <div class="name">已放行：可疑的站会正常参与选站</div>
-                   <div class="desc">它们仍然按「价格 ÷ 质量」排序——质量差一半，成本就翻倍，只有便宜到足够多才会被选中。首字上限仍然独立生效。如果你更在意输出是否可信，把这个开关关掉。</div>
-                 </div>
-               </div>`
-            : ''
-        }
       </div>
     </div>`
 

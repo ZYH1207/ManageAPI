@@ -357,15 +357,20 @@ export async function revealSecret(credentialId) {
 
 /**
  * 真正「在役」的供给：没下线（delistedAt）、站点没暂停（paused）、模型没被忽略（ignoredModels）。
- * 这是三条过滤规则的唯一实现——比价 / 概览 / 智能决策 / 网关 / 免费池 / 探针目标都从这里取，
+ * 这是三条过滤规则的唯一实现——比价 / 概览 / 智能决策 / 网关 / 探针目标都从这里取，
  * 任何一侧自己再写一遍迟早漂移（曾出过「暂停站点仍被派流量」「下线模型仍被探测白烧额度」）。
  * 纯函数：只读 db，不改；调用方拿到的是 db.offers 里的原对象，不要原地修改。
+ *
+ * @param {{ignoreModels?:boolean}} [options] ignoreModels=false 时跳过「忽略模型」这一条。
+ *   免费池用这个：用户忽略某个模型通常是因为它在付费比价里碍事，而免费额度是另一回事——
+ *   一起藏掉会让免费池少掉本来能用的供给。暂停站点和下线模型仍然照滤
+ *   （那两条表示「这条供给不存在」，不是「不想看」）。
  */
-export function routeableOffers(db) {
+export function routeableOffers(db, { ignoreModels = true } = {}) {
   const pausedIds = new Set(db.providers.filter((p) => p.paused).map((p) => p.id))
-  const ignored = new Set(
-    (db.settings?.ignoredModels || []).map((name) => normalizeModelKey(String(name))),
-  )
+  const ignored = ignoreModels
+    ? new Set((db.settings?.ignoredModels || []).map((name) => normalizeModelKey(String(name))))
+    : new Set()
   return db.offers.filter((offer) => {
     if (offer.delistedAt) return false
     if (pausedIds.has(offer.providerId)) return false

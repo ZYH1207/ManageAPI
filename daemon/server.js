@@ -333,7 +333,12 @@ async function buildState({ light = false } = {}) {
   // 已下线（delistedAt 有值）的供给保留在库里，但不参与任何展示与路由
   // 已下线 / 被暂停 / 被忽略的过滤收口在 inv.routeableOffers，探针目标也用同一份
   const liveOffers = inv.routeableOffers(db)
+  // 免费池不过滤「忽略模型」：忽略通常是为了在付费比价里藏掉碍事的模型，
+  // 而免费额度是另一回事，一起藏会让免费池少掉本来能用的供给。
+  // 暂停站点/下线模型仍照滤（见 routeableOffers 的注释）
+  const freePoolSource = inv.routeableOffers(db, { ignoreModels: false })
   const { paid: paidOffers, free: freeOffers } = splitOffers(liveOffers, benchmarks)
+  const { free: freeOffersAll } = splitOffers(freePoolSource, benchmarks)
 
   const { ranked, unpriced } = pricing.rankByModel(paidOffers, db.settings, benchmarks, isTrusted)
   const summary = pricing.summarize(paidOffers, db.settings, benchmarks, isTrusted)
@@ -395,7 +400,9 @@ async function buildState({ light = false } = {}) {
   const result = {
     settings: db.settings,
     dataDir: store.dataDir(),
-    providers: buildProviderViews(db, freeOffers),
+    // 站点卡的「免费 N」徽章与免费池同口径（都不过滤忽略模型），
+    // 否则徽章说 2 个、点进去只有 1 个，用户会以为丢数据
+    providers: buildProviderViews(db, freeOffersAll),
     credentials: db.credentials.map((c) => ({
       id: c.id,
       providerId: c.providerId,
@@ -407,7 +414,8 @@ async function buildState({ light = false } = {}) {
     offers: liveOffers,
     modelIndex: buildModelIndex(db.offers),
     // 免费池：与付费侧完全隔离。两栏数据分开给，前端不用自己筛。
-    freePool: await buildFreePoolSection(freeOffers, scoreMap, benchmarks, db.settings),
+    // 免费池用不过滤「忽略模型」的那份（freeOffersAll），与付费侧的 freeOffers 区分
+    freePool: await buildFreePoolSection(freeOffersAll, scoreMap, benchmarks, db.settings),
     benchmarks,
     reference: { asOf: REFERENCE_AS_OF, list: listReference() },
     // 预置目录：只是「省打字」的辅助，不参与逻辑
