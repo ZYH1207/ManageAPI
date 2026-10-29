@@ -28,7 +28,7 @@ const SEP = ''
  * 两种格式都要认：老键里没有 SEP，按 | 切三段、分组记 '-'（未知）；新键按 SEP 切。
  * 不做数据迁移——老行自然老化，反正它们本来也没有分组信息。
  */
-function parseComposite(composite) {
+export function parseComposite(composite) {
   if (composite.includes(SEP)) {
     const [keyId, providerId, group, ...modelParts] = composite.split(SEP)
     return { keyId, providerId, group: group || '', model: modelParts.join(SEP) }

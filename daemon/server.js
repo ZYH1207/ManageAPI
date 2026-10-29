@@ -72,7 +72,7 @@ import {
 import { splitOffers, isFreeOffer, resolvePool, FREE_PREFIX, FREE_BASE_PATH } from '../core/free.js'
 import { rankFreePool } from '../core/rank-free.js'
 import * as platforms from '../core/platforms/index.js'
-import { recordUsage, usageSummary, tokensUsedByKey, resetUsage, readUsage, localMonthStart } from '../core/usage.js'
+import { recordUsage, usageSummary, tokensUsedByKey, resetUsage, readUsage, localMonthStart, parseComposite } from '../core/usage.js'
 import {
   appendDetail,
   readDetail,
@@ -1782,9 +1782,11 @@ route('POST', /^\/api\/providers\/([\w-]+)\/usage-check$/, async (ctx) => {
 
   for (const bucket of Object.values(usageData.days || {})) {
     for (const [composite, row] of Object.entries(bucket)) {
-      // model 排在复合键最后一段，名字里含 | 时剩余段重新 join（与 usage.js 同规则）
-      const [, providerId, ...modelParts] = composite.split('|')
-      const model = modelParts.join('|')
+      // 复合键解析走 usage.js 的唯一实现：现版键是 keyId / providerId / group / model，
+      // 自己 split('|') 在新格式上什么都切不出来，providerId 判等永远不成立，
+      // 整个桶被 continue 掉——核验面板会显示「本地估算 0」。model 里含 |
+      // 的情况也由它统一处理，不用在这里再 join 一遍。
+      const { providerId, model } = parseComposite(composite)
       if (providerId !== provider.id) continue
       estRequests += row.requests || 0
       estInput += row.input || 0

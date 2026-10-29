@@ -14,7 +14,7 @@ import { offerCost } from './pricing.js'
 // localDayKey 与 usage.js 同一份（usage 不回头 import 本文件，无循环）：
 // 花费曲线要拿这里的日键去 join usage 的天桶，两边必须同一口径——
 // 此前这里用 UTC 键，东八区每天凌晨 8 小时的用量对不上号
-import { localDayKey, localMonthStart } from './usage.js'
+import { localDayKey, localMonthStart, parseComposite } from './usage.js'
 
 /** 各类时序数据的保留上限。按「每站每小时一个点」算，4000 点≈5 个站 1 个月。 */
 const KEEP = {
@@ -509,7 +509,11 @@ function spendByDay(usageData, offers, settings, benchmarks, providerById) {
   for (const [day, bucket] of Object.entries(usageData?.days || {})) {
     const acc = dayMap.get(day) || { estimated: 0, actual: 0, byProvider: {} }
     for (const [composite, row] of Object.entries(bucket || {})) {
-      const [, providerId, model] = composite.split('|')
+      // 复合键解析必须走 usage.js 的唯一实现：现版键是 keyId / providerId / group / model，
+      // 直接 split('|') 切不出任何东西（整串里根本没有 |），providerId / model
+      // 双双 undefined，下面的 byKey 永远查不到——新格式的用量行会在这里被
+      // 静默 continue 掉，花费曲线只算得到改造前的老行。
+      const { providerId, model } = parseComposite(composite)
       const offer = byKey.get(`${providerId}|${model}`)
       if (!offer) continue
       const sum = usageRowCost(offer, settings, benchmarks, row)

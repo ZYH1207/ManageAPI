@@ -64,6 +64,50 @@ console.log('[2] 没有用量的站不出现在拆分里')
   ok(!('pc' in (empty.byProvider || {})), '丙站没有用量 → 不进 byProvider')
 }
 
+console.log('[3] 新格式复合键（keyId␁providerId␁group␁model）也要算进花费')
+{
+  // SEP 是控制字符 \u0001：分组名里可能有 | / 空格 / 中文，只有它才是安全的分隔符。
+  // 回归点：这里曾用 composite.split('|') 直接切，而新键整串里没有 |，
+  // providerId / model 双双 undefined，byKey 永远查不到 → 新格式的用量行
+  // 被静默 continue 掉，花费曲线只算得到改造前的老行。
+  const SEP = '\u0001'
+  const usageSep = {
+    days: {
+      [dayKey]: {
+        [`k1${SEP}pa${SEP}GM1${SEP}m`]: { requests: 1, errors: 0, input: 1e6, output: 0, cached: 0, cacheCreation: 0, inputIncludesCached: 0, latencySum: 0, latencyCount: 0, ttftSum: 0, ttftCount: 0 },
+        // 空串分组＝「未指定分组」，也要认
+        [`k1${SEP}pb${SEP}${SEP}m`]: { requests: 1, errors: 0, input: 0, output: 1e6, cached: 0, cacheCreation: 0, inputIncludesCached: 0, latencySum: 0, latencyCount: 0, ttftSum: 0, ttftCount: 0 },
+      },
+    },
+  }
+  const p2 = buildMonitorView(db, { usageData: usageSep, benchmarks: {}, days: 1 }).spendSeries[0]
+  ok(p2.cny === 10, `新格式两行都算进去了（实际 ${p2.cny}）`)
+  ok(p2.byProvider?.pa === 2, `新格式 甲站 ¥2（实际 ${p2.byProvider?.pa}）`)
+  ok(p2.byProvider?.pb === 8, `新格式 乙站 ¥8（实际 ${p2.byProvider?.pb}）`)
+}
+
+console.log('[4] 模型名里带 | 不能被截断')
+{
+  const SEP = '\u0001'
+  const model = 'vendor|model-x'
+  const dbPipe = {
+    ...db,
+    offers: [
+      { id: 'op', providerId: 'pa', modelKey: model, upstreamName: model, pricingMode: 'manual', inPrice: 2, outPrice: 8, priceUnit: 'per_mtok', currency: 'CNY' },
+    ],
+  }
+  const row = { requests: 1, errors: 0, input: 1e6, output: 0, cached: 0, cacheCreation: 0, inputIncludesCached: 0, latencySum: 0, latencyCount: 0, ttftSum: 0, ttftCount: 0 }
+
+  const sepPipe = { days: { [dayKey]: { [`k1${SEP}pa${SEP}GM1${SEP}${model}`]: row } } }
+  const r1 = buildMonitorView(dbPipe, { usageData: sepPipe, benchmarks: {}, days: 1 }).spendSeries[0]
+  ok(r1.cny === 2, `新格式带 | 的模型名照样命中（实际 ${r1.cny}）`)
+
+  // 老格式是 keyId|providerId|model，模型名里的 | 要靠「剩余段重新 join」还原
+  const oldPipe = { days: { [dayKey]: { [`k1|pa|${model}`]: row } } }
+  const r2 = buildMonitorView(dbPipe, { usageData: oldPipe, benchmarks: {}, days: 1 }).spendSeries[0]
+  ok(r2.cny === 2, `老格式带 | 的模型名照样命中（实际 ${r2.cny}）`)
+}
+
 console.log('')
 if (failed === 0) console.log('全部通过 ✓')
 else {
