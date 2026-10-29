@@ -161,11 +161,15 @@ export async function updateProvider(id, patch) {
     // 站点单价：1 个站点货币单位值多少人民币。只用于「实际消费」展示，
     // 不参与比价/路由/有效成本——内部金钱逻辑保持站点口径不动
     if (patch.unitPrice !== undefined) {
-      if (patch.unitPrice === null || patch.unitPrice === '') provider.unitPrice = null
-      else {
+      if (patch.unitPrice === null || patch.unitPrice === '') {
+        provider.unitPrice = null
+        provider.unitPriceSource = null
+      } else {
         const value = Number(patch.unitPrice)
         if (!Number.isFinite(value) || value <= 0) throw new Error('实际花费折算必须是正数')
         provider.unitPrice = value
+        // 手填的就不能再被登录时读到的站点值覆盖（与分组来源同一套规则）
+        provider.unitPriceSource = 'manual'
       }
     }
     if (patch.quotaRemaining !== undefined) {
@@ -1759,7 +1763,42 @@ export async function loginWithCredentials(providerId, { user, password, confirm
     p.updatedAt = nowIso()
   })
   clearReloginCooldown(providerId)
+
+  // 充值汇率（站点单价）：登录成功后顺手读一次 /api/status
+  await refreshSiteUnitPrice(providerId).catch(() => null)
+
   return { kind: result.kind, via: result.refreshToken ? 'sub2api' : 'one-api' }
+}
+
+/**
+ * 校准站点充值汇率（1 个站内额度单位 = 多少人民币）。
+ *
+ * 为什么必须自动做：中转站按「额度单位」记账，绝大多数 1 单位 = ¥1，但有一批按
+ * 官方美元价收 ¥7 / ¥7.3（格子API 实测：充 ¥7 到账 quota 500000 = 1 单位）。
+ * 这类站不填汇率，余额会把 ¥7 显示成 $1、实际消费少算 7 倍、阈值判断整反。
+ *
+ * 数据来源只有一个：站点 /api/status 的 `price`（充值价格 元/美元）。
+ * 用户手填过（unitPriceSource='manual'）绝不覆盖——他填的才是商务事实。
+ *
+ * @returns {Promise<number|null>} 读到并写入的汇率；读不到/被手填挡住返回 null
+ */
+export async function refreshSiteUnitPrice(providerId) {
+  const db = await readDb()
+  const provider = db.providers.find((p) => p.id === providerId)
+  if (!provider) return null
+  const unitPrice = await providers
+    .fetchSiteUnitPrice({ baseUrl: provider.baseUrl, timeoutMs: 5000 })
+    .catch(() => null)
+  if (!unitPrice) return null
+  await mutate((db2) => {
+    const p = db2.providers.find((x) => x.id === providerId)
+    if (!p) return
+    if (p.unitPriceSource === 'manual' && Number(p.unitPrice) > 0) return
+    p.unitPrice = unitPrice
+    p.unitPriceSource = 'auto'
+    p.updatedAt = nowIso()
+  })
+  return unitPrice
 }
 
 /**

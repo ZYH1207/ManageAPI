@@ -141,7 +141,13 @@ export function applySnapshot(db, snap) {
     trim(m.balance, KEEP.balance)
 
     const threshold = lowBalanceThreshold(settings)
-    if (threshold !== null && balance.remaining <= threshold) {
+    // 阈值是「真实人民币」，站点余额是「站内额度」——先乘站点单价再比。
+    // 格子API 这类 1 单位 = ¥7 的站，不折算就会把 ¥7 当成 ¥1，刚充完也报「低于阈值」。
+    const provider = (db.providers || []).find((p) => p.id === providerId)
+    const realBalance = balanceInCny({ ...provider, quotaRemaining: balance.remaining }, settings)
+    const shown = Number.isFinite(realBalance) ? realBalance : balance.remaining
+    const shownText = `¥${Math.round(shown * 100) / 100}`
+    if (threshold !== null && shown <= threshold) {
       const level = balance.remaining <= 0 ? 'danger' : 'warn'
       const alert = pushAlert(m, {
         providerId,
@@ -149,8 +155,8 @@ export function applySnapshot(db, snap) {
         level,
         title:
           balance.remaining <= 0
-            ? `余额已用尽（${balance.currency || 'CNY'} ${balance.remaining}）—— 去这个站充值，充完 1 分钟内网关会自己重试`
-            : `余额低于阈值（剩 ${balance.currency || 'CNY'} ${balance.remaining}，阈值 ${Math.round(threshold * 100) / 100}）—— 快见底了，建议先充值`,
+            ? `余额已用尽（${shownText}）—— 去这个站充值，充完 1 分钟内网关会自己重试`
+            : `余额低于阈值（剩 ${shownText}，阈值 ¥${Math.round(threshold * 100) / 100}）—— 快见底了，建议先充值`,
         at,
         cooldownMs: 12 * 3600 * 1000,
       })
@@ -421,6 +427,20 @@ export function siteUnitPrice(provider, settings) {
 }
 
 /**
+ * 站点余额折成真实人民币（= 站内额度 × 站点单价）。没读到余额返回 null。
+ *
+ * 阈值（`settings.balanceWarnUsd`）和卡片上的金额都是人民币口径，比较前必须
+ * 走这一步：¥7=1 单位的站（格子API），直接拿站内 1.00 去和 ¥1.5 比会刚充完就报低。
+ */
+export function balanceInCny(provider, settings) {
+  const raw = provider?.quotaRemaining
+  if (raw === null || raw === undefined || raw === '') return null
+  const n = Number(raw)
+  if (!Number.isFinite(n)) return null
+  return n * siteUnitPrice(provider, settings)
+}
+
+/**
  * 实际消费相对「模型消费」的系数。
  *
  * 注意 **offer.currency 不能用来判断折扣**——那是「我们内部基准价表的币种」
@@ -629,7 +649,15 @@ export function buildMonitorView(db, { usageData = null, benchmarks = {}, days =
   const range = recentDays(days)
   const rangeSet = new Set(range)
 
-  const providers = (db.providers || []).map((p) => ({ id: p.id, name: p.name, kind: p.kind || null }))
+  // unitPrice 必须带上：这一屏要把站内额度折成真实人民币（¥7=1 单位的站），
+  // 投影时漏了它，siteUnitPrice 会一路回落到 1，余额又变回「1.00」
+  const providers = (db.providers || []).map((p) => ({
+    id: p.id,
+    name: p.name,
+    kind: p.kind || null,
+    unitPrice: p.unitPrice ?? null,
+    currency: p.currency ?? null,
+  }))
   const providerIndex = new Map(providers.map((p) => [p.id, p]))
   const nameOf = (id) => providerIndex.get(id)?.name || '未知站点'
 
@@ -643,11 +671,17 @@ export function buildMonitorView(db, { usageData = null, benchmarks = {}, days =
   const balanceByProvider = providers
     .map((p) => {
       const point = latest.get(p.id)
+      const unit = siteUnitPrice(p, settings)
+      const raw = point ? point.balance : null
       return {
         providerId: p.id,
         name: p.name,
-        currency: point?.currency || null,
-        balance: point ? point.balance : null,
+        // 这一屏统一用真实人民币：¥7=1 单位的站（格子API）余额 1.00 就是 ¥7.00
+        currency: 'CNY',
+        // balance 保留站内原始额度（图表/兼容），balanceCny 才是给人看的钱
+        balance: raw,
+        balanceCny: raw === null ? null : Math.round(raw * unit * 1e6) / 1e6,
+        unitPrice: unit,
         at: point?.at || null,
         threshold: lowBalanceThreshold(settings),
         groups: (m.snapshot[p.id]?.groups
@@ -658,9 +692,10 @@ export function buildMonitorView(db, { usageData = null, benchmarks = {}, days =
         snapshotAt: m.snapshot[p.id]?.at || null,
       }
     })
+    // 按真实人民币排序：跨站比「谁的余额先见底」，站内额度不可比
     .sort((a, b) => {
-      const av = a.balance === null ? Infinity : a.balance
-      const bv = b.balance === null ? Infinity : b.balance
+      const av = a.balanceCny === null ? Infinity : a.balanceCny
+      const bv = b.balanceCny === null ? Infinity : b.balanceCny
       return av - bv
     })
 
@@ -707,7 +742,7 @@ export function buildMonitorView(db, { usageData = null, benchmarks = {}, days =
       providerCount: providers.length,
       withBalance: withBalance.length,
       lowest: lowest
-        ? { name: lowest.name, balance: lowest.balance, currency: lowest.currency }
+        ? { name: lowest.name, balance: lowest.balanceCny, currency: 'CNY' }
         : null,
       rateChanges24h: changes24h,
       unreadAlerts: unread,

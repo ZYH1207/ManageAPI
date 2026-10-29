@@ -1066,11 +1066,9 @@ route('POST', /^\/api\/providers\/([\w-]+)\/sync$/, async (ctx) => {
   try {
     const adminToken = await inv.revealAdminToken(provider.id)
     if (adminToken) {
-      const fetched = await providers.fetchTokenList({
-        baseUrl: provider.baseUrl,
-        adminToken,
-        timeoutMs: syncTimeoutMs,
-      })
+      const fetched = await withAdminToken(provider.id, (token) =>
+        providers.fetchTokenList({ baseUrl: provider.baseUrl, adminToken: token, timeoutMs: syncTimeoutMs }),
+      )
       const result = await inv.importProviderKeys(provider.id, fetched.items)
       keyImport = { attempted: true, ...result, source: fetched.source }
     }
@@ -1084,6 +1082,8 @@ route('POST', /^\/api\/providers\/([\w-]+)\/sync$/, async (ctx) => {
       error: error.message || String(error),
     }
   }
+  // 顺手校准充值汇率：¥7=1 单位的站靠它把余额/实际消费折成人民币
+  await inv.refreshSiteUnitPrice(provider.id).catch(() => null)
   // 导入可能刚建了新 Key：目标清单要按落库后的台账重取
   let dbNow = db
   if (keyImport.imported > 0) dbNow = await store.readDb()
@@ -1094,7 +1094,12 @@ route('POST', /^\/api\/providers\/([\w-]+)\/sync$/, async (ctx) => {
   const targets = ctx.body.credentialId
     ? dbNow.credentials.filter((c) => c.id === ctx.body.credentialId)
     : dbNow.credentials.filter((c) => c.providerId === provider.id)
-  if (targets.length === 0) throw new HttpError(400, '该站点还没有 Key，先添加一个')
+  if (targets.length === 0) {
+    // 导入失败的原因（掩码 / 没有令牌列表）直接跟在后面：否则用户只会看到
+    // 「还没有 Key」，不知道该去哪拿
+    const hint = keyImport?.error ? `：${keyImport.error}` : ''
+    throw new HttpError(400, `该站点还没有 Key，先添加一个${hint}`)
+  }
 
   const previous = new Set(
     dbNow.offers.filter((o) => o.providerId === provider.id).map((o) => o.upstreamName),
@@ -1229,6 +1234,29 @@ const pricingCache = new Map()
 
 function invalidatePricing(providerId) {
   pricingCache.delete(providerId)
+}
+
+/**
+ * 拿站点令牌执行一次读操作，401/403 时自动重登一次再重试。
+ *
+ * new-api 的 access_token 有 20 分钟有效期（实测格子API：登录后 20 分钟内
+ * /api/token/ 能读，过期就 401 AUTH_TOKEN_EXPIRED，而 /api/user/self 这类接口
+ * 仍然 200）。令牌列表正是短命的那一类——不重登，「分组同步」会一直报
+ * 「令牌已失效」，用户却明明刚登录过。
+ */
+async function withAdminToken(providerId, fn) {
+  const token = await inv.revealAdminToken(providerId)
+  if (!token) return fn('')
+  try {
+    return await fn(token)
+  } catch (error) {
+    // 注意别只认「HTTP 401」：fetchTokenList 会把鉴权失败包成
+    // 「站点令牌已失效或无权限（401/403）…」，那串里没有「HTTP 」
+    if (!/40[13]/.test(String(error?.message || ''))) throw error
+    const relogin = await inv.autoRelogin(providerId)
+    if (!relogin.ok) throw error
+    return await fn(relogin.token)
+  }
 }
 
 async function loadProviderPricing(providerId, { fresh = false } = {}) {
@@ -1544,17 +1572,15 @@ route('POST', /^\/api\/providers\/([\w-]+)\/detect-groups$/, async (ctx) => {
   let items = []
   let source = null
   try {
-    const fetched = await providers.fetchTokenList({
-      baseUrl: provider.baseUrl,
-      adminToken,
-      timeoutMs: 20000,
-    })
+    const fetched = await withAdminToken(provider.id, (token) =>
+      providers.fetchTokenList({ baseUrl: provider.baseUrl, adminToken: token, timeoutMs: 20000 }),
+    )
     items = fetched.items
     source = fetched.source
     await inv.setTokenStatus(provider.id, { ok: true })
   } catch (error) {
     // 401/403 说明令牌本身失效，别的错（网络、结构）不算令牌的锅
-    if (/HTTP (401|403)/.test(String(error?.message || ''))) {
+    if (/40[13]/.test(String(error?.message || ''))) {
       await inv.setTokenStatus(provider.id, { ok: false, message: error.message })
     }
     throw error
@@ -1583,7 +1609,10 @@ route('POST', /^\/api\/providers\/([\w-]+)\/detect-groups$/, async (ctx) => {
   const results = []
   for (const credential of credentials) {
     const secret = await inv.revealSecret(credential.id)
-    const hit = providers.matchTokenBySecret(items, secret)
+    // 明文匹配优先；站点把列表掩码时退到「尾号匹配」——掩码值导不进来，
+    // 但尾 4 位是真的，用户手动贴的 Key 存着 tail，够认出是哪一把
+    const bySecret = providers.matchTokenBySecret(items, secret)
+    const hit = bySecret || providers.matchTokenByTail(items, credential.tail)
     // 分组名必须归一化再写入：offers 与 credentials 两边口径不一致时，
     // 下一轮 syncOffers 的去重键就永远匹配不上，于是每同步一次就多插一整套
     // 重复行（实测一个模型积到 7 份，比价页同一分组刷出 7 行一模一样的）
@@ -1613,6 +1642,8 @@ route('POST', /^\/api\/providers\/([\w-]+)\/detect-groups$/, async (ctx) => {
       credentialId: credential.id,
       label: credential.label,
       matched: true,
+      // 这条分组是从哪认出来的：明文 / 尾号（掩码列表）
+      matchedBy: bySecret ? 'secret' : 'tail',
       group,
       tokenName: hit.name || '',
       rate,
@@ -1802,11 +1833,18 @@ route('POST', /^\/api\/providers\/([\w-]+)\/balance$/, async (ctx) => {
   const provider = db.providers.find((p) => p.id === ctx.params[0])
   if (!provider) throw new HttpError(404, '站点不存在')
   const credentials = db.credentials.filter((c) => c.providerId === provider.id)
-  if (credentials.length === 0) throw new HttpError(400, '该站点还没有 Key')
+
+  // 余额是「账号级」的：有管理令牌就够了，不需要任何 sk- Key。
+  // 以前这里先要求至少一把 Key，导致令牌已填、Key 还没导的站（new-api 把令牌列表
+  // 做了掩码，导不进来）连余额都读不到，一键同步三项全报「该站点还没有 Key」。
+  const adminToken = await inv.revealAdminToken(provider.id)
+  if (credentials.length === 0 && !adminToken) throw new HttpError(400, '该站点还没有 Key')
+
+  // 校准充值汇率：读余额正是最需要它的时刻（¥7=1 单位的站，余额不折就是错的）
+  await inv.refreshSiteUnitPrice(provider.id).catch(() => null)
 
   // 所有 Key 都试（与 sync 同口径）：旧 Key 过期、新 Key 可用时也能读到余额
   const apiKeys = (await Promise.all(credentials.map((c) => inv.revealSecret(c.id)))).filter(Boolean)
-  const adminToken = await inv.revealAdminToken(provider.id)
   const result = await providers.tryBalanceWithKeys({
     baseUrl: provider.baseUrl,
     apiKeys,

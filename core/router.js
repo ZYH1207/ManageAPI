@@ -23,6 +23,7 @@ import { describeUnavailable, isRealCooldown } from './failure.js'
 import { isRoutable, effectiveCost, THRESHOLDS, MIN_SAMPLES_FOR_VERDICT } from './score.js'
 import { normalizeModelKey, modelIdentityKey, balanceDepleted } from './inventory.js'
 import { normalizeDecisionMode, compareByBasis } from './decision-mode.js'
+import { siteUnitPrice } from './monitor.js'
 
 const INFINITY_COST = Number.POSITIVE_INFINITY
 
@@ -402,8 +403,12 @@ export function selectCandidates({
     // （main 线的「余额探底整站离场」要在下面调用），同名会把函数遮蔽掉
     const depleted = balanceDepleted(provider)
     const balanceDepletedFlag = hasBalanceReading && quotaRemaining <= 0
+    // 阈值是真实人民币，余额是站内额度——乘站点单价再比（¥7=1 单位的站不折算会误报）
     const balanceWarn =
-      hasBalanceReading && !balanceDepletedFlag && warnThreshold > 0 && quotaRemaining <= warnThreshold
+      hasBalanceReading &&
+      !balanceDepletedFlag &&
+      warnThreshold > 0 &&
+      quotaRemaining * siteUnitPrice(provider, settings) <= warnThreshold
     // 两个价格口径，分工写在定价模块里：比较一律按美元（pricing.js 的声明），
     // 所以排序和有效成本用 priceUsd；price 字段是给前端展示的人民币值，
     // 由前端 priceText 按显示币种换算——此前排序直接拿 CNY 值，排序结果虽

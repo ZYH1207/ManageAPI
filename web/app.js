@@ -337,13 +337,15 @@ function buildNotifications() {
     const rawUsd = Number(state.settings?.balanceWarnUsd ?? state.settings?.balanceWarnCny)
     const warnUsd = Number.isFinite(rawUsd) && rawUsd >= 0 ? rawUsd : 10
     if (warnUsd === 0) continue
-    const threshold = warnUsd
-    if (p.quotaRemaining > threshold) continue
+    // 站内额度 × 站点单价 = 真实人民币，再和 ¥阈值 比
+    const realCny = p.quotaRemaining * siteUnitCny(p)
+    if (realCny > warnUsd) continue
     list.push({
       id: `quota:${p.id}:${p.quotaRemaining}`,
       level: p.quotaRemaining <= 0 ? 'danger' : 'warn',
       title: t('{name} 余额偏低', { name: p.name }),
-      desc: t('剩余 {amount} {currency}，该充值了', { amount: p.quotaRemaining, currency }),
+      // 金额用真实人民币（站内额度 × 站点单价），币种就是 ¥
+      desc: t('剩余 {amount} {currency}，该充值了', { amount: Math.round(realCny * 100) / 100, currency: 'CNY' }),
     })
   }
 
@@ -1930,10 +1932,11 @@ function providersHtml({ withForm = true, panel = '', actions = '' } = {}) {
     const kindText = kindMeta?.label || ''
     // 这个站有多少模型落在免费池里（后端算好名字，这里只数）
     const freeNames = Array.isArray(p.freeModels) ? p.freeModels : []
-    // 告警阈值存的是「站内额度单位」（默认 1:1，就是 ¥）；余额也是站内额度，
-    // 同单位直接比，展示时两边同乘一个站点单价，不会出现「阈值被放大 7 倍」
+    // 告警阈值是**真实人民币**，余额是站内额度：余额先乘站点单价折成人民币，阈值原样
+    // 以前两边同乘站点单价，¥7=1 单位的站（格子API）阈值会被放大成 ¥10.5、
+    // 余额 ¥7 反而报「低于阈值」——充完钱还是红的。
     const warnUsd = Number(state.settings.balanceWarnUsd ?? state.settings.balanceWarnCny) || 0
-    const warnCny = warnUsd * siteUnitCny(p)
+    const warnCny = warnUsd
     const statusBadge = hasQuota
       ? balanceBadge(quota, warnCny, Boolean(p.balanceDepleted))
       : '<span class="badge">余额未录入</span>'
@@ -5875,17 +5878,19 @@ function renderMonitor() {
   // 只要有站低于阈值，就在 KPI 正下方压一条实心红条：站名 + 剩余 + 阈值。
   // 判定口径与站点卡徽章、后端告警一致：阈值 > 0 且余额 <= 阈值（阈值为 0 即关闭提醒）
   // 不加 role="alert"：整页每 15 秒重渲染一次，读屏会被同一条公告反复打断
+  // 余额用**真实人民币**（balanceCny = 站内额度 × 站点单价），阈值本来就是人民币：
+  // ¥7=1 单位的站，站内 1.00 是 ¥7，不能拿去和 ¥1.5 比
+  const cnyOf = (row) => (typeof row.balanceCny === 'number' ? row.balanceCny : row.balance)
   const lowBalanceRows = (data.balanceByProvider || []).filter(
-    (row) => typeof row.balance === 'number' && Number(row.threshold) > 0 && row.balance <= Number(row.threshold),
+    (row) => typeof cnyOf(row) === 'number' && Number(row.threshold) > 0 && cnyOf(row) <= Number(row.threshold),
   )
   // balanceByProvider 已按余额升序，最危险的站排最前，不用再排
   const balanceAlarmRows = lowBalanceRows
     .map((row) => {
-      const cur = row.currency || 'CNY'
-      const depleted = row.balance <= 0
+      const depleted = cnyOf(row) <= 0
       return `<span class="balance-alarm-row">
         <button class="balance-alarm-site" data-balance-alarm-site="${esc(row.providerId)}" title="${t('看这个站的卡片')}">${esc(row.name)}</button>
-        <b>${esc(cur)} ${money(row.balance)}</b>
+        <b>¥${money(cnyOf(row))}</b>
         <span class="balance-alarm-th">${t('阈值 {amount}', { amount: money(row.threshold) })}</span>
         ${depleted ? `<span class="balance-alarm-tag">${t('已用尽')}</span>` : ''}
       </span>`
@@ -6578,18 +6583,16 @@ document.addEventListener('click', async (event) => {
   const providerId = card?.dataset.provider
 
   // 阈值数字就地编辑：点一下变输入框，回车/失焦保存，Esc 取消，留空不动。
-  // 阈值全局只有一条（settings.balanceWarnUsd，站内额度单位），卡上显示的是
-  // 按本站单价折算后的「这个站的告警线」——所以输入的数按本站单价折回去再存
+  // 阈值全局只有一条（settings.balanceWarnUsd），单位是**真实人民币**——
+  // 与卡片上显示的金额同一单位，所以输入什么就存什么，不再按站点单价折回去
   if (action === 'edit-warn') {
-    const p = (state.providers || []).find((x) => x.id === providerId)
-    const unit = siteUnitCny(p)
     const raw = Number(state.settings.balanceWarnUsd ?? state.settings.balanceWarnCny) || 0
     const input = document.createElement('input')
     input.type = 'number'
     input.step = '0.01'
     input.min = '0'
     input.className = 'inline-num-edit'
-    input.value = raw > 0 ? String(Math.round(raw * unit * 100) / 100) : ''
+    input.value = raw > 0 ? String(Math.round(raw * 100) / 100) : ''
     input.title = t('回车保存，Esc 取消；留空 = 不改')
     actionButton.replaceWith(input)
     input.focus()
@@ -6606,7 +6609,7 @@ document.addEventListener('click', async (event) => {
       if (!Number.isFinite(n) || n < 0) { done = true; toast('阈值不能是负数', true); render(); return }
       saving = true
       try {
-        const usd = Math.round((n / unit) * 100) / 100
+        const usd = Math.round(n * 100) / 100
         state = await api('PATCH', '/api/settings', { balanceWarnUsd: usd })
         done = true
         await loadMonitor(monitorDays)

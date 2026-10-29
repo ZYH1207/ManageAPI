@@ -6,6 +6,7 @@
  */
 import { fetchModelPlaza, flattenPlaza } from './model-plaza.js'
 import { readVendorBalance } from './balance.js'
+import { fetchNewApiPricing } from './newapi-pricing.js'
 
 function describeHttpError(status, bodyText) {
   const snippet = String(bodyText || '').slice(0, 180).replace(/\s+/g, ' ').trim()
@@ -158,6 +159,37 @@ export async function detectProviderKind({ baseUrl, timeoutMs = 5000, adminToken
     kind: 'unknown',
     evidence: sawStatus ? `status 可达但无系别特征（${statusHint || '空'}）` : '各系特征接口均不可达',
   }
+}
+
+/**
+ * 读站点的「充值汇率」：1 个站内额度单位 = 多少人民币。读不到返回 null。
+ *
+ * 为什么需要它：中转站按「额度单位」记账（1 单位 = 500000 quota），但 1 单位卖多少
+ * 人民币各家不同——绝大多数 1:1（充 ¥1 到账 1 单位），也有一批按官方美元价收
+ * ¥7 / ¥7.3（1 单位 = ¥7）。格子API（api.geziapi.com）就是后者：实测充值 ¥7
+ * 到账 quota=500000（= 1 单位），站点自己也按 ¥7 显示余额。
+ *
+ * 只看 /api/status 的两个字段，不猜：
+ *   price             充值价格（元/美元）——就是「1 单位额度卖多少人民币」
+ *   usd_exchange_rate 前端显示汇率，正常站与 price 相同
+ * 两者都没有或都是 0 就返回 null（调用方保持现状，不瞎填）。
+ *
+ * @returns {Promise<number|null>}
+ */
+export async function fetchSiteUnitPrice({ baseUrl, adminToken = '', timeoutMs = 5000 } = {}) {
+  for (const origin of originCandidates(baseUrl)) {
+    try {
+      const payload = await requestJson(`${origin}/api/status`, { timeoutMs, apiKey: adminToken })
+      const d = payload?.data ?? payload
+      const price = Number(d?.price)
+      const rate = Number(d?.usd_exchange_rate)
+      const value = Number.isFinite(price) && price > 0 ? price : Number.isFinite(rate) && rate > 0 ? rate : null
+      if (value) return value
+    } catch {
+      /* 下一个 origin */
+    }
+  }
+  return null
 }
 
 /**
@@ -634,7 +666,17 @@ export async function fetchTokenList({ baseUrl, adminToken, timeoutMs = 15000 })
           tried.push(`${where} 200（结构不认识）`)
           continue
         }
-        return { items: raw.map(normalizeToken), raw: payload, source: attempt.source }
+        // new-api 把令牌列表做了掩码（只回 CJLw**********GPFj）。掩码值导不进来，
+        // 但**尾号还在**：用户已经手动贴过 Key 时，靠尾号就能把「这把 Key 属于哪个
+        // 分组」认出来（见 matchTokenByTail）。所以这里不再整体报错。
+        const maskedCount = raw.filter((t) => String(t?.key || '').includes('*')).length
+        return {
+          items: raw.map(normalizeToken),
+          raw: payload,
+          source: attempt.source,
+          masked: maskedCount === raw.length,
+          maskedCount,
+        }
       } catch (error) {
         const message = error.message || String(error)
         tried.push(`${where} ${message}`)
@@ -666,6 +708,22 @@ function normalizeToken(token) {
     group,
     rate: Number.isFinite(rate) ? rate : null,
   }
+}
+
+/**
+ * 按「Key 尾号」匹配站点令牌（掩码列表专用）。
+ *
+ * new-api 只回 `CJLw**********GPFj`，明文拿不到，但尾 4 位是真的——用户手动贴进来
+ * 的 Key 我们存了 tail。尾号重复（同一站两把 Key 尾号一样）时返回 null，不猜。
+ */
+export function matchTokenByTail(items, tail) {
+  const want = String(tail || '').trim()
+  if (!want) return null
+  const hits = (Array.isArray(items) ? items : []).filter((t) => {
+    const key = String(t?.key || '')
+    return key.includes('*') && key.slice(-want.length) === want
+  })
+  return hits.length === 1 ? hits[0] : null
 }
 
 function pickTokenArray(payload) {
@@ -735,6 +793,16 @@ export async function fetchProviderPricing({ baseUrl, adminToken, kind, timeoutM
     }
   }
 
+  // new-api 的公开价格表：不用令牌、不用开模型广场。没它就读不到「分组倍率 + 单价」——
+  // 格子API 这种「模型能同步、分组和定价全空」的站，根子就是缺这条路。
+  let pricingError = null
+  try {
+    const result = await fetchNewApiPricing({ baseUrl, timeoutMs })
+    if (result.groups.length > 0 && result.models.length > 0) return result
+  } catch (error) {
+    pricingError = error
+  }
+
   try {
     const plazaGroups = await fetchModelPlaza({ baseUrl, timeoutMs })
     const { byModel, groupList, allEntries } = flattenPlaza(plazaGroups)
@@ -772,8 +840,15 @@ export async function fetchProviderPricing({ baseUrl, adminToken, kind, timeoutM
             `模型广场也未开启（${error.message}）。`,
         )
       }
+      const pricingHint = pricingError ? `，公开价格表也不可用（${pricingError.message}）` : ''
       throw new Error(
-        `可用渠道读取失败（${channelError.message}），模型广场也不可用（${error.message}）`,
+        `可用渠道读取失败（${channelError.message}）${pricingHint}，模型广场也不可用（${error.message}）`,
+      )
+    }
+    if (pricingError) {
+      throw new Error(
+        `读不到这个站的价格表（${pricingError.message}）；模型广场也不可用（${error.message}）。` +
+          '填一个「令牌」还能走「可用渠道」，或者手动填倍率。',
       )
     }
     throw new Error('该站没有开启模型广场。填一个「令牌」就能读「可用渠道」，那里数据更全。')
@@ -788,6 +863,8 @@ export async function fetchProviderPricing({ baseUrl, adminToken, kind, timeoutM
 //                      → data.{access_token, refresh_token, expires_in}（Bearer）
 //   one-api / new-api  POST /api/user/login {username, password}
 //                      → data.{token, id}（new-api 请求还要带 New-Api-User: <id> 头）
+//                      ⚠ new-api ≥ v1.0.0-rc 把令牌字段改名为 access_token
+//                      （配 access_expires_at），老版本才是 token——两个都认
 // 两种协议的产物统一为 { token, userId, refreshToken }——编排层（inventory）
 // 负责写回 adminToken / refreshTokenEnc 与失效重试。
 //
@@ -832,6 +909,8 @@ export async function loginProvider({ baseUrl, kind, user, password, timeoutMs =
         }
       }
       // one-api / new-api：{username, password} → data.token（new-api 用 id 配 New-Api-User 头）
+      // new-api 新版返回 access_token（JWT，带 access_expires_at），老版 one-api 返回 token。
+      // 只认 token 会让整批 new-api 站登录失败：「登录响应里没有 token」——这里两个都收。
       const origin = originOf(baseUrl)
       const payload = await requestJson(`${origin}/api/user/login`, {
         method: 'POST',
@@ -843,11 +922,16 @@ export async function loginProvider({ baseUrl, kind, user, password, timeoutMs =
         throw new Error(payload.message || '登录被拒绝')
       }
       const d = payload?.data ?? payload
-      const token = d?.token
-      if (!token) throw new Error(`登录响应里没有 token：${JSON.stringify(d).slice(0, 120)}`)
+      const token = d?.access_token || d?.accessToken || d?.token
+      if (!token) {
+        throw new Error(
+          `登录响应里没有 token/access_token：${JSON.stringify(d).slice(0, 120)}`,
+        )
+      }
+      const uid = d?.id ?? d?.user_id ?? d?.user?.id
       return {
         token,
-        userId: d?.id !== undefined && d?.id !== null ? String(d.id) : null,
+        userId: uid !== undefined && uid !== null ? String(uid) : null,
         refreshToken: null,
         kind: 'new-api',
       }
