@@ -538,6 +538,24 @@ const EN = {
   '网关地址': 'Gateway URL',
   '关闭网关': 'Turn off gateway',
   '开启网关': 'Turn on gateway',
+  '局域网访问': 'LAN access',
+  '让手机 / 平板 / 另一台电脑也能打开这个面板，并把本机当网关用':
+    'Let a phone, tablet or another computer open this panel and use this machine as the gateway',
+  '开启局域网访问': 'Turn on LAN access',
+  '关闭局域网访问': 'Turn off LAN access',
+  '仅在局域网内使用；公网部署请务必关闭。':
+    'For LAN use only. Always turn this off before exposing the daemon to the internet.',
+  '面板没有账号体系，局域网访问只靠下面这串令牌守门——令牌被人拿到，就等于交出全部上游 Key。':
+    'The panel has no accounts: LAN access is protected only by the token below. Anyone who gets it gets every upstream key.',
+  '关闭时 daemon 根本不在局域网网卡上监听，别的设备连端口都握不上手。打开后立刻生效，不用重启。':
+    'While off, the daemon does not listen on the LAN interface at all, so other devices cannot even open a connection. Turning it on takes effect immediately, no restart.',
+  '监听器没起来：可能需要指定网卡（--lan 192.168.x.x）':
+    'Listener is not up: you may need to name the interface (--lan 192.168.x.x)',
+  '复制带令牌的链接': 'Copy link with token',
+  '复制令牌': 'Copy token',
+  '重置': 'Reset',
+  '在别的设备上打开那条「带令牌的链接」就进去了，令牌会存成 7 天 cookie；重置后旧链接立刻失效。':
+    'Open the “link with token” on the other device and it signs you in; the token is kept as a 7-day cookie. Resetting invalidates the old link immediately.',
   '新建Key': 'New key',
   '新建 Key': 'New key',
   '月 token 限额（可空）': 'Monthly token limit (optional)',

@@ -4743,6 +4743,46 @@ function renderGateway() {
       </div>
     </div>`
 
+  // 局域网访问：默认关。面板没有账号体系，开关打开后靠一把令牌守门，
+  // 所以「仅限局域网 / 公网务必关闭」必须写在开关旁边，而不是藏进文档
+  const lan = state.lan || {}
+  const lanToken = String(lan.token || '')
+  const lanUrl = lan.url || (lan.address ? `http://${lan.address}:${location.port || 4319}/` : null)
+  const lanLink = lan.enabled && lanToken && lanUrl ? `${lanUrl}?token=${encodeURIComponent(lanToken)}` : null
+  const lanCard = `
+    <div class="card">
+      <div class="card-head">
+        <div>
+          <h3>${t('局域网访问')}</h3>
+          <div class="meta">${t('让手机 / 平板 / 另一台电脑也能打开这个面板，并把本机当网关用')}</div>
+        </div>
+        <div class="card-actions">
+          <button data-act="toggle-lan" class="${lan.enabled ? '' : 'primary'}">${lan.enabled ? t('关闭局域网访问') : t('开启局域网访问')}</button>
+        </div>
+      </div>
+      <div style="border-left:3px solid var(--warn,#d08700);background:var(--warn-soft,rgba(208,135,0,.08));padding:10px 12px;border-radius:8px;margin-bottom:14px;line-height:1.65">
+        <b>${t('仅在局域网内使用；公网部署请务必关闭。')}</b>
+        ${t('面板没有账号体系，局域网访问只靠下面这串令牌守门——令牌被人拿到，就等于交出全部上游 Key。')}
+      </div>
+      ${!lan.enabled
+        ? `<p class="hint">${t('关闭时 daemon 根本不在局域网网卡上监听，别的设备连端口都握不上手。打开后立刻生效，不用重启。')}</p>`
+        : !lan.open
+          ? `<p class="hint">${esc(lan.error || t('监听器没起来：可能需要指定网卡（--lan 192.168.x.x）'))}</p>`
+          : `
+      <div class="keyrow">
+        <span style="width:52px;color:var(--muted)">${t('地址')}</span>
+        <span class="mono grow">${esc(lanUrl || '')}</span>
+        <button class="ghost" data-act="copy-lan-link">${t('复制带令牌的链接')}</button>
+      </div>
+      <div class="keyrow">
+        <span style="width:52px;color:var(--muted)">${t('令牌')}</span>
+        <span class="mono grow">mapi-lan-••••${esc(lanToken.slice(-4))}</span>
+        <button class="ghost" data-act="copy-lan-token">${t('复制令牌')}</button>
+        <button class="ghost danger" data-act="rotate-lan-token">${t('重置')}</button>
+      </div>
+      <p class="hint">${t('在别的设备上打开那条「带令牌的链接」就进去了，令牌会存成 7 天 cookie；重置后旧链接立刻失效。')}</p>`}
+    </div>`
+
   const keyRows = gateway.keys.map((record) => {
     const used = byKey[record.id] || {}
     const total = (used.input || 0) + (used.output || 0)
@@ -4818,7 +4858,7 @@ function renderGateway() {
       </table>
     </div>`
 
-  view.innerHTML = `${createdBanner}${entryCard}${keyBlock}${logBlock}`
+  view.innerHTML = `${createdBanner}${entryCard}${lanCard}${keyBlock}${logBlock}`
 }
 
 // --------------------------------------------------------------- 用量视图
@@ -8382,6 +8422,58 @@ document.addEventListener('click', async (event) => {
       state = await api('PATCH', '/api/gateway', { enabled: next })
       render()
       toast(next ? '网关已开启' : '网关已关闭')
+    })
+    return
+  }
+
+  // 局域网开关：开了之后这个面板在局域网网卡上也存在了，靠令牌守门。
+  // 所以打开前必须确认一次，把「仅限局域网」这句话当面再说一遍
+  if (action === 'toggle-lan') {
+    const next = !state.lan?.enabled
+    if (
+      next &&
+      !confirm(
+        '开启局域网访问？\n\n同一局域网里的设备可以打开这个面板，只靠令牌守门。\n仅限局域网内使用；公网部署请务必关闭。',
+      )
+    ) {
+      return
+    }
+    await withBusy(actionButton, async () => {
+      state = await api('PATCH', '/api/settings', { lanPanel: next })
+      render()
+      if (!next) {
+        toast('已关闭局域网访问')
+        return
+      }
+      const lan = state.lan || {}
+      toast(lan.open ? `已开启：${lan.url}` : `开关已打开，但监听器没起来：${lan.error || '原因未知'}`)
+    })
+    return
+  }
+
+  if (action === 'copy-lan-token') {
+    const token = String(state.lan?.token || '')
+    if (!token) return
+    await navigator.clipboard.writeText(token)
+    toast('局域网访问令牌已复制')
+    return
+  }
+
+  if (action === 'copy-lan-link') {
+    const lan = state.lan || {}
+    const token = String(lan.token || '')
+    if (!lan.url || !token) return
+    await navigator.clipboard.writeText(`${lan.url}?token=${encodeURIComponent(token)}`)
+    toast('带令牌的链接已复制，在别的设备上直接打开即可')
+    return
+  }
+
+  if (action === 'rotate-lan-token') {
+    if (!confirm('重置局域网访问令牌？已经打开的链接和 cookie 会立刻失效。')) return
+    await withBusy(actionButton, async () => {
+      state = await api('POST', '/api/lan/token/rotate', {})
+      render()
+      toast('令牌已重置，请用新的带令牌链接')
     })
     return
   }

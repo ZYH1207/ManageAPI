@@ -381,7 +381,9 @@
               · <b>地址</b> —— <code>http://127.0.0.1:4319/v1</code><br />
               · <b>Key</b> —— <code>sk-mapi-...</code>，点「新建 Key」可以给每个客户端建一把<br />
               · <b>月限额</b> —— 建 Key 时可设月度 token 上限，超了返回 429<br />
-              · <b>轮换</b> —— 某把 Key 泄露了单独换，不影响其他客户端
+              · <b>轮换</b> —— 某把 Key 泄露了单独换，不影响其他客户端<br />
+              · <b>局域网</b> —— 手机/平板也要用时，在上面打开「网关 → 局域网访问」开关：地址换成
+              <code>http://&lt;本机局域网IP&gt;:4319/v1</code>；面板靠一把令牌守门（点「复制带令牌的链接」即可直达）
             </p>
             <p>
               <b>最近请求</b>表记录每次路由：选了谁、试了几次、耗时多少。
@@ -767,7 +769,9 @@
               · <b>URL</b> — <code>http://127.0.0.1:4319/v1</code><br />
               · <b>Key</b> — <code>sk-mapi-...</code>; create one per client<br />
               · <b>Monthly limit</b> — optional token cap per key; returns 429 when exceeded<br />
-              · <b>Rotate</b> — replace a leaked key without touching the other clients
+              · <b>Rotate</b> — replace a leaked key without touching the other clients<br />
+              · <b>LAN</b> — to use it from a phone or tablet, flip “Gateway → LAN access”: point the client at
+              <code>http://&lt;this machine's LAN IP&gt;:4319/v1</code>; the panel itself is behind a token (“copy link with token”)
             </p>
             <p>
               <b>Recent requests</b> logs every routing decision: who was chosen, how many attempts, how long it took.

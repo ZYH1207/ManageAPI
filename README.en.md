@@ -487,7 +487,13 @@ The backup contains `master.key`, so treat it as sensitive: do not commit it or 
 
 **Threat model**: encryption protects against "leaked backup, file shared by mistake, accidentally committed". It does not protect against "this machine is already compromised", because the key sits in the same directory. Stronger protection needs a master password derived at startup — not implemented.
 
-The daemon binds `127.0.0.1` only, has no authentication, and must not be exposed. **Do not bind `0.0.0.0`.**
+The daemon binds `127.0.0.1` only and the panel has no accounts, so never bind `0.0.0.0` — the panel can decrypt every upstream key.
+
+**To use the panel and gateway from another device on the same LAN**, flip **Gateway → LAN access** in the panel.
+The daemon then binds a second listener on the same port on the LAN interface: the gateway (`/v1`, `/free`) still
+only accepts gateway keys, while the panel and `/api/*` require a LAN token (the “link with token” signs you in).
+While the switch is off no port exists on the LAN interface at all, and toggling needs no restart.
+**For LAN use only — always turn it off before exposing the daemon to the internet.** See [docs/lan.md](docs/lan.md).
 
 ---
 
@@ -530,6 +536,7 @@ core/              Host-agnostic core (no framework dependencies)
 
 daemon/            Local HTTP server + gateway (same port)
   index.js           Startup, port selection, open browser
+  lan.js             LAN entry: second listener + panel token (off by default, toggle in the panel)
   instance-lock.js   Single-instance lock: PID + port, stale locks cleaned up
   server.js          HTTP routes, gateway forwarding, SSE splitting
   probe-runner.js    Probe executor (manual and scheduled)

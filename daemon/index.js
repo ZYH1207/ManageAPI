@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 /**
  * daemon 启动入口。
- * 用法：node daemon/index.js [--port 4319] [--open]
+ * 用法：node daemon/index.js [--port 4319] [--open] [--lan [局域网地址]]
  */
-import { createAppServer, flushGatewayBuffers, setAutoProbe, setDriftWatcher } from './server.js'
+import { createAppServer, flushGatewayBuffers, setAutoProbe, setDriftWatcher, setLanHook } from './server.js'
 import { dataDir, readDb } from '../core/store.js'
 import { ensureGatewayKeys } from '../core/inventory.js'
 import { seedReferenceBenchmarks } from '../core/benchmark.js'
@@ -14,6 +14,7 @@ import { startProbeScheduler } from './scheduler.js'
 import { runProbes } from './probe-runner.js'
 import { createAutoRouteProber } from './autoprobe.js'
 import { createDriftWatcher } from './drift-watcher.js'
+import { createLanHost, resolveLanAddress } from './lan.js'
 import { collectProviderSnapshots } from './monitor-runner.js'
 import { runDetourRechecks } from './detour-runner.js'
 import { spawn } from 'node:child_process'
@@ -32,6 +33,8 @@ function flag(name, fallback) {
 
 const preferredPort = Number(flag('port', process.env.PORT || 4319))
 const shouldOpen = Boolean(flag('open', false))
+// 局域网入口：--lan 自动探测，--lan 192.168.1.9 指定网卡，不传就完全不开（默认行为不变）
+const lanSpec = flag('lan', process.env.MANAGE_API_LAN || '')
 const HOST = '127.0.0.1'
 const REAL_PORT = 4319
 
@@ -157,6 +160,24 @@ const { server, port } = await listen(preferredPort)
 setReportPort(port)
 const url = `http://${HOST}:${port}/`
 
+// 局域网入口：同一个端口号，绑在局域网那张网卡上。
+//   网关（/v1、/free）→ 只认网关 Key
+//   面板与 /api     → 只有设置里那个开关打开时才存在，而且要令牌
+// 监听器的生杀交给 createLanHost：面板里点开关立刻生效，不用重启进程。
+const lan = await resolveLanAddress(lanSpec)
+if (lan.reason === 'loopback') {
+  console.error(`  [daemon] --lan ${lanSpec} 是本机回环地址，那是完整实例的位置；要对外开放请给局域网地址或 --lan`)
+} else if (lan.reason === 'not-found') {
+  console.error('  [daemon] 没探测到局域网地址（只有回环 / 没连网？），请显式指定：--lan 192.168.x.x')
+}
+// --lan 是「强制开着」：命令行显式要求时监听器一直在（只放网关），不看面板开关
+const forcedLan = lan.reason === 'ok' && Boolean(lanSpec) && lanSpec !== false
+const lanHost = createLanHost({ port, forced: forcedLan, addressOverride: forcedLan ? lan.address : null })
+setLanHook(lanHost)
+await lanHost.apply((await readDb()).settings.lanPanel)
+const lanStart = lanHost.status()
+if (lanStart.error) console.error(`  [daemon] 局域网入口：${lanStart.error}`)
+
 try {
   await lock.update({ port })
 } catch (error) {
@@ -211,6 +232,7 @@ function shutdown(signal) {
   server.close(() => {
     flushGatewayBuffers().finally(() => process.exit(0))
   })
+  lanHost.close().catch(() => {})
   // 有长连接（比如正在流式返回）时 close 会等很久，5 秒后强退
   setTimeout(() => {
     flushGatewayBuffers().finally(() => process.exit(0))
@@ -232,6 +254,10 @@ console.log('')
 console.log('  ManageAPI  已启动')
 console.log(`  管理界面 ${url}`)
 console.log(`  网关地址 ${url}v1`)
+if (lanStart.open) {
+  console.log(`  局域网入口 http://${lanStart.address}:${port}/ （网关；面板开关打开时面板也在这）`)
+  console.log('           仅限局域网：面板在公网上暴露前请务必关闭局域网访问')
+}
 console.log(`  网关 Key ${gateway.enabled ? `${gateway.keys.length} 个（在界面里管理）` : '（已关闭）'}`)
 console.log(`  数据目录 ${dataDir()}`)
 console.log(`  自动备份 ${backupRoot()}（每天一次，保留 ${backupKeep()} 份）`)

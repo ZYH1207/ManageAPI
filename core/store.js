@@ -128,6 +128,13 @@ export function emptyDb() {
       //            'switch' = 换一家再问（同站必然犯病时才管用）
       // 判定口径与记录结构在 core/empty-guard.js，网关取用见 daemon/server.js
       emptyGuard: { enabled: false, mode: 'same' },
+      // 局域网访问面板（daemon/lan.js）：默认关闭，关着时连监听器都不存在。
+      // 打开后 daemon 会在局域网网卡上再绑一个同端口监听器：
+      //   /v1、/free        → 仍然只认「网关 Key」（和本机入口同一套鉴权）
+      //   面板与 /api/*     → 认这把 token（浏览器靠 cookie，脚本靠 Authorization）
+      // 面板没有账号体系，token 泄露就等于交出全部上游 Key，所以默认关、
+      // 且只该在自家局域网里开。address 记上次绑定的地址，只为诊断用
+      lanPanel: { enabled: false, token: null, address: null },
     // 全局忽略的模型（归一化后的 key）：不参与比价、决策、探针、网关
     ignoredModels: [],
     // 单个模型的显式开关（精确存储键 → 'shown' | 'ignored'）：分组弹窗里的
@@ -384,6 +391,23 @@ export function remapManualOrderKeys(table, offers, next, prev = {}) {
   return out
 }
 
+/**
+ * 局域网访问面板开关的形状归一（幂等）。
+ *
+ * 老库没这个键，必须有默认值；令牌只在真正打开时才生成（关着的时候库里
+ * 不该躺着一把看起来能用的令牌），所以这里不补 token。
+ */
+function ensureLanPanel(db) {
+  const settings = db.settings || (db.settings = {})
+  const current = settings.lanPanel
+  settings.lanPanel = {
+    enabled: Boolean(current?.enabled),
+    token: typeof current?.token === 'string' && current.token ? current.token : null,
+    address: typeof current?.address === 'string' && current.address ? current.address : null,
+  }
+  return settings.lanPanel
+}
+
 function migrate(db) {
   // CNY 退出单位体系（2026-10-29）：只剩 站内 USD / 真实美元 RUSD 两档。
   // CNY 的计费口径与站内 USD 完全相同（1:1），迁移只是改名，不影响任何价格。
@@ -402,6 +426,7 @@ function migrate(db) {
     ensureFaultSignals(db)
     ensureDiagnosisKeys(db)
     ensureFaultKeys(db)
+    ensureLanPanel(db)
     return db
   }
 
@@ -449,6 +474,7 @@ function migrate(db) {
   // 与 v6 各自独立、都幂等，跨级升上来两条都会跑
   ensureDiagnosisKeys(db)
   ensureFaultKeys(db)
+  ensureLanPanel(db)
   db.version = DB_VERSION
   ensureMonitor(db)
   return db

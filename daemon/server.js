@@ -4,6 +4,7 @@
  */
 import { createServer } from 'node:http'
 import { once } from 'node:events'
+import { randomBytes, timingSafeEqual } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 import { join, extname, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -745,6 +746,19 @@ async function buildState({ light = false } = {}) {
       })),
     },
     usage,
+    // 局域网访问面板：开关在 settings.lanPanel，实际绑没绑在 daemon 侧（lanHook）
+    lan: (() => {
+      const panel = db.settings.lanPanel || {}
+      const host = lanHook?.status?.() || {}
+      return {
+        enabled: Boolean(panel.enabled),
+        token: panel.token || null,
+        address: host.address || panel.address || null,
+        url: host.url || null,
+        open: Boolean(host.open),
+        error: host.error || null,
+      }
+    })(),
     routing: (db.routing || []).slice(-40).reverse(),
   }
   // 轻量版：自动刷新轮询用，砍掉最大的两块（scores 73KB / decisions 20KB），
@@ -769,6 +783,7 @@ route('GET', /^\/api\/health$/, async () => ({ ok: true, at: new Date().toISOStr
 route('GET', /^\/api\/state$/, async (ctx) => buildState({ light: ctx.query.get('light') === '1' }))
 
 route('PATCH', /^\/api\/settings$/, async (ctx) => {
+  let lanPanelAfter = null
   await store.mutate(async (db) => {
     const { fxUsdCny, blendInputWeight } = ctx.body
     if (fxUsdCny !== undefined) {
@@ -974,6 +989,32 @@ route('PATCH', /^\/api\/settings$/, async (ctx) => {
       const enforce = Array.isArray(ctx.body.enforceIgnored) ? ctx.body.enforceIgnored : []
       inv.applyIgnoredModels(db, list, { enforce })
     }
+    // 局域网访问面板：打开时顺手生成令牌（关着的时候库里不躺一把看似能用的令牌），
+    // 并记下绑定地址——只为诊断，真正的绑定状态在 daemon 侧
+    if (ctx.body.lanPanel !== undefined) {
+      const panel = db.settings.lanPanel || (db.settings.lanPanel = { enabled: false, token: null, address: null })
+      const enabled = Boolean(ctx.body.lanPanel)
+      if (enabled && !panel.token) panel.token = newPanelToken()
+      panel.enabled = enabled
+      lanPanelAfter = { ...panel }
+    }
+  })
+  // 监听器的生杀放在 mutate 之后：设置先落盘，再按新状态开/关端口。
+  // 不重启进程——用户点开关就应该立刻生效，否则这个开关就只是个摆设
+  if (lanPanelAfter) {
+    const applied = await lanHook?.apply(lanPanelAfter)
+    if (applied?.error) console.error(`  [lan] ${applied.error}`)
+  }
+  return buildState()
+})
+
+// ---------------------------------------------------------------- 局域网面板
+
+/** 换一把局域网访问令牌：旧 cookie / 旧链接立刻失效 */
+route('POST', /^\/api\/lan\/token\/rotate$/, async () => {
+  await store.mutate((db) => {
+    const panel = db.settings.lanPanel || (db.settings.lanPanel = { enabled: false, token: null, address: null })
+    panel.token = newPanelToken()
   })
   return buildState()
 })
@@ -5376,6 +5417,181 @@ function hostIsLocal(req) {
 }
 
 /**
+ * 连接对端是不是本机回环。
+ *
+ * 为什么不能只靠 Host 头：Host 是客户端自己填的，局域网里任何人
+ * `curl -H 'Host: 127.0.0.1' http://192.168.1.9:4319/api/state` 一秒就绕过去了。
+ * Host 校验只能区分「浏览器以为自己在跟谁说话」，挡不住拿 curl 的人。
+ * 真正来自网络层、伪造不了的证据只有 socket 上的对端地址。
+ */
+export function isLoopbackPeer(address) {
+  const raw = String(address || '').trim().toLowerCase()
+  if (!raw) return false
+  if (raw.startsWith('127.')) return true
+  if (raw === '::1' || raw === '0:0:0:0:0:0:0:1') return true
+  if (raw.startsWith('::ffff:127.')) return true
+  return false
+}
+
+/**
+ * 私有网段对端：RFC1918 + 链路本地 + CGNAT（Tailscale 一类的自有覆盖网）
+ * + IPv6 ULA / link-local。
+ *
+ * 局域网入口只接受这些来源：万一哪天有人在路由器上把端口转发到了公网，
+ * 也不至于当场变成一个「全世界都能花你余额」的开放代理。
+ */
+export function isPrivatePeer(address) {
+  const raw = String(address || '').trim().toLowerCase()
+  if (!raw) return false
+  if (isLoopbackPeer(raw)) return true
+  const v4 = raw.startsWith('::ffff:') ? raw.slice(7) : raw
+  if (/^\d+\.\d+\.\d+\.\d+$/.test(v4)) {
+    const [a, b] = v4.split('.').map(Number)
+    if (a === 10) return true
+    if (a === 192 && b === 168) return true
+    if (a === 172 && b >= 16 && b <= 31) return true
+    if (a === 169 && b === 254) return true // Windows 拿不到 DHCP 时的自分配地址
+    if (a === 100 && b >= 64 && b <= 127) return true // CGNAT / 自有覆盖网
+    return false
+  }
+  if (raw.startsWith('fc') || raw.startsWith('fd')) return true // IPv6 ULA fc00::/7
+  if (/^fe[89ab]/.test(raw)) return true // IPv6 链路本地 fe80::/10
+  return false
+}
+
+/**
+ * 网关入口路径：`/v1` 与免费池的 `/free` 前缀。
+ * 这两处判定必须同一口径，所以收成一个函数，别在两处各写一遍。
+ */
+export function isGatewayPath(pathname) {
+  return (
+    pathname === '/v1' ||
+    pathname.startsWith('/v1/') ||
+    pathname === FREE_BASE_PATH ||
+    pathname.startsWith(`${FREE_BASE_PATH}/`)
+  )
+}
+
+// ------------------------------------------------------------ 局域网面板令牌
+
+/**
+ * 局域网访问面板的令牌。
+ *
+ * 为什么是「令牌 + cookie」而不是账号密码：这是个本地自用工具，没有用户体系；
+ * 要的只是「拿到一个长随机串才能开面板」。令牌存在 db.json 的 settings 里
+ * （靠文件权限 0600 保护），面板里能看到、能重置。
+ */
+export function newPanelToken() {
+  return `mapi-lan-${randomBytes(16).toString('hex')}`
+}
+
+const PANEL_COOKIE = 'mapi_lan'
+/** 令牌有效期：7 天。局域网里明文 HTTP，cookie 本来就只该短命 */
+const PANEL_COOKIE_MAX_AGE = 7 * 24 * 60 * 60
+
+function readCookie(req, name) {
+  const raw = String(req.headers.cookie || '')
+  for (const part of raw.split(';')) {
+    const index = part.indexOf('=')
+    if (index === -1) continue
+    if (part.slice(0, index).trim() !== name) continue
+    return decodeURIComponent(part.slice(index + 1).trim())
+  }
+  return ''
+}
+
+/**
+ * 请求里携带的令牌对不对。四个来源，按可信度排序：
+ *   显式传入（登录时把 body 里的令牌递进来）
+ *   Authorization: Bearer <token>   —— 脚本 / curl
+ *   X-Panel-Token: <token>          —— 反代或插件
+ *   Cookie: mapi_lan=<token>        —— 浏览器（由 ?token= 或登录页种下）
+ */
+function panelTokenOk(req, panel, explicit = '') {
+  const expected = String(panel?.token || '')
+  if (!expected) return false
+  const given =
+    String(explicit || '').trim() ||
+    String(req.headers['x-panel-token'] || '').trim() ||
+    String(req.headers.authorization || '')
+      .replace(/^Bearer\s+/i, '')
+      .trim() ||
+    readCookie(req, PANEL_COOKIE)
+  if (!given) return false
+  // 长度不同直接否：timingSafeEqual 长度不等会抛异常
+  const a = Buffer.from(given)
+  const b = Buffer.from(expected)
+  if (a.length !== b.length) return false
+  return timingSafeEqual(a, b)
+}
+
+function panelCookie(token) {
+  return `${PANEL_COOKIE}=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${PANEL_COOKIE_MAX_AGE}`
+}
+
+function clearPanelCookie() {
+  return `${PANEL_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`
+}
+
+function wantsHtml(req) {
+  return String(req.headers.accept || '').includes('text/html')
+}
+
+/** 没带令牌 / 令牌不对时的登录页：纯内联，不依赖任何静态资源 */
+function sendLanLoginPage(res, { failed = false } = {}) {
+  const html = `<!doctype html><html lang="zh"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ManageAPI · 局域网访问</title>
+<style>
+  :root{color-scheme:light dark}
+  body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;
+    font:15px/1.6 system-ui,-apple-system,"Segoe UI",sans-serif;background:#f6f7f9;color:#1c1f23}
+  @media (prefers-color-scheme:dark){body{background:#14171a;color:#e6e9ec}}
+  form{width:min(420px,88vw);background:rgba(127,127,127,.08);border-radius:14px;padding:26px 24px}
+  h1{font-size:17px;margin:0 0 6px}
+  p{margin:0 0 16px;font-size:13px;opacity:.72}
+  input{width:100%;box-sizing:border-box;padding:10px 12px;border-radius:9px;border:1px solid rgba(127,127,127,.4);
+    background:transparent;color:inherit;font:inherit}
+  button{margin-top:12px;width:100%;padding:10px;border:0;border-radius:9px;background:#3a7afe;color:#fff;
+    font:inherit;font-weight:500;cursor:pointer}
+  .err{margin-top:10px;font-size:13px;color:#d9534f}
+  code{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12.5px}
+</style></head><body>
+<form id="f"><h1>需要局域网访问令牌</h1>
+<p>面板默认只在本机可开。要在这台设备上管理，请粘贴在面板「网关 → 局域网访问」里看到的令牌。
+（仅限局域网使用；公网部署请务必关闭局域网访问）</p>
+<input id="t" placeholder="mapi-lan-..." autocomplete="off" autocapitalize="off" spellcheck="false" autofocus>
+<button type="submit">进入面板</button>
+${failed ? '<div class="err">令牌不对，请重新核对。</div>' : ''}
+</form>
+<script>
+document.getElementById('f').addEventListener('submit', async (event) => {
+  event.preventDefault()
+  const token = document.getElementById('t').value.trim()
+  if (!token) return
+  const res = await fetch('/api/lan/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ token }),
+  }).catch(() => null)
+  if (res && res.ok) location.replace('/')
+  else location.replace('/?token=' + encodeURIComponent(token))
+})
+// ?token= 已经验过但仍被挡回来，说明是错的令牌
+if (location.search.includes('token=')) {
+  document.body.insertAdjacentHTML('beforeend', '<div class="err">令牌已失效，请重新粘贴。</div>')
+}
+</script></body></html>`
+  const body = Buffer.from(html, 'utf8')
+  res.writeHead(401, {
+    'Content-Type': 'text/html; charset=utf-8',
+    'Content-Length': body.length,
+    'Cache-Control': 'no-store',
+  })
+  res.end(body)
+}
+
+/**
  * 自动路由活跃探针（daemon/autoprobe.js）的注入点：index.js 启动时把实例挂进来，
  * 网关热路径在自动路由接单时调 setAutoProbeActivity() 记活跃。
  * 用注入而不是 server.js 自建：探针轮巡和调度器要共用同一个实例（同一个节奏状态）。
@@ -5401,6 +5617,16 @@ let driftWatcherHook = null
 export function setDriftWatcher(hook) {
   driftWatcherHook = hook
 }
+
+/**
+ * 局域网监听器（daemon/lan.js）的注入点。
+ * 开关在 `settings.lanPanel` 里，改完设置立刻生效，不用重启进程——
+ * 所以网络监听器的生杀必须由 daemon 侧（index.js）拿得住，server 只负责调用。
+ */
+let lanHook = null
+export function setLanHook(hook) {
+  lanHook = hook
+}
 function setDriftSample(offerId, sample) {
   try {
     driftWatcherHook?.record(offerId, sample)
@@ -5419,23 +5645,98 @@ function driftDemotedSet() {
   }
 }
 
-export function createAppServer() {
+export function createAppServer(options = {}) {
+  const gatewayOnly = options.mode === 'lan'
   return createServer(async (req, res) => {
     const url = new URL(req.url, 'http://127.0.0.1')
     const pathname = url.pathname
+    // method 必须在 try 外声明：catch 里要用它记日志，写在 try 里会变成 ReferenceError
+    const method = req.method === 'HEAD' ? 'GET' : req.method
 
-    if (!hostIsLocal(req)) {
+    if (gatewayOnly) {
+      // 局域网入口：网关照旧（只认网关 Key），面板要靠令牌换进来。
+      //
+      // 为什么不「先校验 Host 再按路径放行」：那是第二份口径，而且挡不住 curl。
+      // 真正的边界是「这个 socket 绑在哪张网卡上」——客户端伪造不了。
+      if (!isPrivatePeer(req.socket.remoteAddress)) {
+        res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' })
+        res.end('Forbidden: 局域网入口只接受局域网地址')
+        return
+      }
+      if (isGatewayPath(pathname)) {
+        try {
+          await handleProxy(req, res, url)
+        } catch (error) {
+          if (!res.writableEnded) openaiError(res, 500, error.message || String(error), 'server_error')
+        }
+        return
+      }
+
+      // 面板与 /api：开关关着时，这张网卡上连路由都不存在（404 而不是 403：
+      // 403 等于告诉对方「这里有接口，只是不让你进」）
+      const panel = (await store.readDbCached()).settings?.lanPanel
+      if (!panel?.enabled) {
+        res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' })
+        res.end('Not Found')
+        return
+      }
+
+      // 登录 / 登出必须排在令牌校验之前，否则永远进不了门
+      if (method === 'POST' && (pathname === '/api/lan/login' || pathname === '/api/lan/logout')) {
+        const type = String(req.headers['content-type'] || '').toLowerCase()
+        if (!type.startsWith('application/json')) {
+          json(res, 415, { error: '请求体必须是 application/json' })
+          return
+        }
+        const headers = { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }
+        if (pathname === '/api/lan/logout') {
+          res.writeHead(200, { ...headers, 'Set-Cookie': clearPanelCookie() })
+          res.end('{"ok":true}')
+          return
+        }
+        const body = await readBody(req)
+        if (!panelTokenOk(req, panel, body?.token)) {
+          json(res, 401, { error: '令牌不对，请重新核对' })
+          return
+        }
+        res.writeHead(200, { ...headers, 'Set-Cookie': panelCookie(panel.token) })
+        res.end('{"ok":true}')
+        return
+      }
+
+      // 链接里带 ?token=：验过就种 cookie 再跳回同路径，顺手把 URL 里的令牌抹掉
+      const queryToken = url.searchParams.get('token')
+      if (queryToken && method === 'GET') {
+        if (!panelTokenOk(req, panel, queryToken)) {
+          sendLanLoginPage(res, { failed: true })
+          return
+        }
+        res.writeHead(302, {
+          Location: pathname || '/',
+          'Set-Cookie': panelCookie(panel.token),
+          'Cache-Control': 'no-store',
+        })
+        res.end()
+        return
+      }
+
+      if (!panelTokenOk(req, panel)) {
+        // 浏览器要页面，脚本要 JSON：按 Accept 分，别让 curl 拿一页 HTML
+        if (method === 'GET' && wantsHtml(req)) {
+          sendLanLoginPage(res)
+          return
+        }
+        json(res, 401, { error: '需要局域网访问令牌（面板 → 网关 → 局域网访问）' })
+        return
+      }
+      // 令牌过了，下面和本机模式走同一段
+    } else if (!hostIsLocal(req)) {
       res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' })
       res.end('Forbidden: 只接受 127.0.0.1 / localhost 访问')
       return
     }
 
-    if (
-      pathname === '/v1' ||
-      pathname.startsWith('/v1/') ||
-      pathname === FREE_BASE_PATH ||
-      pathname.startsWith(`${FREE_BASE_PATH}/`)
-    ) {
+    if (isGatewayPath(pathname)) {
       try {
         await handleProxy(req, res, url)
       } catch (error) {
@@ -5449,8 +5750,6 @@ export function createAppServer() {
       return
     }
 
-    // method 必须在 try 外声明：catch 里要用它记日志，写在 try 里会变成 ReferenceError
-    const method = req.method === 'HEAD' ? 'GET' : req.method
     try {
       // 变更类请求必须带 JSON 头。表单/纯文本的跨站请求发不出这个头（要预检），
       // 顺带挡掉「任意网页往本地端口 POST 一坨 JSON」的 CSRF 路径。

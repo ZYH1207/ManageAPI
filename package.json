@@ -41,7 +41,8 @@
     "mock": "node .test/mock-upstream.mjs",
     "test": "node .test/run-e2e.mjs",
     "seed:showcase": "node .test/seed-showcase.mjs",
-    "shots": "node .test/capture-shots.mjs"
+    "shots": "node .test/capture-shots.mjs",
+    "start:lan": "node daemon/index.js --lan"
   },
   "engines": {
     "node": ">=20"
