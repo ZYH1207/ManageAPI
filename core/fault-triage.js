@@ -30,6 +30,86 @@ export const DEGRADED_THRESHOLD = 2
 export const PARTIAL_CHARS_THRESHOLD = 40
 
 /**
+ * 一次请求的结局（唯一口径）。网关记账、供给表现、诊断结论、界面标签全吃这一份，
+ * 不许在别处再写一遍字符串——「断流率里混进客户端取消」就是这么来的。
+ *
+ *   ok              正常拿到结果
+ *   stream-broken   站方把连接掐了：回答吐到一半没了
+ *   client-aborted  客户端自己关的连接（用户中断 / 客户端到点取消）
+ *                   —— 不是站的账，不进断流率、不报故障，也不建议用户处置站
+ */
+export const OUTCOME = {
+  OK: 'ok',
+  STREAM_BROKEN: 'stream-broken',
+  CLIENT_ABORTED: 'client-aborted',
+  FAILED: 'failed',
+}
+
+/**
+ * 客户端关连接时底层给出的错误文本，只有两种来源：
+ *   `客户端已断开`   —— 往已经不存在的 res 写，我们自己的 push 抛的
+ *   `This operation was aborted` —— 客户端信号传到上游 fetch，取消瀑布
+ * 空闲超时那条特意用中文「…秒无响应/无数据」，不会误撞这里。
+ */
+const CLIENT_ABORT_RE = /客户端已断开|operation was aborted|aborted/i
+
+/**
+ * 把「上游断流」和「客户端自己走了」分开。两件事在旧代码里都记成 stream-broken，
+ * 于是客户端每次超时取消都会算站方一次断流（真实库里 13 条断流有 8 条是这么来的）。
+ *
+ * @param {{streamError?: string|null, clientAborted?: boolean}} p
+ * @returns {'ok'|'stream-broken'|'client-aborted'}
+ */
+export function classifyOutcome({ streamError = null, clientAborted = false } = {}) {
+  // 两个证据都要：**客户端信号已 abort** + **错误文本是取消瀑布**。
+  // 只看其中一个都会误判：
+  //   - 只看信号：空闲超时（站方卡死）之后客户端恰好也取消，会被算成「客户端走了」
+  //   - 只看文本：别的路径也可能冒出 aborted 字样
+  // 顺序上先判取消再判空，否则「客户端取消 + 已清空原因」会被当成成功。
+  if (clientAborted && CLIENT_ABORT_RE.test(String(streamError || ''))) {
+    return OUTCOME.CLIENT_ABORTED
+  }
+  if (!streamError) return OUTCOME.OK
+  return OUTCOME.STREAM_BROKEN
+}
+
+/**
+ * 断流原因说人话：谁掐的、算不算站的账、要不要处理。
+ * 诊断页、故障事件、决策日志都从这里取措辞，避免同一个现象三种说法。
+ *
+ * @param {string|null} streamError 网关记录的错误文本
+ * @param {{clientAborted?: boolean}} [opts]
+ * @returns {{who: 'client'|'site', reason: string, detail: string, todo: string}}
+ */
+export function explainStreamError(streamError, { clientAborted = false } = {}) {
+  const text = String(streamError || '')
+  if (clientAborted && CLIENT_ABORT_RE.test(text)) {
+    return {
+      who: 'client',
+      reason: '客户端主动断开请求',
+      detail:
+        '客户端自己把连接关了（手动中断，或者客户端等到自己的超时先走了）。回答没要完，但这不是站点的问题。',
+      todo: '不予处理',
+    }
+  }
+  // 空闲超时的两种文案（读流阶段「N 秒无数据」/ fetch 阶段「N 秒无响应（首字超时）」）
+  if (/无响应|无数据|超时|timed?\s?out/i.test(text)) {
+    return {
+      who: 'site',
+      reason: '站方卡死不出字',
+      detail: '站方连续很久一个字节都没吐，被网关的空闲超时掐断——这条供给此刻答不了话。',
+      todo: '在智能决策页把这条供给降权，或直接停用这家站',
+    }
+  }
+  return {
+    who: 'site',
+    reason: '站方把连接掐断了',
+    detail: '回答说了一半，站方把连接断了。探针测不出这类问题，只有真实流量看得见。',
+    todo: '偶发就先观察；反复出现就把它降权或停用',
+  }
+}
+
+/**
  * 判一次请求的影响等级。
  *
  * @param {object} p
@@ -79,8 +159,19 @@ export function assessRequestImpact({
     }
   }
 
+  // ---- 客户端自己走的：不是站的账，不处置
+  if (outcome === OUTCOME.CLIENT_ABORTED) {
+    return {
+      impact: IMPACT.NONE,
+      absorbed: true,
+      reason: '客户端主动断开请求',
+      detail: '客户端自己把连接关了（手动中断 / 客户端到点取消），回答没要完，但这不是站点的问题',
+      todo: '不予处理',
+    }
+  }
+
   // ---- 流式断在半中间
-  if (outcome === 'stream-broken') {
+  if (outcome === OUTCOME.STREAM_BROKEN) {
     if (deliveredChars < PARTIAL_CHARS_THRESHOLD) {
       // 只吐了几个字（甚至一个字都没吐）：用户基本没拿到东西
       return {
@@ -151,6 +242,8 @@ export function shouldEscalate({
  */
 export function faultKindOf(impact, extra = '') {
   if (!impact) return 'runtime'
+  // 客户端自己断开的：单独一类，绝不能被当成 stream-broken 去触发故障转移
+  if (/客户端/.test(impact.reason || '') && /断开|取消/.test(impact.reason || '')) return 'client-aborted'
   if (impact.impact === IMPACT.BLOCKED) {
     if (/断流/.test(impact.reason || '')) return 'stream-broken'
     return 'all-candidates-failed'

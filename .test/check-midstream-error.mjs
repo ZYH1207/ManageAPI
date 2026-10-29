@@ -244,7 +244,7 @@ try {
     await sleep(3500)
     const st2 = await api('/api/state')
     const last = (st2.routing || []).find((r) => r.model === 'm-slow')
-    ok(last && last.outcome === 'client-abort', `客户端取消记成 client-abort（实际 ${last?.outcome}）`)
+    ok(last && last.outcome === 'client-aborted', `客户端取消记成 client-abort（实际 ${last?.outcome}）`)
     ok(!last?.streamError, '客户端取消不带断流原因')
   }
 } catch (e) {

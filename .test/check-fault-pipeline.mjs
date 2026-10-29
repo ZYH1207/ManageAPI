@@ -30,6 +30,9 @@ import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { spawn } from 'node:child_process'
 
+// 相对本文件定位仓库根：写死某个 worktree 路径的话，那个 worktree 一删测试就红
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
+
 let n = 0
 const ok = (cond, label) => {
   assert.ok(cond, label)

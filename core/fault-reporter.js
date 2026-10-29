@@ -121,13 +121,35 @@ export function recentlyReported(events, { offerId, modelKey, kind }, now = Date
   })
 }
 
-/** 落一条研判/上报事件（截流记录也走这里，诊断页统一读） */
-export async function recordFaultEvent(entry) {
+/** 落一条研判/上报事件（截流记录也走这里，诊断页统一读）
+ *
+ * dedupeMs > 0 时做聚合：同一供给、同一 kind、同一 status 在窗口内已有一条，
+ * 就把 hits +1 并刷新 detail，不再新增。用于「客户端断开」这类高频又不需要逐条看的记录
+ * ——不聚合的话它会把事件账刷满，真故障反而被挤出去。 */
+export async function recordFaultEvent(entry, { dedupeMs = 0 } = {}) {
   return mutate((db) => {
     ensureFaultKeys(db)
+    const now = Date.now()
+    if (dedupeMs > 0) {
+      const prev = [...db.faultEvents]
+        .reverse()
+        .find(
+          (e) =>
+            e.status === entry.status &&
+            e.kind === entry.kind &&
+            e.offerId === entry.offerId &&
+            now - Date.parse(e.at) < dedupeMs,
+        )
+      if (prev) {
+        prev.hits = (prev.hits || 1) + 1
+        prev.lastAt = new Date(now).toISOString()
+        if (entry.detail) prev.detail = entry.detail
+        return prev
+      }
+    }
     const record = {
       id: `ev_${Math.random().toString(36).slice(2, 10)}`,
-      at: new Date().toISOString(),
+      at: new Date(now).toISOString(),
       status: 'observed',
       ...entry,
     }

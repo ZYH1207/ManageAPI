@@ -590,7 +590,9 @@ function faultHtml() {
   }
   const { stats = {}, config = {}, tokenReady, autoRouteTokenPresent, events = [] } = faultData
   const KIND_LABEL = {
-    'stream-broken': '断流',
+    'stream-broken': '站方断流',
+    // 客户端自己走的：标签就要直说是「客户端断开」，不能混在「断流」里
+    'client-aborted': '客户端断开',
     'all-candidates-failed': '全部失败',
     'truncated-output': '输出截断',
     'degraded-quality': '降智',
@@ -599,15 +601,23 @@ function faultHtml() {
     degraded: '降质',
     'connectivity-test': '连通性测试',
   }
+  const STATUS_LABEL = {
+    sent: ['已上报', 'warn'],
+    absorbed: ['已截流', 'ok'],
+    // 「不予处理」= 系统看懂了，但这件事不该处理（典型：客户端自己断开的）
+    ignored: ['不予处理', 'ok'],
+    skipped: ['未上报', 'ok'],
+    failed: ['上报失败', 'danger'],
+  }
   const rows = events
     .slice(0, 12)
     .map(
       (e) => `
       <tr>
         <td class="mono">${esc(String(e.at).slice(5, 19).replace('T', ' '))}</td>
-        <td><span class="badge ${e.status === 'sent' ? 'warn' : e.status === 'absorbed' ? 'ok' : 'danger'}">${
-          e.status === 'sent' ? '已上报' : e.status === 'absorbed' ? '已截流' : e.status === 'skipped' ? '未上报' : '上报失败'
-        }</span></td>
+        <td><span class="badge ${(STATUS_LABEL[e.status] || ['异常', 'danger'])[1]}">${
+          (STATUS_LABEL[e.status] || ['异常'])[0]
+        }${e.hits > 1 ? ` ×${e.hits}` : ''}</span></td>
         <td>${esc(KIND_LABEL[e.kind] || e.kind || '—')}</td>
         <td class="desc" style="max-width:360px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(e.detail || e.message || e.error || '')}">${esc(e.detail || e.message || e.error || '—')}</td>
       </tr>`,
@@ -628,6 +638,10 @@ function faultHtml() {
           <div class="stat-icon tint-accent">${icon('swap')}</div>
         </div>
         <div class="stat">
+          <div class="stat-main"><div class="k">不予处理</div><div class="v">${stats.ignored || 0}</div></div>
+          <div class="stat-icon tint-muted">${icon('eye-off')}</div>
+        </div>
+        <div class="stat">
           <div class="stat-main"><div class="k">已上报</div><div class="v">${stats.sent || 0}</div></div>
           <div class="stat-icon ${stats.sent ? 'tint-warn' : 'tint-muted'}">${icon('alert')}</div>
         </div>
@@ -643,6 +657,7 @@ function faultHtml() {
       <p class="hint" style="margin:8px 0 12px">
         用户完全无感的失败（换站后成功）只记一笔、<b>不打扰自动路由</b>——否则它会为了无关痛痒的小问题在健康供给之间反复折腾。
         只有「真的没拿到东西」或「反复降质」才上报，让它做故障转移。
+        <br /><b>「不予处理」</b>是客户端自己把连接关了（手动中断 / 客户端到点取消），不是站的错——不报故障，也不建议你去动站点。
         ${!autoRouteTokenPresent ? '<br /><b>提示：</b>自动路由还没生成上报令牌，故障现在报不上去。' : ''}
       </p>
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
@@ -966,7 +981,7 @@ function renderDiagnosis() {
         <td class="mono">${b.ok}</td>
         <td class="mono">${b.broken || ''}</td>
         <td class="mono">${b.failed || ''}</td>
-        <td class="mono">${b.clientAborts || ''}</td>
+        <td class="mono" title="客户端自己关的连接（手动中断 / 客户端超时），不算站的断流">${b.clientAborts || ''}</td>
         <td class="mono">${fmtTtft(b)}</td>
         <td class="mono">${fmtTps(b)}</td>
         <td class="mono">${fmtCache(b)}</td>
@@ -987,9 +1002,9 @@ function renderDiagnosis() {
 
   const statsPane = `
     <div class="card">
-      <div class="card-head"><h3>供给表现</h3><span class="meta">近 ${diagnosisHours} 小时 · 按小时聚合 · UTC · 「客户端取消」不计入断流/失败 · 估算费用为诊断级非对账口径</span></div>
+      <div class="card-head"><h3>供给表现</h3><span class="meta">近 ${diagnosisHours} 小时 · 按小时聚合 · UTC · 「客户端断开」不计入断流/失败 · 估算费用为诊断级非对账口径</span></div>
       <table class="table">
-        <thead><tr><th>小时</th><th>供给</th><th>请求</th><th>成功</th><th>断流</th><th>失败</th><th>客户端取消</th><th>首字</th><th>吐字/s</th><th>缓存命中</th><th>估算费用</th><th>错误</th></tr></thead>
+        <thead><tr><th>小时</th><th>供给</th><th>请求</th><th>成功</th><th>断流</th><th>失败</th><th>客户端断开</th><th>首字</th><th>吐字/s</th><th>缓存命中</th><th>估算费用</th><th>错误</th></tr></thead>
         <tbody>${statRows || '<tr><td colspan="12" class="desc">暂无流量</td></tr>'}</tbody>
       </table>
     </div>`
@@ -4499,7 +4514,7 @@ function renderGateway() {
           <td class="num">${r.attempts}</td>
           <td class="num">${r.ttftMs ? `${r.ttftMs}ms` : '—'}</td>
           <td class="num">${r.latencyMs}ms</td>
-          <td>${r.outcome === 'ok' ? '<span class="badge ok">成功</span>' : r.outcome === 'client-abort' ? `<span class="badge" title="${t('客户端自己取消了请求，不是站的错')}">${t('客户端取消')}</span>` : `<span class="badge danger">${esc(r.outcome)}</span>`}</td>
+          <td>${r.outcome === 'ok' ? '<span class="badge ok">成功</span>' : r.outcome === 'client-aborted' ? `<span class="badge" title="${t('客户端主动断开请求，不予处理')}">${t('客户端断开')}</span>` : `<span class="badge danger">${esc(r.outcome)}</span>`}</td>
         </tr>`).join('')
 
   const logBlock = `
@@ -4808,12 +4823,12 @@ function closeUsageDetail() {
 
 // 结果列的短标签：决策日志里存的是英文 outcome（stream-broken / failed / client-abort），
 // 直接铺在表里会把列撑到溢出；原文放到 title 里，想对日志还能对上
-// client-abort 单独一档：客户端自己取消（关对话/副任务超时），不是站的错也不是断流
+// 结局标签只有一份：站方断流 vs 客户端自己断开必须一眼分清，否则用户会以为站坏了
 const OUTCOME_LABEL = {
   ok: '成功',
-  'stream-broken': '断流',
+  'stream-broken': '站方断流',
+  'client-aborted': '客户端断开',
   failed: '全部失败',
-  'client-abort': '客户端取消',
 }
 
 // 明细表最多画多少行：筛选在**全部**明细上做，只是不把 500 行一次性塞进 DOM
@@ -5033,7 +5048,8 @@ function paintUsageDetail() {
   const rows = shownRows
     .map((r) => {
       const ok = r.outcome === 'ok'
-      const aborted = r.outcome === 'client-abort'
+      // 客户端自己断开的：不是失败，不能刷成红行——否则用户会以为站又坏了
+      const clientAborted = r.outcome === 'client-aborted'
       const tip = [
         r.protocol
           ? `${r.protocol}${r.stream === true ? ' · 流式' : r.stream === false ? ' · 非流式' : ''}`
@@ -5051,7 +5067,7 @@ function paintUsageDetail() {
               : ''
           }`
         : `<span class="badge danger">${t('全部失败')}</span>`
-      return `<tr class="${ok || aborted ? '' : 'ud-bad'}" title="${esc(tip)}">
+      return `<tr class="${ok || clientAborted ? '' : 'ud-bad'}" title="${esc(tip)}">
         <td style="color:var(--faint)">${fmtDateTime(r.ts)}</td>
         <td>${esc(r.keyName || '—')}</td>
         <td class="mono ud-model">${esc(r.model)}</td>
@@ -5066,7 +5082,7 @@ function paintUsageDetail() {
         <td class="num">${r.reasoning === null ? '—' : formatTokens(r.reasoning)}</td>
         <td class="num">${pct(r.cacheHitRate)}</td>
         <td class="num">${tpsText(r.tps)}</td>
-        <td>${ok ? `<span class="badge ok">${t('成功')}</span>` : `<span class="badge ${aborted ? '' : 'danger'}" title="${esc(r.outcome)}">${esc(
+        <td>${ok ? `<span class="badge ok">${t('成功')}</span>` : clientAborted ? `<span class="badge" title="${t('客户端主动断开请求，不予处理')}">${t('客户端断开')}</span>` : `<span class="badge danger" title="${esc(r.outcome)}">${esc(
           OUTCOME_LABEL[r.outcome] ? t(OUTCOME_LABEL[r.outcome]) : r.outcome,
         )}</span>`}${r.attempts > 1 ? ` <span class="badge">${r.attempts}</span>` : ''}</td>
       </tr>`

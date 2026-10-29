@@ -10,10 +10,10 @@
  *     offerId, hour,
  *     requests, ok, broken, failed, clientAborts,
  *           // requests = ok + broken + clientAborts
- *           // clientAborts = 客户端自己取消（用户关对话 / 自动副任务超时）。
+ *           // clientAborts = 客户端自己断开（用户关对话 / 客户端到点取消 / 自动副任务超时）。
  *           // 它既不是站方的错也不是断流，但必须单列：混进 broken 会把真断流的
  *           // 比例稀释到诊断阈值以下（2026-10-29 的真实现场），混进 ok 又会
- *           // 把“没拿到结果”算成好样本。算率时分母要用 requests - clientAborts。
+ *           // 把「没拿到结果」算成好样本。算率时分母要用 requests - clientAborts。
  *     ttftSum, ttftCount,                  // 首字
  *     latencySum, latencyCount,            // 总时长
  *     genOutSum, genCount, genTimeSum,     // 吐字速度分母/分子（TPS）
@@ -28,8 +28,12 @@
 
 import { offerCost } from './pricing.js'
 import { fingerprintError } from './error-fingerprint.js'
+import { OUTCOME } from './fault-triage.js'
 
 export const OFFER_STATS_MAX_AGE_DAYS = 30
+
+/** 客户端主动断开在事件账里的 kind（与 fault-triage 的 faultKindOf 同一口径） */
+const CLIENT_ABORTED_KIND = 'client-aborted'
 
 /** ISO 时间串 → 小时桶 key（本地无时区概念，一律 UTC，别混） */
 export function hourKey(iso) {
@@ -49,6 +53,8 @@ function bucket(stats, offerId, hour) {
       ok: 0,
       broken: 0,
       failed: 0,
+      // 客户端自己关连接（用户中断 / 客户端到点取消）：既不算成功也不算站方断流，
+      // 单开一栏只用于「解释你看到的那些断流」，绝不进请求数与分母
       clientAborts: 0,
       ttftSum: 0,
       ttftCount: 0,
@@ -111,7 +117,7 @@ const errKey = (kind, code) => `${kind || 'outage'}${code ? `/${code}` : ''}`
 
 /**
  * 把一条决策记录摊进时间序列。纯函数（原地改 stats）：
- *   - 选中供给的 outcome（ok / stream-broken / client-abort）记在该供给名下
+ *   - 选中供给的 outcome（ok / stream-broken / client-aborted）记在该供给名下
  *   - failures[] 里的每次失败尝试记在被试供给名下（那是它们的失败）
  */
 export function applyRoutingToStats(stats, record, { offerById = null, settings = {}, benchmarks = {} } = {}) {
@@ -120,14 +126,16 @@ export function applyRoutingToStats(stats, record, { offerById = null, settings 
 
   if (record.chosenOfferId) {
     const b = bucket(stats, record.chosenOfferId, hour)
+    // 结局口径只有一份（core/fault-triage.js#OUTCOME），这里不再自己拼字符串
+    const clientAborted = record.outcome === OUTCOME.CLIENT_ABORTED
     b.requests += 1
-    // 客户端取消：只计次数，不记成败，也不参与速度/费用/吐字统计——
-    // 被中途掐掉的请求的 ttft/latency 不是这家站的真实速度，拿去做均值只会带偏
-    const clientAbort = record.outcome === 'client-abort'
-    if (clientAbort) b.clientAborts += 1
-    else if (record.outcome === 'stream-broken') b.broken += 1
+    // 客户端自己断开的：只计次数，不记成败，也不参与速度/费用/吐字统计——
+    // 那是一个没说完的回答，拿去算速度只会把基线拉歪。
+    // requests 仍然 +1，是为了让诊断侧能用「requests - clientAborts」这个唯一分母。
+    if (clientAborted) b.clientAborts += 1
+    else if (record.outcome === OUTCOME.STREAM_BROKEN) b.broken += 1
     else b.ok += 1
-    if (!clientAbort) {
+    if (!clientAborted) {
       b.latencySum += Number(record.latencyMs) || 0
       b.latencyCount += 1
       if (Number(record.ttftMs) > 0) {
@@ -154,12 +162,11 @@ export function applyRoutingToStats(stats, record, { offerById = null, settings 
           b.estCostCount += 1
         }
       }
-    }
-    // 断流原因也进错误归类（空闲超时 / 流中断是两种不同的病）
-    if (record.outcome === 'stream-broken' && record.streamError) {
-      const kind = /无响应|超时|timed? ?out/i.test(record.streamError) ? 'slow' : 'outage'
-      const key = errKey(kind, null)
-      b.errors[key] = (b.errors[key] || 0) + 1
+      // 断流原因也进错误归类（空闲超时 / 流中断是两种不同的病）
+      if (record.outcome === OUTCOME.STREAM_BROKEN && record.streamError) {
+        const kind = /无响应|超时|timed? ?out/i.test(record.streamError) ? 'slow' : 'outage'
+        b.errors[errKey(kind, null)] = (b.errors[errKey(kind, null)] || 0) + 1
+      }
     }
   }
 
@@ -177,11 +184,73 @@ export function applyRoutingToStats(stats, record, { offerById = null, settings 
   }
 }
 
+/**
+ * 一次性修数：把历史上误记成「站方断流」的客户端断开挪回它该在的栏。
+ *
+ * 2026-10-29 之前的口径：客户端自己关连接（agent 到点取消 / 用户按 Esc）产生的
+ * `This operation was aborted` 一律记成 stream-broken，于是：
+ *   - 供给表现里断流率虚高（真实库 23 请求里 3 条是这么来的，13% 全是冤的）；
+ *   - 诊断页弹一条「断流率 13%」让用户去降权/停用一家健康站；
+ *   - 故障研判还真的上报过自动路由。
+ *
+ * 不能全清（真有站方断流的桶也在里面），也不能猜。这里只认直接证据：
+ * 故障事件账里留了原始错误文本，只有写着 aborted / 客户端已断开的那几条才算。
+ * 每挪一条就给事件打 `movedToClientAbort` 标记，重复执行不会重复扣。
+ *
+ * 为什么放在 ensure 里而不是 store.migrate：它是诊断数据的自我修复，
+ * 跟 DB 结构版本无关；放 migrate 里还要为它单独抬一次版本号。
+ *
+ * @returns {number} 挪了多少条
+ */
+export function repairClientAborts(db) {
+  const events = Array.isArray(db.faultEvents) ? db.faultEvents : []
+  if (!events.length) return 0
+  const stats = db.offerStats || {}
+  let moved = 0
+  for (const e of events) {
+    if (!e || e.movedToClientAbort) continue
+    if (!e.offerId || !e.at) continue
+    const text = String(e.detail || e.message || e.error || '')
+    // 只认直接证据：客户端取消瀑布的原文，或我们自己「往已关的 res 写」那句
+    if (!/operation was aborted|客户端已断开/i.test(text)) continue
+    // 已经是新口径的（新代码写的事件）不用再改，也不能再扣桶——
+    // 它的桶从一开始就没算进 broken，再扣一次就是把别人的锅算到它头上
+    if (e.kind === CLIENT_ABORTED_KIND) continue
+
+    // 事件本身要改成新口径：不然页面上的「故障处理」表会继续挂着一堆
+    // 「回答被截断 · This operation was aborted」——用户仍然看不出是谁掐的。
+    // 原始文本不删，挪进 originalText 留着查案。
+    e.originalText = text
+    e.kind = CLIENT_ABORTED_KIND
+    e.impact = 'none'
+    e.impactReason = '客户端主动断开请求'
+    e.status = 'ignored'
+    e.message = '客户端主动断开请求，不予处理'
+    e.detail = '客户端主动断开请求：客户端自己把连接关了（手动中断 / 客户端到点取消），回答没要完，但这不是站点的问题'
+    e.todo = '不予处理'
+    e.movedToClientAbort = true
+    moved += 1
+
+    // 小时桶也要扣：老库把这类算进了 broken/requests，不扣历史断流率就一直是假的。
+    // 桶里没有可扣的就不动它（事件可能已经被 300 条滚动窗口挤掉了对应记录）
+    const b = stats[`${e.offerId}|${hourKey(e.at)}`]
+    if (b && Number(b.broken) > 0) {
+      b.broken -= 1
+      // requests = ok + broken 是这个表的口径，挪走一条要同步减，否则三栏对不上
+      b.requests = Math.max(0, (Number(b.requests) || 0) - 1)
+      b.clientAborts = (Number(b.clientAborts) || 0) + 1
+    }
+  }
+  return moved
+}
+
 /** 幂等：诊断相关的新键（错误账本 + 供给表现时间序列）不存在就补上。migrate 和读取路径都调它。 */
 export function ensureDiagnosisKeys(db) {
   if (!db.errorbook || typeof db.errorbook !== 'object') db.errorbook = {}
   if (!db.offerStats || typeof db.offerStats !== 'object') db.offerStats = {}
   if (!Array.isArray(db.checkups)) db.checkups = []
+  // 旧口径的历史数据：只挪一次（幂等），修完的事件有标记
+  repairClientAborts(db)
   return db
 }
 

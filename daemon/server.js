@@ -132,6 +132,9 @@ import {
   faultKindOf,
   holdMinutesFor,
   IMPACT,
+  OUTCOME,
+  classifyOutcome,
+  explainStreamError,
 } from '../core/fault-triage.js'
 import * as faultReporter from '../core/fault-reporter.js'
 
@@ -154,6 +157,8 @@ const MAX_GATEWAY_BODY = 64 * 1024 * 1024
 
 /** 流式转发的空闲超时：连续这么久没收到上游任何字节，才判定卡死 */
 const STREAM_IDLE_MS = 120000
+/** 客户端断开事件的聚合窗口：同一供给 10 分钟内只留一条，后面的只加 hits */
+const CLIENT_ABORT_EVENT_DEDUPE_MS = 10 * 60_000
 
 class HttpError extends Error {
   constructor(status, message, extra = null) {
@@ -3371,6 +3376,8 @@ route('GET', /^\/api\/faults$/, async (ctx) => {
     stats: {
       observed: events.length,
       absorbed: events.filter((e) => e.status === 'absorbed').length,
+      // 客户端自己断开的：单独一个计数，不计入「已截流」（那不是我们截的）
+      ignored: events.filter((e) => e.status === 'ignored').length,
       sent: events.filter((e) => e.status === 'sent').length,
       failed: events.filter((e) => e.status === 'failed').length,
       skipped: events.filter((e) => e.status === 'skipped').length,
@@ -4066,15 +4073,17 @@ async function streamAttempt({
     await reader.cancel().catch(() => {})
     cleanup()
     const { usage, contentChars, textChars, reasoningChars, hasToolCalls, finishReason, textTail } = inspector.state
-    // 客户端自己取消的请求不是站的错，也不是断流：单独标出来，别污染断流统计。
-    // （以前这里一律写 streamError，于是 pi 的自动标题/摘要超时取消全部变成了
-    //   「格子云断流」，真断流被稀释到诊断阈值以下）
+    // 客户端自己取消的请求不是站的错，也不是断流。
+    //
+    // 这里**保留原始错误文本**，只用 clientAbort 这个标记区分——因为
+    // core/fault-triage.js#classifyOutcome 是「信号 + 文本」双证据判定的：
+    // 只看信号的话，「站方卡死超时之后客户端恰好也取消」会被算成客户端走了。
+    // 判定完之后由调用方决定要不要把文本写进决策日志（客户端取消不写，
+    // 免得它进错误指纹账本，把站方账本染上用户自己的中断）。
     const clientGone = Boolean(clientSignal?.aborted)
-    const reason = clientGone
-      ? null
-      : idleTimedOut
-        ? `上游流中断（${STREAM_IDLE_MS / 1000} 秒无数据）`
-        : error.message
+    const reason = idleTimedOut
+      ? `上游流中断（${STREAM_IDLE_MS / 1000} 秒无数据）`
+      : error.message
     return {
       committed,
       usage: usage || null,
@@ -4388,8 +4397,43 @@ async function handleFaultSignals({
   streamError = null,
 } = {}) {
   const impact = assessRequestImpact({ outcome, attempts: attemptCount, deliveredChars, degradation })
+
+  // 客户端自己断开的：既不算故障，也不能当作「无感截流」白白吞掉——
+  // 用户会看到「断流」字样却不知道是谁掐的。记一条 status='ignored' 的账，
+  // 措辞就是人话：客户端主动断开请求，不予处理。
+  //
+  // 这里必须做聚合：客户端取消是家常便饭（agent 到点取消、用户按 Esc），
+  // 每次都新写一条会把事件账刷满，真正值得看的故障反而被挤出去。
+  // 同一供给 10 分钟内只留一条，后面的只加 hits。
+  if (outcome === OUTCOME.CLIENT_ABORTED) {
+    const explained = explainStreamError(streamError, { clientAborted: true })
+    await faultReporter
+      .recordFaultEvent(
+        {
+          offerId,
+          modelKey,
+          kind: 'client-aborted',
+          impact: IMPACT.NONE,
+          impactReason: explained.reason,
+          status: 'ignored',
+          message: '客户端主动断开请求，不予处理',
+          detail: `${explained.reason}：${explained.detail}`,
+          todo: explained.todo,
+          attempts: attemptCount,
+          deliveredChars,
+        },
+        { dedupeMs: CLIENT_ABORT_EVENT_DEDUPE_MS },
+      )
+      .catch(() => {})
+    return
+  }
+
   // 用户完全无感且没换过站：什么都不记（不然每单都写库）
   if (impact.impact === IMPACT.NONE && attemptCount <= 1) return
+
+  // 站方断流要说清「谁掐的」（空闲超时 / 连接被断），别只甩一句「断流」——
+  // 用户看到结论时得能知道后续该查什么
+  const explained = outcome === OUTCOME.STREAM_BROKEN ? explainStreamError(streamError) : null
 
   try {
     const db = await store.readDb()
@@ -4416,7 +4460,8 @@ async function handleFaultSignals({
         impact: impact.impact,
         impactReason: impact.reason,
         status: 'absorbed',
-        detail: `${reason}${streamError ? ` · ${String(streamError).slice(0, 80)}` : ''}`,
+        detail: `${reason}${explained ? ` · ${explained.reason}：${explained.detail}` : ''}${streamError ? ` · ${String(streamError).slice(0, 80)}` : ''}`,
+        todo: explained?.todo || null,
         attempts: attemptCount,
         deliveredChars,
       })
@@ -4427,7 +4472,7 @@ async function handleFaultSignals({
       offerId,
       modelKey,
       kind: faultKindOf(impact),
-      message: `${impact.reason || '故障'}：${impact.detail || ''}${reason ? `（${reason}）` : ''}`.slice(0, 200),
+      message: `${explained ? `${explained.reason}——` : ''}${impact.reason || '故障'}：${impact.detail || ''}${reason ? `（${reason}）` : ''}`.slice(0, 200),
       holdMinutes: holdMinutesFor(impact),
       impact,
     })
@@ -4831,12 +4876,17 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
       })
       if (result.committed) {
         const latencyMs = Date.now() - started
-        // 客户端自己取消的（关掉对话、自动副任务超时）——不是站的错，也不是断流。
-        // 以前这条路径不查 clientAbort：`outcome: streamError ? 'stream-broken' : 'ok'`
-        // 把 144 次“the agent canceled the request”全记成站方断流，真断流被稀释掉。
-        // 单独一档：token 照计（钱真花了），但不进故障视野、不算 supply 的坏账。
-        const clientAbortOutcome = Boolean(result.clientAbort) && !result.streamError
-        if (clientAbortOutcome) {
+        // 这次到底是「站方断流」还是「客户端自己走了」：口径只在 fault-triage 算一次。
+        // 客户端信号已 abort + 错误文本是取消瀑布 → 算客户端；否则算站方断流。
+        // 不分开的话，客户端每超时一次就凭空给站方添一次断流（真实库 13 条里 8 条如此）
+        const outcome = classifyOutcome({
+          streamError: result.streamError,
+          clientAborted: Boolean(result.clientAbort) || clientAbort.signal.aborted,
+        })
+        // 客户端自己取消的 token 照计（钱真花了），但不算供给的坏账
+        const clientAborted = outcome === OUTCOME.CLIENT_ABORTED
+        if (clientAborted) {
+          // 速度样本不吃取消：被掐掉的请求 ttft/latency 不是这家站的真实速度
           const numbers = usageNumbers(result.usage)
           queueRouting({
             model,
@@ -4851,7 +4901,8 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
             chosenGroup: candidate.offer.group || '',
             lastResort: Boolean(candidate.lastResort),
             attempts: index + 1,
-            outcome: 'client-abort',
+            outcome,
+            clientAborted: true,
             streamError: null,
             latencyMs,
             ttftMs: result.ttftMs ?? null,
@@ -4873,9 +4924,18 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
             reasoningTokens: numbers?.reasoning,
             latencyMs,
             ttftMs: result.ttftMs,
-            // 客户端取消 ≠ 站点失败：不计入站点可用率，只记一笔用量
-            ok: true,
-            clientAbort: true,
+            // 客户端自己关掉的请求：没拿到完整结果，但这不是站的错。
+            // usage 账上不能标成功（那是自欺），也不会进可用率。
+            ok: false,
+          })
+          // 故障事件账：记一条 status='ignored'（聚合用），绝不上报自动路由
+          void handleFaultSignals({
+            offerId: candidate.offer.id,
+            modelKey: candidate.offer.modelKey || null,
+            attemptCount: index + 1,
+            outcome,
+            deliveredChars: result.realCheck?.textChars || 0,
+            streamError: result.streamError || null,
           })
           return
         }
@@ -4902,15 +4962,21 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
           // 排查时能区分「正常选站」与「实在没人了才用慢站」。
           lastResort: Boolean(candidate.lastResort),
           attempts: index + 1,
-          outcome: result.streamError ? 'stream-broken' : 'ok',
-          // 断流原因必须进决策日志：core/inventory.js#recordRoutingBatch 与
-          // core/offer-stats.js 都靠 record.streamError 才能把原因沉淀进错误账本。
-          // 以前只有 handleFaultSignals 带了它，于是 errorbook 里断流永远是 null。
+          outcome,
+          // 客户端自己断开的：单列一个标记，排查时不用再从错误文本里猜（断流率不吃它）
+          clientAborted: clientAborted,
+          // 断流的具体成因（空闲超时 / 连接被断 / 坏帧 / 半截帧）：
+          // 只存 outcome 不存原因，事后看日志就只知道「断流了」却不知道为什么。
+          // core/inventory.js#recordRoutingBatch 与 core/offer-stats.js 都靠它
+          // 才能把原因沉淀进错误账本（以前只有 handleFaultSignals 带了它）。
           streamError: result.streamError || null,
           latencyMs,
           ttftMs: result.ttftMs ?? null,
           // 协议 / 是否流式：详细用量页要能解释「为什么这条没有首字/没有速度」
           protocol,
+          // 断流的具体成因（空闲超时 / 连接被断 / 客户端取消）：
+          // 只存 outcome 不存原因，事后看日志就只知道「断流了」却不知道为什么
+          streamError: result.streamError || null,
           stream: body.stream === true,
           usage: result.usage || null,
           candidates: explain(allCandidates),
@@ -4929,17 +4995,23 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
           reasoningTokens: numbers?.reasoning,
           latencyMs,
           ttftMs: result.ttftMs,
-          ok: !result.streamError,
+          // 客户端自己关掉的请求：没拿到完整结果，但这不是站的错。
+          // usage 账上不能标成功（那是自欺），也不会进可用率（bufferTraffic 跳过）
+          ok: outcome === OUTCOME.OK,
         })
-        bufferTraffic(
-          candidate.offer.id,
-          !result.streamError,
-          result.streamError,
-          // 只有成功响应才谈得上「空回答/计费虚报」；断流已经算失败了
-          result.streamError || !result.realCheck
-            ? null
-            : checkRealResponse({ ...result.realCheck, requestTokens }),
-        )
+        // 客户端自己断开的：不进流量统计。它既不是站的成功，也不是站的失败，
+        // 拿它去算可用率等于让用户的手动中断拖累站点评分
+        if (outcome !== OUTCOME.CLIENT_ABORTED) {
+          bufferTraffic(
+            candidate.offer.id,
+            !result.streamError,
+            result.streamError,
+            // 只有成功响应才谈得上「空回答/计费虚报」；断流已经算失败了
+            result.streamError || !result.realCheck
+              ? null
+              : checkRealResponse({ ...result.realCheck, requestTokens }),
+          )
+        }
         // 计费核对样本：本地估算的请求 token vs 上游上报的 prompt_tokens。
         // 这是唯一不依赖站点自报数字的独立证据，虚报时两者会明显背离。
         // 只抽样记录（每 N 次一条），避免把 usage 文件撑大
@@ -4971,7 +5043,7 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
           offerId: candidate.offer.id,
           modelKey: candidate.offer.modelKey || null,
           attemptCount: index + 1,
-          outcome: result.streamError ? 'stream-broken' : 'ok',
+          outcome,
           deliveredChars: result.realCheck?.textChars || 0,
           streamError: result.streamError || null,
         })

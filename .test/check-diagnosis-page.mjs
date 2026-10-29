@@ -82,6 +82,24 @@ for (let i = 0; i < 40; i++) {
     providers: { 绿萝: 15 }, offers: { o_slow: 15 }, lastDiagnosis: null,
   }
   db.providers = [{ id: 'p_lv', name: '绿萝', baseUrl: 'http://127.0.0.1:1/v1', quotaRemaining: 0.39, currency: 'USD', kind: 'sub2api' }]
+  // 故障处理卡：一条「客户端自己断开」的记录（状态必须是「不予处理」、
+  // 类型必须是「客户端断开」——这是用户看得懂与看不懂的分水岭）
+  db.faultEvents = [
+    {
+      id: 'ev_clientabort',
+      at: new Date(Date.now() - 2 * 60000).toISOString(),
+      offerId: 'o_slow',
+      modelKey: 'deepseek-v4.1-flash',
+      kind: 'client-aborted',
+      impact: 'none',
+      impactReason: '客户端主动断开请求',
+      status: 'ignored',
+      message: '客户端主动断开请求，不予处理',
+      detail: '客户端主动断开请求：客户端自己把连接关了（手动中断 / 客户端到点取消），回答没要完，但这不是站点的问题',
+      todo: '不予处理',
+      hits: 3,
+    },
+  ]
   // 异常诊断链路验证：o_slow 近期首字 6s、基线 2s（慢 3 倍）
   const mkBucket = (hoursAgo, ttftMs) => {
     const d = new Date(Date.now() - hoursAgo * 3600000)
@@ -193,10 +211,17 @@ try {
   ok((await evaluate(`document.querySelector('#page-title').textContent`)) === '诊断系统', '页标题=诊断系统')
 
   // 3. UI 化：stats 瓷砖 + 诊断结论卡，账本/供给表默认收起
-  // 诊断结论 4 块 + 故障处理 4 块
-  ok((await evaluate(`document.querySelectorAll('#view-diagnosis .stat').length`)) === 8, '八块状态瓷砖（诊断 4 + 故障处理 4，复用 .stat 组件）')
+  // 诊断结论 4 块 + 故障处理 5 块（已截流 / 不予处理 / 已上报 / 上报失败 / 上报通道）
+  ok((await evaluate(`document.querySelectorAll('#view-diagnosis .stat').length`)) === 9, '九块状态瓷砖（诊断 4 + 故障处理 5，复用 .stat 组件）')
   ok((await evaluate(`document.querySelector('#view-diagnosis').innerHTML`)).includes('故障处理'), '故障处理卡渲染')
   ok((await evaluate(`document.querySelector('#view-diagnosis').innerHTML`)).includes('已截流'), '故障处理卡有「已截流」计数')
+  // 客户端自己断开的：状态写「不予处理」、类型写「客户端断开」，
+  // 不能混在「断流 / 已截流」里让用户以为站坏了
+  const faultCard = await evaluate(`document.querySelector('#view-diagnosis').innerHTML`)
+  ok(faultCard.includes('不予处理'), '故障处理卡有「不予处理」计数')
+  ok(faultCard.includes('客户端断开'), '事件账类型写「客户端断开」')
+  ok(faultCard.includes('客户端主动断开请求'), '事件说明是人话')
+  ok(faultCard.includes('×3'), '同一条记录聚合显示次数')
   ok(!!(await evaluate(`document.querySelector('[data-act="fault-test"]')`)), '有「测试上报通道」按钮')
   const body0 = await evaluate(`document.querySelector('#view-diagnosis').innerHTML`)
   ok(body0.includes('报错诊断'), '第一段=报错诊断')

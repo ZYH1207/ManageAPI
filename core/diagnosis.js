@@ -153,11 +153,27 @@ export function checkConcurrency({ offerStats = {} } = {}) {
  *
  * 两条口径缺一不可（2026-10-29 的教训）：
  *   比例  —— 断流率 ≥ 5% 且断流次数 ≥ 3：适用于样本大、站方整体在抖的情况
- *   次数  —— 断流 ≥ 8 次 且断流率 ≥ 0.8%：适用于“总量很大、比例被好请求稀释”的站
+ *   次数  —— 断流 ≥ 8 次 且断流率 ≥ 0.8%：适用于「总量很大、比例被好请求稀释」的站
  *             现场：格子云 13/919 = 1.4%，用户真的连遭四五次，但比例永远上不去
- * 分母一律用 requests - clientAborts：客户端自己取消不是站方的错，算进分母
- * 会把真断流稀释掉（实测 144 次自动副任务超时就干过这事）。
+ *
+ * 只算站方断的：客户端自己关连接（用户中断 / 客户端到点取消）记在 clientAborts 里，
+ * 不进分子；分母也用 requests - clientAborts，否则「我自己不等了」会被算成
+ * 「这家站爱断」——实测 144 次自动副任务超时就干过这事。
  */
+/**
+ * 把 offerId 翻成人话名。三条规则结论都靠它，绝不能直接甩一头雾水。
+ *
+ * 兼容两种入参：Map（老调用方）和「offerId → {label}」的普通对象（/api/diagnosis 传的
+ * offerMeta 就是这种）。以前只认 Map，于是页面上的结论标题全是 o_3cb287ae 这种内部 ID——
+ * 用户看不懂一条看不懂的告警，比没有告警更糟。
+ */
+function offerLabelOf(offerId, source) {
+  if (!source || !offerId) return null
+  const hit = typeof source.get === 'function' ? source.get(offerId) : source[offerId]
+  if (!hit) return null
+  return typeof hit === 'string' ? hit : hit.label || null
+}
+
 export function checkStreamBreaks({ offerStats = {}, offerById = null } = {}) {
   const byOffer = new Map()
   for (const b of Object.values(offerStats)) {
@@ -176,7 +192,7 @@ export function checkStreamBreaks({ offerStats = {}, offerById = null } = {}) {
     const byRate = rate >= 0.05
     const byCount = s.broken >= STREAM_BREAK_COUNT_FLOOR && rate >= 0.008
     if (!byRate && !byCount) continue
-    const label = offerById?.get?.(offerId) || offerId
+    const label = offerLabelOf(offerId, offerById) || offerId
     findings.push({
       id: `stream-${offerId}`,
       offerId,
@@ -184,7 +200,8 @@ export function checkStreamBreaks({ offerStats = {}, offerById = null } = {}) {
       severity: rate > 0.15 ? 'danger' : 'warn',
       title: `${label} 断流 ${s.broken} 次（${(rate * 100).toFixed(1)}%，分母 ${served} 次已交付请求）`,
       detail:
-        '断流 = 回答吐到一半上游把流掐了（或送出损坏的 SSE 帧）；探针测不出这类问题。' +
+        '断流 = 站方把连接掐了，回答吐到一半就没了（或送出损坏的 SSE 帧）；探针测不出这类问题，只有真实流量看得见。' +
+        `只算站方断的：你自己中断或客户端超时取消的 ${s.clientAborts} 次已单列成「客户端断开」，不进分子也不进分母。` +
         (byCount && !byRate ? '这条供给总量很大，比例看着不高，但绝对次数已经够多了。' : ''),
       evidence: {
         broken: s.broken,
@@ -195,6 +212,44 @@ export function checkStreamBreaks({ offerStats = {}, offerById = null } = {}) {
         streamGapMaxMs: s.gapMax,
       },
       action: '在智能决策页把这条供给降权，或直接停用这家站',
+    })
+  }
+  return findings
+}
+
+/**
+ * 规则③b：客户端主动断开——不是站的错，但也不能装作没看见。
+ *
+ * 为什么单独上一条：用户看到「断流」时会以为站坏了，实际上是他自己的客户端
+ * 等不及先走了。结论里必须写清楚「谁掐的、该不该处理」，否则又是一条看不懂的告警。
+ * 数量多得离谱时反而有诊断价值：说明这些请求本身等得太久（首字慢 / 回答太长），
+ * 不是站点故障，而是「配置该调」。
+ */
+export function checkClientAborts({ offerStats = {}, offerById = null } = {}) {
+  const byOffer = new Map()
+  for (const b of Object.values(offerStats)) {
+    const n = Number(b.clientAborts) || 0
+    if (!n) continue
+    byOffer.set(b.offerId, (byOffer.get(b.offerId) || 0) + n)
+  }
+  const findings = []
+  for (const [offerId, n] of byOffer) {
+    if (n < 3) continue
+    const label = offerLabelOf(offerId, offerById) || offerId
+    findings.push({
+      id: `client-abort-${offerId}`,
+      offerId,
+      layer: 'client',
+      severity: 'info',
+      title: `${label} 有 ${n} 次请求是客户端主动断开的`,
+      detail:
+        '这些不是站点故障：客户端到点取消（或你手动中断）了，网关收到断开信号就把上游也掐了。' +
+        '回答没要完，所以它们不算断流率、也不影响对这条供给的评价。',
+      evidence: { clientAborts: n },
+      action:
+        n >= 10
+          ? '不用处理，但数量不少：说明这些请求等得太久（首字慢或回答太长），值得看看是不是客户端超时设得太紧'
+          : '不予处理',
     })
   }
   return findings
@@ -316,11 +371,17 @@ export function diagnose({
   scores = {},
   nowMs = Date.now(),
 } = {}) {
+  // 人话名从哪来：显式给了 offerById 就用它，否则退回到 offerMeta
+  // （/api/diagnosis 传的正是 offerMeta，以前没人把它交给断流/客户端断开的规则，
+  // 于是页面标题里全是 o_3cb287ae 这种内部 ID）
+  const labelSource = offerById || offerMeta
+
   // 错误诊断：账本里已有的失败信号 → 结论
   const errorFindings = [
     ...checkBalanceDrain({ errorbook, providers, monitorBalance }),
     ...checkConcurrency({ offerStats }),
-    ...checkStreamBreaks({ offerStats, offerById }),
+    ...checkStreamBreaks({ offerStats, offerById: labelSource }),
+    ...checkClientAborts({ offerStats, offerById: labelSource }),
     ...checkUnknownErrors({ errorbook }),
   ].map((f) => ({ category: 'error', ...f }))
 
