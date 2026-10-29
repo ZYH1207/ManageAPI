@@ -83,6 +83,7 @@ import { buildMonitorView, markAlertsRead, markAnnouncementsRead, applySnapshot 
 import { aggregateLongTerm } from '../core/offer-stats.js'
 import { readProbeSpend, clearProbeSpend, buildProbeSpendView } from '../core/probe-spend.js'
 import { collectProviderSnapshots } from './monitor-runner.js'
+import { buildStamp, injectBuildStamp } from './build-stamp.js'
 import { runProbes } from './probe-runner.js'
 import { probeProtocols } from '../core/protocol-probe.js'
 import {
@@ -5335,10 +5336,18 @@ async function serveStatic(req, res, pathname) {
     return
   }
   try {
-    const data = await readFile(target)
+    let data = await readFile(target)
+    // 入口 HTML 里的 /app.js、/style.css 统一挂构建戳：SPA 只在加载时取一次代码，
+    // 没有版本号时长开的标签页会一直跑旧模块图（详见 daemon/build-stamp.js）
+    let stamp = null
+    if (rel === 'index.html') {
+      stamp = buildStamp(WEB_DIR)
+      data = injectBuildStamp(data.toString('utf8'), stamp)
+    }
     res.writeHead(200, {
       'Content-Type': MIME[extname(target).toLowerCase()] || 'application/octet-stream',
       'Cache-Control': 'no-cache',
+      ...(stamp ? { 'X-Build': stamp } : {}),
     })
     res.end(data)
   } catch {
