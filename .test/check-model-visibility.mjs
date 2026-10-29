@@ -12,7 +12,7 @@
  *
  * 用法：node .test/check-model-visibility.mjs
  */
-import { ignoreChecker, modelIgnored, routeableOffers } from '../core/inventory.js'
+import { ignoreChecker, modelIgnored, routeableOffers, applyIgnoredModels } from '../core/inventory.js'
 
 let failed = 0
 const ok = (cond, msg) => {
@@ -92,6 +92,42 @@ console.log('[7] 幂等：例外删空不留空对象')
   ok(modelIgnored(d, 'kimi-k3'), '单押生效')
   // 判定器是纯读，不 mutate——空对象清理由 API 层负责，这里只验证判定不受影响
   ok(modelIgnored(db(), 'kimi-k3') === false, '无配置 → 显示')
+}
+
+console.log('[8] 整组忽略要「这一行也别再漏出来」：清掉单行显示例外')
+{
+  // 现场：GPT 全家已整类忽略，但 gpt-6.1-sol 上留着一个早先点出来的 shown 例外，
+  // 决策页就单蹦一行——面板上却写着「已忽略」，查不出来。
+  const d = db({ settings: { ignoredModels: [], modelOverrides: { 'deepseek-v4.1-flash': 'shown' } } })
+  applyIgnoredModels(d, ['deepseek-v4.1-flash'])
+  ok(d.settings.modelOverrides?.['deepseek-v4.1-flash'] === undefined, '新加的身份键上的 shown 例外被清掉')
+  ok(modelIgnored(d, 'deepseek-v4.1-flash'), '清完之后这一类真的出役了')
+}
+
+console.log('[9] 重发老名单不动例外（别的操作不能顺手废掉用户捞出来的那一个）')
+{
+  const d = db({ settings: { ignoredModels: ['deepseek-v4.1-flash'], modelOverrides: { 'other-model': 'shown' } } })
+  applyIgnoredModels(d, ['deepseek-v4.1-flash'])
+  ok(d.settings.modelOverrides?.['other-model'] === 'shown', '没涉及的例外原样保留')
+}
+
+console.log('[10] enforce：点「整组忽略」时，名单里本来就有也要清')
+{
+  const d = db({ settings: { ignoredModels: ['deepseek-v4.1-flash'], modelOverrides: { 'deepseek-v4.1-flash': 'shown' } } })
+  applyIgnoredModels(d, ['deepseek-v4.1-flash'], { enforce: ['deepseek-v4.1-flash'] })
+  ok(d.settings.modelOverrides?.['deepseek-v4.1-flash'] === undefined, 'enforce 指定的那一类，例外被清掉')
+  ok(modelIgnored(d, 'deepseek-v4.1-flash'), '于是整类真的都不在役')
+
+  const keep = db({ settings: { ignoredModels: ['deepseek-v4.1-flash'], modelOverrides: { 'other-model': 'shown' } } })
+  applyIgnoredModels(keep, ['deepseek-v4.1-flash'], { enforce: ['deepseek-v4.1-flash'] })
+  ok(keep.settings.modelOverrides?.['other-model'] === 'shown', 'enforce 只清自己那一类，别的例外不动')
+}
+
+console.log('[11] 只清 shown，单押的 ignored 例外不动')
+{
+  const d = db({ settings: { ignoredModels: [], modelOverrides: { 'other-model': 'ignored' } } })
+  applyIgnoredModels(d, ['other-model', 'deepseek-v4.1-flash'])
+  ok(d.settings.modelOverrides?.['other-model'] === 'ignored', 'ignored 例外保留（它本来就表示忽略）')
 }
 
 console.log(failed === 0 ? '\n全部通过' : `\n${failed} 项失败`)

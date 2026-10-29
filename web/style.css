@@ -451,6 +451,9 @@ input:focus, select:focus {
 .ig-chip.ig-on:hover { color: var(--text); border-color: var(--border-strong); }
 .ig-chip.ig-off { background: var(--warn-soft); color: var(--warn); border-color: var(--warn-border); }
 .ig-chip.ig-off:hover { background: var(--warn-border); }
+/* 单行例外：整类已忽略、这一行却还在用。用虚线边框区分「整类在用」——它是异常态 */
+.ig-chip.ig-exc { background: transparent; color: var(--warn); border: 1px dashed var(--warn-border); }
+.ig-chip.ig-exc:hover { background: var(--warn-soft); }
 .gs-price { margin-left: auto; font-size: 12px; white-space: nowrap; }
 .gs-price .sub { font-size: 10px; color: var(--faint); }
 .gs-unpriced { color: var(--faint); }

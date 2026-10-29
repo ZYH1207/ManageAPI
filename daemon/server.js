@@ -934,7 +934,10 @@ route('PATCH', /^\/api\/settings$/, async (ctx) => {
         .map((name) => (typeof name === 'string' ? inv.modelIdentityKey(name, aliases) : ''))
         .filter(Boolean)
       if (list.length > 500) throw new HttpError(400, '最多忽略 500 个模型')
-      db.settings.ignoredModels = [...new Set(list)]
+      // 写名单 + 清掉这一批新忽略的模型上遗留的「单行显示」例外（实现在 inventory，
+      // 便于纯函数测试）。不清的话整组忽略之后还会单蹦一行出来。
+      const enforce = Array.isArray(ctx.body.enforceIgnored) ? ctx.body.enforceIgnored : []
+      inv.applyIgnoredModels(db, list, { enforce })
     }
   })
   return buildState()

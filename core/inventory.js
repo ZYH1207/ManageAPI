@@ -486,6 +486,43 @@ export function balanceDepleted(provider) {
  *   modelOverrides（精确名）＝ 单行例外，分组/Key 弹窗的开关徽章在用。
  * 判定优先级：单行例外 > 整类名单。判定唯一实现在 ignoreChecker。
  */
+/**
+ * 写「整类忽略」名单（身份键），并把这次**新加**进来的那一类里遗留的
+ * 「单行显示」例外一起清掉。
+ *
+ * 为什么必须清：整组忽略之后，以前在分组弹窗里点过「显示」的那一行还会单蹦出来
+ * （判定优先级是单行例外 > 整类名单），用户在「忽略模型」面板里看到的是「已忽略」，
+ * 决策/比价里却照样出现——这种不一致在界面上完全查不出来。
+ *
+ * 为什么只清新加的：别的操作（单个开关、搜索后重发名单）会把整份名单再写一遍，
+ * 那股脑清下去会顺手废掉用户故意捞出来的那一个。
+ *
+ * @param {object} db 会被就地修改
+ * @param {string[]} list 身份键名单（调用方已归一过）
+ */
+export function applyIgnoredModels(db, list, { enforce = [] } = {}) {
+  const aliases = db.settings?.modelAliases || {}
+  // 名单里存的必须是身份键（同一模型的不同写法归一个），传进来的可能是任一写法
+  const toId = (name) => identityKey(String(name), aliases)
+  const next = [...new Set((Array.isArray(list) ? list : []).map(toId).filter(Boolean))]
+  const before = new Set(db.settings?.ignoredModels || [])
+  // enforce：调用方明确要「这一类现在就消失」的身份键（点「整组忽略」/单行忽略时带上）。
+  // 它比「新增了才清」更强：名单里本来就有、但被单行例外捞出来的那些也要清掉——
+  // 否则用户点第二遍「整组忽略」毫无反应，界面上却看不出为什么。
+  const explicit = new Set((Array.isArray(enforce) ? enforce : []).map(toId).filter(Boolean))
+  const purge = new Set([...next.filter((id) => !before.has(id)), ...[...explicit].filter((id) => next.includes(id))])
+  if (purge.size > 0 && db.settings?.modelOverrides) {
+    const overrides = db.settings.modelOverrides
+    for (const [exact, mode] of Object.entries(overrides)) {
+      if (mode !== 'shown') continue
+      if (purge.has(toId(exact))) delete overrides[exact]
+    }
+    if (Object.keys(overrides).length === 0) delete db.settings.modelOverrides
+  }
+  if (db.settings) db.settings.ignoredModels = next
+  return next
+}
+
 export function ignoreChecker(db) {
   const aliases = db.settings?.modelAliases || {}
   const identities = ignoredModelSet(db)

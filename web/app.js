@@ -3173,8 +3173,23 @@ function openIgnoredModels() {
   // 搜索后选中的组可能被滤掉：滤没了就回落到未选中（右侧给提示）
   const selected = groups.find((g) => g.key === igSelected) || null
   title.textContent = t('忽略模型')
+  // 单行例外（分组/Key 弹窗里点过「显示」的那些）：整类被忽略，但这一行还能用。
+  // 不显式标出来的话面板会写「已忽略」，而决策/比价里它照样出现——查不出来的那种不一致。
+  const overrides = state.settings?.modelOverrides || {}
+  const exceptionOf = (row) => row.names.find((name) => overrides[name] === 'shown') || ''
+  const exceptionCount = ignored.size
+    ? rows.filter((row) => ignored.has(row.id) && exceptionOf(row)).length
+    : 0
   const chipOf = (row) => {
-    const on = ignored.has(row.id)
+    const classIgnored = ignored.has(row.id)
+    const exception = classIgnored ? exceptionOf(row) : ''
+    const on = classIgnored
+    if (exception) {
+      return `<button type="button" class="badge ig-chip ig-exc"
+        data-act="toggle-ig-model" data-id="${esc(row.id)}" data-exc="${esc(exception)}" aria-pressed="false"
+        title="${esc(t('整类已忽略，但这一行有单行例外（在分组弹窗里点过「显示」）；点一下取消例外，恢复忽略'))}"
+      >${t('单行例外 · 在用')}</button>`
+    }
     return `<button type="button" class="badge ig-chip${on ? ' ig-on' : ' ig-off'}"
       data-act="toggle-ig-model" data-id="${esc(row.id)}" aria-pressed="${on}"
       title="${on ? esc(t('点击显示：恢复参与比价、决策、探针和网关')) : esc(t('点击忽略：不参与比价、决策、探针和网关'))}"
@@ -3183,6 +3198,7 @@ function openIgnoredModels() {
   body.innerHTML = `
     <p class="hint" style="margin:0 0 10px">
       ${t('点左边的模型组，在右边逐个开关：灰「已忽略」不参与比价、决策、探针和网关；橙黄「已显示」在用。')}
+      ${exceptionCount > 0 ? `<b>${t('另有 {n} 个单行例外仍在用（在分组弹窗里点过「显示」），点它就能恢复忽略。', { n: exceptionCount })}</b>` : ''}
     </p>
     <div class="toolbar" style="margin-bottom:8px">
       <input id="ig-search" class="search" type="search" placeholder="${t('搜索模型名…')}" value="${esc(ignoredQuery)}" />
@@ -3240,7 +3256,11 @@ async function bulkIgnoreGroup(key, ignore) {
   const current = new Set((state.settings?.ignoredModels || []).map(identityOf))
   for (const id of ids) (ignore ? current.add : current.delete).call(current, id)
   try {
-    state = await api('PATCH', '/api/settings', { ignoredModels: [...current] })
+    // enforceIgnored：这次点的这一类「必须消失」——服务端会顺手清掉它上面遗留的
+    // 单行显示例外（否则整组忽略之后还会单蹦一行出来）
+    const body = { ignoredModels: [...current] }
+    if (ignore) body.enforceIgnored = [...ids]
+    state = await api('PATCH', '/api/settings', body)
     render()
     openIgnoredModels()
     toast(
@@ -3259,7 +3279,9 @@ async function toggleIgnoredModel(name, checked) {
   if (checked) current.add(identityOf(name))
   else current.delete(identityOf(name))
   try {
-    state = await api('PATCH', '/api/settings', { ignoredModels: [...current] })
+    const body = { ignoredModels: [...current] }
+    if (checked) body.enforceIgnored = [identityOf(name)]
+    state = await api('PATCH', '/api/settings', body)
     render()
     const label = displayModel(name)
     toast(checked ? t('已忽略 {name}', { name: label }) : t('已显示 {name}', { name: label }))
@@ -7427,6 +7449,28 @@ document.addEventListener('click', async (event) => {
     // 只是换成了弹窗徽章的样子。重画面板并保持两栏滚动位置
     const id = actionButton.dataset.id
     if (!id) return
+    // 「单行例外」那一行：整类忽略 + 单个显示例外。点它 = 取消例外（恢复忽略），
+    // 走绝对语义接口，由服务端按现状删例外
+    const exceptionName = actionButton.dataset.exc
+    if (exceptionName) {
+      const left0 = $('.ig-pane-left')
+      const right0 = $('.ig-pane-right')
+      const l0 = left0 ? left0.scrollTop : 0
+      const r0 = right0 ? right0.scrollTop : 0
+      try {
+        state = await api('POST', '/api/model-visibility', { name: exceptionName, shown: false })
+        render()
+        openIgnoredModels()
+        const fl = $('.ig-pane-left')
+        const fr = $('.ig-pane-right')
+        if (fl) fl.scrollTop = l0
+        if (fr) fr.scrollTop = r0
+        toast(t('已忽略 {name}', { name: displayModel(exceptionName) }))
+      } catch (error) {
+        toast(error.message, true)
+      }
+      return
+    }
     const ignored = new Set((state.settings?.ignoredModels || []).map(identityOf))
     const left = $('.ig-pane-left')
     const right = $('.ig-pane-right')
