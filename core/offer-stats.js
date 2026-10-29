@@ -8,7 +8,12 @@
  *
  *   db.offerStats["o_xxx|2026-10-28T08"] = {
  *     offerId, hour,
- *     requests, ok, broken, failed,        // requests=ok+broken（选中且已提交）
+ *     requests, ok, broken, failed, clientAborts,
+ *           // requests = ok + broken + clientAborts
+ *           // clientAborts = 客户端自己取消（用户关对话 / 自动副任务超时）。
+ *           // 它既不是站方的错也不是断流，但必须单列：混进 broken 会把真断流的
+ *           // 比例稀释到诊断阈值以下（2026-10-29 的真实现场），混进 ok 又会
+ *           // 把“没拿到结果”算成好样本。算率时分母要用 requests - clientAborts。
  *     ttftSum, ttftCount,                  // 首字
  *     latencySum, latencyCount,            // 总时长
  *     genOutSum, genCount, genTimeSum,     // 吐字速度分母/分子（TPS）
@@ -44,6 +49,7 @@ function bucket(stats, offerId, hour) {
       ok: 0,
       broken: 0,
       failed: 0,
+      clientAborts: 0,
       ttftSum: 0,
       ttftCount: 0,
       latencySum: 0,
@@ -105,7 +111,7 @@ const errKey = (kind, code) => `${kind || 'outage'}${code ? `/${code}` : ''}`
 
 /**
  * 把一条决策记录摊进时间序列。纯函数（原地改 stats）：
- *   - 选中供给的 outcome（ok / stream-broken）记在该供给名下
+ *   - 选中供给的 outcome（ok / stream-broken / client-abort）记在该供给名下
  *   - failures[] 里的每次失败尝试记在被试供给名下（那是它们的失败）
  */
 export function applyRoutingToStats(stats, record, { offerById = null, settings = {}, benchmarks = {} } = {}) {
@@ -115,32 +121,38 @@ export function applyRoutingToStats(stats, record, { offerById = null, settings 
   if (record.chosenOfferId) {
     const b = bucket(stats, record.chosenOfferId, hour)
     b.requests += 1
-    if (record.outcome === 'stream-broken') b.broken += 1
+    // 客户端取消：只计次数，不记成败，也不参与速度/费用/吐字统计——
+    // 被中途掐掉的请求的 ttft/latency 不是这家站的真实速度，拿去做均值只会带偏
+    const clientAbort = record.outcome === 'client-abort'
+    if (clientAbort) b.clientAborts += 1
+    else if (record.outcome === 'stream-broken') b.broken += 1
     else b.ok += 1
-    b.latencySum += Number(record.latencyMs) || 0
-    b.latencyCount += 1
-    if (Number(record.ttftMs) > 0) {
-      b.ttftSum += Number(record.ttftMs)
-      b.ttftCount += 1
-    }
-    if (Number(record.streamGapMs) > 0) {
-      b.streamGapMax = Math.max(b.streamGapMax, Number(record.streamGapMs))
-    }
-    if (usage) {
-      addUsage(b, usage)
-      const genOut = Number(usage.completion_tokens) || 0
-      if (genOut > 0 && Number(record.latencyMs) > Number(record.ttftMs || 0)) {
-        b.genOutSum += genOut
-        b.genTimeSum += Number(record.latencyMs) - Number(record.ttftMs || 0)
-        b.genCount += 1
+    if (!clientAbort) {
+      b.latencySum += Number(record.latencyMs) || 0
+      b.latencyCount += 1
+      if (Number(record.ttftMs) > 0) {
+        b.ttftSum += Number(record.ttftMs)
+        b.ttftCount += 1
       }
-    }
-    const offer = offerById?.get?.(record.chosenOfferId)
-    if (offer && usage) {
-      const est = estimateCostCny(offer, usage, settings, benchmarks)
-      if (est !== null && Number.isFinite(est)) {
-        b.estCostSum += est
-        b.estCostCount += 1
+      if (Number(record.streamGapMs) > 0) {
+        b.streamGapMax = Math.max(b.streamGapMax, Number(record.streamGapMs))
+      }
+      if (usage) {
+        addUsage(b, usage)
+        const genOut = Number(usage.completion_tokens) || 0
+        if (genOut > 0 && Number(record.latencyMs) > Number(record.ttftMs || 0)) {
+          b.genOutSum += genOut
+          b.genTimeSum += Number(record.latencyMs) - Number(record.ttftMs || 0)
+          b.genCount += 1
+        }
+      }
+      const offer = offerById?.get?.(record.chosenOfferId)
+      if (offer && usage) {
+        const est = estimateCostCny(offer, usage, settings, benchmarks)
+        if (est !== null && Number.isFinite(est)) {
+          b.estCostSum += est
+          b.estCostCount += 1
+        }
       }
     }
     // 断流原因也进错误归类（空闲超时 / 流中断是两种不同的病）
@@ -214,6 +226,7 @@ export function aggregateLongTerm(offerStats = {}, offerMeta = new Map()) {
         ok: 0,
         broken: 0,
         failed: 0,
+        clientAborts: 0,
         ttftSum: 0,
         ttftCount: 0,
         latencySum: 0,
@@ -250,6 +263,7 @@ export function aggregateLongTerm(offerStats = {}, offerMeta = new Map()) {
       rec.ok += Number(b.ok) || 0
       rec.broken += Number(b.broken) || 0
       rec.failed += Number(b.failed) || 0
+      rec.clientAborts += Number(b.clientAborts) || 0
       rec.ttftSum += Number(b.ttftSum) || 0
       rec.ttftCount += Number(b.ttftCount) || 0
       rec.latencySum += Number(b.latencySum) || 0
@@ -277,7 +291,9 @@ export function aggregateLongTerm(offerStats = {}, offerMeta = new Map()) {
         ok: r.ok,
         broken: r.broken,
         failed: r.failed,
-        okRate: r.requests > 0 ? r.ok / r.requests : null,
+        clientAborts: r.clientAborts,
+        // 成功率的口径：分母剔除客户端取消（那不是站方的成绩）
+        okRate: r.requests - r.clientAborts > 0 ? r.ok / (r.requests - r.clientAborts) : null,
         avgTtftMs: r.ttftCount > 0 ? r.ttftSum / r.ttftCount : null,
         avgLatencyMs: r.latencyCount > 0 ? r.latencySum / r.latencyCount : null,
         tps: r.genTimeSum > 0 ? r.genOutSum / r.genTimeSum : null,

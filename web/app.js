@@ -966,6 +966,7 @@ function renderDiagnosis() {
         <td class="mono">${b.ok}</td>
         <td class="mono">${b.broken || ''}</td>
         <td class="mono">${b.failed || ''}</td>
+        <td class="mono">${b.clientAborts || ''}</td>
         <td class="mono">${fmtTtft(b)}</td>
         <td class="mono">${fmtTps(b)}</td>
         <td class="mono">${fmtCache(b)}</td>
@@ -986,10 +987,10 @@ function renderDiagnosis() {
 
   const statsPane = `
     <div class="card">
-      <div class="card-head"><h3>供给表现</h3><span class="meta">近 ${diagnosisHours} 小时 · 按小时聚合 · UTC · 估算费用为诊断级非对账口径</span></div>
+      <div class="card-head"><h3>供给表现</h3><span class="meta">近 ${diagnosisHours} 小时 · 按小时聚合 · UTC · 「客户端取消」不计入断流/失败 · 估算费用为诊断级非对账口径</span></div>
       <table class="table">
-        <thead><tr><th>小时</th><th>供给</th><th>请求</th><th>成功</th><th>断流</th><th>失败</th><th>首字</th><th>吐字/s</th><th>缓存命中</th><th>估算费用</th><th>错误</th></tr></thead>
-        <tbody>${statRows || '<tr><td colspan="11" class="desc">暂无流量</td></tr>'}</tbody>
+        <thead><tr><th>小时</th><th>供给</th><th>请求</th><th>成功</th><th>断流</th><th>失败</th><th>客户端取消</th><th>首字</th><th>吐字/s</th><th>缓存命中</th><th>估算费用</th><th>错误</th></tr></thead>
+        <tbody>${statRows || '<tr><td colspan="12" class="desc">暂无流量</td></tr>'}</tbody>
       </table>
     </div>`
 
@@ -4498,7 +4499,7 @@ function renderGateway() {
           <td class="num">${r.attempts}</td>
           <td class="num">${r.ttftMs ? `${r.ttftMs}ms` : '—'}</td>
           <td class="num">${r.latencyMs}ms</td>
-          <td>${r.outcome === 'ok' ? '<span class="badge ok">成功</span>' : `<span class="badge danger">${esc(r.outcome)}</span>`}</td>
+          <td>${r.outcome === 'ok' ? '<span class="badge ok">成功</span>' : r.outcome === 'client-abort' ? `<span class="badge" title="${t('客户端自己取消了请求，不是站的错')}">${t('客户端取消')}</span>` : `<span class="badge danger">${esc(r.outcome)}</span>`}</td>
         </tr>`).join('')
 
   const logBlock = `
@@ -4805,9 +4806,15 @@ function closeUsageDetail() {
   usageDetailGroupOptions = []
 }
 
-// 结果列的短标签：决策日志里存的是英文 outcome（stream-broken / failed），
+// 结果列的短标签：决策日志里存的是英文 outcome（stream-broken / failed / client-abort），
 // 直接铺在表里会把列撑到溢出；原文放到 title 里，想对日志还能对上
-const OUTCOME_LABEL = { ok: '成功', 'stream-broken': '断流', failed: '全部失败' }
+// client-abort 单独一档：客户端自己取消（关对话/副任务超时），不是站的错也不是断流
+const OUTCOME_LABEL = {
+  ok: '成功',
+  'stream-broken': '断流',
+  failed: '全部失败',
+  'client-abort': '客户端取消',
+}
 
 // 明细表最多画多少行：筛选在**全部**明细上做，只是不把 500 行一次性塞进 DOM
 const UD_ROW_LIMIT = 200
@@ -5026,6 +5033,7 @@ function paintUsageDetail() {
   const rows = shownRows
     .map((r) => {
       const ok = r.outcome === 'ok'
+      const aborted = r.outcome === 'client-abort'
       const tip = [
         r.protocol
           ? `${r.protocol}${r.stream === true ? ' · 流式' : r.stream === false ? ' · 非流式' : ''}`
@@ -5043,7 +5051,7 @@ function paintUsageDetail() {
               : ''
           }`
         : `<span class="badge danger">${t('全部失败')}</span>`
-      return `<tr class="${ok ? '' : 'ud-bad'}" title="${esc(tip)}">
+      return `<tr class="${ok || aborted ? '' : 'ud-bad'}" title="${esc(tip)}">
         <td style="color:var(--faint)">${fmtDateTime(r.ts)}</td>
         <td>${esc(r.keyName || '—')}</td>
         <td class="mono ud-model">${esc(r.model)}</td>
@@ -5058,7 +5066,7 @@ function paintUsageDetail() {
         <td class="num">${r.reasoning === null ? '—' : formatTokens(r.reasoning)}</td>
         <td class="num">${pct(r.cacheHitRate)}</td>
         <td class="num">${tpsText(r.tps)}</td>
-        <td>${ok ? `<span class="badge ok">${t('成功')}</span>` : `<span class="badge danger" title="${esc(r.outcome)}">${esc(
+        <td>${ok ? `<span class="badge ok">${t('成功')}</span>` : `<span class="badge ${aborted ? '' : 'danger'}" title="${esc(r.outcome)}">${esc(
           OUTCOME_LABEL[r.outcome] ? t(OUTCOME_LABEL[r.outcome]) : r.outcome,
         )}</span>`}${r.attempts > 1 ? ` <span class="badge">${r.attempts}</span>` : ''}</td>
       </tr>`

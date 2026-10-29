@@ -25,6 +25,9 @@ import {
   usageNumbers,
   isTerminalChunk,
   rewriteAppendedChunk,
+  dataLineKind,
+  malformedFrameError,
+  truncatedFrameError,
 } from '../core/wire.js'
 import { detailRows, detailRow, sumBuckets, facetOptions } from '../core/usage-detail.js'
 import {
@@ -3881,6 +3884,14 @@ async function streamAttempt({
   let buffer = ''
   let committed = resume
   let ttftMs = null
+  // 这一次尝试的「流级失败原因」。
+  //
+  // 为什么不能只靠 catch 分支置它：上游把错误写在流里（`data: {"error":...}` /
+  // `response.failed` / 坏帧）然后**正常关掉连接**，全程不会抛异常。以前这种
+  // 情况在 committed 之后被原样转发、返回一个干净的 outcome —— 网关记成功、
+  // 客户端却拿到了报错，诊断页里一片空白（2026-10-29 的真实现场）。
+  // 现在只要这一轮被判定为「交付不完整」，就必须在 outcome 里留下痕迹。
+  let streamError = null
   // 质量信号与 usage 都交给检查器累积：两种协议的增量事件形状差得太远，
   // 在这里分叉写两套变量只会让后面每个字段都要判断一次协议
   const inspector = createStreamInspector(protocol, { clientWantsUsage })
@@ -3923,13 +3934,26 @@ async function streamAttempt({
 
         const dataLine = raw.split('\n').find((line) => line.trim().startsWith('data:'))
         const payloadText = dataLine ? dataLine.trim().slice(5).trim() : ''
+        // 帧分类收在 wire.js#dataLineKind：解析失败不再一律当心跳放行
+        const kind = dataLineKind(payloadText)
         let parsed = null
-        if (payloadText && payloadText !== '[DONE]') {
-          try {
-            parsed = JSON.parse(payloadText)
-          } catch {
-            /* 心跳或非 JSON 行，原样转发 */
+        if (kind === 'json') parsed = JSON.parse(payloadText)
+
+        // 坏帧：上游把 JSON 写坏了（连接断在半截 / 编码错）。
+        // 转发给客户端 = 客户端的 JSON.parse 直接抛，整轮回答作废（现场就是
+        // 「malformed server-sent event JSON」）。所以它一律算流级失败：
+        //   - 还没提交 → 静默换站（客户端无感）
+        //   - 已提交   → 停下来如实收尾，并把原因记进 outcome
+        if (kind === 'malformed') {
+          streamError = malformedFrameError(payloadText)
+          await reader.cancel().catch(() => {})
+          if (!committed) {
+            cleanup()
+            return { committed: false, error: streamError, terminal }
           }
+          // 剩下的残渣不能再往客户端倒：这一轮已经定为失败了
+          buffer = ''
+          break
         }
 
         const inspected = inspector.inspect(parsed)
@@ -3937,7 +3961,22 @@ async function streamAttempt({
         // 失败要在 commit 之前拦下：Responses 的 response.failed 是 200 流里的
         // 事件，Chat 的错误可能只是一个顶层 error 字段。两种都归到这里，
         // 才能保住「未提交就能静默换站」这个核心能力
-        if (!committed && inspected.error) {
+        if (inspected.error) {
+          // 已提交之后的错误帧：客户端必须要知道这一轮完了（吞掉它客户端会一直
+          // 等下去），所以原样转给它；但网关不能把这单记成成功——它没交付完。
+          if (committed) {
+            streamError = inspected.error
+            if (!res.destroyed && !res.writableEnded) {
+              try {
+                res.write(raw)
+              } catch {
+                /* 客户端已经走了，交给上层按 client-abort 排除 */
+              }
+            }
+            await reader.cancel().catch(() => {})
+            buffer = ''
+            break
+          }
           await reader.cancel().catch(() => {})
           cleanup()
           return { committed: false, error: inspected.error, terminal }
@@ -3982,14 +4021,26 @@ async function streamAttempt({
       }
     }
 
+    // 流结束了，但 buffer 里还剩下没被 \n\n 收尾的东西：
+    //   - 心跳/纯文本尾巴 → 照旧放行
+    //   - 半截 JSON 帧     → 上游死在帧中间（现场那次 malformed JSON 就是这种）。
+    //     以前这块被整块 push 给客户端，等于把坏数据当正常交付，现在扣下并记失败。
     if (buffer) {
-      commit()
-      if (heldChunks.length > 0) {
-        const held = heldChunks.join('')
-        heldChunks.length = 0
-        await push(held)
+      const dataLine = buffer.split('\n').find((line) => line.trim().startsWith('data:'))
+      const payloadText = dataLine ? dataLine.trim().slice(5).trim() : ''
+      if (dataLineKind(payloadText) === 'malformed') {
+        streamError = truncatedFrameError(payloadText)
+        buffer = ''
+      } else {
+        commit()
+        if (heldChunks.length > 0) {
+          const held = heldChunks.join('')
+          heldChunks.length = 0
+          await push(held)
+        }
+        await push(buffer)
+        buffer = ''
       }
-      await push(buffer)
     }
 
     cleanup()
@@ -3999,6 +4050,8 @@ async function streamAttempt({
       usage: usage || null,
       ttftMs,
       terminal,
+      // 只有「已提交且没交付完」才带 streamError；未提交的失败走上面的 error 分支
+      streamError: streamError || null,
       realCheck: {
         contentChars,
         textChars,
@@ -4012,13 +4065,22 @@ async function streamAttempt({
   } catch (error) {
     await reader.cancel().catch(() => {})
     cleanup()
-    const reason = idleTimedOut ? `上游流中断（${STREAM_IDLE_MS / 1000} 秒无数据）` : error.message
     const { usage, contentChars, textChars, reasoningChars, hasToolCalls, finishReason, textTail } = inspector.state
+    // 客户端自己取消的请求不是站的错，也不是断流：单独标出来，别污染断流统计。
+    // （以前这里一律写 streamError，于是 pi 的自动标题/摘要超时取消全部变成了
+    //   「格子云断流」，真断流被稀释到诊断阈值以下）
+    const clientGone = Boolean(clientSignal?.aborted)
+    const reason = clientGone
+      ? null
+      : idleTimedOut
+        ? `上游流中断（${STREAM_IDLE_MS / 1000} 秒无数据）`
+        : error.message
     return {
       committed,
       usage: usage || null,
       ttftMs,
       terminal,
+      clientAbort: clientGone,
       streamError: reason,
       realCheck: {
         contentChars,
@@ -4769,6 +4831,54 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
       })
       if (result.committed) {
         const latencyMs = Date.now() - started
+        // 客户端自己取消的（关掉对话、自动副任务超时）——不是站的错，也不是断流。
+        // 以前这条路径不查 clientAbort：`outcome: streamError ? 'stream-broken' : 'ok'`
+        // 把 144 次“the agent canceled the request”全记成站方断流，真断流被稀释掉。
+        // 单独一档：token 照计（钱真花了），但不进故障视野、不算 supply 的坏账。
+        const clientAbortOutcome = Boolean(result.clientAbort) && !result.streamError
+        if (clientAbortOutcome) {
+          const numbers = usageNumbers(result.usage)
+          queueRouting({
+            model,
+            pool,
+            autoRoute: autoRoutePick ? { reason: autoRoutePick.reason } : null,
+            keyId: keyRecord?.id ?? null,
+            keyName: keyRecord?.name ?? null,
+            chosenOfferId: candidate.offer.id,
+            chosenProviderId: candidate.offer.providerId,
+            chosenProviderName: candidate.provider.name,
+            upstreamModel: candidate.offer.upstreamName,
+            chosenGroup: candidate.offer.group || '',
+            lastResort: Boolean(candidate.lastResort),
+            attempts: index + 1,
+            outcome: 'client-abort',
+            streamError: null,
+            latencyMs,
+            ttftMs: result.ttftMs ?? null,
+            protocol,
+            stream: body.stream === true,
+            usage: result.usage || null,
+            candidates: explain(allCandidates),
+            failures,
+          })
+          await recordUsage({
+            keyId: keyRecord?.id ?? '-',
+            providerId: candidate.offer.providerId,
+            group: candidate.offer.group || '',
+            model: candidate.offer.modelKey || candidate.offer.upstreamName,
+            inputTokens: numbers?.input,
+            outputTokens: numbers?.output,
+            cachedTokens: numbers?.cached,
+            cacheCreationTokens: numbers?.cacheCreation,
+            reasoningTokens: numbers?.reasoning,
+            latencyMs,
+            ttftMs: result.ttftMs,
+            // 客户端取消 ≠ 站点失败：不计入站点可用率，只记一笔用量
+            ok: true,
+            clientAbort: true,
+          })
+          return
+        }
         // 真实价速比样本：首字 + 原始 usage 顺路进快窗口（成本换算在监视器 tick 里做，
         // 热路径只 push，见 daemon/drift-watcher.js）
         setDriftSample(candidate.offer.id, { ttftMs: result.ttftMs, latencyMs, usage: result.usage })
@@ -4793,6 +4903,10 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
           lastResort: Boolean(candidate.lastResort),
           attempts: index + 1,
           outcome: result.streamError ? 'stream-broken' : 'ok',
+          // 断流原因必须进决策日志：core/inventory.js#recordRoutingBatch 与
+          // core/offer-stats.js 都靠 record.streamError 才能把原因沉淀进错误账本。
+          // 以前只有 handleFaultSignals 带了它，于是 errorbook 里断流永远是 null。
+          streamError: result.streamError || null,
           latencyMs,
           ttftMs: result.ttftMs ?? null,
           // 协议 / 是否流式：详细用量页要能解释「为什么这条没有首字/没有速度」

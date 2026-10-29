@@ -20,11 +20,51 @@
 /** Responses 的终态事件；流到这两个之一就说明这一轮结束了 */
 const RESPONSES_TERMINAL = new Set(['response.completed', 'response.incomplete'])
 
+/**
+ * 一帧 SSE 的 data 行到底是哪一类（**唯一实现**：解析与判定只能在这里写一次）。
+ *
+ * 为什么要单独分类：以前解析失败一律「当作心跳原样转发」，于是三种完全不同的
+ * 东西挤进了同一个假身份——
+ *
+ *   json       正常载荷（含 usage-only 收尾块）
+ *   done       [DONE] 收尾哨兵
+ *   text       心跳/keepalive：上游真的会发 `data: ping` 这种纯文本，转发无害
+ *   malformed  **看着像 JSON 却解析不了**：上游把帧写坏了（连接断在半截、编码错、
+ *              前面少了半个花括号）。这种帧发给客户端就是一记 deterministic 崩溃——
+ *              OpenAI SDK 会在 JSON.parse 处直接抛「malformed server-sent event JSON」，
+ *              客户端把整轮回答丢掉，而网关还以为自己成功交付了。所以它必须算流错误。
+ *
+ * 判据用「首字符像不像 JSON 容器」而不是「长得像不像心跳」：心跳谁都能造，
+ * 但一个以 { 或 [ 开头却没有配平的 data 行，只可能是坏帧。
+ */
+export function dataLineKind(payloadText) {
+  if (!payloadText) return 'none'
+  if (payloadText === '[DONE]') return 'done'
+  try {
+    JSON.parse(payloadText)
+    return 'json'
+  } catch {
+    return /^[[{]/.test(payloadText) ? 'malformed' : 'text'
+  }
+}
+
 /** 客户端请求路径 → 协议名。返回 null 表示这个路径不归网关代理 */
 export function protocolForPath(pathname) {
   if (pathname === '/v1/responses') return 'responses'
   if (pathname === '/v1/chat/completions') return 'chat'
   return null
+}
+
+/** 坏帧 → 给人看的错误文本（路由日志、错误账本、诊断页共用一句） */
+export function malformedFrameError(payloadText) {
+  const head = String(payloadText || '').replace(/\s+/g, ' ').slice(0, 80)
+  return `上游送出损坏的 SSE 帧（无法解析为 JSON）：${head}`
+}
+
+/** 半截帧（流结束时还没有 \n\n 收尾的 data 行）也算坏帧 */
+export function truncatedFrameError(payloadText) {
+  const head = String(payloadText || '').replace(/\s+/g, ' ').slice(0, 80)
+  return `上游的流在帧中间断掉（残留半截 SSE 帧）：${head}`
 }
 
 /** 协议名 → 上游要打的路径 */

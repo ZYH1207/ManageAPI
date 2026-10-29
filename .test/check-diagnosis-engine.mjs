@@ -132,7 +132,7 @@ function makeBook(entries) {
   const offerById = new Map([['o_a', '绿萝 · deepseek-v4.1-flash']])
   const f = checkStreamBreaks({ offerStats: stats, offerById })
   ok(f.length === 1, '断流率 10%（10/100）→ 1 条结论')
-  ok(f[0].title.includes('deepseek') && f[0].title.includes('断流率'), '结论带供给人话名和断流率')
+  ok(f[0].title.includes('deepseek') && f[0].title.includes('断流'), '结论带供给人话名和断流次数')
   ok(f[0].detail.includes('探针测不出'), '说明为什么探针没抓到')
 
   // 样本不足（<20 请求）不说话
@@ -146,6 +146,37 @@ function makeBook(entries) {
     s3[`o_c|${H(h)}`] = { offerId: 'o_c', hour: H(h), requests: 20, ok: 16, broken: 4, failed: 0, errors: {} }
   }
   eq(checkStreamBreaks({ offerStats: s3 })[0].severity, 'danger', '断流率 20% → danger')
+
+  // ---- 2026-10-29 现场：格子云 13/919 = 1.4%，比例永远上不去，但用户真的连遭四五次。
+  // 以前这类「总量大、比例被好请求稀释」的真问题一律不上报（规则只看比例）。
+  const big = {}
+  big[`o_big|${H(1)}`] = { offerId: 'o_big', hour: H(1), requests: 919, ok: 906, broken: 13, failed: 0, clientAborts: 0, errors: {} }
+  const fb = checkStreamBreaks({ offerStats: big })
+  eq(fb.length, 1, '断流 13 次 / 919 请求（1.4%）→ 绝对次数口径也要说话')
+  ok(fb[0].title.includes('13 次'), '标题直接写绝对次数，不靠百分比糊弄')
+  ok(fb[0].detail.includes('总量很大'), '说明为什么比例不高也要报')
+
+  // 次数不够（3 次 + 大样本）→ 仍然不说话（防抖）
+  const small = {}
+  small[`o_sm|${H(1)}`] = { offerId: 'o_sm', hour: H(1), requests: 900, ok: 897, broken: 3, failed: 0, errors: {} }
+  eq(checkStreamBreaks({ offerStats: small }).length, 0, '断流 3 次 / 900（0.3%）不触发——两条口径都不够')
+
+  // 客户端取消不能进分母：144 次取消混进来会把 1.4% 稀释成 1.2%
+  const aborted = {}
+  aborted[`o_ab|${H(1)}`] = {
+    offerId: 'o_ab',
+    hour: H(1),
+    requests: 120,
+    ok: 100,
+    broken: 8,
+    failed: 0,
+    clientAborts: 12,
+    errors: {},
+  }
+  const fab = checkStreamBreaks({ offerStats: aborted })
+  eq(fab.length, 1, '客户端取消不算失败，但分母要剔掉（8/108）')
+  ok(fab[0].evidence.clientAborts === 12, '证据里摊出客户端取消次数')
+  ok(fab[0].evidence.served === 108, `分母 = 请求 − 客户端取消（实际 ${fab[0].evidence.served}）`)
 }
 
 // ---------------------------------------------------------------- 规则④ 陌生错误

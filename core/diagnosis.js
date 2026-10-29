@@ -26,6 +26,9 @@ export const LAYERS = {
 
 const SEV_ORDER = { danger: 0, warn: 1, info: 2 }
 
+/** 断流绝对次数门槛：总量大、比例被稀释的真问题靠这条兜底（见 checkStreamBreaks） */
+export const STREAM_BREAK_COUNT_FLOOR = 8
+
 /** 小时桶 key 的小时数（'2026-10-28T08'） */
 const hourNum = (h) => Number(String(h).slice(11, 13))
 /** 小时桶属于哪一天（UTC 天，用于取同站前几天的基线） */
@@ -117,8 +120,10 @@ export function checkConcurrency({ offerStats = {} } = {}) {
   if (buckets.length < 4) return [] // 样本太少不说话
   // 每个桶的并发近似 = 该小时处于失败状态的事件数占比（没有精确 in-flight 记录时的代理指标）
   const recent = buckets.filter((b) => Date.parse(`${b.hour}:00:00Z`) > Date.now() - 6 * 3600000)
-  const totalReq = recent.reduce((a, b) => a + b.requests, 0)
-  const totalErr = recent.reduce((a, b) => a + b.broken + b.failed, 0)
+  // 分母剔除客户端取消：那不是失败，会把这个比率抹平
+  const served = (list) => list.reduce((a, b) => a + Math.max(0, (b.requests || 0) - (b.clientAborts || 0)), 0)
+  const totalReq = served(recent)
+  const totalErr = recent.reduce((a, b) => a + (b.broken || 0) + (b.failed || 0), 0)
   if (totalReq < 10) return []
   const errRate = totalErr / totalReq
   if (errRate < 0.1) return []
@@ -127,8 +132,8 @@ export function checkConcurrency({ offerStats = {} } = {}) {
     const t = Date.parse(`${b.hour}:00:00Z`)
     return t <= Date.now() - 6 * 3600000 && t > Date.now() - 48 * 3600000
   })
-  const oldReq = older.reduce((a, b) => a + b.requests, 0)
-  const oldErr = older.reduce((a, b) => a + b.broken + b.failed, 0)
+  const oldReq = served(older)
+  const oldErr = older.reduce((a, b) => a + (b.broken || 0) + (b.failed || 0), 0)
   if (oldReq >= 10 && oldErr / oldReq >= errRate) return []
   return [
     {
@@ -145,31 +150,50 @@ export function checkConcurrency({ offerStats = {} } = {}) {
 
 /**
  * 规则③：断流聚集——探针测不到的质量问题。
- * 某条供给的断流率超阈值且样本足够，才说话（误判会把好站拉黑，阈值放宽）。
+ *
+ * 两条口径缺一不可（2026-10-29 的教训）：
+ *   比例  —— 断流率 ≥ 5% 且断流次数 ≥ 3：适用于样本大、站方整体在抖的情况
+ *   次数  —— 断流 ≥ 8 次 且断流率 ≥ 0.8%：适用于“总量很大、比例被好请求稀释”的站
+ *             现场：格子云 13/919 = 1.4%，用户真的连遭四五次，但比例永远上不去
+ * 分母一律用 requests - clientAborts：客户端自己取消不是站方的错，算进分母
+ * 会把真断流稀释掉（实测 144 次自动副任务超时就干过这事）。
  */
 export function checkStreamBreaks({ offerStats = {}, offerById = null } = {}) {
   const byOffer = new Map()
   for (const b of Object.values(offerStats)) {
-    const cur = byOffer.get(b.offerId) || { requests: 0, broken: 0, gapMax: 0 }
-    cur.requests += b.requests
-    cur.broken += b.broken
+    const cur = byOffer.get(b.offerId) || { requests: 0, broken: 0, clientAborts: 0, gapMax: 0 }
+    cur.requests += b.requests || 0
+    cur.broken += b.broken || 0
+    cur.clientAborts += b.clientAborts || 0
     cur.gapMax = Math.max(cur.gapMax, b.streamGapMax || 0)
     byOffer.set(b.offerId, cur)
   }
   const findings = []
   for (const [offerId, s] of byOffer) {
-    if (s.requests < 20 || s.broken < 3) continue
-    const rate = s.broken / s.requests
-    if (rate < 0.05) continue
+    const served = Math.max(0, s.requests - s.clientAborts)
+    if (served < 20 || s.broken < 3) continue
+    const rate = s.broken / served
+    const byRate = rate >= 0.05
+    const byCount = s.broken >= STREAM_BREAK_COUNT_FLOOR && rate >= 0.008
+    if (!byRate && !byCount) continue
     const label = offerById?.get?.(offerId) || offerId
     findings.push({
       id: `stream-${offerId}`,
       offerId,
       layer: 'upstream',
       severity: rate > 0.15 ? 'danger' : 'warn',
-      title: `${label} 断流率 ${(rate * 100).toFixed(0)}%（${s.broken}/${s.requests}）`,
-      detail: '断流 = 回答吐到一半上游断开，探针测不出这类问题；这是站方上游质量差',
-      evidence: { broken: s.broken, requests: s.requests, rate, streamGapMaxMs: s.gapMax },
+      title: `${label} 断流 ${s.broken} 次（${(rate * 100).toFixed(1)}%，分母 ${served} 次已交付请求）`,
+      detail:
+        '断流 = 回答吐到一半上游把流掐了（或送出损坏的 SSE 帧）；探针测不出这类问题。' +
+        (byCount && !byRate ? '这条供给总量很大，比例看着不高，但绝对次数已经够多了。' : ''),
+      evidence: {
+        broken: s.broken,
+        requests: s.requests,
+        clientAborts: s.clientAborts,
+        served,
+        rate,
+        streamGapMaxMs: s.gapMax,
+      },
       action: '在智能决策页把这条供给降权，或直接停用这家站',
     })
   }

@@ -47,6 +47,9 @@ export function mergeWindow(buckets) {
     ok: 0,
     broken: 0,
     failed: 0,
+    // 客户端自己取消的数量：不进失败率分母（2026-10-29 现场：144 次自动副任务
+    // 超时被算成断流，把真断流稀释到阈值以下）
+    clientAborts: 0,
     ttftSum: 0,
     ttftCount: 0,
     genOutSum: 0,
@@ -67,6 +70,7 @@ export function mergeWindow(buckets) {
     m.ok += b.ok || 0
     m.broken += b.broken || 0
     m.failed += b.failed || 0
+    m.clientAborts += b.clientAborts || 0
     m.ttftSum += b.ttftSum || 0
     m.ttftCount += b.ttftCount || 0
     m.genOutSum += b.genOutSum || 0
@@ -85,6 +89,8 @@ export function mergeWindow(buckets) {
 
 /** 窗口累计量 → 可比较的指标；算不出来的给 null，不要用 0 假装 */
 export function windowMetrics(m) {
+  // 客户端取消的请求不算站方的成绩：既不算成功、也不算失败，分母里一并剔掉
+  const served = Math.max(0, (m.requests || 0) - (m.clientAborts || 0))
   return {
     requests: m.requests,
     ttft: m.ttftCount ? m.ttftSum / m.ttftCount : null,
@@ -93,7 +99,7 @@ export function windowMetrics(m) {
     reasoningRatio: m.outputTokens > 0 ? m.reasoningTokens / m.outputTokens : null,
     outPerReq: m.requests > 0 ? m.outputTokens / m.requests : null,
     costPerReq: m.estCostCount > 0 ? m.estCostSum / m.estCostCount : null,
-    failRate: m.requests > 0 ? (m.broken + m.failed) / m.requests : null,
+    failRate: served > 0 ? (m.broken + m.failed) / served : null,
     gapMax: m.streamGapMax || null,
   }
 }
