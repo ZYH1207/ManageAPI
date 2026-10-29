@@ -23,6 +23,13 @@
  * 边界：只接管付费池。免费入口（/free/v1 或 free/ 前缀）保持原行为——
  * 把免费请求偷偷改派到付费模型等于静默扣钱，这个项目明令禁止。
  *
+ * 谁来决定开不开：除了界面上的开关，**客户端也能拨**（2026-10-29 定）。
+ * 网关模型清单里常驻一个虚拟模型 AutoThink，其余是全场供给——
+ * 客户端点 AutoThink = 请求接管（AUTO_ROUTE 打开且立刻挑一次），
+ * 点别的模型 = 不再接管，就按那个模型派活。这样在本机换模型不用反复改 Key。
+ * 关掉接管时钉住当前模型（`settings.pinnedModelKey`，见 daemon/server.js）：
+ * 客户端行为只负责「拨开关」，不该顺带改变派的谁。
+ *
  * 纯函数约定：pickAutoRoute 只读 db、不写 db（网关热路径拿到的是共享缓存对象，
  * 「下游只读不改」），切换结果由调用方决定要不要经 store.mutate 落盘。
  */
@@ -34,6 +41,51 @@ import { faultMatcher } from './failover.js'
 
 /** 新模型至少要比现役好这个比例才值得切换（0.15 = 好 15% 以上） */
 export const AUTO_ROUTE_SWITCH_GAIN = 0.15
+
+/**
+ * 网关模型清单里那个虚拟模型的名字：客户端选中它 = 让网关接管。
+ *
+ * 为什么是「虚拟模型」而不是一个自定义参数：客户端（Codex / Claude Code / 各类
+ * 桌面端）只认模型清单里的 id，改配置要重启、要重登、要重填 Key。清单里摆一个
+ * AutoThink 之后，「换 Key / 改 base_url」这件事就不必反复做了——在客户端下拉里
+ * 点一下就是拨开关（见 daemon/server.js#handleChatCompletions）。
+ */
+export const AUTO_THINK_MODEL = 'AutoThink'
+
+/**
+ * 这个名字算不算「要接管」。写法宽容一点：AutoThink / auto-think / AUTO THINK
+ * 都算——客户端有时自己会做一次归一化，没必要为此报 404。
+ *
+ * 边界：如果某家站真的有个叫 AutoThink 的模型（极不可能），调用方必须先用
+ * 「清单里有没有同名的真供给」把虚拟模型让开，不能把它遮住。
+ */
+export function isAutoThinkModel(name) {
+  const flat = String(name ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/[-_\s]+/g, '')
+  return flat === AUTO_THINK_MODEL.toLowerCase()
+}
+
+/**
+ * 一个请求到底算什么：虚拟开关，还是真有这么个模型的点名单。
+ *
+ * 判定只有一份（网关和测试都走这里）：名字长得像 AutoThink **且** 全场没有
+ * 同身份的真供给 → 'virtual'（拨开关）；否则 'real'（当普通模型名走）。
+ * 少这一步，某家站真有个 AutoThink 时就会永远点不到它。
+ *
+ * @param {string} name 客户端请求的 model（已剥掉 free/ 前缀）
+ * @param {Array} offers 参与判定的供给（付费 + 免费都要算，真供给优先）
+ */
+export function autoThinkIntent(name, offers) {
+  if (!isAutoThinkModel(name)) return 'real'
+  // 比的是同一个宽容判定，不是身份键：身份键不会把 AutoThink 与 auto-think 归到一起
+  // （那两条规则只抹版本号与日期，不抹单词间的连接符），拿它比会漏掉变体写法
+  const hasReal = (offers || []).some((offer) =>
+    isAutoThinkModel(offer.modelKey || offer.upstreamName),
+  )
+  return hasReal ? 'real' : 'virtual'
+}
 
 /** settings.autoRoute 的缺省形状（store.js 的 settings 默认值也引用这一份口径） */
 export function defaultAutoRoute() {
@@ -196,6 +248,30 @@ export function pickAutoRoute(db, { scores, benchmarks, force = false, driftDemo
     reason,
     failoverFrom,
   }
+}
+
+/**
+ * 打开接管（mutate 回调里用）：保留已有记录（scope / modelKey / failoverFrom）。
+ * 单独一个函数是为了「客户端点名 AutoThink」和 UI 开关走同一条路，不各写一遍。
+ */
+export function enableAutoRoute(settings) {
+  settings.autoRoute = { ...normalizeAutoRoute(settings.autoRoute), enabled: true }
+  return settings.autoRoute
+}
+
+/**
+ * 关闭接管（mutate 回调里用）。
+ *
+ * 清掉挑选记录（modelKey / offerId / pickedAt / reason / failoverFrom）：那只是
+ * 接管期间的临时状态，关了还留着会让人以为它还在生效。
+ * **但保留 scope**：接管范围是用户在决策页一个个勾出来的偏好，不是接管结果；
+ * 现在客户端切一下模型就会关一次接管（见 daemon/server.js），要是每次顺手
+ * 把 scope 抹了，用户勾的范围一天掉八遍。
+ */
+export function disableAutoRoute(settings) {
+  const record = normalizeAutoRoute(settings.autoRoute)
+  settings.autoRoute = { ...defaultAutoRoute(), enabled: false, scope: record.scope }
+  return settings.autoRoute
 }
 
 /** 把挑选结果写回 settings.autoRoute 的落盘形状（mutate 回调里用） */

@@ -189,8 +189,11 @@ try {
       probe.close(() => resolve(port))
     })
   })
+  // 用 fileURLToPath 而不是 url.pathname：pathname 是百分号编码的，
+  // 工作区路径里只要有中文（比如 .wt/协议侦测全量）spawn 就会 ENOENT
+  const { fileURLToPath } = await import('node:url')
   const child = spawn(process.execPath, ['daemon/index.js', '--port', String(PORT)], {
-    cwd: new URL('..', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1'),
+    cwd: fileURLToPath(new URL('..', import.meta.url)),
     env: { ...process.env, MANAGE_API_HOME: HOME },
     stdio: 'ignore',
   })

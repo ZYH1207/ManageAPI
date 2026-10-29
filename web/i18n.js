@@ -527,6 +527,7 @@ const EN = {
   '探针花费统计已清除': 'Probe spend cleared',
   '无花费': 'no spend',
   '还没有探针花费': 'No probe spend yet',
+  '另 {n} 个站': '{n} more sites',
   '统计自 {since} 起': 'since {since}',
   '共 {n} 次探测': '{n} probes in total',
   '最近一次：': 'latest: ',
@@ -689,11 +690,31 @@ Object.assign(EN, {
 
   // 探针
   '主动探测': 'Active probing',
-  '每个模型最多发 4 个请求：指纹 + 计费、截断、缓存（连发两次）。结果进入评分，路由据此排除可疑的站。缓存数字超过 2 小时过期，过期后的下一次定时/轮巡探测自动升级全量补测；手动探测每次都全量。自动路由开着时定时探针由轮巡接管。':
-    'Up to four requests per model: fingerprint + billing, truncation, cache (twice). The results feed the score that routing uses to exclude suspicious sites. Cache numbers go stale after two hours; the next scheduled or patrol probe after that runs the full set. Manual probes always run all four. While auto-route is on, the patrol takes over probing.',
+  '每个模型最多发 4 个请求：指纹 + 计费、截断、缓存（连发两次）。结果进入评分，路由据此排除可疑的站。手动探测可选：Lite 只发前 2 个（指纹+计费、截断），全量 4 个都发。定时/轮巡探测平时发 2 个，缓存数字满 2 小时过期的那一轮自动补成全量。自动路由开着时定时探针由轮巡接管，方案见下方。':
+    'Up to four requests per model: fingerprint + billing, truncation, cache (twice). The results feed the score that routing uses to exclude suspicious sites. Manual probes come in two modes: Lite sends the first two (fingerprint + billing, truncation), Full sends all four. Scheduled and patrol probes send two by default and upgrade to the full set in the round where the cache number passes two hours old. While auto-route is on, the patrol takes over probing — see the note below.',
   '探测全部（最多 5 个）': 'Probe all (max 5)',
   '探测全部（{n} 个）': 'Probe all ({n})',
   '探测所选（{n} 个）': 'Probe selected ({n})',
+  'Lite 探测（{n} 个）': 'Lite probe ({n})',
+  '全量探测（{n} 个）': 'Full probe ({n})',
+  '先选方案再跑：Lite 每模型 2 发（省一半钱），全量 4 发（多测一项缓存命中率）。鼠标悬停两个选项能看到具体发什么。':
+    'Pick a mode first: Lite sends 2 requests per model (half the cost), Full sends 4 (adds the cache hit rate). Hover either option to see exactly what it sends.',
+  'Lite 探测：每个模型只发 2 个请求——① 指纹 + 计费（固定小题目，看输出是不是精确匹配、用量有没有虚报）② 截断（让它数到 120，看会不会被提前掐断）。缓存命中率这一项跳过，沿用上次的数字。用一半的钱看清「可不可信」，适合整场巡检。':
+    'Lite probe: 2 requests per model — (1) fingerprint + billing (a fixed short question; checks the output matches exactly and whether usage is inflated), (2) truncation (asks it to count to 120 and sees if it gets cut off early). The cache hit rate is skipped and keeps its previous number. Half the cost to see whether a supply is trustworthy — good for sweeping everything.',
+  '全量探测：每个模型发 4 个请求——Lite 的两发之外，再连发两次同一段长前缀测缓存命中率（看第二次报的 cached_tokens / prompt_tokens），中间等 1.5 秒让上游把缓存写进去。最贵的是截断那一发（最多 1500 token）。探完评分里「缓存」那栏才有新数字。':
+    'Full probe: 4 requests per model — the two from Lite, plus the same long prefix sent twice to measure the cache hit rate (second response cached_tokens / prompt_tokens), with a 1.5s pause so the upstream can write the cache. The truncation request is the expensive one (up to 1500 tokens). Only after this does the Cache column in the score get a fresh number.',
+  '单条探测走全量：发 4 个请求（指纹 + 计费、截断、缓存×2），要的就是完整证据':
+    'A single probe always runs full: 4 requests (fingerprint + billing, truncation, cache twice) — you asked for complete evidence',
+  '自动路由开着时定时探针不跑，这是它实际的探测节奏（数字随服务端配置走）':
+    'While auto-route is on the scheduled probe stands down; this is its actual probing cadence (the numbers come from the server config)',
+  '这是当前生效的探测节奏（数字随服务端配置走）':
+    'This is the probing cadence currently in effect (numbers come from the server config)',
+  '定时探针每 {n} 分钟跑一轮：每个模型发 2 个请求（指纹 + 计费、截断）；某条供给的缓存数字满 2 小时时，它那一轮自动补成 4 发。上面的 Lite / 全量是手动点的那一下，不受这个间隔管。':
+    'The scheduled probe runs every {n} minutes: 2 requests per model (fingerprint + billing, truncation). When a supply’s cache number turns 2 hours old, that round for it is upgraded to all 4. The Lite / Full buttons above are what you trigger by hand and ignore this interval.',
+  '定时探针现在是关的（自动探测 0 分钟）：不点就不探，一分钱不花。要跑就选上面的 Lite 或全量，或者在表格里点单条「探测」。':
+    'The scheduled probe is off right now (auto probe 0 minutes): nothing runs and nothing is spent unless you ask. To run, pick Lite or Full above, or hit the single Probe button in the table.',
+  '自动路由开着时定时探针不跑，改由轮巡接管：① 网关来真实流量时先全量探一遍「现役模型 + 可能接替它的几个」（每模型 4 发）打基础分；② 之后还在接流量就每 {m} 分钟续一轮 Lite（每模型 2 发），缓存命中率不是每轮都测，满 2 小时的那一轮自动补一次；③ 静默超过 {w} 分钟就不探，一分钱不花；④ 欠费站直接跳过。':
+    'While auto-route is on the scheduled probe stands down and the patrol takes over: (1) on the first real traffic it runs a full round over the models in charge plus a few possible successors (4 requests each) to take a baseline; (2) while traffic continues it repeats a Lite round every {m} minutes (2 requests each), with the cache hit rate refreshed only in the round where it is 2 hours old; (3) after {w} minutes of silence it stops probing and spends nothing; (4) sites that are out of balance are skipped.',
   '全部站点': 'All sites',
   '全部分组': 'All groups',
   '全部模型': 'All models',
@@ -884,6 +905,11 @@ Object.assign(EN, {
     'Ranks by price per millisecond of first-token wait: cost and latency collapse into one number, so the slow and the pricey both show up — the best combined pick lands first.',
   '/s 首字': '/s TTFT',
   '自动路由': 'Auto routing',
+  '探针口径': 'probe basis',
+  '真实': 'real',
+  '真实 {n} 单': 'real {n} reqs',
+  '真实流量首字（{n} 单，你真实负载下的体感）': 'Real-traffic TTFT ({n} reqs, what you actually feel)',
+  '样本较少，仅供参考': 'few samples, indicative only',
   '轮巡中 {n} 条…': 'Patrol running · {n} supplies…',
   '轮巡待命': 'Patrol idle',
   '· 下一轮约 {n} 分钟后': '· next in ~{n}m',
@@ -911,11 +937,31 @@ Object.assign(EN, {
     'Real total wall time (TTFT + generation) vs the {n}-hour baseline; at 30% slower, traffic is re-dispatched automatically.',
   '吐字': 'Tokens/s',
   '漂移 {n}': 'Drift {n}',
+  '漂移 {n}（仅监视）': 'Drift {n} (monitor only)',
+  '比基线慢 {n}%': '{n}% slower than baseline',
+  '比基线慢 {n}%（仅监视）': '{n}% slower than baseline (monitor only)',
+  '比基线{n}': '{n} vs baseline',
+  '与基线持平': 'On par with baseline',
+  '持平': 'on par',
+  '慢 {n}%': '{n}% slower',
+  '快 {n}%': '{n}% faster',
+  ' · 仅监视 {name}（未开自动路由，不改派）':
+    ' · monitoring {name} only (auto routing is off, nothing is re-dispatched)',
   '实时 {n}': 'Realtime {n}',
   '，降级 {n} 条': ', {n} demoted',
   '已由自动路由接管': 'Taken over by auto routing',
-  '自动路由开着时定时探针不跑：轮巡每 30 分钟接替探测，关掉自动路由后这里自动恢复生效':
-    'While auto-route is on the scheduled probe stands down — the patrol probes every 30 minutes. This resumes when you turn auto routing off.',
+  '自动路由开着时定时探针不跑，改由轮巡接管（方案见下方说明）；关掉自动路由后这里自动恢复生效':
+    'While auto-route is on the scheduled probe stands down and the patrol takes over (see the note below). This resumes when you turn auto routing off.',
+  '· 客户端点 AutoThink = 开，点别的模型 = 关（客户端的点名会覆盖上面这个开关）':
+    '· pick AutoThink in the client to turn it on, any other model to turn it off (the client’s pick wins over this switch)',
+  '网关模型清单里一直摆着一个 AutoThink，其余是全场模型。客户端点 AutoThink = 打开自动路由；点别的模型 = 关掉自动路由，就派那一个。所以在本机换档不用反复改 Key':
+    'The gateway model list always carries an AutoThink next to the full pool. Picking AutoThink turns auto routing on; picking any other model turns it off and dispatches exactly that model — no more editing keys back and forth on this machine.',
+  '客户端停在 {name}': 'client last picked {name}',
+  '客户端拉了模型清单后选了 {name}：那一下等于关掉自动路由、就派这个模型。点旁边的叉回到「谁都不钉」':
+    'The client listed models and picked {name}: that turns auto routing off and dispatches this model. Click the cross to unpin.',
+  '解除：让客户端下一次选什么就派什么，不再钉在这一个':
+    'Unpin: from now on whatever the client picks gets dispatched',
+  '已解除：客户端下次选什么就派什么': 'Unpinned: whatever the client picks next gets dispatched',
   '探测间隔不能是负数': 'Probe interval cannot be negative',
   '一键接管': 'Take over',
   '权限在决策侧重之上：接管后客户端要什么模型都无所谓': 'Sits above the decision basis: once taken over, whatever model the client asks for is irrelevant',
@@ -925,8 +971,8 @@ Object.assign(EN, {
   '故障转移': 'Failover',
   '外部监控上报了真实故障（探针没测到也以监控为准），已故障转移；保持期过后若仍是全场第一会自动提回':
     'The external monitor reported a real failure (monitor wins even if probes saw nothing); traffic was failed over. It re-enters automatically after the hold expires if still ranked first.',
-  '接管后，不管客户端请求哪个模型、怎么切模型，网关都只派给当前决策档位下全场最优的那一个模型——不分站点、不分分组、不分来自哪个站。若新模型只比现役好一点点（不到 15%），不切换：反复横跳对用户的干扰比那点收益大，只有明显更优或现役下线才换。免费入口不受影响。':
-    'Once taken over, whichever model the client asks for — and however it switches — the gateway dispatches only to the single best model under the current decision basis, regardless of site, group or origin. A new champion only marginally better than the incumbent (under 15%) is ignored: flapping disturbs users more than the tiny gain, so it switches only on a clear win or when the incumbent goes offline. Free-pool entries are unaffected.',
+  '接管后，不管客户端请求哪个模型、怎么切模型，网关都只派给当前决策档位下全场最优的那一个模型——不分站点、不分分组、不分来自哪个站。若新模型只比现役好一点点（不到 15%），不切换：反复横跳对用户的干扰比那点收益大，只有明显更优或现役下线才换。免费入口不受影响。\n\n探针：开着自动路由时定时探针不跑，改由轮巡接管——来真实流量先全量拍一轮，之后每轮 Lite 续拍，静默时不探（完整方案在探针页）。':
+    'Once taken over, whichever model the client asks for — and however it switches — the gateway dispatches only to the single best model under the current decision basis, regardless of site, group or origin. A new champion only marginally better than the incumbent (under 15%) is ignored: flapping disturbs users more than the tiny gain, so it switches only on a clear win or when the incumbent goes offline. Free-pool entries are unaffected.\n\nProbing: while auto-route is on the scheduled probe stands down and the patrol takes over — first round is full, later rounds are Lite, nothing runs while idle (full scheme on the probe page).',
   '开启后网关无视客户端请求的模型名，始终把请求派给当前决策档位下全场最优的模型。免费入口不受影响。':
     'When on, the gateway ignores the requested model name and always dispatches to the best model across the whole pool under the current decision basis. Free-pool entries are unaffected.',
   '开启后，不管客户端请求哪个模型、怎么切模型，网关都只派给当前决策档位下全场最优的那一个模型——不分站点、不分分组、不分来自哪个站。若新模型只比现役好一点点（不到 15%），不切换：反复横跳对用户的干扰比那点收益大，只有明显更优或现役下线才换。':
@@ -1726,9 +1772,45 @@ Object.assign(EN, {
   '手选': 'Custom',
 
   // ---- 协议探查（web/protocol-view.js）
+  '检测模式': 'Depth',
+  '轻量': 'Lite',
+  '全量': 'Full',
+  '检测次数': 'Runs',
+  '单次': 'Once',
+  '三次': '3×',
+  '只测每协议 5 项关键能力（能不能调工具、认不认系统提示、会不会失忆等），几十秒出结果。':
+    'Only 5 key capabilities per protocol (tool calls, system prompt, memory...). Done in under a minute.',
+  '每种协议的全部能力逐项验证，能把翻译层装得像的地方全戳穿，代价是请求多、耗时长。':
+    'Verifies every capability of every protocol — catches everything a translation layer can fake. More requests, more time.',
+  '只跑一遍，快；结论可能不确切，偶发失败会被当成真缺失。':
+    'One pass, fast — but a single flake is treated as a real gap, so the verdict can be off.',
+  '同一项跑三遍：全过才算过、全挂才算挂，中间态标「时好时坏」。推荐。':
+    'Each check runs three times: pass only if all pass, fail only if all fail, otherwise "flaky". Recommended.',
+  '单次检测得到的结论可能不确切：偶发失败会被当成真的缺失。想要准的结论请选「三次」。':
+    'A single run can be wrong: an occasional failure is reported as a real gap. Pick 3× for a trustworthy verdict.',
+  '单次 · 结论可能不确切': 'Once · verdict may be off',
+  '时好时坏': 'Flaky',
+  '做不到 · 以及会坏在哪': 'Not supported · and what breaks',
+  '能做': 'Works',
+  '能导进哪个工具': 'Which tools can consume it',
+  '导错工具的后果': 'If you plug it into the wrong tool',
+  '怎么用这个站': 'How to use this site',
+  '全绿': 'All green',
+  '基本完整': 'Mostly complete',
+  '残缺可用': 'Usable but incomplete',
+  '大面积缺失': 'Mostly missing',
+  '协议不可用': 'Protocol unavailable',
+  '可以接入': 'Plug it in',
+  '勉强可接': 'Risky',
+  '别接入': "Don't plug it in",
+  '未判定': 'Undetermined',
+  '没有可用的关键能力。': 'No key capability works.',
+  '没有缺失的关键能力。': 'No key capability is missing.',
+  '没有已知消费方。': 'No known consumer.',
+
   '选择要探查的模型，或直接粘 API': 'Pick models to probe, or paste an API directly',
-  '勾选任意站点 / 分组 / 模型做批量探查；每个模型发二十多个小请求。非 Anthropic 模型自动跳过 Anthropic 协议。结果不影响评分与路由。':
-    'Check any sites / groups / models for a batch probe; each model sends 20+ small requests. Non-Anthropic models skip the Anthropic protocol. Results never affect scoring or routing.',
+  '勾选任意站点 / 分组 / 模型做批量探查。四种协议（Chat / Responses / Anthropic / Gemini）一律都测，测完给出「这个协议能干什么、能导进哪个工具、导错会怎样」。结果不影响评分与路由。':
+    'Check any sites / groups / models for a batch probe; each model sends 20+ small requests. Four protocols are always probed. Results never affect scoring or routing.',
   '网关内模型': 'Gateway models',
   '手动粘贴 API': 'Paste an API',
   '站点': 'Sites',
@@ -1814,8 +1896,8 @@ Object.assign(EN, {
   '点上方胶囊看能力明细': 'Click a pill above for capability details',
   '删除记录': 'Delete record',
   '具备 / 原生基线': 'Present / native baseline',
-  '未测（非 Anthropic 模型）': 'Untested (non-Anthropic model)',
-  '非 Anthropic 模型': 'non-Anthropic model',
+  '本次未测': 'Not probed this run',
+
   '的表面协议背后都是': 'behind the surface is a',
   'Chat Completions 翻译层': 'Chat Completions translation layer',
   '：外形能对上，原生能力大量缺失。': ': it mimics the shape, but native capabilities are largely missing.',

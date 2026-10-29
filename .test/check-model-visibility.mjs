@@ -12,7 +12,14 @@
  *
  * 用法：node .test/check-model-visibility.mjs
  */
-import { ignoreChecker, modelIgnored, routeableOffers, applyIgnoredModels } from '../core/inventory.js'
+import {
+  ignoreChecker,
+  modelIgnored,
+  routeableOffers,
+  applyIgnoredModels,
+  overrideKey,
+  parseOverrideKey,
+} from '../core/inventory.js'
 
 let failed = 0
 const ok = (cond, msg) => {
@@ -128,6 +135,61 @@ console.log('[11] 只清 shown，单押的 ignored 例外不动')
   const d = db({ settings: { ignoredModels: [], modelOverrides: { 'other-model': 'ignored' } } })
   applyIgnoredModels(d, ['other-model', 'deepseek-v4.1-flash'])
   ok(d.settings.modelOverrides?.['other-model'] === 'ignored', 'ignored 例外保留（它本来就表示忽略）')
+}
+
+console.log('[12] 站点页的开关只作用于「这一行」：同名模型在别的站/分组不受影响')
+{
+  // 现场：deepseek-v4.1-flash 在 5 个站 8 个分组里都有。以前点一个「忽略」，
+  // 8 条供给一起离场——用户点的是这一行，变的是这一类。现在按 站+分组+模型 存例外。
+  const db2 = {
+    settings: { modelAliases: {}, ignoredModels: [], modelOverrides: {} },
+    providers: [provider('pa'), provider('pb')],
+    offers: [
+      { id: 'a1', providerId: 'pa', group: 'g1', modelKey: 'deepseek-v4.1-flash', upstreamName: 'deepseek-v4.1-flash' },
+      { id: 'b1', providerId: 'pb', group: 'g9', modelKey: 'deepseek-v4.1-flash', upstreamName: 'deepseek-v4.1-flash' },
+    ],
+  }
+  db2.settings.modelOverrides[overrideKey('deepseek-v4.1-flash', { providerId: 'pa', group: 'g1' })] = 'ignored'
+  const live = ids(db2)
+  ok(JSON.stringify(live) === JSON.stringify(['b1']), `只有 a1 离场，b1 还在（实际 ${live.join(',')}）`)
+  ok(modelIgnored(db2, 'deepseek-v4.1-flash', { providerId: 'pa', group: 'g1' }), '带作用域问 a1 → 忽略')
+  ok(!modelIgnored(db2, 'deepseek-v4.1-flash', { providerId: 'pb', group: 'g9' }), '带作用域问 b1 → 显示')
+  ok(!modelIgnored(db2, 'deepseek-v4.1-flash'), '不带作用域（只问全局）→ 不算忽略')
+}
+
+console.log('[13] 旧数据兼容：纯模型名键仍是全局（对所有站生效）')
+{
+  const d = db({ settings: { ignoredModels: [], modelOverrides: { 'deepseek-v4.1-flash': 'ignored' } } })
+  ok(modelIgnored(d, 'deepseek-v4.1-flash', { providerId: 'p1', group: '' }), '全局忽略对带作用域的行也生效')
+  ok(modelIgnored(d, 'deepseek-v4.1-flash'), '不带作用域的询问也一样')
+}
+
+console.log('[14] 优先级：这一行的例外 > 全局例外 > 整类名单')
+{
+  const d = db({ settings: { ignoredModels: ['deepseek-v4.1-flash'], modelOverrides: {} } })
+  d.settings.modelOverrides[overrideKey('deepseek-v4.1-flash', { providerId: 'p1', group: '' })] = 'shown'
+  ok(!modelIgnored(d, 'deepseek-v4.1-flash', { providerId: 'p1', group: '' }), '这一行被捞回 → 显示')
+  ok(modelIgnored(d, 'deepseek-v4.1-flash', { providerId: 'p2', group: '' }), '别的站仍整类忽略')
+
+  const d2 = db({ settings: { ignoredModels: ['deepseek-v4.1-flash'], modelOverrides: { 'deepseek-v4.1-flash': 'shown' } } })
+  ok(!modelIgnored(d2, 'deepseek-v4.1-flash'), '全局 shown 生效')
+  d2.settings.modelOverrides[overrideKey('deepseek-v4.1-flash', { providerId: 'p1', group: '' })] = 'ignored'
+  ok(modelIgnored(d2, 'deepseek-v4.1-flash', { providerId: 'p1', group: '' }), '这一行改成 ignored → 这一行忽略')
+}
+
+console.log('[15] 作用域键的解析（分组名里带冒号也不切坏）')
+{
+  ok(overrideKey('deepseek-v4.1-flash', { providerId: 'p1', group: '' }) === 'p1::::deepseek-v4.1-flash', '空分组也合法')
+  const k = overrideKey('deepseek-v4.1-flash', { providerId: 'p1', group: 'a::b' })
+  const parsed = parseOverrideKey(k)
+  ok(parsed.model === 'deepseek-v4.1-flash', `模型名不被切坏（实际 ${parsed.model}）`)
+  ok(parseOverrideKey('deepseek-v4.1-flash').scope === null, '纯模型名 → 全局')
+
+  const d = db({ settings: { ignoredModels: [], modelOverrides: {} } })
+  const key = overrideKey('deepseek-v4.1-flash', { providerId: 'p1', group: 'g1' })
+  d.settings.modelOverrides[key] = 'shown'
+  applyIgnoredModels(d, ['deepseek-v4.1-flash'])
+  ok(d.settings.modelOverrides?.[key] === undefined, '整类忽略清掉了作用域写法上的 shown 例外')
 }
 
 console.log(failed === 0 ? '\n全部通过' : `\n${failed} 项失败`)

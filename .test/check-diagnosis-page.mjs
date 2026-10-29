@@ -275,7 +275,8 @@ try {
   await evaluate(`document.querySelector('[data-act="diagnosis-pane"][data-pane="stats"]').click()`)
   await new Promise((r) => setTimeout(r, 300))
   const body2 = await evaluate(`document.querySelector('#view-diagnosis').innerHTML`)
-  ok(body2.includes('吐字/s'), '供给表现表展开')
+  ok(body2.includes('按小时聚合 · UTC'), '供给表现表展开')
+  ok(body2.includes('<th>客户端断开</th>'), '供给表现表有「客户端断开」列（与断流分列）')
   ok(body2.includes('2026-10-28T08'.slice(5, 10).replace('-', '/')), '小时桶显示')
   ok(!body2.includes('错误模板（悬停看原文）'), '切换后账本收起')
 

@@ -407,6 +407,14 @@ In your client:
 
 Then request as usual; `model` takes the normalised name (`GET /v1/models` lists them). When you swap an upstream key, clients do not change.
 
+`GET /v1/models` always carries one extra entry at the top, `AutoThink`. It is a **switch** for auto routing, not a real model:
+
+- Pick `AutoThink` in the client → the gateway turns auto routing on and dispatches to the best supply pool-wide under the current decision basis (the real target is in the `X-ManageAPI-Model` response header)
+- Pick any real model → auto routing switches off and exactly that model is dispatched
+
+So flipping between "let the gateway choose" and "this specific model" costs one click in the client, not a key/base_url edit.
+The free pool (`/free/v1`, `free/` prefix) is never taken over — silently rerouting a free request to a paid model means silently spending money.
+
 ![Gateway](docs/screenshot-gateway.png)
 
 ### How a site is picked

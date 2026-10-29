@@ -5,6 +5,7 @@ import * as store from '../core/store.js'
 import * as inv from '../core/inventory.js'
 import * as bench from '../core/benchmark.js'
 import { probeModel } from '../core/probe.js'
+import { preflight } from '../core/probe-preflight.js'
 import { offerCost } from '../core/pricing.js'
 import { usageRowCost } from '../core/monitor.js'
 import { recordProbeSpend } from '../core/probe-spend.js'
@@ -141,6 +142,21 @@ export async function runProbes({ providerId, offerId, offerIds, limit = 5, lite
         results[index] = { offerId: offer.id, providerId: offer.providerId, ok: false, error: 'Key 解密失败' }
         continue
       }
+      // L1/L2 预检（零 token）：DNS/TCP/TLS + /models。连不上或 Key 失效就不发
+      // 对话请求——那种站既拿不到结论，又要占满 45 秒并发槽（codexpert 站实测
+      // 一轮被拖七分钟）。预检通过才进 L3（真花钱的对话探测）
+      const pre = await preflight({ baseUrl: provider.baseUrl, apiKey })
+      if (!pre.ok) {
+        results[index] = {
+          offerId: offer.id,
+          providerId: offer.providerId,
+          ok: false,
+          error: `预检未过（${pre.layer}）：${pre.error}`,
+          preflight: { layer: pre.layer, ms: pre.ms, modelCount: pre.modelCount },
+          spend: null,
+        }
+        continue
+      }
       const shape = shapeByOffer.get(offer.id) || { lite, withCache: true }
       const record = await probeModel({
         baseUrl: provider.baseUrl,
@@ -149,6 +165,7 @@ export async function runProbes({ providerId, offerId, offerIds, limit = 5, lite
         timeoutMs: db.settings.probeTimeoutMs || 45000,
         ...shape,
       })
+      record.preflight = { layer: null, ms: pre.ms, modelCount: pre.modelCount }
       // 先只收集结果，落盘在批量网络异常判断之后（见下）
       results[index] = { offerId: offer.id, providerId: offer.providerId, ...record }
     }

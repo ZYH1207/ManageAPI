@@ -129,28 +129,38 @@ console.log('\n=== 6. 路由决策日志 ===')
   }
 }
 
-console.log('\n=== 7. 自动路由接管：清单只出 AutoThink ===')
+console.log('\n=== 7. 客户端拨开关：点 AutoThink 开接管，点别的模型关接管 ===')
 {
-  await api('PATCH', '/api/settings', { autoRouteEnabled: true })
+  // 清单始终是「AutoThink + 全场」，接管与否都这样——客户端才能在同一个下拉里拨开关
+  const listed = async () =>
+    (await (await fetch(`${BASE}/v1/models`, { headers: auth })).json()).data.map((m) => m.id)
+  const idleIds = await listed()
+  if (idleIds[0] !== 'AutoThink' || idleIds.length < 2) {
+    throw new Error(`清单应为 AutoThink + 全场，实际 ${JSON.stringify(idleIds)}`)
+  }
+  console.log('未接管时清单', JSON.stringify(idleIds))
 
-  const res = await fetch(`${BASE}/v1/models`, { headers: auth })
-  const data = await res.json()
-  const ids = data.data.map((m) => m.id)
-  if (ids.length !== 1 || ids[0] !== 'AutoThink') throw new Error(`清单应只有 AutoThink，实际 ${JSON.stringify(ids)}`)
-  console.log('模型清单', JSON.stringify(ids), 'providers', data.data[0].providers, 'healthy', data.data[0].healthy)
-
-  // 非流式：model 随便写都行，响应头应带真实上游模型
-  const plain = await fetch(`${BASE}/v1/chat/completions`, {
+  // 未接管时点 AutoThink → 接管打开，这一单本身也按接管派活
+  const turnOn = await fetch(`${BASE}/v1/chat/completions`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...auth },
     body: JSON.stringify({ model: 'AutoThink', messages: [{ role: 'user', content: 'hi' }] }),
   })
-  if (!plain.ok) throw new Error(`AutoThink 非流式应 200，实际 ${plain.status}`)
-  const served = decodeURIComponent(plain.headers.get('x-manageapi-model') || '')
-  if (!served) throw new Error('非流式响应缺 X-ManageAPI-Model 头')
-  console.log('非流式 200，X-ManageAPI-Model =', served, '响应体 model =', (await plain.json()).model)
+  if (!turnOn.ok) throw new Error(`点 AutoThink 应 200，实际 ${turnOn.status} ${await turnOn.text()}`)
+  const served = decodeURIComponent(turnOn.headers.get('x-manageapi-model') || '')
+  if (!served) throw new Error('响应缺 X-ManageAPI-Model 头')
+  console.log('点 AutoThink → 200，实际派给', served)
+  let st = await api('GET', '/api/state')
+  if (!st.autoRoute?.enabled) throw new Error('点 AutoThink 后自动路由应已打开')
 
-  // 流式：同样要带真实模型头
+  // 接管中清单照样是全量（不再是只有 AutoThink）
+  const onIds = await listed()
+  if (onIds.length < 2 || onIds[0] !== 'AutoThink') {
+    throw new Error(`接管中清单仍应是全量，实际 ${JSON.stringify(onIds)}`)
+  }
+  console.log('接管中清单', JSON.stringify(onIds))
+
+  // 流式也必须带真实模型头
   const stream = await fetch(`${BASE}/v1/chat/completions`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...auth },
@@ -159,15 +169,25 @@ console.log('\n=== 7. 自动路由接管：清单只出 AutoThink ===')
   if (!stream.ok) throw new Error(`AutoThink 流式应 200，实际 ${stream.status}`)
   const streamServed = decodeURIComponent(stream.headers.get('x-manageapi-model') || '')
   if (!streamServed) throw new Error('流式响应缺 X-ManageAPI-Model 头')
-  const text = await stream.text()
-  if (!text.includes('[DONE]')) throw new Error('流式没走到 [DONE]')
+  if (!(await stream.text()).includes('[DONE]')) throw new Error('流式没走到 [DONE]')
   console.log('流式 200，X-ManageAPI-Model =', streamServed)
 
-  // 关掉后清单恢复全量
-  await api('PATCH', '/api/settings', { autoRouteEnabled: false })
-  const restored = (await (await fetch(`${BASE}/v1/models`, { headers: auth })).json()).data.map((m) => m.id)
-  if (restored.length < 2 || restored.includes('AutoThink')) {
-    throw new Error(`关闭后应恢复全量且无 AutoThink，实际 ${JSON.stringify(restored)}`)
-  }
-  console.log('关闭后恢复', JSON.stringify(restored))
+  // 接管中点别的模型 → 关接管、就派那一个，并把它钉住
+  const named = onIds.find((id) => id !== 'AutoThink')
+  const turnOff = await fetch(`${BASE}/v1/chat/completions`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...auth },
+    body: JSON.stringify({ model: named, messages: [{ role: 'user', content: 'hi' }] }),
+  })
+  if (!turnOff.ok) throw new Error(`点 ${named} 应 200，实际 ${turnOff.status} ${await turnOff.text()}`)
+  st = await api('GET', '/api/state')
+  if (st.autoRoute?.enabled) throw new Error('点别的模型后自动路由应已关闭')
+  if (st.autoRoute?.modelKey) throw new Error('关接管后应清掉挑选记录（modelKey 只属于接管期）')
+  if (!st.pinnedModelKey) throw new Error('关接管后应钉住客户端选的那个模型')
+  console.log(`点 ${named} → 自动路由已关，pinnedModelKey=${st.pinnedModelKey}`)
+
+  // 解除钉子：界面上的小叉就是这条 PATCH
+  st = await api('PATCH', '/api/settings', { pinnedModelKey: '' })
+  if (st.pinnedModelKey) throw new Error('解除后 pinnedModelKey 应为 null')
+  console.log('解除钉子 → pinnedModelKey =', st.pinnedModelKey)
 }

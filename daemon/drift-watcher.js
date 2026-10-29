@@ -29,6 +29,7 @@ import {
   evaluateDrift,
   usableSample,
   FAST_WINDOW_MS,
+  BASELINE_HOURS,
 } from '../core/real-drift.js'
 
 /** 转移后的冷却期：10 分钟内不再因漂移转移（诊断故障不受限） */
@@ -39,6 +40,8 @@ export const TRIAL_SAMPLES = 10
 export const TRIAL_MAX_MS = 5 * 60_000
 /** 连续这么多次「漂移了但挑不出更好的」就踢一轮 Lite 探针开新周期 */
 export const EXHAUST_LIMIT = 3
+/** 没开自动路由时最多盯几条供给：按真实流量排前的十几条，能覆盖日常在用的模型 */
+export const WATCH_LIMIT = 12
 
 // e2e 要把节奏压到亚秒级才能验状态机，与 autoprobe 的环境变量同一先例
 const envMs = (name, fallback) => {
@@ -69,12 +72,22 @@ export function createDriftWatcher({ runProbes, onProbesRan = null, logger = con
   let trial = null // { offerId, startedAt, samples }
   // 最近一次判定（UI 读这份缓存，不必每 15 秒重算一遍）
   let lastEvaluation = null
+  // 同时在监视的其它供给（自动路由关着时是流量最多的几条；开着时只有现役一条）
+  let lastScan = []
   let lastSwitch = null // { at, fromOfferId, toOfferId, drift }
 
-  function record(offerId, { ttftMs, latencyMs, usage } = {}) {
+  function record(offerId, { ttftMs, latencyMs, usage, stream } = {}) {
     if (!offerId || !Number.isFinite(ttftMs) || ttftMs <= 0) return
     const ring = rings.get(offerId) || []
-    ring.push({ at: Date.now(), ttftMs, latencyMs: Number(latencyMs) || ttftMs, usage: usage || null })
+    // stream 只用于排查「流式/非流式的吐字口径差异」；归一化本身吃 usage 里的
+    // completion_tokens，与是否流式无关（见 core/real-drift.js）
+    ring.push({
+      at: Date.now(),
+      ttftMs,
+      latencyMs: Number(latencyMs) || ttftMs,
+      usage: usage || null,
+      stream: stream === true,
+    })
     if (ring.length > RING_CAP) ring.splice(0, ring.length - RING_CAP)
     rings.set(offerId, ring)
     if (trial && trial.offerId === offerId) trial.samples += 1
@@ -90,6 +103,7 @@ export function createDriftWatcher({ runProbes, onProbesRan = null, logger = con
       latencyMs: sample.latencyMs,
       outTokens: sample.outTokens,
       costCny: sample.costCny,
+      stream: sample.stream === true,
     })
     if (ring.length > RING_CAP) ring.splice(0, ring.length - RING_CAP)
     rings.set(offerId, ring)
@@ -118,18 +132,59 @@ export function createDriftWatcher({ runProbes, onProbesRan = null, logger = con
         at: s.at,
         ttftMs: s.ttftMs,
         latencyMs,
-        outTokens: Number(s.usage?.completion_tokens) || 0,
+        outTokens: Number(s.usage?.completion_tokens) || Number(s.outTokens) || 0,
+        stream: s.stream === true,
         costCny,
       })
     }
     return out
   }
 
+  /**
+   * 没开自动路由时要盯谁：按真实流量排前的几条供给。
+   *
+   * 不能「快窗口里有东西就不看账本」——这十分钟只走过一两条供给、
+   * 流量最大的那条恰好没流量时，会被完全漏掉。所以两份并起来取并集，
+   * 按 6 小时总流量（账本 requests + 快窗口样本数）排序，流量最大的
+   * 那几条才能保证被盯上。
+   */
+  function watchedOffers(db, now) {
+    const live = new Map()
+    // 快窗口：最近 10 分钟真在跑的（进程重启会空，不能只靠它）
+    for (const [offerId, ring] of rings) {
+      const n = (ring || []).filter(
+        (s) => usableSample(s) && (!Number.isFinite(s.at) || now - s.at <= FAST_WINDOW_MS),
+      ).length
+      if (n > 0) live.set(offerId, n)
+    }
+    // 账本：最近 6 小时小时桶的样本数（即使快窗口空也补上流量最大的几条）。
+    // 取样口径取 requests / latencyCount / ttftCount 里最大的那个：正常桶三者相等，
+    // 但老数据与测试夹具可能只填了其中一个，只认 requests 会把有数的桶当成 0 单
+    const cutoff = now - BASELINE_HOURS * 3600_000
+    for (const [key, b] of Object.entries(db.offerStats || {})) {
+      const sep = String(key).lastIndexOf('|')
+      if (sep <= 0 || !b) continue
+      const start = Date.parse(`${String(key).slice(sep + 1)}:00:00Z`)
+      if (Number.isFinite(start) && start < cutoff) continue
+      const offerId = String(key).slice(0, sep)
+      const weight = Math.max(Number(b.requests) || 0, Number(b.latencyCount) || 0, Number(b.ttftCount) || 0)
+      live.set(offerId, (live.get(offerId) || 0) + weight)
+    }
+    return [...live.entries()]
+      .filter(([offerId]) => db.offers.some((o) => o.id === offerId))
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, WATCH_LIMIT)
+      .map(([offerId]) => offerId)
+  }
+
   const fmtMs = (v) => (Number.isFinite(v) ? `${(v / 1000).toFixed(1)}s` : '?')
 
   /**
-   * 调度器每分钟调一次：判漂移、执行转移。
-   * 自动路由没开就只清周期状态不判——判定逻辑全部让位（连锁机制同调度器侧）。
+   * 调度器每分钟调一次：算基线、判漂移，自动路由开着时才执行转移。
+   *
+   * 监视与动手是两件事：基线（6 小时近期值 + 30 天常量值）是网关每单顺路记账
+   * 攒出来的，跟「谁来派活」无关。自动路由关着的时候只是没有「改派给谁」，
+   * 不代表算不了「这条线现在比平时慢多少」——所以这里先算，再决定动不动手。
    */
   async function tick() {
     const db = await store.readDb()
@@ -139,6 +194,7 @@ export function createDriftWatcher({ runProbes, onProbesRan = null, logger = con
     if (settings.driftEnabled === false) {
       resetCycle()
       lastEvaluation = null
+      lastScan = []
       return
     }
     // 可调参数：环境变量 > 设置 > 默认（环境变量是测试压节奏用的）
@@ -152,19 +208,56 @@ export function createDriftWatcher({ runProbes, onProbesRan = null, logger = con
     const trialSamples =
       envMs('MANAGE_API_TRIAL_SAMPLES', 0) ||
       (Number(settings.driftTrialSamples) > 0 ? Number(settings.driftTrialSamples) : TRIAL_SAMPLES)
-    if (!record.enabled || !record.offerId) {
-      resetCycle()
-      lastEvaluation = null
-      return
-    }
     const now = Date.now()
     const benchmarks = await bench.readBenchmarks().catch(() => ({}))
-    const offer = db.offers.find((o) => o.id === record.offerId) || null
-    const converted = convert(rings.get(record.offerId), offer, db.settings, benchmarks, now)
+    // 监视对象与改派对象是两回事：
+    //   - 监视：始终盯真实流量最多的那几条（基线账是日常累积的，不管开不开自动路由都要算）
+    //   - 改派：只看自动路由的现役那条（换也只有它能换）
+    // 以前自动路由开着就只算现役一条，结果用户看到「只有一格有数」，
+    // 实际上其它模型也在跑，只是没人算了。
+    const autoWatching = Boolean(record.enabled && record.offerId)
+    const watched = watchedOffers(db, now)
+    // 现役那条必须当第一优先：它是改派的对象，判不出来就没法动手
+    const targets = autoWatching
+      ? [record.offerId, ...watched.filter((id) => id !== record.offerId)]
+      : watched
 
-    // 快窗口现值 + 慢基线 → 漂移判定（UI 缓存这份结果）
-    const evaluation = evaluateDrift(converted, db.offerStats, record.offerId, now, threshold)
-    lastEvaluation = { offerId: record.offerId, at: now, ...evaluation }
+    // 每条监视对象都算一份完整判定（现值 + 两档基线 + 分项漂移），UI 直接照这份画
+    const scan = []
+    for (const offerId of targets) {
+      const offer = db.offers.find((o) => o.id === offerId) || null
+      if (!offer) continue
+      const ring = rings.get(offerId) || []
+      // 最近一单是什么时候：现值空着时用它告诉用户「账没断，只是这十分钟没用过」
+      let lastSampleAt = null
+      for (const s of ring) {
+        if (Number.isFinite(s.at) && (lastSampleAt === null || s.at > lastSampleAt)) lastSampleAt = s.at
+      }
+      const converted = convert(ring, offer, db.settings, benchmarks, now)
+      // 标签一并算好：状态里只下发「在役」供给（routeableOffers），
+      // 被忽略/停用的供给前端查不到名字，只能显原始 offerId
+      const provider = db.providers.find((p) => p.id === offer.providerId) || null
+      const label = `${provider?.name || '?'} · ${offer.modelKey || offer.upstreamName || '?'}`
+      scan.push({
+        offerId,
+        label,
+        at: now,
+        lastSampleAt,
+        ...evaluateDrift(converted, db.offerStats, offerId, now, threshold),
+      })
+    }
+    lastScan = scan
+    // 主监控：自动路由开着就是现役那条（scan[0]），关着是流量最多的那条
+    const evaluation = scan.find((r) => r.offerId === record.offerId) || scan[0] || null
+    lastEvaluation = evaluation
+
+    // 没开自动路由：账照算、漂移照判，但不动手——没有「改派给谁」这回事。
+    // 降级名单/冷却/试跑窗一并作废，免得重新开启自动路由时带着上一轮的旧账把好站排除在外
+    if (!autoWatching) {
+      resetCycle()
+      return
+    }
+    if (!evaluation) return
 
     if (evaluation.verdict !== 'drifted') {
       // 现役恢复正常 → 从降级名单放出来重新参选；连续成功也把逃生舱计数清零
@@ -238,15 +331,17 @@ export function createDriftWatcher({ runProbes, onProbesRan = null, logger = con
     }
   }
 
-  /** UI 读的快照：最近一次判定 + 周期状态。纯读缓存，随便调。 */
+  /** UI 读的快照：最近一次判定 + 同时在监视的几条 + 周期状态。纯读缓存，随便调。 */
   function snapshot() {
     return {
       evaluation: lastEvaluation,
+      scan: lastScan,
       demoted: [...demoted],
       cooldownUntil: cooldownUntil || null,
       trial: trial ? { ...trial } : null,
       lastSwitch,
       fastWindowMs: FAST_WINDOW_MS,
+      baselineHours: BASELINE_HOURS,
     }
   }
 

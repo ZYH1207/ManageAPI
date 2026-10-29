@@ -12,12 +12,13 @@
  */
 import { t } from './i18n.js'
 
-const PROTOCOL_ORDER = ['chat', 'responses', 'anthropic']
-const PROTOCOL_SHORT = { chat: 'Chat', responses: 'Responses', anthropic: 'Anthropic' }
+const PROTOCOL_ORDER = ['chat', 'responses', 'anthropic', 'gemini']
+const PROTOCOL_SHORT = { chat: 'Chat', responses: 'Responses', anthropic: 'Anthropic', gemini: 'Gemini' }
 const PROTOCOL_FULL = {
   chat: 'OpenAI Chat Completions',
   responses: 'OpenAI Responses',
   anthropic: 'Anthropic Messages',
+  gemini: 'Gemini generateContent',
 }
 
 const SURFACE_LABEL = {
@@ -34,7 +35,7 @@ const SURFACE_LABEL = {
   unknown: '无法判定',
 }
 
-const CAP_STATUS_LABEL = { pass: '通过', fail: '缺失', unknown: '未测' }
+const CAP_STATUS_LABEL = { pass: '通过', fail: '缺失', flaky: '时好时坏', unknown: '未测' }
 
 // 模型当前状况标签：判定在服务端（admissionTags 唯一实现），这里只负责画。
 // 文案与探针/比价页的 STATUS_TAG 同一套，改文案两边要一起改。
@@ -85,6 +86,8 @@ const state = {
   selected: new Set(), // offerId 集合：真正要探查的模型，只在模型列勾
   focusSites: new Set(), // 勾了哪些站点：只控制分组列展示什么，不代表选中模型
   focusGroups: new Set(), // 勾了哪些分组（siteId::group）：只控制模型列展示什么
+  depth: 'full', // lite | full
+  repeat: 3, // 1 | 3
   queueTotal: 0,
   queueIndex: 0,
   statusWarning: false,
@@ -134,6 +137,7 @@ function realBadgeClass(real) {
 function capDotClass(status) {
   if (status === 'pass') return 'green'
   if (status === 'fail') return 'red'
+  if (status === 'flaky') return 'yellow'
   return 'gray'
 }
 
@@ -176,12 +180,31 @@ function skeletonHtml() {
         <div>
           <h2>${esc(t('选择要探查的模型，或直接粘 API'))}</h2>
           <p class="hint">
-            ${esc(t('勾选任意站点 / 分组 / 模型做批量探查；每个模型发二十多个小请求。非 Anthropic 模型自动跳过 Anthropic 协议。结果不影响评分与路由。'))}
+            ${esc(t('勾选任意站点 / 分组 / 模型做批量探查。四种协议（Chat / Responses / Anthropic / Gemini）一律都测，测完给出「这个协议能干什么、能导进哪个工具、导错会怎样」。结果不影响评分与路由。'))}
           </p>
         </div>
         <div class="seg" id="pp-mode-seg">
           <button type="button" data-mode="gateway" class="active">${esc(t('网关内模型'))}</button>
           <button type="button" data-mode="manual">${esc(t('手动粘贴 API'))}</button>
+        </div>
+      </div>
+
+      <div class="pp-depth-row">
+        <div class="pp-depth">
+          <span class="pp-depth-label">${esc(t('检测模式'))}</span>
+          <div class="seg" id="pp-depth-seg">
+            <button type="button" data-depth="lite">${esc(t('轻量'))}</button>
+            <button type="button" data-depth="full" class="active">${esc(t('全量'))}</button>
+          </div>
+          <span class="pp-depth-hint" id="pp-depth-hint"></span>
+        </div>
+        <div class="pp-depth">
+          <span class="pp-depth-label">${esc(t('检测次数'))}</span>
+          <div class="seg" id="pp-repeat-seg">
+            <button type="button" data-repeat="1">${esc(t('单次'))}</button>
+            <button type="button" data-repeat="3" class="active">${esc(t('三次'))}</button>
+          </div>
+          <span class="pp-depth-hint" id="pp-repeat-hint"></span>
         </div>
       </div>
 
@@ -274,6 +297,10 @@ export function ensureProtocolView(view) {
       progress: view.querySelector('#pp-progress-root'),
       result: view.querySelector('#pp-result-root'),
       modeSeg: view.querySelector('#pp-mode-seg'),
+      depthSeg: view.querySelector('#pp-depth-seg'),
+      depthHint: view.querySelector('#pp-depth-hint'),
+      repeatSeg: view.querySelector('#pp-repeat-seg'),
+      repeatHint: view.querySelector('#pp-repeat-hint'),
       modal: view.querySelector('#pp-batch-modal'),
       gatewayPanel: view.querySelector('#pp-gateway-panel'),
       manualPanel: view.querySelector('#pp-manual-panel'),
@@ -284,6 +311,7 @@ export function ensureProtocolView(view) {
     }
     wireEvents()
     loadManualPrefs()
+    updateDepthHints()
     state.built = true
   }
   if (state.running) return
@@ -324,6 +352,7 @@ function saveManualPrefs() {
   }
 }
 
+/** 模型名像不像 Claude：只用来在提示里加一句「这个模型不是 Claude，/messages 可能被拒」。 */
 function looksAnthropic(model) {
   return /claude|anthropic/i.test(String(model || ''))
 }
@@ -573,12 +602,13 @@ function updateTargetNote() {
 
   const badCount = models.filter(hasBadStatus).length
   const noKey = models.filter((model) => !model.hasKey).length
-  const requestEstimate = models.reduce(
-    (sum, model) => sum + (looksAnthropic(model.model) ? 29 : 21),
-    0,
-  )
+  // 四种协议一律都测，所以请求量只跟「模式 × 次数」有关，与模型名无关
+  const perRun = state.depth === 'lite' ? 24 : 66
+  const requestEstimate = models.length * perRun * state.repeat
   els.targetNote.innerHTML =
-    `${esc(t('已选'))} <b>${models.length}</b> ${esc(t('个模型，预计约'))} <b>${requestEstimate}</b> ${esc(t('个请求'))}` +
+    `${esc(t('已选'))} <b>${models.length}</b> ${esc(t('个模型'))} · ` +
+    `${esc(t(state.depth === 'lite' ? '轻量' : '全量'))} × ${esc(t(state.repeat === 1 ? '单次' : '三次'))} · ` +
+    `${esc(t('预计约'))} <b>${requestEstimate}</b> ${esc(t('个请求'))}` +
     (badCount ? ` · <span class="warn">${esc(t('{n} 个状况不佳', { n: badCount }))}</span>` : '') +
     (noKey ? ` · <span class="danger">${esc(t('{n} 个分组没有 Key，会跳过', { n: noKey }))}</span>` : '')
 }
@@ -601,6 +631,24 @@ function wireEvents() {
   els.manualBase.addEventListener('input', updateTargetNote)
   els.manualModel.addEventListener('input', updateTargetNote)
   els.manualAuth.addEventListener('change', updateTargetNote)
+
+  els.depthSeg.addEventListener('click', (event) => {
+    const button = event.target.closest('button[data-depth]')
+    if (!button) return
+    state.depth = button.dataset.depth === 'lite' ? 'lite' : 'full'
+    els.depthSeg.querySelectorAll('button').forEach((b) => b.classList.toggle('active', b.dataset.depth === state.depth))
+    updateDepthHints()
+    updateTargetNote()
+  })
+
+  els.repeatSeg.addEventListener('click', (event) => {
+    const button = event.target.closest('button[data-repeat]')
+    if (!button) return
+    state.repeat = button.dataset.repeat === '1' ? 1 : 3
+    els.repeatSeg.querySelectorAll('button').forEach((b) => b.classList.toggle('active', Number(b.dataset.repeat) === state.repeat))
+    updateDepthHints()
+    updateTargetNote()
+  })
 
   els.run.addEventListener('click', startRun)
   els.stop.addEventListener('click', () => state.abort?.abort())
@@ -628,6 +676,25 @@ function wireEvents() {
       state.pendingTargets = null
     }
   })
+}
+
+/** 模式/次数两行的说明文案 + 单次模式的「可能不确切」悬浮提示。 */
+function updateDepthHints() {
+  if (els.depthHint) {
+    els.depthHint.textContent =
+      state.depth === 'lite'
+        ? t('只测每协议 5 项关键能力（能不能调工具、认不认系统提示、会不会失忆等），几十秒出结果。')
+        : t('每种协议的全部能力逐项验证，能把翻译层装得像的地方全戳穿，代价是请求多、耗时长。')
+  }
+  if (els.repeatHint) {
+    const warn = t('单次检测得到的结论可能不确切：偶发失败会被当成真的缺失。想要准的结论请选「三次」。')
+    els.repeatHint.textContent =
+      state.repeat === 1
+        ? t('只跑一遍，快；结论可能不确切，偶发失败会被当成真缺失。')
+        : t('同一项跑三遍：全过才算过、全挂才算挂，中间态标「时好时坏」。推荐。')
+    els.repeatHint.classList.toggle('pp-hint-warn', state.repeat === 1)
+    els.repeatHint.title = state.repeat === 1 ? warn : ''
+  }
 }
 
 function setMode(mode) {
@@ -751,11 +818,13 @@ async function runBatch(targets) {
       const response = await fetch('/api/protocol/probe', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Accept: 'application/x-ndjson' },
-        body: JSON.stringify(
-          target.mode === 'manual'
+        body: JSON.stringify({
+          ...(target.mode === 'manual'
             ? { mode: 'manual', baseUrl: target.baseUrl, apiKey: target.apiKey, model: target.model, authMode: target.authMode }
-            : { mode: 'gateway', offerId: target.offerId },
-        ),
+            : { mode: 'gateway', offerId: target.offerId }),
+          depth: state.depth,
+          repeat: state.repeat,
+        }),
         signal: state.abort.signal,
       })
       if (!response.ok) {
@@ -866,19 +935,16 @@ function liveProtocolCard(protocol) {
 function renderLiveGrid(target) {
   const grid = els.progress.querySelector('#pp-live-grid')
   if (!grid) return
-  // 非 Anthropic 模型跳过 anthropic；实时卡片与实际请求一致
-  const scope = looksAnthropic(target.model)
-    ? PROTOCOL_ORDER
-    : PROTOCOL_ORDER.filter((id) => id !== 'anthropic')
-  grid.innerHTML = scope
-    .map((id) =>
-      liveProtocolCard({
-        id,
-        label: PROTOCOL_FULL[id],
-        capabilities: Array.from({ length: 8 }, (_, i) => ({ id: `cap${i}`, name: `${t('能力')} ${i + 1}` })),
-      }),
-    )
-  state.live = { total: scope.length * 8, done: 0 }
+  // 四种协议一律都测（不再按模型名跳过），实时卡片按全量能力数占位，
+  // 真正的 id / 名字由 start 事件回填
+  grid.innerHTML = PROTOCOL_ORDER.map((id) =>
+    liveProtocolCard({
+      id,
+      label: PROTOCOL_FULL[id],
+      capabilities: Array.from({ length: 8 }, (_, i) => ({ id: `cap${i}`, name: `${t('能力')} ${i + 1}` })),
+    }),
+  ).join('')
+  state.live = { total: PROTOCOL_ORDER.length * 8, done: 0 }
   updateProgressCount()
   setPhase(t('检测表面协议…'))
 }
@@ -995,35 +1061,20 @@ function conclusionHtml(protocols) {
     return `<span class="warn">${esc(t('可测的表面协议都没有被接受'))}</span>（${esc(reasons)}）。${esc(t('先检查地址、Key 和分组权限。'))}`
   }
 
-  const groups = new Map()
-  for (const protocol of supported) {
-    const real = protocol.real || {}
-    const key = real.id || 'unknown'
-    if (!groups.has(key)) groups.set(key, { label: real.label || '无法判定', protocols: [] })
-    groups.get(key).protocols.push(PROTOCOL_SHORT[protocol.id] || protocol.id)
-  }
-
-  if (groups.size === 1) {
-    const [entry] = [...groups.values()]
-    const names = entry.protocols.join(' / ')
-    if (entry.label.includes('底层翻译')) {
-      return `<b>${esc(names)}</b> ${esc(t('的表面协议背后都是'))} <b>${esc(t('Chat Completions 翻译层'))}</b>${esc(t('：外形能对上，原生能力大量缺失。'))}`
-    }
-    if (entry.label.includes('兼容层')) {
-      return `<b>${esc(names)}</b> ${esc(t('背后是'))} <b>${esc(entry.label)}</b>${esc(t('：结构像原生，但关键能力有缺失。'))}`
-    }
-    if (entry.label.includes('不支持')) {
-      return `<b>${esc(names)}</b> ${esc(t('不可用。'))}`
-    }
-    return `<b>${esc(names)}</b> ${esc(t('背后是'))} <b>${esc(entry.label)}</b>${esc(t('，原生能力完整。'))}`
-  }
-
+  // 逐条列出，不按 real.id 分组：Chat 原生和「被翻译成 Chat」是两回事，
+  // 合并成一句会出现「四种协议背后都是 Chat（原生）」这种自相矛盾的话。
   return supported
-    .map(
-      (protocol) =>
-        `<b>${esc(PROTOCOL_SHORT[protocol.id] || protocol.id)}</b> → ${esc(protocol.real?.label || t('无法判定'))}`,
-    )
-    .join('；')
+    .map((protocol) => {
+      const real = protocol.real || {}
+      const level = protocol.verdict?.level
+      const tone = level === 'native' ? 'ok' : level === 'mostly' ? 'ok' : level === 'weak' || level === 'unsupported' ? 'bad' : 'warn'
+      return (
+        `<span class="pp-arrow"><b>${esc(PROTOCOL_SHORT[protocol.id] || protocol.id)}</b>` +
+        `<span class="pp-arrow-sep">→</span>` +
+        `<span class="${tone}">${esc(real.label || t('无法判定'))}</span></span>`
+      )
+    })
+    .join('')
 }
 
 /**
@@ -1035,7 +1086,7 @@ function resultCardHtml(entry, { index, total }) {
   const protocols = PROTOCOL_ORDER.map((id) => entry.protocols?.[id]).filter(Boolean)
   const skipped = entry.skippedProtocols || []
   const summary = entry.summary || {}
-  const caps = summary.capabilities || { pass: 0, fail: 0, unknown: 0, total: 0 }
+  const caps = summary.capabilities || { pass: 0, fail: 0, flaky: 0, unknown: 0, total: 0 }
   const uid = entry.recordId || entry.localId || `local-${index}`
 
   const chips = protocols
@@ -1056,7 +1107,7 @@ function resultCardHtml(entry, { index, total }) {
       (id) => `
         <span class="pp-chip">
           <span class="cap-dot gray"></span>
-          <span><b>${esc(PROTOCOL_SHORT[id] || id)}</b> ${esc(t('未测（非 Anthropic 模型）'))}</span>
+          <span><b>${esc(PROTOCOL_SHORT[id] || id)}</b> ${esc(t('本次未测'))}</span>
         </span>`,
     )
     .join('')
@@ -1067,13 +1118,16 @@ function resultCardHtml(entry, { index, total }) {
     total > 1 && index != null
       ? `<span class="badge">${index + 1} / ${total}</span>`
       : ''
+  const depthTag =
+    (entry.mode ? `<span class="badge">${esc(t(entry.mode === 'lite' ? '轻量' : '全量'))}</span>` : '') +
+    (entry.repeat > 1 ? `<span class="badge">${esc(t('三次'))}</span>` : entry.repeat ? `<span class="badge warn">${esc(t('单次 · 结论可能不确切'))}</span>` : '')
 
   return `
     <div data-result-block="${esc(uid)}">
       <article class="card pp-summary">
         <div class="pp-summary-top">
           <div>
-            <div class="pp-eyebrow">${esc(t('探查对象'))} ${queueTag}${entry.ts ? `<span class="pp-eyebrow-time">${esc(new Date(entry.ts).toLocaleString())}</span>` : ''}</div>
+            <div class="pp-eyebrow">${esc(t('探查对象'))} ${queueTag}${depthTag}${entry.ts ? `<span class="pp-eyebrow-time">${esc(new Date(entry.ts).toLocaleString())}</span>` : ''}</div>
             <div class="pp-target-title">${esc(target.label || `${target.baseUrl || ''} / ${target.model || ''}`)}</div>
             <div class="pp-target-sub mono">${esc(target.baseUrl || '')} · ${esc(target.model || '')}</div>
             ${entry.badStatus ? `<div class="pp-inline-warn">${esc(STATUS_WARNING_HTML)}</div>` : ''}
@@ -1081,6 +1135,7 @@ function resultCardHtml(entry, { index, total }) {
           <div class="pp-summary-stats">
             <div class="pp-stat good"><div class="n">${caps.pass}</div><div class="l">${esc(t('具备'))}</div></div>
             <div class="pp-stat bad"><div class="n">${caps.fail}</div><div class="l">${esc(t('缺失'))}</div></div>
+            ${caps.flaky ? `<div class="pp-stat warn"><div class="n">${caps.flaky}</div><div class="l">${esc(t('时好时坏'))}</div></div>` : ''}
             <div class="pp-stat gray"><div class="n">${caps.unknown}</div><div class="l">${esc(t('未测'))}</div></div>
             <div class="pp-stat"><div class="n">${summary.requests ?? '—'}</div><div class="l">${esc(t('请求'))}</div></div>
             <div class="pp-stat"><div class="n">${esc(entry.durationMs != null ? secs(entry.durationMs) : '—')}</div><div class="l">${esc(t('耗时'))}</div></div>
@@ -1097,6 +1152,8 @@ function resultCardHtml(entry, { index, total }) {
           <div class="pp-conclusion">${conclusionHtml(protocols)}</div>
         </div>
 
+        ${entry.advice ? `<div class="pp-advice"><b>${esc(t('怎么用这个站'))}</b><span>${esc(entry.advice)}</span></div>` : ''}
+
         <div class="pp-legend">
           <span><span class="cap-dot green"></span>${esc(t('具备 / 原生基线'))}</span>
           <span><span class="cap-dot red"></span>${esc(t('缺失'))}</span>
@@ -1107,6 +1164,95 @@ function resultCardHtml(entry, { index, total }) {
         </div>
       </article>
       <div class="pp-details" data-details="${esc(uid)}" hidden>${detailCards}</div>
+    </div>`
+}
+
+/**
+ * 「这协议到底能干什么」的说明块。
+ *
+ * 作者的原话：只知道缺东西，不知道缺了会怎样。所以这里固定四段：
+ *   ① 一句话结论  ② 能做  ③ 做不到 + 后果  ④ 能导进哪个工具 / 导错会怎样
+ * 不写「n 项通过」这种数字，数字在下面的能力表里已经有了。
+ */
+const LEVEL_LABEL = {
+  native: '全绿',
+  mostly: '基本完整',
+  partial: '残缺可用',
+  weak: '大面积缺失',
+  unknown: '无法判定',
+  unsupported: '协议不可用',
+}
+
+const READY_LABEL = { ok: '可以接入', part: '勉强可接', no: '别接入', unknown: '未判定' }
+
+function verdictHtml(protocol) {
+  const verdict = protocol.verdict
+  if (!verdict) return ''
+  const can = (verdict.can || []).slice(0, 8)
+  const cannot = (verdict.cannot || []).slice(0, 8)
+  const consumers = verdict.consumers || []
+
+  const canHtml = can.length
+    ? `<div class="pv-chips">${can.map((item) => `<span class="pv-chip">${esc(item)}</span>`).join('')}</div>`
+    : `<div class="pv-empty">没有可用的关键能力。</div>`
+
+  const cannotHtml = cannot.length
+    ? cannot
+        .map(
+          (item) => `
+        <div class="pv-gap">
+          <div class="pv-gap-head">
+            <span class="cap-dot ${capDotClass(item.status)}"></span>
+            <b>${esc(item.name)}</b>
+          </div>
+          <div class="pv-gap-impact">${esc(item.impact)}</div>
+          ${item.detail ? `<div class="pv-gap-detail">实测：${esc(item.detail)}</div>` : ''}
+        </div>`,
+        )
+        .join('')
+    : `<div class="pv-ok">没有缺失的关键能力。</div>`
+
+  const consumerHtml = consumers.length
+    ? consumers
+        .map(
+          (item) => `
+        <div class="pv-tool pv-tool-${esc(item.ready)}">
+          <div class="pv-tool-head">
+            <b>${esc(item.name)}</b>
+            <span class="badge ${item.ready === 'ok' ? 'ok' : item.ready === 'no' ? 'danger' : 'warn'}">${esc(t(READY_LABEL[item.ready] || '未判定'))}</span>
+          </div>
+          <div class="pv-tool-why">${esc(item.why)}</div>
+        </div>`,
+        )
+        .join('')
+    : `<div class="pv-empty">${esc(t('没有已知消费方。'))}</div>`
+
+  return `
+    <div class="pv-block">
+      <div class="pv-headline pv-level-${esc(verdict.level)}">
+        <span class="pv-level">${esc(t(LEVEL_LABEL[verdict.level] || verdict.level))}</span>
+        <span>${esc(verdict.headline)}</span>
+      </div>
+
+      <div class="pv-section">
+        <div class="pv-label">${esc(t('能做'))}</div>
+        ${canHtml}
+      </div>
+
+      <div class="pv-section">
+        <div class="pv-label">${esc(t('做不到 · 以及会坏在哪'))}</div>
+        ${cannotHtml}
+      </div>
+
+      <div class="pv-section">
+        <div class="pv-label">${esc(t('能导进哪个工具'))}</div>
+        ${consumerHtml}
+      </div>
+
+      <div class="pv-hint">
+        <b>${esc(t('导错工具的后果'))}</b>
+        <span>${esc(verdict.toolHint)}</span>
+      </div>
     </div>`
 }
 
@@ -1148,8 +1294,8 @@ function protocolDetailHtml(protocol, uid) {
           </div>
         </div>
         <div class="pp-counts">
-          <div>${esc(t('{n} 项原生能力', { n: summary.total }))}</div>
-          <div><span class="ok">${summary.pass} ${esc(t('绿'))}</span> · <span class="bad">${summary.fail} ${esc(t('红'))}</span> · <span class="gray">${summary.unknown} ${esc(t('灰'))}</span></div>
+          <div>${esc(t('{n} 项能力', { n: summary.total }))}</div>
+          <div><span class="ok">${summary.pass} ${esc(t('绿'))}</span> · <span class="bad">${summary.fail} ${esc(t('红'))}</span>${summary.flaky ? ` · <span class="warn">${summary.flaky} ${esc(t('时好时坏'))}</span>` : ''} · <span class="gray">${summary.unknown} ${esc(t('灰'))}</span></div>
         </div>
       </div>
 
@@ -1161,8 +1307,8 @@ function protocolDetailHtml(protocol, uid) {
       <div class="pp-baseline">
         <b>${esc(t('原生基线'))}</b>
         <span class="pp-baseline-dots">${capabilities.map(() => '<span class="cap-dot green"></span>').join('')}</span>
-        <span>${esc(t('原生协议 8 项能力全绿'))}</span>
-        <span>${esc(t('实测'))} <b class="ok">${summary.pass}</b> ${esc(t('绿'))} / <b class="bad">${summary.fail}</b> ${esc(t('红'))} / <b>${summary.unknown}</b> ${esc(t('灰'))}</span>
+        <span>${esc(t('原生协议本应全绿'))}</span>
+        <span>${esc(t('实测'))} <b class="ok">${summary.pass}</b> ${esc(t('绿'))} / <b class="bad">${summary.fail}</b> ${esc(t('红'))}${summary.flaky ? ` / <b class="warn">${summary.flaky}</b> ${esc(t('时好时坏'))}` : ''} / <b>${summary.unknown}</b> ${esc(t('灰'))}</span>
       </div>
 
       <table class="pp-cap-table">
@@ -1176,6 +1322,7 @@ function protocolDetailHtml(protocol, uid) {
         </thead>
         <tbody>${rows}</tbody>
       </table>
+      ${verdictHtml(protocol)}
     </article>`
 }
 
@@ -1276,7 +1423,7 @@ function recordSummaryDots(record) {
     const protocol = record.protocols?.[id]
     if (!protocol) {
       const skipped = (record.skippedProtocols || []).includes(id)
-      return `<span class="cap-dot gray" title="${esc(PROTOCOL_SHORT[id])}：${esc(t('未测'))}${skipped ? `（${esc(t('非 Anthropic 模型'))}）` : ''}"></span>`
+      return `<span class="cap-dot gray" title="${esc(PROTOCOL_SHORT[id])}：${esc(t('未测'))}${skipped ? `（${esc(t('本次未测'))}）` : ''}"></span>`
     }
     const outcome = protocol.surface?.outcome
     return `<span class="cap-dot ${surfaceDotClass(outcome)}" title="${esc(PROTOCOL_SHORT[id])}：${esc(t(SURFACE_LABEL[outcome] || outcome || '未知'))}"></span>`

@@ -53,7 +53,11 @@ import {
   pickAutoRoute,
   normalizeAutoRoute,
   applyAutoRoutePick,
-  defaultAutoRoute,
+  enableAutoRoute,
+  disableAutoRoute,
+  autoThinkIntent,
+  isAutoThinkModel,
+  AUTO_THINK_MODEL,
 } from '../core/auto-route.js'
 import {
   ensureFailoverToken,
@@ -221,6 +225,9 @@ async function readBody(req, { maxBytes = MAX_BODY } = {}) {
 function scoresFor(db) {
   return scoreOffers(db.probes, db.traffic, {
     maxAgeMs: (Number(db.settings.scoreMaxAgeHours) || 6) * 3600 * 1000,
+    // 真实首字来源：与探针首字分开算（探针 45 token vs 真实 25 万上下文，
+    // 混平均会让人以为站很快）。见 core/score.js#realTtftOf
+    offerStats: db.offerStats,
   })
 }
 
@@ -327,7 +334,9 @@ async function buildState({ light = false } = {}) {
         name,
         ratio: offer.ratio === null || offer.ratio === undefined ? null : Number(offer.ratio),
         free: isFreeOffer(offer, benchmarks),
-        ignored: isIgnored(name),
+        // 作用域：这一条供给自己的站 + 分组。不传就等于只问全局例外，
+        // 「只开这一行」会被读成「整类都开」
+        ignored: isIgnored(name, { providerId: offer.providerId, group: offer.group }),
         perCall: Boolean(cost.perCall),
         inCny: cost.inCnyPerMtok,
         outCny: cost.outCnyPerMtok,
@@ -437,6 +446,9 @@ async function buildState({ light = false } = {}) {
         ...row,
         cacheHitRate: score?.cacheHitRate ?? null,
         ttftMs: score?.ttftMs ?? null,
+        // 真实首字与探针首字并列（不混算）：比价行首字列同样按「真实优先」显示
+        realTtftMs: score?.realTtftMs ?? null,
+        realTtftSamples: score?.realTtftSamples ?? 0,
         avgLatencyMs: score?.latencyMs ?? null,
       }
     }),
@@ -565,8 +577,15 @@ async function buildState({ light = false } = {}) {
     decisionModeText: describeDecisionMode(db.settings.decisionMode),
     // 自动路由（一键接管）：决策页的开关与「正在使用」照这份显示。
     // modelKey 之后的找补（哪个站、哪个分组、供给还活着吗）前端从
-    // decisions 里按 modelKey 自己查，服务端不重复算一遍
+    // decisions 里按 modelKey 自己查，服务端不重复算一遍。
+    // virtualAutoThink：网关清单里那个虚拟模型始终可点（客户端拨开关用），
+    // 除非用户自己真有个同名的供给——那时真供给优先（与网关同一套判定）
     autoRoute: normalizeAutoRoute(db.settings.autoRoute),
+    // 客户端「停在哪个模型」（身份键）：客户端选了一个具体模型、把接管关掉时记下的
+    pinnedModelKey: db.settings.pinnedModelKey || null,
+    // 客户端能否拨开关：清单里那个虚拟 AutoThink 是否存在（用户真有个同名的供给时
+    // 虚拟模型让位，界面上的提示跟着诚实地消失）。判定与网关同一份
+    virtualAutoThink: autoThinkIntent(AUTO_THINK_MODEL, inv.routeableOffers(db)) === 'virtual',
     // 漂移监视器快照（真实速度/基线/降级名单/最近转移）+ 轮巡状态：诊断页展示。
     // 纯读缓存（tick 每分钟算一次），这里不重算
     drift: driftWatcherHook?.snapshot?.() ?? null,
@@ -867,14 +886,21 @@ route('PATCH', /^\/api\/settings$/, async (ctx) => {
     // 请求才有「正在使用」可显示；关闭时清掉挑选记录——模型名只是接管
     // 期间的临时状态，关了还留着会让人误以为它仍在生效
     if (ctx.body.autoRouteEnabled !== undefined) {
-      db.settings.autoRoute = normalizeAutoRoute(db.settings.autoRoute)
-      db.settings.autoRoute.enabled = Boolean(ctx.body.autoRouteEnabled)
-      if (db.settings.autoRoute.enabled) {
+      // 开关的记账跑 core/auto-route.js 那一份：客户端点名 AutoThink 走的是同两个函数，
+      // 两边各写一遍「开 / 关」迟早漂（比如关的时候该不该保留 scope）
+      if (ctx.body.autoRouteEnabled) {
+        enableAutoRoute(db.settings)
         const pick = pickAutoRoute(db, { scores: scoresFor(db), benchmarks: await bench.readBenchmarks(), force: true })
         if (pick) applyAutoRoutePick(db.settings, pick)
       } else {
-        db.settings.autoRoute = { ...defaultAutoRoute(), enabled: false }
+        disableAutoRoute(db.settings)
       }
+    }
+    // 界面解绑「客户端钉住的模型」（决策页「客户端停在 X」后面的小叉）
+    if (ctx.body.pinnedModelKey !== undefined) {
+      db.settings.pinnedModelKey = ctx.body.pinnedModelKey
+        ? inv.modelIdentityKey(String(ctx.body.pinnedModelKey), db.settings?.modelAliases) || null
+        : null
     }
     if (ctx.body.focusModel !== undefined) {
       // 看板结论句里选中的模型：空 / null = 交回自动（按用量 > 手动排序 > 探过 挑）
@@ -1985,17 +2011,23 @@ route('POST', /^\/api\/auto-route\/scope$/, async (ctx) => {
 })
 
 /**
- * 单个模型的显式开关（分组/Key 弹窗里的「已忽略 / 已显示」徽章）。
+ * 单条供给的显式开关（分组/Key 弹窗里的「已忽略 / 已显示」徽章）。
+ *
+ * 作用域：请求带上 providerId + group 时，只影响**这一行**（这个站的这个分组里的
+ * 这个模型），别的站/别的分组里的同名模型不受影响；不带 providerId 则维持旧行为
+ * （全局，对所有站生效）。
  *
  * 绝对语义（shown=true 让它显示 / false 让它忽略），不是 toggle：
- * 「显示」可能是删掉单行忽略例外，也可能是新增单行显示例外（整类被忽略时
- * 捞一个出来），由服务端按现状算，前端不用复制判定规则。
+ * 「显示」可能是删掉这一行的忽略例外，也可能是新增显示例外（整类被忽略时捞一个
+ * 出来），由服务端按现状算，前端不用复制判定规则。
  * 整类忽略（身份键名单）不走这里——那是「忽略模型」管理面板的事。
  */
 route('POST', /^\/api\/model-visibility$/, async (ctx) => {
   const name = String(ctx.body?.name || '').trim()
   if (!name) throw new HttpError(400, 'name 必填')
   const shown = Boolean(ctx.body?.shown)
+  const providerId = String(ctx.body?.providerId || '').trim()
+  const group = String(ctx.body?.group ?? '').trim()
   await store.mutate((db) => {
     if (!db.settings.modelOverrides || typeof db.settings.modelOverrides !== 'object') {
       db.settings.modelOverrides = {}
@@ -2003,17 +2035,25 @@ route('POST', /^\/api\/model-visibility$/, async (ctx) => {
     const overrides = db.settings.modelOverrides
     const exact = inv.normalizeModelKey(name)
     if (!exact) throw new HttpError(400, '模型名无效')
-    const currentlyIgnored = inv.ignoreChecker(db)(exact)
+    if (providerId && !db.providers.some((p) => p.id === providerId)) {
+      throw new HttpError(400, `站点不存在：${providerId}`)
+    }
+    // 键：带 providerId 就是「这一行」专属，否则是全局旧写法
+    const key = inv.overrideKey(exact, { providerId, group })
+    const scope = providerId ? { providerId, group } : undefined
+    const currentlyIgnored = inv.ignoreChecker(db)(exact, scope)
+    const own = overrides[key]
     if (shown) {
       if (!currentlyIgnored) throw new HttpError(400, `${name} 本来就是显示状态`)
-      // 现在是「单行被忽略」→ 删例外即可；否则（整类被忽略）→ 设「显示」例外
-      if (overrides[exact] === 'ignored') delete overrides[exact]
-      else overrides[exact] = 'shown'
+      // 这一行自己写着「忽略」→ 删掉它即可；否则是被上一层（整类名单/全局例外）
+      // 压着的，那就给这一行补一个「显示」例外
+      if (own === 'ignored') delete overrides[key]
+      else overrides[key] = 'shown'
     } else {
       if (currentlyIgnored) throw new HttpError(400, `${name} 本来就是忽略状态`)
-      // 现在是「单行显示例外」→ 删例外回到整类忽略；否则设「忽略」例外
-      if (overrides[exact] === 'shown') delete overrides[exact]
-      else overrides[exact] = 'ignored'
+      // 这一行自己写着「显示」→ 删掉即回到上一层；否则给这一行补「忽略」
+      if (own === 'shown') delete overrides[key]
+      else overrides[key] = 'ignored'
     }
     // 空了就删掉键，别让 {} 一直躺在 settings 里
     if (Object.keys(db.settings.modelOverrides).length === 0) delete db.settings.modelOverrides
@@ -2160,7 +2200,7 @@ function protocolTargets(db) {
         offerId: offer.id,
         model: name,
         modelKey,
-        ignored: isIgnored(name),
+        ignored: isIgnored(name, { providerId: provider.id, group: offer.group }),
         hasKey: Boolean(credentialForOffer(db, offer)),
         tags,
         blocked,
@@ -2195,6 +2235,12 @@ function protocolTargets(db) {
 }
 
 /** Anthropic 系模型才探 Anthropic Messages：模型名里带 claude / anthropic 才算。 */
+/**
+ * 以前这里按模型名判断「不是 Claude 就不测 Anthropic」，结果是一大片站
+ * 明明把 /messages 翻译得好好的，却永远拿不到 Anthropic 的诊断。
+ * 现在四种协议一律都测：探针只花几个小请求，而「这站到底能不能接 Claude Code」
+ * 恰恰是最该知道的事。模型名只用来给个提示，不再用来决定测不测。
+ */
 function looksAnthropic(model) {
   return /claude|anthropic/i.test(String(model || ''))
 }
@@ -2230,7 +2276,8 @@ route('POST', /^\/api\/protocol\/probe$/, async (ctx) => {
       model,
       authMode: ['auto', 'bearer', 'x-api-key'].includes(body.authMode) ? body.authMode : 'auto',
       label: `${inv.normalizeBaseUrl(baseUrl)} / ${model}`,
-      anthropicSkipped: !looksAnthropic(model),
+      anthropicSkipped: false,
+      nativeAnthropicModel: looksAnthropic(model),
     }
   } else {
     const db = await store.readDb()
@@ -2253,22 +2300,31 @@ route('POST', /^\/api\/protocol\/probe$/, async (ctx) => {
       model: offer.upstreamName || offer.modelKey,
       authMode: 'auto',
       label: `${provider.name} / ${offer.group || '默认分组'} / ${offer.upstreamName}`,
-      anthropicSkipped: !looksAnthropic(offer.upstreamName || offer.modelKey),
+      anthropicSkipped: false,
+      nativeAnthropicModel: looksAnthropic(offer.upstreamName || offer.modelKey),
     }
   }
 
-  // 非 Anthropic 模型（名字里没 claude/anthropic）跳过 Anthropic Messages：
-  // 站点对非 Claude 模型的 /messages 几乎必拒，测了只会产出一整片误导性红圆
-  const protocolScope = target.anthropicSkipped ? ['chat', 'responses'] : undefined
+  // 四种协议一律都测。以前「非 Claude 模型跳过 Anthropic」看着省事，
+  // 实际是把「这站能不能接 Claude Code」这条最重要的信息直接抹掉了。
+  // 注意：body.mode 一直是「manual / gateway」，检测深度走 body.depth，别混用同一个字段
+  const depth = body.depth === 'lite' ? 'lite' : 'full'
+  const repeat = Math.min(Math.max(Math.round(Number(body.repeat) || 1), 1), 5)
 
   const timeoutMs = Math.min(Math.max(Number(body.timeoutMs) || 45000, 5000), 60000)
-  const overallTimeoutMs = Math.min(Math.max(Number(body.overallTimeoutMs) || 240000, 20000), 300000)
+  // 全量 + 三次要多留点时间，否则跑到后面几项会被整体超时截断成「未测」
+  const fullBudget = depth === 'full' ? (repeat >= 3 ? 900000 : 600000) : 300000
+  const overallTimeoutMs = Math.min(
+    Math.max(Number(body.overallTimeoutMs) || fullBudget, 20000),
+    Math.max(fullBudget, 900000),
+  )
   const options = {
     baseUrl: target.baseUrl,
     apiKey: target.apiKey,
     model: target.model,
     authMode: target.authMode,
-    protocols: protocolScope,
+    mode: depth,
+    repeat,
     timeoutMs,
     overallTimeoutMs,
   }
@@ -2360,7 +2416,10 @@ route('GET', /^\/api\/protocol\/records$/, async () => {
         id: row.id,
         ts: row.ts,
         durationMs: row.durationMs,
-        mode: row.mode,
+        probeBy: row.probeBy || row.mode || 'gateway',
+        mode: row.mode || 'full',
+        repeat: row.repeat || 1,
+        advice: row.advice || null,
         label: row.label,
         baseUrl: row.baseUrl,
         model: row.model,
@@ -2374,6 +2433,7 @@ route('GET', /^\/api\/protocol\/records$/, async () => {
             {
               surface: protocol.surface,
               real: protocol.real,
+              verdict: protocol.verdict || null,
               summary: protocol.summary,
             },
           ]),
@@ -2423,11 +2483,17 @@ route('DELETE', /^\/api\/protocol\/records$/, async () => {
 
 route('POST', /^\/api\/probes\/run$/, async (ctx) => {
   const limit = Math.min(Number(ctx.body.limit) || 5, 20)
+  // lite / cache 由界面显式指定，后端不再自己猜：
+  //   批量探测（探测全部）由用户在 Lite / 全量 之间选——Lite 只发 2 发，省一半钱；
+  //   单条探测（行内的「探测」）不传 lite，走默认全量 4 发（用户点名要的就是完整证据）；
+  //   cache 默认 'always'（手动=每次都测缓存），只有界面要按保质期补测时才传 'auto'。
   const results = await runProbes({
     providerId: ctx.body.providerId,
     offerId: ctx.body.offerId,
     offerIds: ctx.body.offerIds,
     limit,
+    lite: Boolean(ctx.body.lite),
+    cache: ctx.body.cache === 'auto' ? 'auto' : 'always',
   })
   if (results.length === 0) {
     throw new HttpError(400, '没有可探测的目标：需要该站至少一个 Key，并已同步模型列表')
@@ -4518,6 +4584,52 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
   // 只有 settings.allowPaidFallback 显式打开时才允许「免费不够用 → 付费顶上」。
   const split = splitOffers(inv.routeableOffers(db), benchmarks)
 
+  // ------------------------------------------------------------ 客户端拨开关
+  //
+  // 模型清单里常驻一个虚拟模型 AutoThink（见 handleProxy 的 /v1/models）：
+  //   点 AutoThink → 请求接管：打开自动路由，并立刻按当前档位挑一次
+  //   点别的模型 → 不再接管：关掉自动路由，就按这个模型派活
+  // 这样在本机换模型不必反复改 Key / 改 base_url（2026-10-29 用户需求）。
+  //
+  // 三件必须当场决定的事：
+  //   1. 清单里真的有同名真供给时，虚拟模型让开——不能把用户的站遮住
+  //   2. 关掉接管同时把当前模型钉住（settings.pinnedModelKey）：客户端行为只负责
+  //      「拨开关」，不该因为开关一关就丢掉手动排序、把刚点的那行又挪走
+  //   3. 免费入口一律不接管：把免费请求偷偷改派到付费模型等于静默扣钱
+  const requestedIdentity = inv.modelIdentityKey(rawModel, db.settings?.modelAliases)
+  // 「点的是虚拟 AutoThink」 vs 「碰巧有真模型叫这个名字」：后者优先给真供给。
+  // 判定只有一份（core/auto-route.js#autoThinkIntent，网关与测试共用）；
+  // isAutoThinkModel 放前面短路，普通模型名不要为了一次名字检查重建整个供给数组
+  const wantsAuto =
+    !isFree &&
+    isAutoThinkModel(parsed.model) &&
+    autoThinkIntent(parsed.model, [...split.paid, ...split.free]) === 'virtual'
+  let clientToggled = null // 这一单顺带把开关拨成了什么（落盘后写进路由日志）
+  if (!isFree) {
+    const record = normalizeAutoRoute(db.settings.autoRoute)
+    if (wantsAuto && !record.enabled) {
+      // 热路径拿的是共享缓存对象，不能写——开关也走 mutate，与界面开关同一条路。
+      // 切回接管时清掉「客户端钉住的模型」：钉住是关接管时留下的现场，留着没用
+      await store.mutate((latest) => {
+        enableAutoRoute(latest.settings)
+        latest.settings.pinnedModelKey = null
+      })
+      // 重新读一份：下面的 pickAutoRoute 要用最新记录（enabled / scope），
+      // 不能用切换前那份缓存的。scores / split 只依赖探针与供给，不用重算
+      db = await store.readDb()
+      clientToggled = 'on'
+    } else if (!wantsAuto && record.enabled) {
+      // 客户端换模型了：不再接管，就按它要的那个派活。
+      // 同时钉住这个模型：客户端行为只负责「拨开关」，不该顺带改变派的谁
+      await store.mutate((latest) => {
+        disableAutoRoute(latest.settings)
+        latest.settings.pinnedModelKey = requestedIdentity || null
+      })
+      db = await store.readDb()
+      clientToggled = 'off'
+    }
+  }
+
   // 自动路由接管：开关开着且不是免费入口时，无视客户端要的模型，
   // 改派当前决策档位下全场最优的那个（口径与迟滞规则见 core/auto-route.js）。
   // 免费入口不接管：把免费请求偷偷改派到付费模型等于静默扣钱。
@@ -4949,8 +5061,13 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
           model,
           pool,
           // 接管标记：路由日志里能看出这一单是被自动路由改派的，
-          // 而不是客户端真的点名了这个模型
-          autoRoute: autoRoutePick ? { reason: autoRoutePick.reason } : null,
+          // 而不是客户端真的点名了这个模型；clientToggled 记下客户端这一单
+          // 顺带把开关拨成了什么（on/off），排查「谁把我的自动路由关了」时用
+          autoRoute: autoRoutePick
+            ? { reason: autoRoutePick.reason, clientToggled }
+            : clientToggled
+              ? { reason: 'client-toggle', clientToggled }
+              : null,
           keyId: keyRecord?.id ?? null,
           keyName: keyRecord?.name ?? null,
           chosenOfferId: candidate.offer.id,
@@ -5078,7 +5195,11 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
     pool,
     // 整单失败也要记「被自动路由改派过」：否则排查时分不清客户端真的点名了这个模型，
     // 还是冠军被带崩后连带全灭
-    autoRoute: autoRoutePick ? { reason: autoRoutePick.reason } : null,
+    autoRoute: autoRoutePick
+      ? { reason: autoRoutePick.reason, clientToggled }
+      : clientToggled
+        ? { reason: 'client-toggle', clientToggled }
+        : null,
     keyId: keyRecord?.id ?? null,
     keyName: keyRecord?.name ?? null,
     chosenOfferId: null,
@@ -5125,7 +5246,7 @@ async function handleProxy(req, res, url) {
 
   // 网关热路径用带缓存的读：db.json 已到 1MB，每请求解析一遍要 15ms 左右。
   // 注意：这里返回的对象是共享的，下游只读不改（写操作一律走 mutate）。
-  const db = await store.readDbCached()
+  let db = await store.readDbCached()
 
   const auth = authorizeGateway(req, db)
   if (!auth.ok) return openaiError(res, auth.status, auth.message, 'authentication_error')
@@ -5151,34 +5272,38 @@ async function handleProxy(req, res, url) {
       })
     }
 
-    // 自动路由接管付费入口时，清单只出一个虚拟模型 AutoThink：客户端拉到的
-    // 就这一个、请求也只发它，网关背后照常改派全场最优。真实落点在
-    // X-ManageAPI-Model 响应头和路由日志里，上游响应体的 model 字段原样透传。
+    // 付费入口的清单：**全场模型一直全部列出**，AutoThink 永远排在最前。
+    //
+    // 为什么不再「接管时只出 AutoThink」：那是 2026-10-28 第一版的做法，
+    // 结果客户端下拉里只剩一个名字，想临时用另一家模型就得去改配置。现在反过来——
+    // 清单不变，客户端点 AutoThink 就等于打开接管，点任何别的模型就等于关掉接管
+    // 改派到那一个（详见 handleChatCompletions 里的 protocol 前处理）。
     // 免费入口不接管（把免费请求改派到付费模型等于静默扣钱），/free/v1/models 照旧。
-    if (normalizeAutoRoute(db.settings.autoRoute).enabled) {
-      const all = listPublicModels({ offers: split.paid, scores, settings: db.settings })
-      return json(res, 200, {
-        object: 'list',
-        data: [
-          {
-            id: 'AutoThink',
-            object: 'model',
-            created: Math.floor(Date.now() / 1000),
-            owned_by: 'manage-api',
-            providers: all.reduce((n, m) => n + m.providers, 0),
-            healthy: all.reduce((n, m) => n + m.healthy, 0),
-          },
-        ],
-      })
-    }
-
-    // 付费入口：付费模型 + 带 free/ 前缀的免费模型。
-    // 带前缀是有意的——用户在下拉里能看见、能选，且一眼知道走的是免费池。
     const paidModels = listPublicModels({ offers: split.paid, scores, settings: db.settings })
     const freeModels = listPublicModels({ offers: split.free, scores, settings: db.settings })
+    const record = normalizeAutoRoute(db.settings.autoRoute)
+    // AutoThink 背后的规模：接管中直接报现役那条，没接管时报全场合计，
+    // 客户端下拉里就能看出这个虚拟模型背后有多少家能接
+    const current = record.enabled
+      ? paidModels.find((m) => m.id === (record.modelKey || ''))
+      : null
+    const providers = current ? current.providers : paidModels.reduce((n, m) => n + m.providers, 0)
+    const healthy = current ? current.healthy : paidModels.reduce((n, m) => n + m.healthy, 0)
     return json(res, 200, {
       object: 'list',
       data: [
+        {
+          id: AUTO_THINK_MODEL,
+          object: 'model',
+          created: Math.floor(Date.now() / 1000),
+          owned_by: 'manage-api',
+          providers,
+          healthy,
+          // 非标准字段：有的客户端会把它显示在模型名旁边（不认也无害）
+          description: record.enabled
+            ? '自动路由接管中：网关按当前档位挑全场最优'
+            : '自动路由：选中即交给网关挑最优；选别的模型即关闭',
+        },
         ...paidModels.map((m) => shape(m, 'manage-api')),
         ...freeModels.map((m) => shape(m, 'manage-api-free', FREE_PREFIX)),
       ],

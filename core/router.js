@@ -338,7 +338,7 @@ export function admissionFailure(candidates, { model = '', maxTtftMs = 0 } = {})
  *            只是同类里靠后 + 自动路由不把它当「最优」；故障到期自动恢复
  *   emptyRecent —— 可选 Map<offerId, n>：近 1 小时空回合次数。只供展示徽章（空回复），
  *            不参与准入与路由
- * @returns {Array<{offer,provider,credential,price,quality,routable,effective,status,ttftMs}>}
+ * @returns {Array<{offer,provider,credential,price,quality,routable,effective,status,ttftMs,realTtftMs,realTtftSamples}>}
  */
 export function selectCandidates({
   offers,
@@ -416,6 +416,10 @@ export function selectCandidates({
     const priceUsd = cost.blendedUsdPerMtok
     const price = cost.blendedCnyPerMtok
     const ttftMs = score?.ttftMs ?? null
+    // 真实流量首字：和探针首字**并列**，绝不混算（见 core/score.js#realTtftOf）。
+    // 决策页首字列优先显示真实值，探针值退到悬浮提示里标「探针口径」。
+    const realTtftMs = score?.realTtftMs ?? null
+    const realTtftSamples = score?.realTtftSamples ?? 0
     // 太慢的直接排除，但仍保留在候选列表里——决策日志要能看出「为什么没选它」。
     // 口径在 isTooSlow：评分过期不算慢（首字是旧证据）
     const tooSlow = isTooSlow(score, maxTtftMs)
@@ -489,6 +493,9 @@ export function selectCandidates({
       allowUntrusted,
       statusReason: reasons.join(' · ') || null,
       ttftMs,
+      realTtftMs,
+      realTtftSamples,
+      realMsPerToken: score?.realMsPerToken ?? null,
       // 外部监控上报的真实故障：只降级不拉黑（探针的准入判定不受影响），
       // 排序时同类靠后；自动路由不把它当「最优」，到期自动恢复
       faulted: typeof isFaulted === 'function' ? Boolean(isFaulted(offer)) : false,
@@ -582,6 +589,10 @@ export function explain(candidates) {
     // 探针看着再健康，监控报了故障就是真故障——先用起来，证据细情看 failover 字段
     faulted: Boolean(c.faulted),
     ttftMs: c.ttftMs,
+    // 真实流量首字与样本数：决策页首字列按「真实优先、探针兑底」的规则显示
+    realTtftMs: c.realTtftMs,
+    realTtftSamples: c.realTtftSamples,
+    realMsPerToken: c.realMsPerToken,
     status: c.status,
     samples: c.samples,
     confidence: c.confidence,

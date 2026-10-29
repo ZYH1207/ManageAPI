@@ -33,6 +33,39 @@ const HEAVY_TABS = new Set(['decision'])
  * 缺价或缺首字的一律 —：不知道就是不冒充，与排序口径一致。
  * 评分过期同理：价速比是价格÷首字算出来的，首字都不作数了，它也不能拿旧数冒充。
  */
+/**
+ * 首字单元格：**真实流量优先**，探针值只作参考。
+ *
+ * 为什么必须分开：探针发的是 45 token 的小请求，量到 2 秒；你的真实负载是
+ * 25 万 token 上下文，实测 8–12 秒。把两者平均成「5 秒」既不是探针也不是真实，
+ * 会让用户以为这个站很快（2026-10-29 真实踩过：界面 2s、实际 9s）。
+ *
+ * 显示规则：
+ *   - 真实样本 ≥ FAST_REAL_MIN（5 单）→ 显示真实首字 + 样本数
+ *   - 有真实但不足 5 单 → 显示真实首字，标「样本少」
+ *   - 完全没有真实流量 → 显示探针首字，并标「探针口径」
+ * 悬浮提示永远同时给出两个值，方便对照。
+ */
+const REAL_TTFT_MIN = 5
+function ttftCell(candidate, stale) {
+  if (stale) {
+    return `<span class="badge" title="${esc(t('评分已过期：超过有效期没重新探测，首字是旧证据，不作数'))}">${esc(t('评分过期'))}</span>`
+  }
+  const probe = Number.isFinite(candidate?.ttftMs) ? candidate.ttftMs : null
+  const real = Number.isFinite(candidate?.realTtftMs) ? candidate.realTtftMs : null
+  const realN = Number(candidate?.realTtftSamples) || 0
+  const probeTip = probe === null ? '无探针值' : `探针 ${probe}ms（45 token 小请求口径）`
+  if (real === null) {
+    if (probe === null) return '—'
+    return `<span title="${esc(probeTip)}">${probe}ms<div class="sub">${esc(t('探针口径'))}</div></span>`
+  }
+  const tip =
+    `${t('真实流量首字（{n} 单，你真实负载下的体感）', { n: realN })} · ${probeTip}` +
+    (realN < REAL_TTFT_MIN ? ` · ${t('样本较少，仅供参考')}` : '')
+  const sub = realN < REAL_TTFT_MIN ? t('真实 {n} 单', { n: realN }) : t('真实')
+  return `<span title="${esc(tip)}">${real}ms<div class="sub">${esc(sub)}</div></span>`
+}
+
 function priceSpeedText(candidate) {
   if (candidate?.status === 'stale') return '—'
   const price = Number(candidate?.price)
@@ -265,6 +298,13 @@ async function api(method, path, body, extraHeaders = null) {
 
 function providerName(id) {
   return state?.providers.find((p) => p.id === id)?.name || '未知站'
+}
+
+/** 供给 → 「站点 · 模型」：诊断页漂移卡和自动路由旁边的徽章共用，别各写一份 */
+function offerDisplayLabel(offerId) {
+  const offer = (state?.offers || []).find((x) => x.id === offerId)
+  if (!offer) return offerId || '—'
+  return `${providerName(offer.providerId)} · ${offer.modelKey || offer.upstreamName || '?'}`
 }
 
 /** 名字 → 模型身份键（后端给的表：同一模型的多种写法落到同一个键） */
@@ -770,28 +810,125 @@ function driftMonitorCard() {
   const threshold = Number(st.driftThresholdPct) || 30
   const cooldown = Number(st.driftCooldownMinutes) || 10
   const trial = Number(st.driftTrialSamples) || 10
+  const autoOn = Boolean(state.autoRoute?.enabled)
+  const scan = Array.isArray(snap?.scan) ? snap.scan : []
   const e = snap?.evaluation
-  const pct = (v) => (Number.isFinite(v) ? `${v >= 0 ? '+' : ''}${Math.round(v * 100)}%` : '—')
+  // 漂移幅度一律说人话：正 = 比基线慢（变差），负 = 比基线快（变好）。
+  // 只写「+11%」会被读成「加了 11 分 / 变好了」，所以带上「慢/快」并上色。
+  // 0.5% 以内算持平，免得 ±0% 这种噪声进视线。
+  const driftWord = (v) => {
+    if (!Number.isFinite(v)) return { text: '—', cls: '' }
+    const r = Math.round(v * 100)
+    if (r === 0) return { text: '持平', cls: 'flat' }
+    return r > 0 ? { text: `慢 ${r}%`, cls: 'slower' } : { text: `快 ${-r}%`, cls: 'faster' }
+  }
+  const driftVal = (v) => {
+    const w = driftWord(v)
+    return `<span class="drift-val ${w.cls}">${w.text}</span>`
+  }
+  // 兼容原来的纯文本用法（title/徽章里不带 HTML）
+  const pct = (v) => driftWord(v).text
   const ms = (v) => (Number.isFinite(v) ? `${(v / 1000).toFixed(1)}s` : '—')
+  const tps = (v) => (Number.isFinite(v) ? `${Math.round(v * 1000)} tok/s` : '—')
+  // 现值只用最近 10 分钟的真实请求。没流量时现值与两个分项必然空，
+  // 但这不是「没数据」——两档基线照样在账上，所以把基线绝对值直接摆在分项格里
+  const sampleNote = (row) => {
+    if (!row) return ''
+    if (row.samples > 0) return `近 10 分钟 ${row.samples} 单`
+    if (Number.isFinite(row.lastSampleAt)) {
+      const minAgo = Math.max(1, Math.round((Date.now() - row.lastSampleAt) / 60000))
+      return `最近一单 ${minAgo} 分钟前`
+    }
+    return '这十分钟没有请求'
+  }
+  // 分项格：有判定漂移→ +12%（基线 5.7s）；没有判定但有一小时内参考→ 带上参考值；
+  // 都没有→只摆基线绝对值。注意这些函数的参数必须是**数**，
+  // 早在这里传了格式化好的 "5.7s"，Number.isFinite 永远 false，
+  // 结果两项永远显示横线（首字/吐字分项「怎么不算」就是这个 bug）。
+  const partValue = (row, drift, refDrift, baseValue, fmt) => {
+    if (!row) return '—'
+    const baseText = Number.isFinite(baseValue) ? fmt(baseValue) : null
+    if (Number.isFinite(drift)) return `${driftVal(drift)}${baseText ? `<small>基线 ${baseText}</small>` : ''}`
+    if (Number.isFinite(refDrift)) return `${driftVal(refDrift)}<small>近 1h 参考</small>`
+    return baseText ? `<span class="drift-val flat">暂无对比</span><small>基线 ${baseText}</small>` : '—'
+  }
+  // 现值：快窗口优先；空着时用最近一小时顶上（只展示，不参与判定），
+  // 总比摆个横线让人以为「系统没在工作」强
+  const currentValue = (row) => {
+    if (!row) return '—'
+    if (Number.isFinite(row.current)) return ms(row.current)
+    if (Number.isFinite(row.recent?.avgLatencyMs)) return `${ms(row.recent.avgLatencyMs)}<small>最近一小时 ${row.recent.samples} 单</small>`
+    return '—'
+  }
+  // 「现值较常量」同理：现值缺失时用最近一小时算，标清是参考，别留一列横线
+  const constantDiff = (row) => {
+    if (!row) return '—'
+    if (Number.isFinite(row.driftVsConstant)) return driftVal(row.driftVsConstant)
+    if (
+      Number.isFinite(row.recent?.avgLatencyMs) &&
+      Number.isFinite(row.constant) &&
+      row.constant > 0
+    ) {
+      return `${driftVal((row.recent.avgLatencyMs - row.constant) / row.constant)}<small>近 1h 参考</small>`
+    }
+    return '—'
+  }
+  const currentNote = (row) => {
+    if (!row) return ''
+    if (Number.isFinite(row.current)) return ''
+    if (Number.isFinite(row.recent?.avgLatencyMs)) return ''
+    return sampleNote(row)
+  }
+  // 常量基线是「日常攒出来的平时速度」：攒够 3 天才是中位数，不够就老实标出来
+  const constantNote = (row) =>
+    !row || !Number.isFinite(row.constant)
+      ? '还没攒够'
+      : row.constantSource === 'days'
+        ? `${row.constantDays} 天中位`
+        : `仅 ${Math.max(row.constantDays || 0, 1)} 天均值`
+  const verdictText = (row) =>
+    !row
+      ? '—'
+      : row.verdict === 'drifted'
+        ? `漂移：比基线${pct(row.drift)}`
+        : row.verdict === 'ok'
+          ? `正常：比基线${pct(row.drift)}`
+          : `样本不足 ${row.samples}/5`
   const verdictBadge =
     !e
       ? '<span class="badge">未判定</span>'
       : e.verdict === 'drifted'
-        ? `<span class="badge warn">漂移 ${pct(e.drift)}</span>`
+        ? `<span class="badge warn">漂移：比基线${pct(e.drift)}</span>`
         : e.verdict === 'ok'
-          ? `<span class="badge ok">正常 ${pct(e.drift)}</span>`
+          ? `<span class="badge ok">正常：比基线${pct(e.drift)}</span>`
           : `<span class="badge">样本不足 ${e.samples}/5</span>`
   const demoted = Array.isArray(snap?.demoted) ? snap.demoted : []
-  const offerName = (id) => {
-    const o = (state.offers || []).find((x) => x.id === id)
-    if (!o) return id
-    const p = (state.providers || []).find((x) => x.id === o.providerId)
-    return `${p ? p.name : '?'} · ${o.modelKey || o.upstreamName || '?'}`
-  }
+  // 服务端扫描时会顺带算好标签（不在役/被忽略的供给前端查不到名字）
+  const labelById = new Map((scan || []).filter((r) => r.label).map((r) => [r.offerId, r.label]))
+  const offerName = (id) => labelById.get(id) || offerDisplayLabel(id)
   const lastSwitch = snap?.lastSwitch
   const trialInfo = snap?.trial
     ? `<span class="desc">试跑中：${esc(offerName(snap.trial.offerId))}（已 ${snap.trial.samples} 单，攒满 ${trial} 单或 5 分钟后才判它）</span>`
     : ''
+  // 多条供给同时在监视时列个表：不开自动路由就是靠这张表看「哪条线最近不对劲」
+  const rows =
+    scan.length > 1
+      ? `<table class="table" style="margin:2px 0 10px">
+          <thead><tr><th>监视的供给</th><th>现值</th><th>6 小时基线</th><th>常量基线</th><th>现值较常量</th><th>判定</th></tr></thead>
+          <tbody>${scan
+            .map(
+              (row) => `<tr>
+              <td>${esc(offerName(row.offerId))}</td>
+              <td>${currentValue(row)} <span class="desc">${esc(currentNote(row))}</span></td>
+              <td>${ms(row.baseline)}</td>
+              <td>${ms(row.constant)} <span class="desc">${esc(constantNote(row))}</span></td>
+              <td>${constantDiff(row)}</td>
+              <td>${esc(verdictText(row))}</td>
+            </tr>`,
+            )
+            .join('')}</tbody>
+        </table>`
+      : ''
   return `
     <div class="card">
       <div class="card-head">
@@ -800,24 +937,35 @@ function driftMonitorCard() {
       </div>
       <div style="display:flex;gap:18px;flex-wrap:wrap;margin-bottom:10px">
         <div class="stat" style="flex:1;min-width:150px">
-          <div class="stat-main"><div class="k">现值总耗时</div><div class="v">${e ? ms(e.current) : '—'}</div></div>
+          <div class="stat-main"><div class="k">现值总耗时</div><div class="v">${currentValue(e)}<small>${esc(currentNote(e))}</small></div></div>
         </div>
         <div class="stat" style="flex:1;min-width:150px">
           <div class="stat-main"><div class="k">6 小时基线</div><div class="v">${e ? ms(e.baseline) : '—'}</div></div>
         </div>
         <div class="stat" style="flex:1;min-width:150px">
-          <div class="stat-main"><div class="k">首字分项</div><div class="v">${e ? pct(e.ttftDrift) : '—'}</div></div>
+          <div class="stat-main"><div class="k">常量基线</div><div class="v">${e ? ms(e.constant) : '—'}<small>${e ? constantNote(e) : ''}</small></div></div>
         </div>
         <div class="stat" style="flex:1;min-width:150px">
-          <div class="stat-main"><div class="k">吐字分项</div><div class="v">${e ? pct(e.tpsDrift) : '—'}</div></div>
+          <div class="stat-main"><div class="k">首字分项</div><div class="v">${partValue(e, e?.ttftDrift, e?.reference?.ttftDrift, e?.baselineTtftMs, ms)}</div></div>
+        </div>
+        <div class="stat" style="flex:1;min-width:150px">
+          <div class="stat-main"><div class="k">吐字分项</div><div class="v">${partValue(e, e?.tpsDrift, e?.reference?.tpsDrift, e?.baselineTps, tps)}</div></div>
         </div>
       </div>
       <div class="desc" style="margin-bottom:8px">
-        在岗供给：${e ? esc(offerName(e.offerId)) : '—'} · 样本 ${e?.samples ?? 0} 单（10 分钟窗口，至少 5 单才判）
+        ${autoOn ? '在岗供给' : '监视对象'}：${e ? esc(offerName(e.offerId)) : '—'} · 样本 ${e?.samples ?? 0} 单（10 分钟窗口，至少 5 单才判）
+        ${e && Number.isFinite(e.driftVsConstant) ? ` · 现值较常量 ${pct(e.driftVsConstant)}` : ''}
         ${demoted.length ? ` · 降级 ${demoted.length} 条：${esc(demoted.map(offerName).join('、'))}` : ''}
         ${lastSwitch ? ` · 最近转移：${esc(offerName(lastSwitch.fromOfferId))} → ${esc(offerName(lastSwitch.toOfferId))}（${pct(lastSwitch.drift)}）` : ''}
         ${trialInfo}
       </div>
+      ${autoOn
+        ? ''
+        : `<div class="desc" style="margin-bottom:8px">自动路由没开：照样记账、照样算两档基线并判漂移，只是不做改派（换不换站由你自己定）。</div>`}
+      ${e && e.samples === 0
+        ? `<div class="desc" style="margin-bottom:8px">现值只看最近 10 分钟的真实请求（进程重启会清空这段窗口），所以流量一断那一格就是空的；这时写成「最近一小时」的那个数是账本里最新小时桶，只用来补位、不参与漂移判定。基线是历史账，随时都在。</div>`
+        : ''}
+      ${rows}
       <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:center">
         <label class="field-inline">漂移检测
           <select data-drift="enabled">
@@ -839,14 +987,22 @@ function driftMonitorCard() {
         <summary class="desc" style="cursor:pointer">算法说明（怎么算的、为什么这么定）</summary>
         <div class="desc" style="margin-top:6px;line-height:1.7">
           ① <b>现值</b>：最近 10 分钟真实请求的平均总耗时（首字 + 吐字，网关实测），至少 5 单才下结论。<br />
-          ② <b>基线</b>：该供给在 offerStats 里最近 6 小时的小时桶加权均值；优先用历史桶（排除正在写入的当前桶，
-          防止自己跟自己比），每天头一个小时没有历史桶时退回当前桶（只会低估漂移，不会误报）。<br />
+          ② <b>基线两档</b>：<b>6 小时基线</b> = 最近 6 小时小时桶的加权均值（优先用历史桶，排除正在写入的当前桶，
+          防止自己跟自己比；每天头一个小时没有历史桶时退回当前桶，只会低估漂移，不会误报）；
+          <b>常量基线</b> = 最近 30 天按天求均值后取<b>中位数</b>（每天至少 10 单才算一天，至少 3 天才取中位；今天不参与），
+          就是「这条线平时到底多快」。攒够前的天数不足时退回全窗口加权均值，并标「仅 N 天均值」。
+          为什么两档都要：整段慢慢变慢时现值会跟着 6 小时基线一起长，那一档看不出问题；
+          跟常量一比就知道「最近一直比平时慢」。<br />
           ③ <b>判定</b>：现值比基线慢出阈值（默认 30%）即为漂移。用总耗时而不是「成本 ÷ 耗时」——
           后者会把「吐字被抽慢但价格没变」判成「每秒更便宜 = 变好」，方向是反的。<br />
           ④ <b>动作</b>：把漂移的供给降级（本轮周期内不当「最优」），自动路由改派探针价速比最优的备选；
-          冷却期内不重复转移，新现役要先过试跑窗。<br />
+          冷却期内不重复转移，新现役要先过试跑窗。改派只在自动路由开着时发生。<br />
           ⑤ <b>逃生舱</b>：备选挨个试完仍不达标 → 踢一轮 Lite 探针刷新基础分，清空降级名单开新周期。<br />
-          ⑥ <b>分项</b>：首字 / 吐字各自和基线比，只用于定位是哪半边烂，不单独触发。
+          ⑥ <b>分项</b>：首字 / 吐字各自和 6 小时基线比，只用于定位是哪半边烂，不单独触发。
+          最近 10 分钟不够 5 单（判不了）时，分项改成拿「最近一小时」跟基线比，标「近 1h 参考」——
+          它不是判定结果，只是提前告诉你漏在哪半边。<br />
+          ⑦ <b>跟自动路由无关</b>：样本是网关每单顺路记的，两档基线都是日常用出来的账，
+          不开自动路由也照常累积、照常判漂移（只是不做改派）。
         </div>
       </details>
     </div>`
@@ -1013,7 +1169,28 @@ function renderDiagnosis() {
   const findings = diagnosisFindings?.findings || []
   const errFindings = findings.filter((f) => (f.category || 'error') === 'error')
   const anomalyFindings = findings.filter((f) => f.category === 'anomaly')
-  const hasFindings = findings.length > 0
+  // 真实流量漂移单独列一条：它跟自动路由无关（账是网关每单记的），
+  // 但必须跟其它异常一起出现在顶部结论里——否则上面写「一切正常」、
+  // 下面漂移卡写「漂移 +134%」，同一页自相矛盾
+  const driftAlerts = (state.drift?.scan || []).filter((r) => r.verdict === 'drifted')
+  const hasFindings = findings.length + driftAlerts.length > 0
+  const secs = (v) => (Number.isFinite(v) ? `${(v / 1000).toFixed(1)}s` : '—')
+  const pctText = (v) => (Number.isFinite(v) ? `${v >= 0 ? '+' : ''}${Math.round(v * 100)}%` : '—')
+  const driftRows = driftAlerts
+    .map(
+      (r) => `
+      <div class="notice warn has-detail">
+        <span class="name">真实流量变慢：${esc(offerDisplayLabel(r.offerId))}</span>
+        <span class="grow"></span>
+        <span class="desc">真实流量</span>
+        <div class="desc" style="flex-basis:100%;margin-top:4px">
+          现值 ${secs(r.current)}，比 6 小时基线 ${secs(r.baseline)} 慢 ${pctText(r.drift)}；
+          常量基线 ${secs(r.constant)}（现值较常量 ${pctText(r.driftVsConstant)}）。
+          　→ ${state.autoRoute?.enabled ? '已交给漂移转移处置' : '自动路由没开，只监视不改派'}
+        </div>
+      </div>`,
+    )
+    .join('')
 
   const LAYER_LABEL = {
     client: '客户端',
@@ -1075,7 +1252,7 @@ function renderDiagnosis() {
   view.innerHTML = `
     <div class="stats">
       <div class="stat">
-        <div class="stat-main"><div class="k">自动诊断</div><div class="v">${hasFindings ? `${findings.length} 项结论` : '一切正常'}</div></div>
+        <div class="stat-main"><div class="k">自动诊断</div><div class="v">${hasFindings ? `${findings.length + driftAlerts.length} 项结论` : '一切正常'}</div></div>
         <div class="stat-icon ${hasFindings && diagnosisFindings.summary.counts.danger > 0 ? 'tint-warn' : 'tint-accent'}">${icon('alert')}</div>
       </div>
       <div class="stat">
@@ -1083,8 +1260,8 @@ function renderDiagnosis() {
         <div class="stat-icon tint-warn">${icon('alert')}</div>
       </div>
       <div class="stat">
-        <div class="stat-main"><div class="k">异常项</div><div class="v">${anomalyFindings.length}</div></div>
-        <div class="stat-icon ${anomalyFindings.length ? 'tint-warn' : 'tint-muted'}">${icon('trend')}</div>
+        <div class="stat-main"><div class="k">异常项</div><div class="v">${anomalyFindings.length + driftAlerts.length}</div></div>
+        <div class="stat-icon ${anomalyFindings.length + driftAlerts.length ? 'tint-warn' : 'tint-muted'}">${icon('trend')}</div>
       </div>
       <div class="stat">
         <div class="stat-main"><div class="k">已自动诊断</div><div class="v">${totals.diagnosed}</div></div>
@@ -1104,15 +1281,18 @@ function renderDiagnosis() {
       }
     </div>
 
-    <h3 class="section-title"><span class="s-icon">${icon('trend')}</span>异常诊断${anomalyFindings.length ? `（${anomalyFindings.length}）` : ''}</h3>
+    <h3 class="section-title"><span class="s-icon">${icon('trend')}</span>异常诊断${anomalyFindings.length + driftAlerts.length ? `（${anomalyFindings.length + driftAlerts.length}）` : ''}</h3>
     <div class="notice-list">
+      ${driftRows}
       ${
         anomalyFindings.length
           ? findingRows(anomalyFindings)
-          : calmRow(
-              '表现没有异常波动',
-              '没报错也可能在变差：变慢、偷思考、关缓存、输出变短、时好时坏，都拿它自己的历史基线比出来',
-            )
+          : driftAlerts.length
+            ? ''
+            : calmRow(
+                '表现没有异常波动',
+                '没报错也可能在变差：变慢、偷思考、关缓存、输出变短、时好时坏，都拿它自己的历史基线比出来',
+              )
       }
     </div>
 
@@ -1299,6 +1479,7 @@ const ICONS = {
   key: '<circle cx="8" cy="12" r="4"/><path d="M12 12h9M18 12v3M15 12v2"/>',
   trash: '<path d="M4 7h16M9 7V5h6v2M6 7l1 13h10l1-13"/><path d="M10 11v6M14 11v6"/>',
   plus: '<path d="M12 5v14M5 12h14"/>',
+  x: '<path d="M6 6l12 12M18 6L6 18"/>',
   servers: '<rect x="3" y="4" width="18" height="6" rx="2"/><rect x="3" y="14" width="18" height="6" rx="2"/><path d="M7 7h.01M7 17h.01"/>',
   layers: '<path d="M12 3l9 5-9 5-9-5 9-5Z"/><path d="M3 13l9 5 9-5"/>',
   columns: '<rect x="3" y="5" width="5.5" height="14" rx="1.5"/><rect x="10" y="5" width="4" height="14" rx="1.5"/><rect x="16.5" y="5" width="4.5" height="14" rx="1.5"/>',
@@ -2413,17 +2594,27 @@ function closeGroupModels() {
  *
  * 忽略状态是一个可点的开关徽章（分组页和 Key 页都能用）：
  *   已忽略 = 灰色，不参与比价、决策、探针和网关；已显示 = 橙黄。
- * 点一下只切这**一个**模型（精确名，走 modelOverrides 单行例外），
- * 不动同类写法；「整类忽略」在「忽略模型」管理面板（身份键名单）。判定规则在服务端。
+ * 点一下只切**这一行**——这个站的这个分组里的这个模型（作用域 = 站 + 分组 + 模型名），
+ * 别的站/分组里的同名模型不受影响；同一类的写法变体也不受影响。
+ * 「整类忽略」在「忽略模型」管理面板（身份键名单，跨站跨分组全局）。判定规则在服务端。
+ *
+ * @param {object} m 模型行
+ * @param {{providerId:string, group:string}} scope 这一行的位置；缺省则不传作用域（全局）
  */
-function modelRowHtml(m) {
+function modelRowHtml(m, scope = {}) {
   const flags = [
     m.free ? `<span class="badge ok">${t('免费')}</span>` : '',
     m.perCall ? `<span class="badge">${t('按次')}</span>` : '',
     m.name
       ? `<button type="button" class="badge ig-chip${m.ignored ? ' ig-on' : ' ig-off'}"
-          data-act="toggle-sheet-ignore" data-name="${esc(m.name)}" aria-pressed="${Boolean(m.ignored)}"
-          title="${m.ignored ? esc(t('点击显示：恢复参与比价、决策、探针和网关')) : esc(t('点击忽略：不参与比价、决策、探针和网关'))}"
+          data-act="toggle-sheet-ignore" data-name="${esc(m.name)}"
+          data-provider="${esc(scope.providerId || '')}" data-group="${esc(scope.group || '')}"
+          aria-pressed="${Boolean(m.ignored)}"
+          title="${
+            m.ignored
+              ? esc(t('点击显示：只恢复这一行（这个站的这个分组），别的站不受影响'))
+              : esc(t('点击忽略：只忽略这一行（这个站的这个分组），别的站不受影响'))
+          }"
         >${m.ignored ? t('已忽略') : t('已显示')}</button>`
       : '',
   ]
@@ -2558,6 +2749,8 @@ function groupSheetView() {
   if (!site || (!(group in site) && keys.length === 0)) return null
   const ignoredCount = models.filter((m) => m.ignored).length
   return {
+    // 这一弹窗里所有行共用一个作用域：这个站 + 这个分组
+    scope: { providerId, group: group || '' },
     title: group || t('未指定分组'),
     meta: `${t('{n} 个模型', { n: models.length })}${
       keys.length ? ` · ${t('{n} 把 Key 在这个分组', { n: keys.length })}` : ''
@@ -2588,6 +2781,7 @@ function keySheetView() {
     }">${label}<span class="seg-count">${n}</span></button>`
   const provider = (state.providers || []).find((p) => p.id === providerId)
   return {
+    scope: { providerId, group: credential.group || '' },
     title: credential.group ? `${credential.label} · ${credential.group}` : credential.label,
     // 站点名后面补 Key 尾号：同一个站点常挂好几把 Key，只看标题分不清是哪一把
     site: `${provider?.name || ''} · sk-••••${credential.tail || '????'}`,
@@ -2669,7 +2863,7 @@ function paintGroupModels() {
     // 定价视图：自带表格（可编辑输入框），不再套 gs-list 只读行
     inner = `${view.seg || ''}${view.customBody}`
   } else {
-    const rows = view.models.map(modelRowHtml).join('')
+    const rows = view.models.map((m) => modelRowHtml(m, view.scope || {})).join('')
     const head = `
       <div class="gs-meta">
         <span class="hint">${view.meta}</span>
@@ -3626,13 +3820,7 @@ function renderDecision() {
               ? ''
               : `<div class="sub" title="${esc(t('本行综合成本为原厂有效成本的 {pct}（按波峰口径）', { pct: officialPctText }))}">${t('原厂')} ${officialPctText}</div>`
           }</td>
-          <td class="num${sortMark('speed')}">${
-            stale
-              ? `<span class="badge" title="${t('评分已过期：超过有效期没重新探测，首字是旧证据，不作数')}">${t('评分过期')}</span>`
-              : candidate.ttftMs === null
-                ? '—'
-                : `${candidate.ttftMs}ms`
-          }</td>
+          <td class="num${sortMark('speed')}">${ttftCell(candidate, stale)}</td>
           <td class="num${sortMark('priceSpeed')}">${priceSpeedText(candidate)}</td>
           <td>${badges}${candidate.statusReason ? `<div class="sub">${esc(candidate.statusReason)}</div>` : ''}</td>
         </tr>`
@@ -3810,9 +3998,21 @@ function driftStatusLine() {
   const snap = state.drift
   if (!snap?.evaluation) return ''
   const e = snap.evaluation
-  const pct = (v) => (Number.isFinite(v) ? `${v >= 0 ? '+' : ''}${Math.round(v * 100)}%` : '')
+  // 和诊断页漂移卡同一套说法：慢 / 快，不用裸的 ±%（会被读成加减分）
+  const pct = (v) => {
+    if (!Number.isFinite(v)) return ''
+    const r = Math.round(v * 100)
+    if (r === 0) return t('持平')
+    return r > 0 ? t('慢 {n}%', { n: r }) : t('快 {n}%', { n: -r })
+  }
+  // 没开自动路由时也必须把话说清：这个数是真实流量算出来的，只是不会自动改派
+  const watching = state.autoRoute?.enabled
+    ? ''
+    : t(' · 仅监视 {name}（未开自动路由，不改派）', { name: offerDisplayLabel(e.offerId) })
   if (e.verdict === 'insufficient') {
-    return `<span class="sub" title="${esc(t('真实价速比每 10 分钟一窗，窗口内至少 5 单才开始判漂移；探针开工全量 + 每小时 Lite 负责基础分'))}">${t('实时分样本 {n}/5', { n: e.samples })}</span>`
+    return `<span class="sub" title="${esc(
+      t('真实价速比每 10 分钟一窗，窗口内至少 5 单才开始判漂移；探针开工全量 + 每小时 Lite 负责基础分') + watching,
+    )}">${t('实时分样本 {n}/5', { n: e.samples })}</span>`
   }
   // 分项定位：综合漂移里首字和吐字各贡献多少（解耦型劣化一眼看出烂在哪半边）
   const parts = []
@@ -3820,13 +4020,19 @@ function driftStatusLine() {
   if (Number.isFinite(e.tpsDrift)) parts.push(`${t('吐字')} ${pct(e.tpsDrift)}`)
   const tip = esc(
     t('真实总耗时（首字+吐字）比 {n} 小时基线的漂移；慢出 30% 自动改派', { n: 6 }) +
-      (parts.length > 0 ? ` · ${parts.join(' / ')}` : ''),
+      (parts.length > 0 ? ` · ${parts.join(' / ')}` : '') +
+      watching,
   )
   if (e.verdict === 'drifted') {
     const demotedNote = (snap.demoted || []).length > 0 ? t('，降级 {n} 条', { n: snap.demoted.length }) : ''
-    return `<span class="sub"><span class="badge warn" title="${tip}">${t('漂移 {n}', { n: pct(e.drift) })}</span>${esc(demotedNote)}</span>`
+    // 没开自动路由时得把话说在明面上：这个漂移不会自动换站，只是盯上了
+    const label = state.autoRoute?.enabled
+      ? t('比基线慢 {n}%', { n: Math.round(e.drift * 100) })
+      : t('比基线慢 {n}%（仅监视）', { n: Math.round(e.drift * 100) })
+    return `<span class="sub"><span class="badge warn" title="${tip}">${label}</span>${esc(demotedNote)}</span>`
   }
-  return `<span class="sub"><span class="badge ok" title="${tip}">${t('实时 {n}', { n: pct(e.drift) })}</span></span>`
+  const head = pct(e.drift)
+  return `<span class="sub"><span class="badge ok" title="${tip}">${head === t('持平') ? t('与基线持平') : t('比基线{n}', { n: head })}</span></span>`
 }
 
 /**
@@ -3838,6 +4044,38 @@ function driftStatusLine() {
  * 但客户端请求什么模型就再也不重要了。免费入口不接管：把免费请求偷偷
  * 改派到付费模型等于静默扣钱。
  */
+/**
+ * 探针**现在实际在怎么跑**——一处写成，说明行/徽章/tooltip 都从这儿取。
+ *
+ * 以前这套规则只活在代码注释里：用户要么看到「已由自动路由接管」但不知道
+ * 探几条、花多少，要么定时探针关着却不知道还能手动跑。数字全部从服务端下发
+ * 的 state.probePatrol / settings 读，不在前端另写一份——否则改一处另一处就飘了。
+ */
+function autoRouteProbeSchemeText() {
+  const p = state.probePatrol || {}
+  const minutes = Math.round((Number(p.passIntervalMs) || 60 * 60_000) / 60000)
+  const windowMin = Math.round((Number(p.activityWindowMs) || 10 * 60_000) / 60000)
+  return t(
+    '自动路由开着时定时探针不跑，改由轮巡接管：① 网关来真实流量时先全量探一遍「现役模型 + 可能接替它的几个」（每模型 4 发）打基础分；② 之后还在接流量就每 {m} 分钟续一轮 Lite（每模型 2 发），缓存命中率不是每轮都测，满 2 小时的那一轮自动补一次；③ 静默超过 {w} 分钟就不探，一分钱不花；④ 欠费站直接跳过。',
+    { m: minutes, w: windowMin },
+  )
+}
+
+/** 「定时探针」这一档实际在干嘛：开着 / 关着 / 被自动路由接管，三种说法 */
+function scheduledProbeSchemeText(intervalMinutes) {
+  if (state.autoRoute?.enabled) return autoRouteProbeSchemeText()
+  const minutes = Number(intervalMinutes) || 0
+  if (minutes > 0) {
+    return t(
+      '定时探针每 {n} 分钟跑一轮：每个模型发 2 个请求（指纹 + 计费、截断）；某条供给的缓存数字满 2 小时时，它那一轮自动补成 4 发。上面的 Lite / 全量是手动点的那一下，不受这个间隔管。',
+      { n: minutes },
+    )
+  }
+  return t(
+    '定时探针现在是关的（自动探测 0 分钟）：不点就不探，一分钱不花。要跑就选上面的 Lite 或全量，或者在表格里点单条「探测」。',
+  )
+}
+
 /**
  * 轮巡进度：自动路由开着时，探测由轮巡接管，一轮 60 秒起步。
  * 不做这个指示，用户在探针页看到的是一片静止，会以为「没在跑」。
@@ -3873,6 +4111,15 @@ function autoRouteSwitch() {
     scope.length > 0
       ? `<span class="sub" title="${t('没有勾选的模型 = 回到全场。去智能决策页每个模型组上的加号增减')}">${t('接管范围：{n} 个勾选模型，其余不参选', { n: scope.length })}</span>`
       : ''
+  // 客户端拨过开关的痕迹：它是真实发生的事，必须让人看得见——
+  // 否则「我没动过开关，怎么就关了」这类现象根本无从解释
+  const pinned = state.pinnedModelKey || null
+  const pinnedHint =
+    pinned && !enabled
+      ? `<span class="sub" title="${esc(
+          t('客户端拉了模型清单后选了 {name}：那一下等于关掉自动路由、就派这个模型。点旁边的叉回到「谁都不钉」', { name: pinned }),
+        )}">${t('客户端停在 {name}', { name: pinned })}<button class="ghost tiny" data-act="clear-pinned" title="${esc(t('解除：让客户端下一次选什么就派什么，不再钉在这一个'))}">${icon('x')}</button></span>`
+      : ''
   return `
     <label class="switch switch-inline auto-route-inline">
       <input type="checkbox" id="auto-route-switch" ${enabled ? 'checked' : ''} />
@@ -3880,10 +4127,14 @@ function autoRouteSwitch() {
       <span class="switch-text"><b>${t('自动路由')}</b></span>
     </label>
     ${scopeHint}
+    ${pinnedHint}
     ${driftStatusLine()}
     <span class="help-dot" tabindex="0" aria-label="${t('自动路由功能介绍')}" title="${t(
-      '接管后，不管客户端请求哪个模型、怎么切模型，网关都只派给当前决策档位下全场最优的那一个模型——不分站点、不分分组、不分来自哪个站。若新模型只比现役好一点点（不到 15%），不切换：反复横跳对用户的干扰比那点收益大，只有明显更优或现役下线才换。免费入口不受影响。',
-    )}">?</span>`
+      '接管后，不管客户端请求哪个模型、怎么切模型，网关都只派给当前决策档位下全场最优的那一个模型——不分站点、不分分组、不分来自哪个站。若新模型只比现役好一点点（不到 15%），不切换：反复横跳对用户的干扰比那点收益大，只有明显更优或现役下线才换。免费入口不受影响。\n\n探针：开着自动路由时定时探针不跑，改由轮巡接管——来真实流量先全量拍一轮，之后每轮 Lite 续拍，静默时不探（完整方案在探针页）。',
+    )}">?</span>
+    <span class="sub" title="${esc(
+      t('网关模型清单里一直摆着一个 AutoThink，其余是全场模型。客户端点 AutoThink = 打开自动路由；点别的模型 = 关掉自动路由，就派那一个。所以在本机换档不用反复改 Key'),
+    )}">${state.virtualAutoThink === false ? '' : t('· 客户端点 AutoThink = 开，点别的模型 = 关（客户端的点名会覆盖上面这个开关）')}</span>`
 }
 
 /**
@@ -4075,7 +4326,7 @@ function renderProbes() {
   const intervalUnit = interval > 0 && interval % 60 === 0 ? 60 : 1
   const intervalValue = intervalUnit === 60 ? interval / 60 : interval
   const intervalLock = autoRouteOn
-    ? `disabled title="${esc(t('自动路由开着时定时探针不跑：轮巡每 30 分钟接替探测，关掉自动路由后这里自动恢复生效'))}"`
+    ? `disabled title="${esc(t('自动路由开着时定时探针不跑，改由轮巡接管（方案见下方说明）；关掉自动路由后这里自动恢复生效'))}"`
     : ''
   const pause = state.probePause || { paused: false, until: null, next: null, count: 0 }
   // 暂停状态由服务端算（state.probePause），这里只管显示，跨夜 / 多段重叠的判断
@@ -4122,14 +4373,32 @@ function renderProbes() {
 
   // 版面：上面几行是标题，下面左右两栏——左栏从上到下是筛选/设置与开关，
   // 右栏原先整块空着，探针花费卡就落在那儿（底部对齐，贴住卡片右下角）
+  //
+  // 「探测全部」下面那块空档用来摆方案选择：Lite 和 全量 差一倍钱，
+  // 不写出来用户根本不知道有这两种、也不知道自己点的那下花了几分钱。
+  const liteTip = t(
+    'Lite 探测：每个模型只发 2 个请求——① 指纹 + 计费（固定小题目，看输出是不是精确匹配、用量有没有虚报）② 截断（让它数到 120，看会不会被提前掉断）。缓存命中率这一项跳过，沿用上次的数字。用一半的钱看清「可不可信」，适合整场巡检。',
+  )
+  const fullTip = t(
+    '全量探测：每个模型发 4 个请求——Lite 的两发之外，再连发两次同一段长前缀测缓存命中率（看第二次报的 cached_tokens / prompt_tokens），中间等 1.5 秒让上游把缓存写进去。最贵的是截断那一发（最多 1500 token）。探完评分里「缓存」那栏才有新数字。',
+  )
   const intro = `
     <div class="card">
       <div style="display:flex;align-items:flex-start;gap:16px;flex-wrap:wrap">
         <div style="flex:1;min-width:240px">
           <div style="font-weight:500">${t('主动探测')}</div>
-          <div class="hint" style="margin:4px 0 0">${t('每个模型最多发 4 个请求：指纹 + 计费、截断、缓存（连发两次）。结果进入评分，路由据此排除可疑的站。缓存数字超过 2 小时过期，过期后的下一次定时/轮巡探测自动升级全量补测；手动探测每次都全量。自动路由开着时定时探针由轮巡接管。')}</div>
+          <div class="hint" style="margin:4px 0 0">${t('每个模型最多发 4 个请求：指纹 + 计费、截断、缓存（连发两次）。结果进入评分，路由据此排除可疑的站。手动探测可选：Lite 只发前 2 个（指纹+计费、截断），全量 4 个都发。定时/轮巡探测平时发 2 个，缓存数字满 2 小时过期的那一轮自动补成全量。自动路由开着时定时探针由轮巡接管，方案见下方。')}</div>
         </div>
-        <button class="primary" data-act="probe-all" ${probeTargets.length === 0 ? 'disabled' : ''}>${esc(probeBtn)}</button>
+        <div class="probe-run-col">
+          <button class="primary" data-act="probe-all" ${probeTargets.length === 0 ? 'disabled' : ''}
+            title="${esc(t('先选方案再跑：Lite 每模型 2 发（省一半钱），全量 4 发（多测一项缓存命中率）。鼠标悬停两个选项能看到具体发什么。'))}">${esc(probeBtn)}${probeModeOpen ? '' : ' ▾'}</button>
+          ${probeModeOpen
+            ? `<div class="probe-run-modes">
+                <button class="primary" data-act="probe-all-lite" ${probeTargets.length === 0 ? 'disabled' : ''} title="${esc(liteTip)}">${esc(t('Lite 探测（{n} 个）', { n: probeTargets.length }))}</button>
+                <button class="primary" data-act="probe-all-full" ${probeTargets.length === 0 ? 'disabled' : ''} title="${esc(fullTip)}">${esc(t('全量探测（{n} 个）', { n: probeTargets.length }))}</button>
+              </div>`
+            : ''}
+        </div>
       </div>
       <div class="probe-body">
         <div class="probe-body-main">
@@ -4142,7 +4411,7 @@ function renderProbes() {
           </div>
           <div class="probe-settings">
             <label class="field-inline">自动探测
-              ${autoRouteOn ? '<span class="badge">已由自动路由接管</span>' : ''}
+              ${autoRouteOn ? `<span class="badge" title="${esc(autoRouteProbeSchemeText())}">${t('已由自动路由接管')}</span>` : ''}
               <input id="probe-interval-num" type="number" min="0" step="1" value="${intervalValue}" style="width:64px" ${intervalLock} />
               <select id="probe-interval-unit" ${intervalLock}>
                 <option value="1" ${intervalUnit === 1 ? 'selected' : ''}>${t('分钟')}</option>
@@ -4159,6 +4428,7 @@ function renderProbes() {
               <button class="ghost tiny" data-act="add-pause-window">${icon('plus')}${t('添加时段')}</button>
             </div>
           </div>
+          <div class="probe-scheme-note" title="${esc(t('这是当前生效的探测节奏（数字随服务端配置走）'))}">${icon('refresh')}<span>${esc(scheduledProbeSchemeText(interval))}</span></div>
         </div>
         ${probeSpendCardHtml()}
       </div>
@@ -4191,7 +4461,7 @@ function renderProbes() {
           <td class="num">${pct(score?.billingRate)}</td>
           <td class="num">${score?.ttftMs ? `${score.ttftMs}ms` : '—'}</td>
           <td style="color:var(--faint)" title="${esc(t('探针：'))}${relTime(score?.lastProbeAt)}">${relTime(score?.evidenceAt)}</td>
-          <td class="num"><button class="ghost" data-act="probe">探测</button></td>
+          <td class="num"><button class="ghost" data-act="probe" title="${esc(t('单条探测走全量：发 4 个请求（指纹 + 计费、截断、缓存×2），要的就是完整证据'))}">探测</button></td>
         </tr>
         <tr class="detail-row" data-detail-for="${esc(offer.id)}" ${new URLSearchParams(location.search).has('expand') ? '' : 'hidden'}>
           <td colspan="9">${probeDetailHtml(score)}</td>
@@ -4350,22 +4620,34 @@ function probeSpendCardHtml() {
   const money = Number.isFinite(Number(total.paidCny)) ? Number(total.paidCny) : Number(total.cny) || 0
   const since = probeSpend.since ? dayClockOf(new Date(probeSpend.since).getTime()) : null
 
-  // 每个探过的站都列一行（按花得多到少），鼠标悬停能看这个站探了几次、最近一次什么时候
+  // 每个探过的站都列一行（按花得多到少），鼠标悬停能看这个站探了几次、最近一次什么时候。
+  // 行是横向流式排的（见 .ps-rows），1600 宽下 5 个站一行、540px 卡最多容两行。
+  // 站再多也不让卡往上长：超过 PS_MAX_SITES 个时，前 PS_MAX_SITES-1 个照列，
+  // 剩下的合成一格「另 N 个站 ¥合计」，悬停列出全部明细——钱最少的那批本来也看不见
+  const PS_MAX_SITES = 8
+  const siteRowOf = (row) => {
+    const tip = [
+      t('{n} 次探测 · {m} 个请求', { n: row.probes || 0, m: row.requests || 0 }),
+      row.lastAt ? `${t('最近一次')}：${relTime(row.lastAt)}` : null,
+    ]
+      .filter(Boolean)
+      .join(' · ')
+    return `<div class="ps-row" title="${esc(tip)}">
+      <span class="ps-row-name">${esc(row.name)}</span>
+      <b class="ps-row-money">${probeMoneyText(row.paidCny)}</b>
+    </div>`
+  }
+  const hiddenSites = sites.length > PS_MAX_SITES ? sites.slice(PS_MAX_SITES - 1) : []
+  const hiddenMoney = hiddenSites.reduce((sum, row) => sum + (Number(row.paidCny) || 0), 0)
+  const hiddenTip = hiddenSites.map((row) => `${row.name} ${probeMoneyText(row.paidCny)}`).join(' · ')
   const siteRows = sites.length
-    ? sites
-        .map((row) => {
-          const tip = [
-            t('{n} 次探测 · {m} 个请求', { n: row.probes || 0, m: row.requests || 0 }),
-            row.lastAt ? `${t('最近一次')}：${relTime(row.lastAt)}` : null,
-          ]
-            .filter(Boolean)
-            .join(' · ')
-          return `<div class="ps-row" title="${esc(tip)}">
-            <span class="ps-row-name">${esc(row.name)}</span>
-            <b class="ps-row-money">${probeMoneyText(row.paidCny)}</b>
-          </div>`
-        })
-        .join('')
+    ? sites.slice(0, PS_MAX_SITES - 1).map(siteRowOf).join('') +
+      (hiddenSites.length
+        ? `<div class="ps-row" title="${esc(hiddenTip)}">
+      <span class="ps-row-name dim">${esc(t('另 {n} 个站', { n: hiddenSites.length }))}</span>
+      <b class="ps-row-money">${probeMoneyText(hiddenMoney)}</b>
+    </div>`
+        : '')
     : `<div class="ps-row"><span class="ps-row-name dim">${t('还没有探针花费')}</span></div>`
 
   // 一条探测记录都没有时趋势条整排是空的灰点，白白撑高卡片、把左边筛选行
@@ -6118,6 +6400,11 @@ const collapsedPanels = new Set()
  *  存模块级变量：探测完 re-render 不丢，切页回来也还在。 */
 const probeFilters = { providerId: '', group: '', model: '' }
 
+/** 「探测全部」展开成 Lite / 全量两个按钮：默认收起，点一下露出选择。
+ *  不直接开跑是因为两种方案的钱差一倍，不能让用户不知道自己在花哪份钱。
+ *  选过一次后保持展开（本页会话内），下次进来还是两道选项。 */
+let probeModeOpen = false
+
 /** 站点卡的搜索与分页（站点多了以后一屏放不下） */
 let siteQuery = ''
 let sitePage = 1
@@ -7445,6 +7732,19 @@ document.addEventListener('click', async (event) => {
     return
   }
 
+  if (action === 'clear-pinned') {
+    // 解除客户端钉住的模型：钉住只是「关掉接管那一单点的是谁」的现场记录，
+    // 不是设置；放着它只会让人以为网关还记得什么
+    try {
+      state = await api('PATCH', '/api/settings', { pinnedModelKey: '' })
+      render()
+      toast(t('已解除：客户端下次选什么就派什么'))
+    } catch (error) {
+      toast(error.message, true)
+    }
+    return
+  }
+
   if (action === 'toggle-autoroute') {
     // 自动路由范围：勾上后只在勾选的模型里挑，全移出 = 回到全场
     const modelKey = actionButton.dataset.model
@@ -7516,12 +7816,15 @@ document.addEventListener('click', async (event) => {
     // 整类忽略（「忽略模型」管理面板）不在这里。
     const name = actionButton.dataset.name
     if (!name) return
+    // 作用域：只改这一行（这个站的这个分组）。服务端按 providerId+group 存专属例外
+    const providerId = actionButton.dataset.provider || ''
+    const group = actionButton.dataset.group || ''
     const makeShown = actionButton.classList.contains('ig-on')
     // 重画弹窗会把滚动位置打回顶部：先记住，切完再放回去
     const sheetBody = $('#group-models-body')
     const scrollTop = sheetBody ? sheetBody.scrollTop : 0
     try {
-      state = await api('POST', '/api/model-visibility', { name, shown: makeShown })
+      state = await api('POST', '/api/model-visibility', { name, shown: makeShown, providerId, group })
       const label = displayModel(name)
       toast(makeShown ? t('已显示 {name}', { name: label }) : t('已忽略 {name}', { name: label }))
     } catch (error) {
@@ -7949,18 +8252,37 @@ document.addEventListener('click', async (event) => {
   }
 
   if (action === 'probe-all') {
+    // 不直接开跑：先把 Lite / 全量 两个方案摊开让人选。
+    // 两种方案的钱差一倍，默默按其中一种跑等于替用户决定花多少钱。
+    probeModeOpen = !probeModeOpen
+    renderProbes()
+    translateDom($('#view-probes') || document.body)
+    return
+  }
+
+  if (action === 'probe-all-lite' || action === 'probe-all-full') {
     // 前端按筛选条件算好目标清单，服务端照单全收（不再默认砍到 5 个）。
     // 清单为空就提示，不让用户点了个寂寞。
+    const lite = action === 'probe-all-lite'
     const targets = probeFilteredOffers()
     if (targets.length === 0) {
       toast('筛选条件下没有可探测的模型，先调一下筛选', true)
       return
     }
-    // 一次探十几个以上会真实花钱（每个模型 5 个请求），超过 10 个先确认一次
-    if (targets.length > 10 && !confirm(`将探测 ${targets.length} 个模型，每个发 5 个请求，可能消耗较多 Token。继续？`)) return
-    toast('正在探测，需要几秒到几十秒…')
+    // 每个模型的请求数固定写在这里（Lite 2 发 / 全量 4 发，见 core/probe.js），
+    // 不再写死「5 个」——那句话在改成四连发之后就已经是错的了
+    const perModel = lite ? 2 : 4
+    // 一次探十几个以上会真实花钱，超过 10 个先确认一次
+    if (
+      targets.length > 10 &&
+      !confirm(
+        `将用${lite ? ' Lite ' : '全量'}方案探测 ${targets.length} 个模型：每个发 ${perModel} 个请求，共约 ${targets.length * perModel} 个，可能消耗较多 Token。继续？`,
+      )
+    )
+      return
+    toast(lite ? '正在 Lite 探测（每模型 2 发）…' : '正在全量探测（每模型 4 发）…')
     await withBusy(actionButton, async () => {
-      const result = await api('POST', '/api/probes/run', { offerIds: targets.map((o) => o.id) })
+      const result = await api('POST', '/api/probes/run', { offerIds: targets.map((o) => o.id), lite })
       state = result
       render()
       void refreshProbeSpendNow()

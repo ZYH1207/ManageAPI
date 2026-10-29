@@ -40,26 +40,54 @@ console.log('[1] 漂移判定纯函数（core/real-drift.js，综合分 = 真实
     outTokens,
   })
 
-  // 快窗口：平均总耗时是综合分主体
+  // 快窗口：综合分是「归一化」后的等效耗时，不是裸总耗时
   const cur = fastCurrent(Array.from({ length: 5 }, () => sample(2000, 2000, 100)), now)
-  ok(cur.samples === 5 && cur.avgLatencyMs === 2000, `5 单同值 → 总耗时 2000ms（${cur.avgLatencyMs}）`)
-  ok(fastCurrent([sample(2000, 2000, 100)], now).avgLatencyMs === null, '样本不足 5 → 判不了')
+  ok(cur.samples === 5 && cur.avgLatencyMs === 2000, `5 单同值 → 裸总耗时 2000ms（${cur.avgLatencyMs}）`)
+  // 归一化：ttft 2000 + outRef 100 × msPerToken 0 = 2000
+  ok(cur.compositeMs === 2000, `综合分 = ttft + outRef×msPerToken = 2000（${cur.compositeMs}）`)
+  ok(fastCurrent([sample(2000, 2000, 100)], now).compositeMs === null, '样本不足 5 → 判不了')
   const withOld = fastCurrent(
     [sample(2000, 2000, 100), sample(2000, 2000, 100), sample(2000, 2000, 100), sample(2000, 2000, 100), sample(2000, 2000, 100, 20)],
     now,
   )
-  ok(withOld.samples === 4 && withOld.avgLatencyMs === null, '20 分钟前的旧样本被窗口排除（剩 4 单判不了）')
+  ok(withOld.samples === 4 && withOld.compositeMs === null, '20 分钟前的旧样本被窗口排除（剩 4 单判不了）')
   const withTps = fastCurrent(Array.from({ length: 5 }, () => sample(500, 2500, 100)), now)
   ok(Math.abs(withTps.tps - 0.05) < 1e-9, `吐字速度 = 吐字量 ÷ (总耗时-首字)：100/2000ms = 0.05 tok/ms（${withTps.tps}）`)
+
+  // ---- 归一化专项：短单 vs 长单必须可比（这是「20 token 快单被当慢站」的解药）
+  // A：20 token / 10.0s（ttft 1s，吐字 20 token/9s ≈ 450ms/token）
+  // B：200 token / 15.4s（ttft 1s，吐字 200 token/14.4s ≈ 72ms/token）
+  const shortRuns = Array.from({ length: 5 }, () => sample(1000, 10000, 20))
+  const longRuns = Array.from({ length: 5 }, () => sample(1000, 15400, 200))
+  const a = fastCurrent(shortRuns, now)
+  const b = fastCurrent(longRuns, now)
+  ok(a.avgLatencyMs < b.avgLatencyMs, `裸比：短单总耗时更小（${a.avgLatencyMs} < ${b.avgLatencyMs}）`)
+  ok(
+    a.msPerToken > b.msPerToken * 3,
+    `但归一化后短单每 token 慢得多（${Math.round(a.msPerToken)} vs ${Math.round(b.msPerToken)} ms/token）`,
+  )
+  // 参照工作量不同（20 vs 200），各自折算后两者的「单位工作量耗时」由 msPerToken 决定胜负
+  ok(b.msPerToken < a.msPerToken, '归一化判定：长输出的站其实是快的那个')
 
   // 慢基线：最新桶（漂移中的样本正往里写）必须排除
   const hourKey = (ageH) => {
     const d = new Date(now - ageH * 3600_000)
     return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}T${String(d.getUTCHours()).padStart(2, '0')}`
   }
-  const bucket = (offerId, ageH, latencySum, ttftSum, count, genOut = 0, genTime = 0) => [
+  // requests/outputTokens 用来算「参照工作量 outRef」（这个站平均每单吐多少 token），
+  // 归一化靠它把长短单折算到同一起跑线；缺了它基线算不出综合分
+  const bucket = (offerId, ageH, latencySum, ttftSum, count, genOut = 0, genTime = 0, requests = count, outTokens = genOut) => [
     `${offerId}|${hourKey(ageH)}`,
-    { latencySum, ttftSum, latencyCount: count, ttftCount: count, genOutSum: genOut, genTimeSum: genTime },
+    {
+      latencySum,
+      ttftSum,
+      latencyCount: count,
+      ttftCount: count,
+      genOutSum: genOut,
+      genTimeSum: genTime,
+      requests,
+      outputTokens: outTokens,
+    },
   ]
   const stats = Object.fromEntries([
     bucket('o1', 0, 18000, 18000, 9), // 当前小时：漂移中的样本，不进基线
@@ -67,16 +95,19 @@ console.log('[1] 漂移判定纯函数（core/real-drift.js，综合分 = 真实
     bucket('o1', 3, 10000, 10000, 5),
   ])
   const base = baselineRatio(stats, 'o1', now)
-  ok(base.avgLatencyMs === 2000 && base.source === 'history', `基线只用历史桶（2000ms，${base.samples} 单）`)
+  ok(
+    base.avgTtftMs === 2000 && base.source === 'history',
+    `基线只用历史桶（首字 2000ms，${base.samples} 单）`,
+  )
   const baseEmpty = baselineRatio(Object.fromEntries([bucket('o2', 0, 2000, 2000, 2)]), 'o2', now)
-  ok(baseEmpty.avgLatencyMs === null, '基线样本不足 → 判不了')
+  ok(baseEmpty.compositeMs === null, '基线样本不足 → 判不了')
 
   // 每天头一个小时没有历史桶：回退用当前小时桶当基线（稀释偏差方向保守）
   const freshDay = Object.fromEntries([bucket('o3', 0, 60000, 60000, 30)])
   const baseFresh = baselineRatio(freshDay, 'o3', now)
   ok(
-    baseFresh.avgLatencyMs === 2000 && baseFresh.source === 'current-hour',
-    `头一小时回退当前桶（${baseFresh.source}，${baseFresh.avgLatencyMs}ms）`,
+    baseFresh.avgTtftMs === 2000 && baseFresh.source === 'current-hour',
+    `头一小时回退当前桶（${baseFresh.source}，${baseFresh.avgTtftMs}ms）`,
   )
 
   // 判定：现值 4000ms vs 基线 2000ms = +100% ≥ 30% → drifted
@@ -108,6 +139,117 @@ console.log('[1] 漂移判定纯函数（core/real-drift.js，综合分 = 真实
   ok(
     decoupled.verdict === 'drifted' && decoupled.ttftDrift === 0 && decoupled.tpsDrift > 0.5,
     `首字不动、吐字慢 → 综合分照样触发（首字 ${decoupled.ttftDrift}，吐字 ${decoupled.tpsDrift?.toFixed(2)}）`,
+  )
+}
+
+// ------------------------------------------- [1b] 常量基线（30 天按天取中位）
+
+console.log('[1b] 常量基线：按天取中位、今天不参与、不够 3 天退回加权均值')
+{
+  const { longTermBaseline, evaluateDrift } = await import('../core/real-drift.js')
+  const now = Date.now()
+  const hourKey = (ageH) => {
+    const d = new Date(now - ageH * 3600_000)
+    return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}T${String(d.getUTCHours()).padStart(2, '0')}`
+  }
+  // 一天一个桶：latency 均值 = latencyEach，样本数 count（genOutSum/genTimeSum 用来算吐字）
+  const day = (offerId, ageH, latencyEach, count) => [
+    `${offerId}|${hourKey(ageH)}`,
+    {
+      latencySum: latencyEach * count,
+      latencyCount: count,
+      ttftSum: latencyEach * count,
+      ttftCount: count,
+      genOutSum: 100 * count,
+      genTimeSum: 1000 * count,
+    },
+  ]
+  const stats = Object.fromEntries([
+    day('o5', 2, 60000, 30), // 今天：正在写的桶，不许进常量
+    day('o5', 30, 2000, 10),
+    day('o5', 54, 3000, 10),
+    day('o5', 78, 10000, 10), // 一天突然塌了：中位数应该无视它
+  ])
+  const lt = longTermBaseline(stats, 'o5', now)
+  ok(
+    lt.source === 'days' && lt.days === 3 && lt.avgLatencyMs === 3000,
+    `3 天中位 = 3000ms（${lt.source}/${lt.days} 天/${lt.avgLatencyMs}ms）`,
+  )
+  ok(lt.samples === 30, `常量只算合格的天（${lt.samples} 单）`)
+  ok(Math.abs(lt.tps - 0.1) < 1e-9, `吐字速度 = 100/(1000) = 0.1 tok/ms（${lt.tps}）`)
+
+  const twoDays = longTermBaseline(
+    Object.fromEntries([day('o5', 30, 2000, 10), day('o5', 54, 4000, 10)]),
+    'o5',
+    now,
+  )
+  ok(
+    twoDays.source === 'pooled' && twoDays.avgLatencyMs === 3000,
+    `不够 3 天 → 退回全窗口加权均值（${twoDays.source}/${twoDays.avgLatencyMs}ms）`,
+  )
+  const tooFew = longTermBaseline(Object.fromEntries([day('o5', 30, 2000, 3)]), 'o5', now)
+  ok(tooFew.avgLatencyMs === null, '样本不够 5 单 → 没有常量（不给一两单编个数）')
+  const noData = longTermBaseline({}, 'o5', now)
+  ok(noData.avgLatencyMs === null && noData.source === null && noData.days === 0, '没有任何账 → null')
+
+  // 判定里带出常量与「现值较常量」：6 小时基线被整段拖慢时的兑底证据
+  const verdict = evaluateDrift(
+    Array.from({ length: 5 }, () => ({ at: now, ttftMs: 2000, latencyMs: 6000, outTokens: 100 })),
+    Object.fromEntries([day('o6', 30, 2000, 10), day('o6', 54, 2000, 10), day('o6', 78, 2000, 10), day('o6', 2, 6000, 10)]),
+    'o6',
+    now,
+  )
+  ok(
+    verdict.constant === 2000 && Math.abs(verdict.driftVsConstant - 2) < 1e-9,
+    `现值 6000ms 较常量 2000ms = +200%（${verdict.driftVsConstant}）`,
+  )
+  // 现值算不出来时（这十分钟没流量）也要带出基线绝对值：界面上不能只余一排横线
+  const noTraffic = evaluateDrift(
+    [],
+    Object.fromEntries([day('o7', 2, 2000, 10), day('o7', 30, 2000, 10)]),
+    'o7',
+    now,
+  )
+  ok(
+    noTraffic.verdict === 'insufficient' &&
+      noTraffic.current === null &&
+      noTraffic.baselineTtftMs === 2000 &&
+      Math.abs(noTraffic.baselineTps - 0.1) < 1e-9,
+    `没流量也带出基线首字/吐字（${noTraffic.baselineTtftMs}ms / ${noTraffic.baselineTps} tok/ms）`,
+  )
+  // 现值补位用：最近一小时小时桶（只展示，不参与判定）
+  ok(
+    Math.abs(noTraffic.recent.avgLatencyMs - 2000) < 1e-9 && noTraffic.recent.samples === 10,
+    `现值空时用最近一小时补位（${noTraffic.recent.avgLatencyMs}ms / ${noTraffic.recent.samples} 单）`,
+  )
+  ok(
+    !("drift" in noTraffic.recent) && Number.isFinite(noTraffic.recent.ageMs),
+    `补位值不带漂移结论，只带时间戳（龄 ${noTraffic.recent.ageMs}ms）`,
+  )
+  // 参考漂移：最近一小时 vs 6 小时基线，只给界面看，不参与触发
+  ok(
+    Number.isFinite(noTraffic.reference?.ttftDrift) &&
+      Math.abs(noTraffic.reference.ttftDrift) < 1e-9 &&
+      Number.isFinite(noTraffic.reference?.tpsDrift),
+    `同一小时当参考：首字/吐字漂移都是 0（${noTraffic.reference?.ttftDrift} / ${noTraffic.reference?.tpsDrift}）`,
+  )
+  // 首字/吐字是两个不同资源，必须能分别算出来（UI 那格以前永远是横线就是这个丢了）
+  const split = evaluateDrift(
+    [],
+    Object.fromEntries([
+      day('o8', 2, 12000, 10), // 最近一小时：总 12s
+      day('o8', 4, 6000, 10), // 6 小时基线：总 6s
+    ]),
+    'o8',
+    now,
+  )
+  ok(
+    Math.abs(split.reference.ttftDrift - 1) < 1e-9 && Math.abs(split.reference.drift - 1) < 1e-9,
+    `最近一小时比基线慢一倍 → 参考漂移 +100%（首字 ${split.reference.ttftDrift}）`,
+  )
+  ok(
+    Number.isFinite(split.baselineTtftMs) && Number.isFinite(split.baselineTps),
+    `基线首字/吐字绝对值都在（${split.baselineTtftMs}ms / ${split.baselineTps} tok/ms）`,
   )
 }
 
@@ -268,14 +410,99 @@ console.log('[3] Watcher 状态机：转移 / 试跑窗 / 冷却 / 逃生舱 / �
   await watcher.tick()
   ok(!watcher.snapshot().demoted.includes('o-a1'), '恢复正常 → 放回参选')
 
-  // (g) 自动路由关掉 → 周期状态全清（连锁机制同调度器侧）
+  // (g) 自动路由关掉 → 不再改派，但监视不停（基线账照算）
   await store.mutate((latest) => {
     latest.settings.autoRoute = { ...latest.settings.autoRoute, enabled: false }
   })
   await watcher.tick()
-  ok(watcher.snapshot().evaluation === null && watcher.snapshot().demoted.length === 0, '关闭自动路由 → 周期状态清空')
+  ok(watcher.snapshot().demoted.length === 0, '关闭自动路由 → 降级名单作废（重新开启不带旧账）')
+
+  // (h) 没开自动路由：照常算两档基线、照常判漂移，但一单也不改派
+  for (let i = 0; i < 5; i++) watcher.seedSample('o-b1', { ttftMs: 2000, latencyMs: 9000, outTokens: 100 })
+  await watcher.tick()
+  const snap = watcher.snapshot()
+  db = await store.readDb()
+  ok(snap.evaluation !== null && snap.evaluation.verdict !== undefined, '不开自动路由也算得出判定（不再返回 null）')
+  ok(snap.scan.length >= 2, `同时在监视多条供给（${snap.scan.length} 条）`)
+  ok(
+    snap.evaluation.baseline === 2000 && Number.isFinite(snap.evaluation.constant),
+    `两档基线都算出来了（6h ${snap.evaluation.baseline}ms / 常量 ${snap.evaluation.constant}ms）`,
+  )
+  ok(
+    snap.evaluation.offerId === 'o-a1',
+    `主监控 = 真实流量最多的那条（${snap.evaluation.offerId}）`,
+  )
+  ok(db.settings.autoRoute.offerId === 'o-a1' && snap.demoted.length === 0, '漂移了也不改派、不降级')
+  ok(snap.trial === null && snap.cooldownUntil === null, '试跑窗/冷却期在关掉自动路由后为空')
+
+  // (i) 总开关关掉 → 连监视都停（用户明确关掉漂移检测）
+  await store.mutate((latest) => {
+    latest.settings.driftEnabled = false
+  })
+  await watcher.tick()
+  ok(watcher.snapshot().evaluation === null && watcher.snapshot().scan.length === 0, '漂移检测总开关关掉 → 快照清空')
+  await store.mutate((latest) => {
+    latest.settings.driftEnabled = true
+  })
 
   ok(DRIFT_COOLDOWN_MS === 10 * 60_000, `默认冷却 10 分钟（${DRIFT_COOLDOWN_MS}）`)
+
+  // (j) 进程刚重启、快窗口是空的：监视对象从 offerStats 里挑（不因「这十分钟没流量」就什么都不显示）
+  const coldWatcher = createDriftWatcher({ runProbes: async () => [], logger: { info() {}, warn() {} } })
+  await coldWatcher.tick()
+  const cold = coldWatcher.snapshot()
+  ok(cold.scan.length === 2, `快窗口空 → 从 6 小时小时桶里挑监视对象（${cold.scan.length} 条）`)
+  ok(
+    cold.evaluation.samples === 0 && cold.evaluation.baseline !== null,
+    `没流量也把已攒好的基线露出来（样本 ${cold.evaluation.samples} / 基线 ${cold.evaluation.baseline}ms）`,
+  )
+  ok(cold.evaluation.offerId === 'o-a1', `按请求数排序，主监控仍是 o-a1（${cold.evaluation.offerId}）`)
+  ok(
+    cold.scan.every((r) => r.lastSampleAt === null && Number.isFinite(r.baselineTtftMs)),
+    '快窗口空 → 最近一单为空，但基线首字照样带出（界面不会只剩横线）',
+  )
+
+  // (k) 快窗口只走了小流量那条，大流量那条也不许被漏——两份账取并集后按流量排
+  // 先把 o-a1 的账本推到明显大头（它是站内主力），o-b1 只在快窗口里露了个头
+  await store.mutate((latest) => {
+    latest.offerStats[`o-a1|${hourKey(0)}`] = { latencySum: 200000, latencyCount: 100, ttftSum: 200000, ttftCount: 100, requests: 100 }
+  })
+  const mixedWatcher = createDriftWatcher({ runProbes: async () => [], logger: { info() {}, warn() {} } })
+  // 只给 o-b1 灌快窗口样本（o-a1 这十分钟没流量，但账本里它是大头）
+  for (let i = 0; i < 5; i++) mixedWatcher.seedSample('o-b1', { ttftMs: 1000, latencyMs: 1200, outTokens: 100 })
+  await mixedWatcher.tick()
+  const mixed = mixedWatcher.snapshot()
+  ok(
+    mixed.scan.map((r) => r.offerId).sort().join(',') === 'o-a1,o-b1',
+    `快窗口 + 账本取并集，大流量那条不会被漏（${mixed.scan.map((r) => r.offerId).join(' / ')}）`,
+  )
+  ok(mixed.evaluation.offerId === 'o-a1', `主监控仍是大流量那条（${mixed.evaluation.offerId}）`)
+  ok(
+    mixed.scan.find((r) => r.offerId === 'o-a1').current === null &&
+      Number.isFinite(mixed.scan.find((r) => r.offerId === 'o-a1').recent.avgLatencyMs),
+    '大流量那条现值空着，但最近一小时有数可补位',
+  )
+
+  // (l) 自动路由开着也不能只算现役一条：其它模型也在跑，账也得算
+  await store.mutate((latest) => {
+    latest.settings.autoRoute = {
+      ...latest.settings.autoRoute,
+      enabled: true,
+      modelKey: 'm-b',
+      offerId: 'o-b1',
+      pickedAt: new Date().toISOString(),
+      reason: 'initial',
+    }
+  })
+  const autoWatcher = createDriftWatcher({ runProbes: async () => [], logger: { info() {}, warn() {} } })
+  await autoWatcher.tick()
+  const autoSnap = autoWatcher.snapshot()
+  ok(autoSnap.scan.length >= 2, `自动路由开着也扫多条（${autoSnap.scan.length} 条）`)
+  ok(autoSnap.evaluation.offerId === 'o-b1', `主监控 = 现役那条（${autoSnap.evaluation.offerId}）`)
+  ok(
+    autoSnap.scan.some((r) => r.offerId === 'o-a1'),
+    '非现役但有大流量，也在 scan 里（界面看得到它慢不慢）',
+  )
 }
 
 console.log(failed === 0 ? '\n全部通过' : `\n${failed} 项失败`)

@@ -104,11 +104,57 @@ function freshTraffic(row, now, maxAgeMs) {
  * @param {{window?:number, maxAgeMs?:number, now?:number}} options
  * @returns {Map<string, object>}
  */
+/**
+ * 从 offerStats 小时桶里取「真实流量首字」（最近 6 小时加权均值）。
+ *
+ * 与探针首字分开的理由见 scoreOffers 里 offerStats 选项的注释：探针是小请求，
+ * 真实是 25 万上下文，两者差 4–6 倍，混算就是误判。
+ *
+ * @returns {{realTtftMs:number|null, realTtftSamples:number, realMsPerToken:number|null}}
+ */
+export function realTtftOf(offerStats, offerId, now = Date.now()) {
+  const empty = { realTtftMs: null, realTtftSamples: 0, realMsPerToken: null }
+  if (!offerStats || !offerId) return empty
+  const cutoff = now - 6 * 3600_000
+  let ttftSum = 0
+  let ttftCount = 0
+  let genTimeSum = 0
+  let genOutSum = 0
+  for (const key of Object.keys(offerStats)) {
+    if (!key.startsWith(`${offerId}|`)) continue
+    const hour = key.slice(offerId.length + 1)
+    const bucketStart = Date.parse(`${hour}:00:00Z`)
+    if (Number.isFinite(bucketStart) && bucketStart < cutoff) continue
+    const b = offerStats[key]
+    if (!b) continue
+    if (Number(b.ttftCount) > 0) {
+      ttftSum += Number(b.ttftSum) || 0
+      ttftCount += Number(b.ttftCount)
+    }
+    if (Number(b.genTimeSum) > 0 && Number(b.genOutSum) > 0) {
+      genTimeSum += Number(b.genTimeSum)
+      genOutSum += Number(b.genOutSum)
+    }
+  }
+  if (ttftCount === 0) return empty
+  return {
+    realTtftMs: Math.round(ttftSum / ttftCount),
+    realTtftSamples: ttftCount,
+    // 每输出 token 的吐字毫秒（越大越慢）：判断「首字快但吐字慢」用
+    realMsPerToken: genOutSum > 0 ? genTimeSum / genOutSum : null,
+  }
+}
+
 export function scoreOffers(probes, traffic = {}, options = {}) {
   const window = options.window ?? DEFAULT_WINDOW
   const maxAgeMs = options.maxAgeMs ?? DEFAULT_MAX_AGE_MS
   const trafficMaxAgeMs = options.trafficMaxAgeMs ?? DEFAULT_TRAFFIC_MAX_AGE_MS
   const now = options.now ?? Date.now()
+  // 真实首字的来源（db.offerStats 的逐小时桶）。**刻意与探针首字分开**：
+  // 探针只发 45 token 的小请求，量到的 2 秒和你 25 万上下文真实跑的 9 秒不是一回事，
+  // 混在一起平均会让人以为这个站很快（真实踩过）。这里只取「最近 N 小时的加权均值」，
+  // 由调用方决定用它做展示还是排序，scoreOffers 自己不混算。
+  const offerStats = options.offerStats || null
 
   const byOffer = new Map()
   for (const record of probes) {
@@ -388,8 +434,12 @@ export function scoreOffers(probes, traffic = {}, options = {}) {
       integrityFaults,
       quality,
       cacheHitRate,
+      // 探针首字（小请求口径，仅供参考）：真实首字看 realTtftMs
       ttftMs: median(recent.map((r) => r.ttftMs)),
       latencyMs: median(recent.map((r) => r.latencyMs)),
+      // 真实流量首字（大上下文下的真实体感），与上面那个**不混算**。
+      // 没有任何真实流量时是 null，调用方应回退到 ttftMs 并标注「探针口径」
+      ...realTtftOf(offerStats, offerId, now),
       lastProbeAt,
       ageMs,
       // 证据新鲜度（探针或真实流量，取最近一次）与置信度（样本量）

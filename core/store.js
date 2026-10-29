@@ -85,8 +85,11 @@ export function emptyDb() {
       // 自动路由（一键接管）：开启后网关无视客户端请求的模型名，
       // 始终派给当前决策档位下全场最优的模型（口径见 core/auto-route.js）。
       // modelKey / offerId / pickedAt / reason 是最近一次挑选的落盘记录，
-      // 决策页「正在使用」照着显示；归一化与挑选逻辑只有 core/auto-route.js 一份
+      // 决策页「正在使用」照着显示；归一化与挑选逻辑只有 core/auto-route.js 一份。
+      // 这个开关客户端也能拨：清单里的虚拟模型 AutoThink 就是它的把手
       autoRoute: { enabled: false, modelKey: null, offerId: null, pickedAt: null, reason: null, failoverFrom: null },
+      // 客户端关掉接管时点到的那一个模型（身份键口径）；null = 没钉
+      pinnedModelKey: null,
       // 故障转移上报令牌：外部监控系统拿它证明身份（POST /api/failover/report）。
       // daemon 启动时自动生成一次（core/failover.js#ensureFailoverToken），这里只是形状占位
       failoverToken: null,

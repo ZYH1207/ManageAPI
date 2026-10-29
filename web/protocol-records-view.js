@@ -188,7 +188,7 @@ function renderRetention() {
 
 /** 筛选键：手动探查没有 providerName，归到「手动」一项。 */
 function siteOf(record) {
-  return record.providerName || (record.mode === 'manual' ? t('手动') : record.baseUrl || '—')
+  return record.providerName || (record.probeBy === 'manual' ? t('手动') : record.baseUrl || '—')
 }
 
 function filteredRecords() {

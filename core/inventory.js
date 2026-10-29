@@ -478,14 +478,39 @@ export function balanceDepleted(provider) {
 }
 
 /**
- * 单个模型的显式开关（settings.modelOverrides）：精确存储键 → 'shown' | 'ignored'。
+ * 单个供给的显式开关（settings.modelOverrides）：存储键 → 'shown' | 'ignored'。
  *
- * 为什么要有它：身份键把变体归成一类，但用户要的是分组弹窗里**这一行**单独
- * 开关——包括「整类被忽略时，把其中一个捞回来」。两层各管各的：
- *   ignoredModels（身份键）＝ 整类忽略，「忽略模型」管理面板在用；
- *   modelOverrides（精确名）＝ 单行例外，分组/Key 弹窗的开关徽章在用。
- * 判定优先级：单行例外 > 整类名单。判定唯一实现在 ignoreChecker。
+ * 为什么要有它：身份键把变体归成一类，但用户要的是弹窗里**这一行**单独开关——
+ * 包括「整类被忽略时，把其中一个捞回来」。两层各管各的：
+ *   ignoredModels（身份键）＝ 整类忽略，「忽略模型」管理面板在用（跨站跨分组全局）；
+ *   modelOverrides（作用域 + 精确名）＝ 单行例外，分组/Key 弹窗的开关徽章在用。
+ * 判定优先级：作用域例外 > 全局例外（旧数据）> 整类名单。判定唯一实现在 ignoreChecker。
+ *
+ * 存储键分两种写法：
+ *   `providerId::group::模型名`  这一行的开关（分组/Key 弹窗写入）——只影响这一条供给
+ *   `模型名`                     旧写法，全局（对所有站所有分组生效）——只为兼容老数据
+ * 以前只有第二种，于是「点这一行」实际把**所有站、所有分组里的同名模型**一起改了：
+ * 同一个 deepseek-v4.1-flash 在 5 个站 8 个分组里都是同一条命令，用户点的是
+ * 「这一行」，变的是「这一类」。作用域键就是补上这一刀。
  */
+
+/** 作用域键：站 + 分组 + 模型精确名。分组为空串也合法（默认分组）。 */
+export function overrideKey(name, { providerId, group } = {}) {
+  const exact = normalizeModelKey(name)
+  if (!exact) return ''
+  if (!providerId) return exact
+  return `${providerId}::${group || ''}::${exact}`
+}
+
+/** 拆作用域键；没有 providerId 前缀的是「全局」旧键（scope 为 null） */
+export function parseOverrideKey(key) {
+  const raw = String(key || '')
+  if (!raw) return { scope: null, model: '' }
+  // 只在最后一个 :: 处切：分组名里万一带冒号也不会把模型名切坏
+  const at = raw.lastIndexOf('::')
+  if (at < 0) return { scope: null, model: raw }
+  return { scope: raw.slice(0, at), model: raw.slice(at + 2) }
+}
 /**
  * 写「整类忽略」名单（身份键），并把这次**新加**进来的那一类里遗留的
  * 「单行显示」例外一起清掉。
@@ -513,9 +538,11 @@ export function applyIgnoredModels(db, list, { enforce = [] } = {}) {
   const purge = new Set([...next.filter((id) => !before.has(id)), ...[...explicit].filter((id) => next.includes(id))])
   if (purge.size > 0 && db.settings?.modelOverrides) {
     const overrides = db.settings.modelOverrides
-    for (const [exact, mode] of Object.entries(overrides)) {
+    for (const [key, mode] of Object.entries(overrides)) {
       if (mode !== 'shown') continue
-      if (purge.has(toId(exact))) delete overrides[exact]
+      // 键可能是作用域写法（providerId::group::模型名），比的是它里面的模型名
+      const { model } = parseOverrideKey(key)
+      if (purge.has(toId(model))) delete overrides[key]
     }
     if (Object.keys(overrides).length === 0) delete db.settings.modelOverrides
   }
@@ -523,23 +550,34 @@ export function applyIgnoredModels(db, list, { enforce = [] } = {}) {
   return next
 }
 
+/**
+ * 忽略判定器。`fn(name, scope?)` → 是否忽略。
+ *
+ * scope 传供给自己的位置 `{ providerId, group }`：传了就先看这一行有没有专属例外，
+ * 再看全局例外（旧数据），最后才落到整类名单。**不传 scope 就等于只问全局**——
+ * 调用方拿得到 offer 就必须传，否则「只开这一行」会被读成「整类都开」。
+ */
 export function ignoreChecker(db) {
   const aliases = db.settings?.modelAliases || {}
   const identities = ignoredModelSet(db)
   const overrides = db.settings?.modelOverrides || {}
-  return (name) => {
+  const decide = (mode) => (mode === 'shown' ? false : mode === 'ignored' ? true : null)
+  return (name, scope) => {
     const exact = normalizeModelKey(name)
-    const override = exact ? overrides[exact] : undefined
-    if (override === 'shown') return false
-    if (override === 'ignored') return true
+    if (exact) {
+      const scoped = scope?.providerId ? decide(overrides[overrideKey(exact, scope)]) : null
+      if (scoped !== null) return scoped
+      const global = decide(overrides[exact])
+      if (global !== null) return global
+    }
     const id = identityKey(String(name), aliases)
     return Boolean(id) && identities.has(id)
   }
 }
 
 /** 单个模型名现在的忽略状态（每次调用重建判定器；循环里请用 ignoreChecker） */
-export function modelIgnored(db, name) {
-  return ignoreChecker(db)(name)
+export function modelIgnored(db, name, scope) {
+  return ignoreChecker(db)(name, scope)
 }
 
 /**
@@ -557,7 +595,10 @@ export function routeableOffers(db) {
   return db.offers.filter((offer) => {
     if (offer.delistedAt) return false
     if (pausedIds.has(offer.providerId)) return false
-    if (isIgnored(offer.modelKey || offer.upstreamName || '')) return false
+    // 作用域必须传：否则「只开这一行」会被读成「整类都开」
+    if (isIgnored(offer.modelKey || offer.upstreamName || '', { providerId: offer.providerId, group: offer.group })) {
+      return false
+    }
     return true
   })
 }

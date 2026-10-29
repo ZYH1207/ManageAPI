@@ -816,3 +816,160 @@
   .pp-top-actions { justify-content: flex-start; }
   .pp-cap-table td:first-child { min-width: 120px; }
 }
+
+/* ---------------------------------------------------------------- 检测深度 */
+
+.pp-depth-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 22px;
+  margin: 2px 0 4px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-2);
+}
+.pp-depth {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex: 1 1 320px;
+}
+.pp-depth-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.pp-depth-hint {
+  font-size: 11.5px;
+  color: var(--faint);
+  line-height: 1.35;
+}
+.pp-depth-hint.pp-hint-warn { color: var(--warn); }
+
+.pp-advice {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  margin-top: 8px;
+  padding: 9px 12px;
+  border-radius: 9px;
+  background: var(--success-soft);
+  border: 1px solid var(--accent-mid);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+.pp-advice b { white-space: nowrap; color: var(--success); }
+.pp-advice span { color: var(--text); }
+
+/* ------------------------------------------------------- 协议说明（结论块） */
+
+.pv-block {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px dashed var(--border);
+  display: grid;
+  gap: 12px;
+}
+
+.pv-headline {
+  display: flex;
+  gap: 9px;
+  align-items: baseline;
+  padding: 10px 12px;
+  border-radius: 9px;
+  background: var(--surface-2);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.pv-level {
+  flex: none;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid currentColor;
+}
+.pv-level-native { color: #16a34a; }
+.pv-level-mostly { color: #0f766e; }
+.pv-level-partial { color: #b45309; }
+.pv-level-weak, .pv-level-unsupported { color: #b91c1c; }
+.pv-level-unknown { color: #64748b; }
+
+.pv-section { display: grid; gap: 6px; }
+.pv-label {
+  font-size: 11.5px;
+  font-weight: 700;
+  color: var(--muted);
+  letter-spacing: 0.02em;
+}
+
+.pv-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.pv-chip {
+  font-size: 11.5px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: var(--success-soft);
+  border: 1px solid var(--accent-mid);
+  color: #15803d;
+}
+
+.pv-gap {
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--danger-soft);
+  border: 1px solid var(--danger-border, #f6c9c9);
+}
+.pv-gap-head { display: flex; align-items: center; gap: 7px; font-size: 12.5px; }
+.pv-gap-impact { margin-top: 3px; font-size: 12px; color: #7f1d1d; line-height: 1.5; }
+.pv-gap-detail { margin-top: 2px; font-size: 11px; color: var(--faint); }
+
+.pv-ok, .pv-empty { font-size: 12px; color: var(--faint); }
+
+.pv-tool {
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: #fff;
+}
+.pv-tool-ok { border-color: var(--accent-mid); }
+.pv-tool-part { border-color: var(--warn-border, #f3d9a4); background: var(--warn-soft); }
+.pv-tool-no { border-color: var(--danger-border, #f6c9c9); background: var(--danger-soft); }
+.pv-tool-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+}
+.pv-tool-why { margin-top: 3px; font-size: 11.5px; color: var(--muted); line-height: 1.5; }
+
+.pv-hint {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  padding: 9px 11px;
+  border-radius: 9px;
+  background: var(--surface-2);
+  border: 1px dashed var(--border);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.pv-hint b { white-space: nowrap; color: var(--muted); }
+
+/* 结论行：逐协议箭头，一行一个，不会因为分组把「原生 Chat」和「翻译成 Chat」混起来 */
+.pp-arrow {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  margin-right: 16px;
+  white-space: nowrap;
+}
+.pp-arrow-sep { color: var(--faint); }
+.pp-arrow .ok { color: var(--success); }
+.pp-arrow .bad { color: var(--danger); }
+.pp-arrow .warn { color: var(--warn); }
+
+/* 模式/次数按钮：中文不能竖排 */
+#pp-depth-seg button, #pp-repeat-seg button { white-space: nowrap; }
