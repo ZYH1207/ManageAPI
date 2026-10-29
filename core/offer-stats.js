@@ -116,6 +116,18 @@ function addUsage(b, usage) {
 const errKey = (kind, code) => `${kind || 'outage'}${code ? `/${code}` : ''}`
 
 /**
+ * 桶里的「客户端自己断开」次数（**唯一读法**）。
+ *
+ * 历史上有两个字段名：`clientAborted`（release 上 9689c72 写的）和
+ * `clientAborts`（本分支统一后的名字）。库里可能两种都有，读的时候必须都认，
+ * 否则升级后老数据会被当成「0 次客户端断开」，那批请求就凭空变回断流了。
+ */
+export function clientAbortsOf(bucket) {
+  if (!bucket) return 0
+  return (Number(bucket.clientAborts) || 0) + (Number(bucket.clientAborted) || 0)
+}
+
+/**
  * 把一条决策记录摊进时间序列。纯函数（原地改 stats）：
  *   - 选中供给的 outcome（ok / stream-broken / client-aborted）记在该供给名下
  *   - failures[] 里的每次失败尝试记在被试供给名下（那是它们的失败）
@@ -332,7 +344,7 @@ export function aggregateLongTerm(offerStats = {}, offerMeta = new Map()) {
       rec.ok += Number(b.ok) || 0
       rec.broken += Number(b.broken) || 0
       rec.failed += Number(b.failed) || 0
-      rec.clientAborts += Number(b.clientAborts) || 0
+      rec.clientAborts += clientAbortsOf(b)
       rec.ttftSum += Number(b.ttftSum) || 0
       rec.ttftCount += Number(b.ttftCount) || 0
       rec.latencySum += Number(b.latencySum) || 0

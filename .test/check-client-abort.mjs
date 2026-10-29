@@ -25,7 +25,12 @@ import {
   shouldEscalate,
   IMPACT,
 } from '../core/fault-triage.js'
-import { applyRoutingToStats, ensureDiagnosisKeys, repairClientAborts } from '../core/offer-stats.js'
+import {
+  applyRoutingToStats,
+  ensureDiagnosisKeys,
+  repairClientAborts,
+  clientAbortsOf,
+} from '../core/offer-stats.js'
 import { checkStreamBreaks, checkClientAborts, diagnose } from '../core/diagnosis.js'
 
 let n = 0
@@ -295,6 +300,27 @@ const eq = (a, b, label) => {
   }
   repairClientAborts(db3)
   eq(db3.offerStats['o_c|2026-10-28T21'].broken, 1, '新口径事件不再扣桶（那是别的请求的断流）')
+}
+
+
+// ---------------------------------------------------------------- 6. 老字段名兼容
+{
+  // release 上 9689c72 写的是 clientAborted，本分支统一成 clientAborts。
+  // 库里可能两种都有，读的时候必须都认——否则升级后老数据凭空变回断流。
+  const stats = {}
+  const hour = '2026-10-29T05'
+  for (let i = 0; i < 20; i++) {
+    applyRoutingToStats(stats, { ts: `${hour}:10:00Z`, chosenOfferId: 'o_old', outcome: OUTCOME.OK })
+  }
+  // 手工塞一个老口径桶（模拟 release 版跑出来的历史数据）
+  stats[`o_old|${hour}`].clientAborted = 5
+  stats[`o_old|${hour}`].requests += 5
+  eq(clientAbortsOf(stats[`o_old|${hour}`]), 5, '老字段 clientAborted 也要读出来')
+  const f = checkStreamBreaks({ offerStats: stats, offerById: new Map([['o_old', '秋']]) })
+  eq(f.length, 0, '老桶里的客户端断开不参与断流判定')
+  const aborts = checkClientAborts({ offerStats: stats, offerById: new Map([['o_old', '秋']]) })
+  eq(aborts.length, 1, '老桶里的客户端断开照样单独成结论')
+  eq(aborts[0].evidence.clientAborts, 5, '数量取得到')
 }
 
 console.log(`check-client-abort: ${n} 项全部通过`)

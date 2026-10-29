@@ -70,7 +70,8 @@ export function mergeWindow(buckets) {
     m.ok += b.ok || 0
     m.broken += b.broken || 0
     m.failed += b.failed || 0
-    m.clientAborts += b.clientAborts || 0
+    // 老桶叫 clientAborted、新桶叫 clientAborts，两种都要认（见 offer-stats#clientAbortsOf）
+    m.clientAborts += (Number(b.clientAborts) || 0) + (Number(b.clientAborted) || 0)
     m.ttftSum += b.ttftSum || 0
     m.ttftCount += b.ttftCount || 0
     m.genOutSum += b.genOutSum || 0

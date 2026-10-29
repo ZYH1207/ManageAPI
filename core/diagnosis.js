@@ -14,6 +14,7 @@
  */
 
 import { detectAnomalies } from './anomaly.js'
+import { clientAbortsOf } from './offer-stats.js'
 
 /** 五层归因的标签与顺序（severity 排序用） */
 export const LAYERS = {
@@ -180,7 +181,7 @@ export function checkStreamBreaks({ offerStats = {}, offerById = null } = {}) {
     const cur = byOffer.get(b.offerId) || { requests: 0, broken: 0, clientAborts: 0, gapMax: 0 }
     cur.requests += b.requests || 0
     cur.broken += b.broken || 0
-    cur.clientAborts += b.clientAborts || 0
+    cur.clientAborts += clientAbortsOf(b)
     cur.gapMax = Math.max(cur.gapMax, b.streamGapMax || 0)
     byOffer.set(b.offerId, cur)
   }
@@ -228,7 +229,7 @@ export function checkStreamBreaks({ offerStats = {}, offerById = null } = {}) {
 export function checkClientAborts({ offerStats = {}, offerById = null } = {}) {
   const byOffer = new Map()
   for (const b of Object.values(offerStats)) {
-    const n = Number(b.clientAborts) || 0
+    const n = clientAbortsOf(b)
     if (!n) continue
     byOffer.set(b.offerId, (byOffer.get(b.offerId) || 0) + n)
   }
