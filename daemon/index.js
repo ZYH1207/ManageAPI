@@ -129,7 +129,7 @@ for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => shutdown(si
 /**
  * 父进程看护（宿主插件用 `--parent-watch` 启动时启用）。
  *
- * DSH 插件把 daemon 当子进程拉起，自己崩了/被强杀时子进程会被系统留在后台，
+ * DSH 插件端（github.com/ZYH1207/dsh-manage-api）把 daemon 当子进程拉起，自己崩了/被强杀时子进程会被系统留在后台，
  * 下次再拉起就撞实例锁、变成"孤儿 daemon 占着数据目录"。stdin 是父进程给的管道，
  * 父进程一死管道必然关闭（EOF），这就是最可靠的存活信号——不需要端口探测或轮询。
  */

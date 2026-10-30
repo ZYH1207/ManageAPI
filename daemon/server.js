@@ -1,6 +1,6 @@
 /**
  * 本地 daemon：HTTP API + 静态页。
- * 只绑 127.0.0.1，不做鉴权（个人本机工具）；DSH 插件壳将来直接复用这些接口。
+ * 只绑 127.0.0.1，不做鉴权（个人本机工具）；DSH 插件端（github.com/ZYH1207/dsh-manage-api）复用这些接口。
  */
 import { createServer } from 'node:http'
 import { once } from 'node:events'
@@ -461,7 +461,7 @@ route('GET', /^\/api\/state$/, async (ctx) => buildState({ light: ctx.query.get(
  *
  * 为什么跳过 manage-api：走网关的那部分，网关自己已经记过一次（recordUsage），
  * 插件再推一遍就是同一次请求记两遍账。
- * 分桶口径：keyId 固定 'dsh-plugin'，providerId 加 'dsh:' 前缀，和网关流量分得开。
+ * 分桶口径：keyId 固定 'dsh-plugin'（DSH 插件端写入的桶，字符串保持稳定以免历史数据错桶），providerId 加 'dsh:' 前缀，和网关流量分得开。
  */
 route('POST', /^\/api\/ingest\/usage$/, async (ctx) => {
   const body = ctx.body || {}
