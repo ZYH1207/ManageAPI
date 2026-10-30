@@ -279,6 +279,108 @@ function toast(message, isError = false) {
   toastTimer = setTimeout(() => { el.hidden = true }, isError ? 4200 : 2200)
 }
 
+/**
+ * 复制文本：三级降级，任何一级成功就返回 true。
+ *
+ * 为什么不能只用 `navigator.clipboard`：它只在**安全上下文**里存在。
+ * 面板从局域网地址（`http://192.168.1.26:4319/`）打开时不是安全上下文
+ * （只有 localhost / HTTPS 算），`navigator.clipboard` 直接是 undefined，
+ * `navigator.clipboard.writeText(...)` 抛 TypeError——按了「复制」什么都不会发生，
+ * 剪贴板里还是上一次的内容。用户看到的就是「复制密钥复制不上，粘贴出来是地址」
+ * （地址是先复制的，Key 那次静默失败了）。
+ *
+ * 而「局域网访问」这个功能本身就是让人从别的设备用 `http://<IP>` 打开面板，
+ * 所以这条路径必然踩到，不是小概率事件。
+ */
+async function copyText(text) {
+  const value = String(text ?? '')
+  if (!value) return false
+
+  // 1. 标准 API：安全上下文（本机 localhost / HTTPS）才有
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(value)
+      return true
+    }
+  } catch {
+    // 没焦点 / 权限被拒：往下走回退，不要让异常冒出去把后续 toast 吞掉
+  }
+
+  // 2. 回退：临时 textarea + execCommand。非安全上下文里唯一可走的路。
+  //    必须挂在 document 上并 select，否则 execCommand 拿不到选区。
+  try {
+    const area = document.createElement('textarea')
+    area.value = value
+    area.setAttribute('readonly', '')
+    area.style.position = 'fixed'
+    area.style.top = '-1000px'
+    area.style.left = '-1000px'
+    area.style.opacity = '0'
+    document.body.appendChild(area)
+    const selection = document.getSelection()
+    const previous = selection && selection.rangeCount > 0 ? selection.getRangeAt(0) : null
+    area.select()
+    area.setSelectionRange(0, value.length)
+    const copied = document.execCommand('copy')
+    area.remove()
+    // 别把用户原来的选区弄丢
+    if (previous && selection) {
+      selection.removeAllRanges()
+      selection.addRange(previous)
+    }
+    if (copied) return true
+  } catch {
+    // 继续降级到「摊开来让人自己复制」
+  }
+
+  return false
+}
+
+/**
+ * 通用「手动复制」弹窗：复制真做不到的时候，把内容摊进一个可全选的输入框。
+ * 关键是**不撒谎**——以前复制失败还是提示「已复制」，用户到别处一粘才发现不对。
+ */
+function showCopyBox({ title = '手动复制', hint = '剪贴板被浏览器拦住了，下面这段已经全选，按 Ctrl/⌘ + C 复制。', text = '', mono = true } = {}) {
+  const old = document.getElementById('copy-box')
+  if (old) old.remove()
+  const wrap = document.createElement('div')
+  wrap.id = 'copy-box'
+  wrap.className = 'modal'
+  wrap.innerHTML = `
+    <div class="modal-backdrop" data-act="close-copy-box"></div>
+    <div class="modal-panel" style="max-width:640px">
+      <div class="modal-head">
+        <b>${esc(t(title))}</b>
+        <button class="ghost" data-act="close-copy-box">${t('关闭')}</button>
+      </div>
+      <div class="modal-body">
+        <p class="hint" style="margin:0 0 8px">${esc(t(hint))}</p>
+        <textarea class="copy-box-text" readonly rows="3"${mono ? ' style="font-family:var(--mono,monospace)"' : ''}></textarea>
+      </div>
+    </div>`
+  const area = wrap.querySelector('.copy-box-text')
+  area.value = text
+  document.body.appendChild(wrap)
+  wrap.addEventListener('click', (event) => {
+    if (event.target.closest('[data-act="close-copy-box"]')) wrap.remove()
+  })
+  area.focus()
+  area.select()
+}
+
+/**
+ * 复制 + 反馈：成功给一句 toast，失败就弹手动复制框（不要静默）。
+ * 返回是否真的复制进了剪贴板。
+ */
+async function copyWithFeedback(text, okMessage, boxTitle = '手动复制') {
+  if (await copyText(text)) {
+    toast(okMessage)
+    return true
+  }
+  showCopyBox({ title: boxTitle, text: String(text ?? '') })
+  return false
+}
+
 async function api(method, path, body, extraHeaders = null) {
   const res = await fetch(path, {
     method,
@@ -6753,21 +6855,11 @@ document.addEventListener('click', async (event) => {
   if (contactCard) {
     const value = contactCard.dataset.value || ''
     if (contactCard.dataset.act === 'copy-contact') {
-      try {
-        await navigator.clipboard.writeText(value)
-        toast('已复制到剪贴板')
-      } catch {
-        toast(`复制失败，手动复制：${value}`, true)
-      }
+      await copyWithFeedback(value, '已复制到剪贴板', '手动复制')
     } else if (/^https?:\/\//i.test(value)) {
       window.open(value, '_blank', 'noopener,noreferrer')
     } else if (value) {
-      try {
-        await navigator.clipboard.writeText(value)
-        toast('已复制到剪贴板')
-      } catch {
-        toast(`复制失败，手动复制：${value}`, true)
-      }
+      await copyWithFeedback(value, '已复制到剪贴板', '手动复制')
     }
     return
   }
@@ -7481,12 +7573,10 @@ document.addEventListener('click', async (event) => {
         const result = await api('POST', `/api/free/platforms/${platformId}/diagnose`, {})
         const text = JSON.stringify(result.diagnose, null, 2)
         // 诊断信息是给人看的（发给开发者定位字段），复制比弹窗实用
-        try {
-          await navigator.clipboard.writeText(text)
-          toast('诊断信息已复制，发给开发者就能定位')
-        } catch {
-          // 剪贴板不可用时的兜底：弹一个只读文本框让用户自己复制，
-          // 不要把可能含站点信息的原文打到控制台
+        // 复制失败（局域网 http 下 clipboard 不存在）时弹可全选文本框，
+        // 不要把可能含站点信息的原文打到控制台
+        if (await copyText(text)) toast('诊断信息已复制，发给开发者就能定位')
+        else {
           showDiagnoseBox(text)
           toast('已打开诊断信息，手动复制一下')
         }
@@ -8349,25 +8439,20 @@ document.addEventListener('click', async (event) => {
   }
 
   if (action === 'copy-base') {
-    await navigator.clipboard.writeText(`${location.origin}/v1`)
-    toast('网关地址已复制')
+    await copyWithFeedback(`${location.origin}/v1`, '网关地址已复制', '网关地址')
     return
   }
 
   if (action === 'copy-gwkey') {
     const id = actionButton.closest('[data-gwkey]').dataset.gwkey
     const record = state.gateway.keys.find((k) => k.id === id)
-    if (record) {
-      await navigator.clipboard.writeText(record.key)
-      toast(`已复制「${record.name}」的 Key`)
-    }
+    if (record) await copyWithFeedback(record.key, `已复制「${record.name}」的 Key`, '网关 Key')
     return
   }
 
   if (action === 'copy-new-gwkey') {
     if (lastCreatedGatewayKey) {
-      await navigator.clipboard.writeText(lastCreatedGatewayKey.key)
-      toast('已复制新 Key')
+      await copyWithFeedback(lastCreatedGatewayKey.key, '已复制新 Key', '网关 Key')
     }
     return
   }
@@ -8454,8 +8539,7 @@ document.addEventListener('click', async (event) => {
   if (action === 'copy-lan-token') {
     const token = String(state.lan?.token || '')
     if (!token) return
-    await navigator.clipboard.writeText(token)
-    toast('局域网访问令牌已复制')
+    await copyWithFeedback(token, '局域网访问令牌已复制', '局域网访问令牌')
     return
   }
 
@@ -8463,8 +8547,11 @@ document.addEventListener('click', async (event) => {
     const lan = state.lan || {}
     const token = String(lan.token || '')
     if (!lan.url || !token) return
-    await navigator.clipboard.writeText(`${lan.url}?token=${encodeURIComponent(token)}`)
-    toast('带令牌的链接已复制，在别的设备上直接打开即可')
+    await copyWithFeedback(
+      `${lan.url}?token=${encodeURIComponent(token)}`,
+      '带令牌的链接已复制，在别的设备上直接打开即可',
+      '带令牌的链接',
+    )
     return
   }
 
