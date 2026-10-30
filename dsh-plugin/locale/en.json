@@ -1,6 +1,0 @@
-{
-  "meta": {
-    "title": "ManageAPI (dsh-manage-api)",
-    "description": "ManageAPI: manage the multi-station model routing daemon from the DSH settings page — station pricing, smart routing decisions, probe results and real traffic usage."
-  }
-}
