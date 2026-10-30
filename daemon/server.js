@@ -452,6 +452,50 @@ function route(method, pattern, handler) {
 route('GET', /^\/api\/health$/, async () => ({ ok: true, at: new Date().toISOString() }))
 route('GET', /^\/api\/state$/, async (ctx) => buildState({ light: ctx.query.get('light') === '1' }))
 
+/**
+ * 宿主插件（DSH 那一侧）推送它自己观测到的真实用量。
+ *
+ * 为什么需要：不是所有 DSH 会话都走 ManageAPI 网关——用户可能暂时选了别的渠道，
+ * 那部分花掉的钱在界面里完全不可见。插件在 llm/stream 上看到 usage 后推过来，
+ * 就能让「今日用量」覆盖全部渠道。
+ *
+ * 为什么跳过 manage-api：走网关的那部分，网关自己已经记过一次（recordUsage），
+ * 插件再推一遍就是同一次请求记两遍账。
+ * 分桶口径：keyId 固定 'dsh-plugin'，providerId 加 'dsh:' 前缀，和网关流量分得开。
+ */
+route('POST', /^\/api\/ingest\/usage$/, async (ctx) => {
+  const body = ctx.body || {}
+  const provider = String(body.provider || '').trim()
+  const model = String(body.model || '').trim()
+  if (!provider || !model) throw new HttpError(400, 'provider 与 model 必填')
+  if (provider === 'manage-api' || provider.startsWith('manage-api/')) {
+    return { ok: true, skipped: 'gateway-managed' }
+  }
+  const count = (value) => {
+    const n = Number(value)
+    return Number.isFinite(n) && n > 0 ? Math.round(n) : 0
+  }
+  const ms = (value) => {
+    const n = Number(value)
+    return Number.isFinite(n) && n >= 0 ? Math.round(n) : undefined
+  }
+  await recordUsage({
+    keyId: 'dsh-plugin',
+    providerId: `dsh:${provider}`,
+    model,
+    inputTokens: count(body.inputTokens),
+    outputTokens: count(body.outputTokens),
+    cachedTokens: count(body.cachedTokens),
+    cacheCreationTokens: count(body.cacheCreationTokens),
+    latencyMs: ms(body.latencyMs),
+    ttftMs: ms(body.ttftMs),
+    ok: body.ok !== false,
+    ts: typeof body.ts === 'string' ? body.ts : undefined,
+  })
+  return { ok: true, recorded: true }
+})
+
+
 /** 汇率与加权：手工汇率=手动模式；fxAuto 恢复自动；权重 0~1。 */
 function applyFxSettings(db, body) {
   const { fxUsdCny, blendInputWeight } = body

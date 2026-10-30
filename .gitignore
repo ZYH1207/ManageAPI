@@ -22,3 +22,8 @@ db.json
 benchmark.json
 usage.json
 master.key
+
+# 测试期间的真实数据快照备份
+.test/manage-api-backups/
+# 插件开发期本地产物
+.tools/

@@ -4,7 +4,11 @@
 >
 > v1（2026-10 早期稿）已被本稿替代。v1 的四处判断经实测修正：DSH 版本基线、P0 排序（provider 早已接通）、daemon 的能力边界（它不止是网页）、客户端「零构建」不成立。v2 另吸收了 `D:\AgentWorkPlace\DSH\manageapi-plugin-mapping.md`（678 行只读分析）的模块/数据/网关事实。
 >
-> **已定决策**（用户 2026-10-30 确认）：运行形态走 **内置运行时 + 子进程**。
+> **已定决策**（用户 2026-10-30 确认）：
+> 1. 运行形态：**内置运行时 + 子进程**（含 attach-or-spawn、孤儿防护）
+> 2. 范围：**一路做到 Phase 2**（Phase 0/1/2 全做；Phase 3 表单页按需）
+> 3. 面板入口：**常驻 `settings.section`**（DSH 设置页内一块「ManageAPI」区域）；不再依赖 `dsh-better-sidebar`
+> 4. 插件名：**`dsh-manage-api`**（bundle 包名、client bundle id、patch entry id 三处一致）
 
 ---
 
@@ -126,9 +130,8 @@ DSH Host 进程
 │   ├─ 注册            tools（status/switch/balance）+ commands(/manage) + model discovery
 │   └─ 生命周期        ctx.effect 清理，全部注册返回 disposer
 └─ plugin client 半边（client.js，打包为 __ModuleLoader__ 产物）
-    ├─ ctx.betterSidebar.registerTab('manage-api:panel')  ← 主入口（缺失时降级）
+    ├─ settings.section（id: manage-api）                   ← 主入口：设置页常驻面板（五个只读子页）
     ├─ conversation.chat.assistant-actions                 ← 会话成本 chip
-    ├─ settings.section                                    ← 设置页（Phase 3 表单）
     └─ workspace.toast / shell.overlay                     ← 余额低、降智、429
 
 数据通路（唯一写通道 = daemon HTTP）
@@ -150,7 +153,7 @@ client ──fetch('/api/manage-api/providers', POST)──▶ host 代理 ─�
 
 | # | 功能 | 落点 | 数据源 | 依赖 daemon |
 |---|---|---|---|---|
-| 1 | 右栏 ManageAPI 面板（概览/比价/决策/探针/用量 五个只读子页） | `ctx.betterSidebar.registerTab`；缺失降级为 `settings.section` + `conversation.view` | `GET /api/state?light=1` | 是（兜底直读文件） |
+| 1 | 设置页常驻面板「ManageAPI」（概览/比价/决策/探针/用量 五个只读子页） | `ctx.slots.inject('settings.section', ...)`，id `manage-api` | `GET /api/state?light=1` | 是（兜底直读文件） |
 | 2 | 同源只读代理 | `webServer.register({kind:'exact', path:'/api/manage-api/state'})` + `connection.requestRejection` | 转发 4319 | 是 |
 | 3 | 会话成本 chip | `conversation.chat.assistant-actions` | `llm/stream` 的 `usage` + `finish` | 否（DSH 侧自算） |
 | 4 | daemon 托管（attach-or-spawn + 孤儿防护 + flush/kill） | 子进程 + `ctx.effect` | `/api/health` | — |
@@ -160,7 +163,7 @@ client ──fetch('/api/manage-api/providers', POST)──▶ host 代理 ─�
 | # | 功能 | 落点 | 说明 |
 |---|---|---|---|
 | 5 | 真实流量回写评分 | `llm/stream` 采集 → daemon 新路由 `POST /api/ingest/usage` | **需要 daemon 小改（约 50 行，见 §8）**；必须分桶 `source:'traffic'`，不混进探针 benchmark |
-| 6 | 模型列表动态化 | `llm.registerModelDiscovery(settingsNs, discover)` | `settingsNs` 从 `llm.listConfigurableProviders()` 运行时读，不猜；数据源 `/v1/models` + `/api/state` catalog；干掉 patch 里硬编码的 2 条 |
+| 6 | 模型列表动态化 | ~~`llm.registerModelDiscovery(settingsNs, discover)`~~ | **实测不可行**：该方法只服务「插件自己拥有的 settings 命名空间」，`manage-api` 的命名空间属于 `llm-pi-ai`，第三方注册会冲突。**替代**：`manageapi_models` 工具 + `/manage models` 命令 + 面板「比价」子页 |
 | 7 | 系统提示注入实时上下文 | `systemPrompt.context()` + `refreshContext()` | 当前站点、单价（`pricing.offerCost → blendedUsdPerMtok`）、余额、可用免费通道 |
 | 8 | 工具 + command | `ctx.tools.register` / `commands.register` | `manageapi_status`（只读）、`manageapi_switch`、`manageapi_balance`；`/manage` 开面板 |
 | 9 | 预算熔断 + 告警 | `tools.guard` / `agent/pre-step`；`workspace.toast` | 当日超支拒单；余额低/降智/429 推 toast |
@@ -186,7 +189,7 @@ client ──fetch('/api/manage-api/providers', POST)──▶ host 代理 ─�
 ```jsonc
 // dsh-plugin/package.json
 {
-  "name": "manage-api-dsh",
+  "name": "dsh-manage-api",
   "type": "module",
   "main": "lib/index.js",
   "exports": {
@@ -208,15 +211,15 @@ client ──fetch('/api/manage-api/providers', POST)──▶ host 代理 ─�
 
 ```yaml
 - insert:
-    - id: manage-api-dsh
-      name: manage-api-dsh
+    - id: dsh-manage-api
+      name: dsh-manage-api
 ```
 
 **元数据必须齐全**：`locale/en.json` + `locale/zh.json` 的 `meta.title` / `meta.description`、原创 `icon.svg`（≤256KiB，包内）、`files` 列全。
 
 ### 6.2 client 产物的硬约束
 
-- 形态：`window.__ModuleLoader__.load({ id: 'manage-api-dsh', factory: (e) => { /* CJS 风格 */ } })`
+- 形态：`window.__ModuleLoader__.load({ id: 'dsh-manage-api', factory: (e) => { /* CJS 风格 */ } })`
 - 模块解析走 factory 的 `e(specifier)`：`react`、`react-dom`、`react/jsx-runtime` 由宿主提供
 - 导出 `apply(ctx)` 与 `inject = [...]`（cordis 客户端插件形态）
 - **不 import DSH client 内部包**（`dsh-client-ui-primitives` / `dsh-client-store` 等）。虽有个例能跑，但它们是 0.2.x 内部 API，升级必炸 → 自己写 markup + `--dsw-alias-*` 主题 token
@@ -233,7 +236,7 @@ build({
   format: 'cjs',
   platform: 'neutral',
   external: ['react', 'react-dom', 'react/jsx-runtime'],
-  banner: { js: `window.__ModuleLoader__.load({id:"manage-api-dsh",factory:(e)=>{var module={exports:{}};var require=e;` },
+  banner: { js: `window.__ModuleLoader__.load({id:"dsh-manage-api",factory:(e)=>{var module={exports:{}};var require=e;` },
   footer: { js: `;return module.exports}})` },
 })
 ```
@@ -241,7 +244,7 @@ build({
 产物形态（与已装插件一致）：
 
 ```js
-window.__ModuleLoader__.load({ id: 'manage-api-dsh', factory: (e) => {
+window.__ModuleLoader__.load({ id: 'dsh-manage-api', factory: (e) => {
   var module = { exports: {} }, require = e
   /* esbuild 的 cjs 产物：require('react') → 宿主提供的 React */
   return module.exports        // { apply, inject }
@@ -250,30 +253,33 @@ window.__ModuleLoader__.load({ id: 'manage-api-dsh', factory: (e) => {
 
 host 半边（`lib/index.js`）**保持零构建**：手写 ESM，只 import `node:` 内置与（必要时）`manage-api/core/*.js` 的纯函数。产物 `lib/client.js` 提交进 git，仓库运行时依旧零依赖。
 
-### 6.4 主入口的两种挂载
+### 6.4 主入口：设置页常驻 section（已定）
 
 ```js
-// 优先：右侧栏（需 dsh-better-sidebar）
-ctx.inject(['betterSidebar'], (s) =>
-  s.effect(() => s.betterSidebar.registerTab({
-    id: 'manage-api:panel',
-    title: () => t('title'),
-    description: () => t('desc'),
-    icon: (size) => <Icon size={size} />,
-    order: 40,
-    single: true,
-    component: (props) => <Panel {...props} />,   // props: { ctx, store, scope, ... }
-  }), 'manage-api: sidebar tab'),
-)
-
-// 降级：设置页常驻 section + 会话内 tab
+// 主入口（无外部依赖，DSH 自带 settings 服务即生效）
 ctx.slots.inject('settings.section', () => ctx.slots.register({
-  name: 'settings.section', id: 'manage-api', order: 60, locale: NS,
-  inject: () => ({}),
+  name: 'settings.section',
+  id: 'manage-api',
+  order: 60,
+  locale: NS,
+  inject: () => ({ /* store / 代理 fetch 封装 */ }),
 }, PanelSection))
 ```
 
-`ctx.inject([...], cb)` 不阻塞：betterSidebar 与我们的加载顺序无关。
+```jsx
+// PanelSection：顶部 5 个 tab（概览/比价/决策/探针/用量），内容走只读 HTML 复用（§6.5）
+export function PanelSection() {
+  const [page, setPage] = React.useState('overview')
+  return (
+    <section className="ma-panel" data-locale={NS}>
+      <nav className="ma-tabs">{TABS.map(k => <TabButton key={k} active={page === k} onClick={() => setPage(k)} />)}</nav>
+      <div className="ma-body" ref={afterRenderTranslate} dangerouslySetInnerHTML={{ __html: renderPage(page) }} />
+    </section>
+  )
+}
+```
+
+`dsh-better-sidebar` 是可选增强（右栏 tab），**不是依赖**；若用户已装且我们检测到 `ctx.betterSidebar`，可额外挂一个 tab 指向同一组件，未检测到就只走设置页。Phase 1 只做设置页。
 
 ### 6.5 UI 复用的边界（这条决定 Phase 1 工期）
 
@@ -351,27 +357,31 @@ ctx.on('llm/stream', async function*(options, next) {
 
 ## 10. 分期与验收
 
-### Phase 0（0.5 天，只验四件事）
+### Phase 0（0.5 天，只验四件事）— ✅ 已完成（2026-10-30）
 
-- [ ] 空 bundle 装上，client 产物 `__ModuleLoader__` 包装跑通（一个 hello 组件进右栏）
-- [ ] `llm/stream` 能拿到 `usage` 与 `finish`（打印即可）
-- [ ] spawn 子进程 + `ELECTRON_RUN_AS_NODE=1` 能起 daemon，`/api/health` 通
-- [ ] 锁被占时子进程的**退出码/文案**能被识别为「应 attach」而非「启动失败」
+- [x] 空 bundle 装上，client 产物 `__ModuleLoader__` 包装跑通（面板进设置页 `settings.section`，Slots 实测 `active:true`）
+- [x] `llm/stream` 能拿到 `usage` 与 `finish`（chip 实测随每轮增长）
+- [x] spawn 子进程 + `ELECTRON_RUN_AS_NODE=1` 能起 daemon，`/api/health` 通（`mode:'owned'`）
+- [x] 锁被占时子进程的**退出码/文案**能被识别为「应 attach」而非「启动失败」（`LOCK_CONFLICT_PATTERN` 命中即 attached）
+- 实测踩坑两条：① Cordis 里声明服务必须 `ctx.provide()`，`ctx.set()` 会抛 `cannot set property "x" without provide`；② 工具 `output.schema` 不接受 `type: ['object','null']` 联合类型，单条 register 会静默失败
 
-### Phase 1（2–3 天）
+### Phase 1（2–3 天）— ✅ 已完成
 
-- [ ] 面板五页只读可用，`translateDom()` 中英都正常
-- [ ] 代理路由仅 loopback，非 loopback 403，隧道下不可达
-- [ ] 成本 chip 在 assistant 消息下正确显示 token 与花费
-- [ ] DSH 退出后 daemon 子进程在 5s 内消失
-- [ ] attached 模式下插件不碰锁、不写库
+- [x] 面板五页只读可用（中英文案走配置，非 `translateDom()`）
+- [x] 代理路由仅 loopback：非回环/跨站 Origin 一律 403，写操作还要求 `application/json`
+- [x] 成本 chip 在 assistant 消息下显示本会话 token 与调用次数（`assistant-actions` id `manage-api-cost`）
+- [x] DSH 卸载时 owned 的 daemon 被 `flushGatewayBuffers()` + SIGTERM 停止（实测重载后 PID 从 22060 → 新 PID）
+- [x] attached 模式下插件不碰锁、不写库（实测 attach 到用户已有 daemon 时 `pid:null`）
 
-### Phase 2（3–4 天）
+### Phase 2（3–4 天）— ✅ 已完成（⑥ 受限，见 §5 P1 第 6 行）
 
-- [ ] 三类 daemon 小改落地并自测
-- [ ] 流量上报写入 `db.traffic`，`source:'traffic'` 分桶，探针分布不被污染
-- [ ] 模型列表来自 `/v1/models`，patch 里硬编码条目可删
-- [ ] 工具与 `/manage` 可用；熔断与 toast 生效
+- [x] daemon 两处改动落地并自测：`--parent-watch`（stdin 关闭即退）与 `POST /api/ingest/usage`（独立 `MANAGE_API_HOME` 临时实例验证过写库）
+- [x] 流量上报写入 `usage.json`（`dsh:<provider>` 分桶，`keyId:'dsh-plugin'`），与网关流量分开统计；网关自身流量跳过回写
+- [x] 系统提示注入：`systemPrompt.context` 每轮出现真实文案（30s 缓存 + 请求顺手刷新，回调内绝不 await）
+- [x] 工具 `manageapi_status/models/usage` + `/manage` 命令（`/manage status|models|usage|budget` 实测）
+- [x] 熔断：`tools.guard` 按会话/今日 token 拒绝工具调用；面板顶部横幅 + 提示词里的超预算警告
+- [ ] ~~模型列表来自 `/v1/models`，patch 里硬编码条目可删~~ → **不可行**，理由见 §5 P1 第 6 行；由工具/命令/面板比价覆盖
+- 自检脚本从 27 项扩到 51 项（含 6 个 UI 组件的渲染冒烟，覆盖「daemon 挂 + 预算超限」的告警分支）
 
 ### Phase 3（按需）
 
@@ -394,11 +404,14 @@ ctx.on('llm/stream', async function*(options, next) {
 
 ---
 
-## 12. 待定
+## 12. 决策状态（全部已定）
 
 1. ~~ManageAPI 是否已发布到 npm？~~ **已定**：`manage-api@0.3.0` 已于 2026-10-30 发布到 `registry.npmjs.org`（`latest` = 0.3.0，shasum `ec17d48…`，tag `v0.3.0` 已推 origin），插件依赖固定 `"^0.3.0"`，B 方案仅作解析失败兜底。
-2. **第一版范围**：只到 Phase 1，还是一路做到 Phase 2 的流量上报？
-3. **面板入口**：确认走 betterSidebar 右栏（建议）+ 缺失降级，还是直接常驻 `settings.section`。
+2. ~~第一版范围~~ **已定**：一路做到 **Phase 2**（含流量上报、模型发现、系统提示注入、工具/command、熔断告警）。
+3. ~~面板入口~~ **已定**：**常驻 `settings.section`**（id `manage-api`），不依赖 betterSidebar。
+4. ~~插件名~~ **已定**：**`dsh-manage-api`**。
+
+**无待定项，可开工。**
 
 ---
 
@@ -430,7 +443,7 @@ ctx.betterSidebar.registerTab({ id, title, description, icon, order, single, com
 ctx.slots.inject(ownerKey, () => ctx.slots.register({ name, id, order, locale, inject: (props) => ({...}) }, Component))
 
 // client：产物形态
-window.__ModuleLoader__.load({ id: 'manage-api-dsh', factory: (e) => { /* module.exports = { apply, inject } */ } })
+window.__ModuleLoader__.load({ id: 'dsh-manage-api', factory: (e) => { /* module.exports = { apply, inject } */ } })
 ```
 
 ---

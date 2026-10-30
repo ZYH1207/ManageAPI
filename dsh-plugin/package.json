@@ -1,0 +1,55 @@
+{
+  "name": "dsh-manage-api",
+  "version": "0.2.0",
+  "description": "ManageAPI for DeepSeek Harness: native settings panel, daemon lifecycle, live usage and traffic feedback.",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "dsh": {
+    "manifestVersion": 1,
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": []
+    }
+  },
+  "files": [
+    "lib",
+    "locale",
+    "icon.svg",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "dsh-plugin",
+    "manage-api",
+    "llm-router"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "peerDependencies": {
+    "manage-api": "^0.3.0"
+  },
+  "peerDependenciesMeta": {
+    "manage-api": {
+      "optional": true
+    }
+  },
+  "scripts": {
+    "check": "node scripts/check.mjs"
+  }
+}

@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "ManageAPI (dsh-manage-api)",
+    "description": "ManageAPI：在 DSH 设置页里管理多站点模型路由守护进程，查看站点比价、智能决策、探针结果与真实用量。"
+  }
+}

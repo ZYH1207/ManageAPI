@@ -126,6 +126,23 @@ startProbeScheduler({ runProbes, collectMonitor: collectProviderSnapshots, logge
 
 for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => shutdown(signal))
 
+/**
+ * 父进程看护（宿主插件用 `--parent-watch` 启动时启用）。
+ *
+ * DSH 插件把 daemon 当子进程拉起，自己崩了/被强杀时子进程会被系统留在后台，
+ * 下次再拉起就撞实例锁、变成"孤儿 daemon 占着数据目录"。stdin 是父进程给的管道，
+ * 父进程一死管道必然关闭（EOF），这就是最可靠的存活信号——不需要端口探测或轮询。
+ */
+if (Boolean(flag('parent-watch', false))) {
+  const onParentGone = () => shutdown('parent-exit')
+  process.stdin.on('end', onParentGone)
+  process.stdin.on('close', onParentGone)
+  process.stdin.on('error', onParentGone)
+  // 开启监听才会真正读到 EOF；不 resume 的话管道永远静默
+  process.stdin.resume()
+}
+
+
 console.log('')
 console.log('  ManageAPI  已启动')
 console.log(`  管理界面 ${url}`)
