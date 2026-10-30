@@ -2226,6 +2226,35 @@ async function forwardToUpstream({ candidate, body, res, attemptIndex, pool = 'p
     if (!res.write(chunk)) await once(res, 'drain')
   }
 
+  /**
+   * 这一帧算不算「用户能看见的内容」。
+   *
+   * 提交判据从「收到第一帧」改成「收到第一帧有内容的帧」：上游常常先吐 delta.role
+   * 空帧、心跳或 content 空串帧，以前这些也会把 committed 置真，站点还没真正开口
+   * 就不能再换站了。现在这类帧先进 held 缓冲，等第一帧真内容到了再一起冲刷。
+   */
+  const chunkIsContent = (parsed, payloadText) => {
+    if (parsed === null) return String(payloadText || '').length > 0
+    const choice = Array.isArray(parsed?.choices) ? parsed.choices[0] : null
+    if (!choice) return false
+    const delta = choice.delta || {}
+    if (typeof delta.content === 'string' && delta.content.length > 0) return true
+    if (typeof delta.reasoning_content === 'string' && delta.reasoning_content.length > 0) return true
+    if (Array.isArray(delta.tool_calls) && delta.tool_calls.length > 0) return true
+    return false
+  }
+
+  /** 未提交前攒下的帧；超过上限直接冲刷，避免把长思考流无限缓冲在内存里。 */
+  const HELD_LIMIT = 64 * 1024
+  const held = []
+  let heldBytes = 0
+
+  const flushHeld = async () => {
+    commit()
+    while (held.length) await push(held.shift())
+    heldBytes = 0
+  }
+
   try {
     while (true) {
       const { value, done } = await reader.read()
@@ -2273,20 +2302,26 @@ async function forwardToUpstream({ candidate, body, res, attemptIndex, pool = 'p
           parsed && Array.isArray(parsed.choices) && parsed.choices.length === 0 && parsed.usage
         if (usageOnly && !clientWantsUsage) continue
 
-        commit()
+        if (!chunkIsContent(parsed, payloadText)) {
+          held.push(raw)
+          heldBytes += raw.length
+          if (heldBytes > HELD_LIMIT) await flushHeld()
+          continue
+        }
+        await flushHeld()
         await push(raw)
       }
 
       // 非标准上游可能不用 \n\n 分隔，攒太多就整块放行
       if (buffer.length > 8192) {
-        commit()
+        await flushHeld()
         await push(buffer)
         buffer = ''
       }
     }
 
     if (buffer) {
-      commit()
+      await flushHeld()
       await push(buffer)
     }
 
@@ -2428,11 +2463,15 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
 
   const started = Date.now()
   const failures = []
+  // 失败范围决定下一步：provider 级 → 跳过这家其余供给；request 级 → 原样报错，别再换站
+  const skippedProviders = new Set()
+  let requestScopedError = null
   // 请求规模估算（只用于「计费是否明显虚报」的量级判断，不追求精确）
   const requestTokens = estimateRequestTokens(body)
 
   for (let index = 0; index < candidates.length; index += 1) {
     const candidate = candidates[index]
+    if (skippedProviders.has(candidate.provider.id)) continue
     // 客户端已断开就别再换站：后面的候选会立刻因 aborted 失败，
     // 把「根本没发出去的请求」记成它们的失败，污染可用率评分
     if (clientAbort.signal.aborted) return
@@ -2528,6 +2567,12 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
         ms: Date.now() - attemptStarted,
       })
       bufferTraffic(candidate.offer.id, false, result.error)
+      const scope = classifyFailure(result.error).scope
+      if (scope === 'provider') skippedProviders.add(candidate.provider.id)
+      if (scope === 'request') {
+        requestScopedError = result.error
+        break
+      }
     } catch (error) {
       if (clientAbort.signal.aborted) return
       failures.push({
@@ -2537,7 +2582,18 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
         ms: Date.now() - attemptStarted,
       })
       bufferTraffic(candidate.offer.id, false, error.message || String(error))
+      const scope = classifyFailure(error.message || String(error)).scope
+      if (scope === 'provider') skippedProviders.add(candidate.provider.id)
+      if (scope === 'request') {
+        requestScopedError = error.message || String(error)
+        break
+      }
     }
+  }
+
+  // 请求本身不成立：换多少家结果都一样，直接把上游原话交回去（400 而不是 502）
+  if (requestScopedError) {
+    return openaiError(res, 400, `请求本身不成立：${requestScopedError}`, 'invalid_request_error')
   }
 
   queueRouting({

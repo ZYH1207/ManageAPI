@@ -15,7 +15,7 @@
  * 如果评分还停在昨天，路由会继续用它——所以过期的评分一律不放行。
  */
 
-import { classifyFailure, cooldownUntil } from './failure.js'
+import { classifyFailure, cooldownUntil, failureScope } from './failure.js'
 import { REAL_QUALITY_MIN_SAMPLES, REAL_QUALITY_BAD_RATE } from './quality-signals.js'
 
 const DEFAULT_WINDOW = 20
@@ -206,8 +206,11 @@ export function scoreOffers(probes, traffic = {}, options = {}) {
 
     // 冷却期内不放行，但不当成「坏站」：额度充上、限流过去就自动恢复，
     // 判断依据是「最后一次不可用失败」晚于「最后一次成功」
+    // request 级失败（这一单太大/参数错）不该冷却站点：换站也解决不了，
+    // 冷却只会让好站白闲置。以前 budget 超限就吃 5 分钟冷却，正是这个问题。
+    const cooldownApplies = unavailableKind && failureScope(unavailableKind) !== 'request'
     const blockedUntil =
-      unavailableKind && unavailableAt > successAt ? cooldownUntil(unavailableKind, unavailableAt) : 0
+      cooldownApplies && unavailableAt > successAt ? cooldownUntil(unavailableKind, unavailableAt) : 0
     const blocked = blockedUntil > now ? { kind: unavailableKind, until: blockedUntil } : null
 
     const quality =

@@ -104,6 +104,15 @@ createServer(async (req, res) => {
       return
     }
 
+    if (MODE === 'roleonly') {
+      // 只吐一个 role 帧就收工：模拟「上游 200 但先吐空帧」的坏供给。
+      // 新提交判据要求「有内容的帧」才 committed，所以这一站应该被判失败并换站。
+      res.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8' })
+      res.write('data: {"id":"chatcmpl-mock","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant"}}]}\n\n')
+      setTimeout(() => res.end(), 120)
+      return
+    }
+
     return sse(res, [answer.slice(0, 8), answer.slice(8)], { usage, finishReason })
   }
 
