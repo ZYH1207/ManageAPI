@@ -364,6 +364,7 @@ ctx.on('llm/stream', async function*(options, next) {
 - [x] spawn 子进程 + `ELECTRON_RUN_AS_NODE=1` 能起 daemon，`/api/health` 通（`mode:'owned'`）
 - [x] 锁被占时子进程的**退出码/文案**能被识别为「应 attach」而非「启动失败」（`LOCK_CONFLICT_PATTERN` 命中即 attached）
 - 实测踩坑两条：① Cordis 里声明服务必须 `ctx.provide()`，`ctx.set()` 会抛 `cannot set property "x" without provide`；② 工具 `output.schema` 不接受 `type: ['object','null']` 联合类型，单条 register 会静默失败
+- 上线后踩坑两条（2026-10-30 修）：③ 客户端 `API_PREFIX` 与宿主 `PREFIX` 必须一致（曾是 `dsh-manage-api` vs `manage-api`，表现为面板报「宿主路由返回了非 JSON 响应」）；④ 可选服务不能用 `ctx.get()` 一次性探——webServer 若晚于插件激活就位，路由会**永久**不注册（表现为重启后面板全 401），必须 `ctx.inject(['webServer'], …)`。两条都加了自检断言
 
 ### Phase 1（2–3 天）— ✅ 已完成
 

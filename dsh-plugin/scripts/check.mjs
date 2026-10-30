@@ -60,7 +60,7 @@ try {
   if (typeof mod.apply === 'function') ok('导出 apply(ctx, config)')
   else fail('导出 apply(ctx, config)', 'apply 不是函数')
 
-  const registered = { effects: [], ons: [], services: new Map(), tools: [], guards: [], contexts: [], commands: [] }
+  const registered = { effects: [], ons: [], services: new Map(), tools: [], guards: [], contexts: [], commands: [], routes: [], injects: [] }
   const fakeTools = {
     register(definition) {
       registered.tools.push(definition)
@@ -83,7 +83,21 @@ try {
       return () => {}
     },
   }
+  const fakeWebServer = {
+    register(route) {
+      registered.routes.push(route)
+      return () => {}
+    },
+  }
   const fakeCtx = {
+    // 真 Cordis 的 ctx.inject(deps, cb) 在依赖就绪后执行 cb；
+    // 这里同步执行，就能覆盖「webServer 就绪后才注册路由」的路径。
+    inject(deps, cb) {
+      registered.injects.push(deps.join(','))
+      const d = cb(fakeCtx)
+      if (typeof d === 'function') registered.effects.push({ label: 'inject:' + deps.join(','), dispose: d })
+      return () => {}
+    },
     effect(fn, label) {
       registered.effects.push({ label, dispose: fn() })
       return () => {}
@@ -93,7 +107,7 @@ try {
       return () => {}
     },
     get(name) {
-      if (name === 'webServer') return null
+      if (name === 'webServer') return fakeWebServer
       if (name === 'tools') return fakeTools
       if (name === 'systemPrompt') return fakeSystemPrompt
       if (name === 'commands') return fakeCommands
@@ -145,6 +159,62 @@ try {
   if (typeof dispose === 'function') {
     dispose()
     ok('apply 返回值可调用')
+  }
+
+  // ── [1b] 同源代理路由：proxyEnabled=true 时必须注册 /api/manage-api ──
+  //
+  // 回归防护：这里曾经是 ctx.get('webServer') 一次性探，服务未就绪就永久跳过注册，
+  // 表现是「设置页面板一直报 401 / 非 JSON」。现在必须走 ctx.inject。
+  {
+    const routes = []
+    const injects = []
+    const fakeWebServer = {
+      register(route) {
+        routes.push(route)
+        return () => {}
+      },
+    }
+    const routeCtx = {
+      inject(deps, cb) {
+        injects.push(deps.join(','))
+        const d = cb(routeCtx)
+        if (typeof d === 'function') d()
+        return () => {}
+      },
+      effect(fn) {
+        const d = fn()
+        if (typeof d === 'function') d()
+        return () => {}
+      },
+      on() {
+        return () => {}
+      },
+      get(n) {
+        if (n === 'webServer') return fakeWebServer
+        if (n === 'tools') return fakeTools
+        if (n === 'systemPrompt') return fakeSystemPrompt
+        if (n === 'commands') return fakeCommands
+        return undefined
+      },
+      set(n) {
+        throw new Error('cannot set property "' + n + '" without provide')
+      },
+      provide() {
+        return () => {}
+      },
+      logger() {
+        return { info() {}, warn() {}, error() {} }
+      },
+    }
+    mod.apply(routeCtx, { autoStart: false, proxyEnabled: true, promptContext: false, ingestExternalUsage: false })
+    if (injects.includes('webServer')) ok('通过 ctx.inject 等 webServer 就绪')
+    else fail('通过 ctx.inject 等 webServer 就绪', JSON.stringify(injects))
+    const route = routes.find((r) => r && r.path === '/api/manage-api')
+    if (route && route.kind === 'prefix' && typeof route.handler === 'function') {
+      ok('注册同源代理前缀 /api/manage-api')
+    } else {
+      fail('注册同源代理前缀 /api/manage-api', JSON.stringify(routes.map((r) => r && r.path)))
+    }
   }
 } catch (err) {
   fail('host 半边加载', String(err && err.stack ? err.stack : err).slice(0, 800))
@@ -307,6 +377,22 @@ try {
 }
 
 // ── 4) package.json 自洽 ────────────────────────────────────────────
+console.log('\n[3b/4] client 与 host 的 API 前缀一致性')
+try {
+  const clientSource = await readFile(join(root, 'lib', 'client.js'), 'utf8')
+  const routesSource = await readFile(join(root, 'lib', 'routes.js'), 'utf8')
+  const hostPrefix = (routesSource.match(/const PREFIX = '([^']+)'/) || [])[1] || ''
+  const clientPrefix = (clientSource.match(/var API_PREFIX = '([^']+)'/) || [])[1] || ''
+  if (hostPrefix && clientPrefix && hostPrefix === '/api/' + clientPrefix) {
+    ok('client API 前缀与 host 路由一致', hostPrefix + " <- API_PREFIX='" + clientPrefix + "'")
+  } else {
+    fail('client API 前缀与 host 路由一致', 'host=' + hostPrefix + ' client=' + clientPrefix)
+  }
+} catch (err) {
+  fail('client API 前缀一致性检查', String(err && err.message ? err.message : err))
+}
+
+
 console.log('\n[4/4] package.json 自洽')
 try {
   const pkg = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'))

@@ -80,6 +80,15 @@ dsh plugin --profile desktop add "file:D:/AgentWorkPlace/DSH/ManageAPI/dsh-plugi
 # 再把 "dsh-manage-api" 加进 profile package.json 的 dsh.profile.bundles
 ```
 
+## 排障
+
+| 现象 | 原因 | 处理 |
+| --- | --- | --- |
+| 面板显示「宿主路由返回了非 JSON 响应」 | 客户端与宿主的 API 前缀不一致（曾是 `dsh-manage-api` vs `manage-api`） | 已修；刷新页面即可。`scripts/check.mjs` 有一致性断言 |
+| 重启 DSH 后面板一直 401 / 非 JSON，但 `/manage` 和工具都正常 | 路由注册用了 `ctx.get('webServer')` 一次性探，激活早于 webServer 就绪时**永久跳过注册** | 已改为 `ctx.inject(['webServer'], …)`，等依赖就绪再注册；自检里有断言 |
+| 面板状态「未运行」但端口 4319 有进程 | 那个是旧进程，不认识 `/api/ingest/usage` | 关掉旧进程让插件自己 spawn（`mode: owned`），或用面板的「重启托管」 |
+| DSH 能看到模型但调不通 | daemon 没跑（provider 指向 `127.0.0.1:4319`） | 设置页 → ManageAPI → 「启动托管」 |
+
 ## 安全
 
 - 所有插件路由只允许 **loopback** 来源；跨站请求（`Sec-Fetch-Site: cross-site` / 非回环 Origin）一律 403。

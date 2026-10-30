@@ -1,6 +1,6 @@
 {
   "name": "dsh-manage-api",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "ManageAPI for DeepSeek Harness: native settings panel, daemon lifecycle, live usage and traffic feedback.",
   "type": "module",
   "main": "lib/index.js",

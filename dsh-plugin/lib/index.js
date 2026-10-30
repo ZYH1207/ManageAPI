@@ -136,14 +136,15 @@ export function apply(ctx, rawConfig) {
   })
 
   // ── HTTP 路由（webServer 是可选依赖）────────────────────────────
+  //
+  // ⚠️ 必须用 ctx.inject 等 webServer 就绪，不能用 ctx.get 一次性探：
+  //    激活时机早于 webServer 服务时就绪时，ctx.get 返回 undefined，
+  //    一次性判断会永久跳过注册 —— 表现是「面板一直 401 / 非 JSON」。
   if (config.proxyEnabled) {
-    ctx.effect(() => {
+    ctx.inject(['webServer'], (ctx) => {
       const webServer = ctx.get('webServer', false)
-      if (!webServer) {
-        log('webServer 不可用，跳过同源代理')
-        return () => {}
-      }
-      return registerRoutes({
+      if (!webServer) return
+      return ctx.effect(() => registerRoutes({
         webServer,
         manager,
         config,
@@ -155,8 +156,8 @@ export function apply(ctx, rawConfig) {
         promptRefresh: () => promptContext.maybeRefresh(),
         toolInfo: () => toolsInfo(),
         commandInfo: () => commandInfo(),
-      })
-    }, 'manage-api: http routes')
+      }), 'manage-api: http routes')
+    })
   }
 
   // ── llm/stream：只 tee，不缓冲、不 await 磁盘 ────────────────────
@@ -222,36 +223,30 @@ export function apply(ctx, rawConfig) {
 
   // ── 工具（模型可见）：status / models / usage ────────────────────
   let toolsInfo = () => ({ names: [], failed: [], unavailable: true })
-  ctx.effect(() => {
+  ctx.inject(['tools'], (ctx) => {
     const tools = ctx.get('tools', false)
-    if (!tools || typeof tools.register !== 'function') {
-      log('tools 不可用，跳过工具注册')
-      return () => {}
-    }
+    if (!tools || typeof tools.register !== 'function') return
     const registered = registerTools({ tools, port: config.port, budget, streamStats, log })
     toolsInfo = registered.info
     return registered.dispose
-  }, 'manage-api: tools')
+  })
 
   // ── 人类命令：/manage status|models|usage|budget ─────────────────
   let commandInfo = () => ({ name: 'manage', registered: false, unavailable: true })
-  ctx.effect(() => {
+  ctx.inject(['commands'], (ctx) => {
     const commands = ctx.get('commands', false)
-    if (!commands || typeof commands.register !== 'function') {
-      log('commands 不可用，跳过 /manage 命令')
-      return () => {}
-    }
+    if (!commands || typeof commands.register !== 'function') return
     commandInfo = () => ({ name: 'manage', registered: true, unavailable: false })
     return registerCommands({ commands, port: config.port, budget, streamStats, log })
-  }, 'manage-api: commands')
+  })
 
   // ── 预算熔断：超预算后拒绝一切工具调用 ───────────────────────────
   //
   // 只能挂在工具上：模型请求由宿主直接发出，插件在 llm/stream 里只是旁观者。
   // 拒绝一切工具后 agent 无法继续扩大动作面，配合提示词里的预算状态通常会自己收尾。
-  ctx.effect(() => {
+  ctx.inject(['tools'], (ctx) => {
     const tools = ctx.get('tools', false)
-    if (!tools || typeof tools.guard !== 'function') return () => {}
+    if (!tools || typeof tools.guard !== 'function') return
     const dispose = tools.guard((execution) => {
       const agentId = execution && execution.agent && typeof execution.agent.id === 'string' ? execution.agent.id : undefined
       return budget.denyReason(agentId)
@@ -263,16 +258,13 @@ export function apply(ctx, rawConfig) {
         /* ignore */
       }
     }
-  }, 'manage-api: budget guard')
+  })
 
   // ── 系统提示词上下文：daemon 现状 + 用量 + 预算 ──────────────────
   if (config.promptContext) {
-    ctx.effect(() => {
+    ctx.inject(['systemPrompt'], (ctx) => {
       const systemPrompt = ctx.get('systemPrompt', false)
-      if (!systemPrompt || typeof systemPrompt.context !== 'function') {
-        log('systemPrompt 不可用，跳过提示词上下文')
-        return () => {}
-      }
+      if (!systemPrompt || typeof systemPrompt.context !== 'function') return
       const stopTimer = promptContext.start()
       const dispose = promptContext.register(systemPrompt)
       return () => {
@@ -283,7 +275,7 @@ export function apply(ctx, rawConfig) {
         }
         stopTimer()
       }
-    }, 'manage-api: prompt context')
+    })
   }
 
   // 暴露给同进程内的其它部件（Client 路由、后续投影）。

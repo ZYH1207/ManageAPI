@@ -28,7 +28,8 @@ window.__ModuleLoader__.load({
     // 避免"激活早于 renderer 提供 slots → 设置分区永久不出现"的竞态。
     var inject = ['slots']
 
-    var API_PREFIX = 'dsh-manage-api'
+    // 必须与 lib/routes.js 的 PREFIX='"/api/manage-api"' 保持一致（check.mjs 有一致性断言）
+    var API_PREFIX = 'manage-api'
 
     // ── 工具：URL / 请求 ───────────────────────────────────────────────
     //
@@ -52,10 +53,20 @@ window.__ModuleLoader__.load({
         opts.body = JSON.stringify(opts.body || {})
       }
       return fetch(apiUrl(path), opts).then(function (res) {
-        return res.json().then(
-          function (body) { return { ok: res.ok, status: res.status, body: body } },
-          function () { return { ok: res.ok, status: res.status, body: null } },
-        )
+        return res.text().then(function (text) {
+          var body = null
+          try {
+            body = text ? JSON.parse(text) : null
+          } catch (e) {
+            body = null
+          }
+          return {
+            ok: res.ok,
+            status: res.status,
+            body: body,
+            text: body === null ? String(text || '').slice(0, 120) : '',
+          }
+        })
       })
     }
 
@@ -229,7 +240,8 @@ window.__ModuleLoader__.load({
           if (s && s.body) {
             if (s.body.ok) { setState(s.body); setError('') } else { setState(s.body); setError(s.body.error || '') }
           } else if (s && s.body === null) {
-            setError('宿主路由返回了非 JSON 响应')
+            setError('宿主路由返回了非 JSON 响应（HTTP ' + s.status + '）'
+              + (s.text ? '：' + s.text.replace(/\s+/g, ' ').trim() : ''))
           }
         })
       }, [])
