@@ -12,6 +12,12 @@
  *   3. 网关：点 AutoThink 开接管并真实改派；点别的模型关接管、派那一个、并钉住
  *   4. 边界：free/ 前缀与 /free 入口永远不接管（不偷偷扣钱）；关接管保留 scope
  *
+ * 2026-10-30：客户端拨开关先收起（core/auto-route.js 的 AUTO_ROUTE_CLIENT_SWITCH）。
+ * 端到端那几段默认跳过，改验两件事：
+ *   - 清单里确实没有 AutoThink；手写 model:AutoThink 也不会偷偷开接管
+ *   - 面板开关（PATCH autoRouteEnabled）与 AutoThink 走同一套记账——恢复后行为一致
+ * 把常量改回 true 就自动跑回原来的全量断言，不用改测试。
+ *
  * 用法：node .test/check-autothink.mjs
  */
 import { createServer } from 'node:net'
@@ -22,6 +28,7 @@ import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
   AUTO_THINK_MODEL,
+  AUTO_ROUTE_CLIENT_SWITCH,
   autoThinkIntent,
   isAutoThinkModel,
   normalizeAutoRoute,
@@ -243,12 +250,36 @@ try {
   console.log('\n[4] 未接管时清单：AutoThink + 全场')
   {
     const ids = await listed()
-    ok(ids[0] === 'AutoThink', `AutoThink 排第一（${ids[0]}）`)
+    if (AUTO_ROUTE_CLIENT_SWITCH) {
+      ok(ids[0] === 'AutoThink', `AutoThink 排第一（${ids[0]}）`)
+    } else {
+      ok(!ids.includes('AutoThink'), `客户端拨开关已收起：清单里没有 AutoThink（${ids.join(', ')}）`)
+    }
     ok(ids.includes('test-model-a') && ids.includes('test-model-b'), `全场模型都在（${ids.join(', ')}）`)
     ok(state.autoRoute?.enabled === false, '初始状态自动路由是关的')
   }
 
-  console.log('\n[5] 点 AutoThink：接管打开，这一单就按接管派活')
+  if (!AUTO_ROUTE_CLIENT_SWITCH) {
+    console.log('\n[4b] 收起状态下：手写 AutoThink 不能偷偷开接管，面板开关照旧能开')
+    {
+      const r = await chat('AutoThink')
+      ok(r.status !== 200, `手写 model:AutoThink 不生效（HTTP ${r.status}）`)
+      state = await api(base, 'GET', '/api/state')
+      ok(state.autoRoute?.enabled === false, '请求没把接管打开')
+      ok(state.pinnedModelKey === null, '也没把「客户端停在」写成 AutoThink')
+      ok(state.virtualAutoThink === false, 'state.virtualAutoThink 报 false（面板不会再写那条提示）')
+
+      // 恢复后要用到的能力全都还在：面板开关能开、能挑、能关
+      state = await api(base, 'PATCH', '/api/settings', { autoRouteEnabled: true })
+      ok(state.autoRoute?.enabled === true, '面板开关能打开接管（能力没删）')
+      ok(Boolean(state.autoRoute?.modelKey), `打开时立刻挑出模型（${state.autoRoute?.modelKey}）`)
+      state = await api(base, 'PATCH', '/api/settings', { autoRouteEnabled: false })
+      ok(state.autoRoute?.enabled === false, '面板开关能关掉接管')
+    }
+  }
+
+  if (AUTO_ROUTE_CLIENT_SWITCH) {
+    console.log('\n[5] 点 AutoThink：接管打开，这一单就按接管派活')
   {
     const r = await chat('AutoThink')
     ok(r.status === 200, `HTTP ${r.status}`)
@@ -260,7 +291,9 @@ try {
     const ids = await listed()
     ok(ids[0] === 'AutoThink' && ids.length >= 3, `接管中清单仍是 AutoThink + 全场（${ids.join(', ')}）`)
   }
+  }
 
+  if (AUTO_ROUTE_CLIENT_SWITCH) {
   console.log('\n[6] 接管中点别的模型：关接管、就派那一个、并钉住')
   {
     // 把 test-model-b 钉到乙站：不接管时应该听这个指定，接管时应该听「哪个便宜」。
@@ -282,7 +315,9 @@ try {
     const again = await chat('test-model-b')
     ok(again.status === 200 && again.servedProvider === '乙站', `后续请求仍按点名（${again.servedProvider}）`)
   }
+  }
 
+  if (AUTO_ROUTE_CLIENT_SWITCH) {
   console.log('\n[7] 解除钉子 + 关接管不丢接管范围')
   {
     state = await api(base, 'PATCH', '/api/settings', { pinnedModelKey: '' })
@@ -303,7 +338,9 @@ try {
       `客户端拨开关不动接管范围（${JSON.stringify(state.autoRoute?.scope)}）`,
     )
   }
+  }
 
+  if (AUTO_ROUTE_CLIENT_SWITCH) {
   console.log('\n[8] 免费池永不接管：free/ 前缀与 /free 入口')
   {
     // 把乙站那条改成免费：它不在付费池里，接管挑人时看不到它
@@ -328,6 +365,7 @@ try {
     )
     state = await api(base, 'GET', '/api/state')
     ok(state.autoRoute?.enabled === true, '免费请求不关接管（拨开关只认付费入口）')
+  }
   }
 } catch (error) {
   failed += 1

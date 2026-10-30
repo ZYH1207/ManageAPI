@@ -6,6 +6,8 @@
  *   MODE=fail      PORT=5103 node .test/mock-upstream.mjs   # 便宜但会挂（chat 一律 503）
  *   MANAGE_API_HOME=<临时目录> node daemon/index.js --port 4399
  */
+import { AUTO_ROUTE_CLIENT_SWITCH } from '../core/auto-route.js'
+
 const BASE = process.env.GW_BASE || 'http://127.0.0.1:4399'
 
 async function api(method, path, body) {
@@ -130,7 +132,21 @@ console.log('\n=== 6. 路由决策日志 ===')
 }
 
 console.log('\n=== 7. 客户端拨开关：点 AutoThink 开接管，点别的模型关接管 ===')
-{
+if (!AUTO_ROUTE_CLIENT_SWITCH) {
+  // 2026-10-30：客户端拨开关暂时收起（缓存命中率原因，见 core/auto-route.js）。
+  // 这一段验的就反过来：清单里不能有 AutoThink；面板开关仍然是可用的
+  const listed = async () =>
+    (await (await fetch(`${BASE}/v1/models`, { headers: auth })).json()).data.map((m) => m.id)
+  const ids = await listed()
+  if (ids.includes('AutoThink')) throw new Error(`收起状态下清单不该有 AutoThink，实际 ${JSON.stringify(ids)}`)
+  if (ids.length < 1) throw new Error('清单空了——真模型应该照旧全部列出')
+  console.log('清单（无 AutoThink）', JSON.stringify(ids))
+  let st = await api('PATCH', '/api/settings', { autoRouteEnabled: true })
+  if (!st.autoRoute?.enabled) throw new Error('面板开关应该还能打开接管（能力没删）')
+  st = await api('PATCH', '/api/settings', { autoRouteEnabled: false })
+  if (st.autoRoute?.enabled) throw new Error('面板开关应该还能关掉接管')
+  console.log('面板开关 开→关 正常，接管能力保留')
+} else {
   // 清单始终是「AutoThink + 全场」，接管与否都这样——客户端才能在同一个下拉里拨开关
   const listed = async () =>
     (await (await fetch(`${BASE}/v1/models`, { headers: auth })).json()).data.map((m) => m.id)

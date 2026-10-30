@@ -53,6 +53,22 @@ export const AUTO_ROUTE_SWITCH_GAIN = 0.15
 export const AUTO_THINK_MODEL = 'AutoThink'
 
 /**
+ * 客户端能不能通过点名一个虚拟模型来拨自动路由（AutoThink）——**暂时关掉**。
+ *
+ * 与 daemon/server.js 里的 /v1/models 清单是同一个开关：清单里不露那个虚拟模型，
+ * 网关也不认它的点名。两边必须同一份判定，只关一边会得到「清单里看得到、点了没反应」
+ * 或「看不见、但手写 model:AutoThink 居然能开」，两种都更让人糊涂。
+ *
+ * 为什么关（2026-10-30）：接管会在模型之间反复切，而模型的 KV 缓存是绑在
+ * 模型+上游分组上的——每换一次，客户端那几十万 token 上下文就要重新算一遍，
+ * 缓存命中率暴跌，省下的差价远不够赔变慢与缓存重建。路由逻辑改好后再打开。
+ *
+ * 只关「客户端拨开关」：面板开关（PATCH /api/settings autoRouteEnabled）、
+ * 挑选/迟滞/轮巡/漂移转移全部保留，测试照旧打它们。
+ */
+export const AUTO_ROUTE_CLIENT_SWITCH = false
+
+/**
  * 这个名字算不算「要接管」。写法宽容一点：AutoThink / auto-think / AUTO THINK
  * 都算——客户端有时自己会做一次归一化，没必要为此报 404。
  *

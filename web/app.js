@@ -4079,6 +4079,10 @@ function routeNowPill() {
  * 服务端按身份键匹配——站点把同一模型写成别的名字也能勾得住。
  */
 function autorouteScopeButton(decision) {
+  // 界面暂藏（见 AUTO_ROUTE_UI_HIDDEN）：勾选范围只对自动路由有意义，
+  // 开关不在台面上时一排加号只会让人猜「这个加号加的是什么」。
+  // 接管正在生效时照旧露出——那是它的配套控件
+  if (AUTO_ROUTE_UI_HIDDEN && !state.autoRoute?.enabled) return ''
   const scope = Array.isArray(state.autoRoute?.scope) ? state.autoRoute.scope : []
   const enrolled = scope.includes(decision.modelKey)
   const title = enrolled
@@ -4208,6 +4212,11 @@ function patrolBadge() {
 
 function autoRouteSwitch() {
   const enabled = Boolean(state.autoRoute?.enabled)
+  // 界面暂藏（见 AUTO_ROUTE_UI_HIDDEN）：整个开关连同接管范围、钉住的模型、
+  // 漂移状态行一并收起来。
+  // 但**已经在接管中**时不能藏：那是正在生效的行为（网关在改派请求），
+  // 藏了就没有任何地方能把它关掉，只能去翻 db.json。所以只藏「怎么开」。
+  if (AUTO_ROUTE_UI_HIDDEN && !enabled) return ''
   const scope = Array.isArray(state.autoRoute?.scope) ? state.autoRoute.scope : []
   const scopeHint =
     scope.length > 0
@@ -6534,6 +6543,19 @@ const TABS = ['overview', 'monitor', 'decision', 'probes', 'protocol', 'gateway'
 /** 暂时隐藏但代码全部保留的 tab：恢复 = index.html 取消导航注释 + 从这里移除。
  *  隐藏视图的循环必须包含它们，否则切页时 #view-free 不会被动收起来。 */
 const HIDDEN_TABS = ['free']
+
+/**
+ * 自动路由的界面入口先藏起来（2026-10-30），代码一行不动。
+ *
+ * 为什么：接管后网关无视客户端点的模型，一律派「当前档位的最优」。而模型的
+ * KV 缓存是**按模型（还有上游分组）绑的**——每换一次模型，客户端那几十万 token
+ * 的上下文都要在上游重新算一遍，缓存命中率直接掉到接近 0。省钱逻辑赢了、
+ * 变慢和变贵却没人记账，所以路由逻辑没修好之前这个开关不该摆在台面上。
+ *
+ * 藏的是**入口**，不是能力：后端开关、AutoThink、轮巡、漂移转移全都留着一份
+ * 能跑的实现（测试也还在打它们）。所以恢复 = 把这个 false 改成 true，不用改别的。
+ */
+const AUTO_ROUTE_UI_HIDDEN = true
 
 /** 折叠状态：'provider:xxx' / 'pricing:模型名' / 'probe:站点id' */
 const collapsedPanels = new Set()

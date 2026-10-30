@@ -58,6 +58,7 @@ import {
   disableAutoRoute,
   autoThinkIntent,
   isAutoThinkModel,
+  AUTO_ROUTE_CLIENT_SWITCH,
   AUTO_THINK_MODEL,
 } from '../core/auto-route.js'
 import {
@@ -580,14 +581,18 @@ async function buildState({ light = false } = {}) {
     // 自动路由（一键接管）：决策页的开关与「正在使用」照这份显示。
     // modelKey 之后的找补（哪个站、哪个分组、供给还活着吗）前端从
     // decisions 里按 modelKey 自己查，服务端不重复算一遍。
-    // virtualAutoThink：网关清单里那个虚拟模型始终可点（客户端拨开关用），
-    // 除非用户自己真有个同名的供给——那时真供给优先（与网关同一套判定）
+    // virtualAutoThink：网关清单里那个虚拟模型到底可不可点（客户端拨开关用）。
+    // 2026-10-30 起客户端拨开关暂时关闭（AUTO_ROUTE_CLIENT_SWITCH）：清单里没这一项，
+    // 这里也必须报 false，否则界面上还会写「客户端点 AutoThink = 开」——一句没用的提示。
+    // 另外还要排除用户自己真有个同名供给的情况（那时真供给优先，与网关同一套判定）
     autoRoute: normalizeAutoRoute(db.settings.autoRoute),
     // 客户端「停在哪个模型」（身份键）：客户端选了一个具体模型、把接管关掉时记下的
     pinnedModelKey: db.settings.pinnedModelKey || null,
     // 客户端能否拨开关：清单里那个虚拟 AutoThink 是否存在（用户真有个同名的供给时
     // 虚拟模型让位，界面上的提示跟着诚实地消失）。判定与网关同一份
-    virtualAutoThink: autoThinkIntent(AUTO_THINK_MODEL, inv.routeableOffers(db)) === 'virtual',
+    virtualAutoThink:
+      AUTO_ROUTE_CLIENT_SWITCH &&
+      autoThinkIntent(AUTO_THINK_MODEL, inv.routeableOffers(db)) === 'virtual',
     // 漂移监视器快照（真实速度/基线/降级名单/最近转移）+ 轮巡状态：诊断页展示。
     // 纯读缓存（tick 每分钟算一次），这里不重算
     drift: driftWatcherHook?.snapshot?.() ?? null,
@@ -4646,6 +4651,7 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
   // isAutoThinkModel 放前面短路，普通模型名不要为了一次名字检查重建整个供给数组
   const wantsAuto =
     !isFree &&
+    AUTO_ROUTE_CLIENT_SWITCH &&
     isAutoThinkModel(parsed.model) &&
     autoThinkIntent(parsed.model, [...split.paid, ...split.free]) === 'virtual'
   let clientToggled = null // 这一单顺带把开关拨成了什么（落盘后写进路由日志）
@@ -5323,6 +5329,10 @@ async function handleProxy(req, res, url) {
     // 清单不变，客户端点 AutoThink 就等于打开接管，点任何别的模型就等于关掉接管
     // 改派到那一个（详见 handleChatCompletions 里的 protocol 前处理）。
     // 免费入口不接管（把免费请求改派到付费模型等于静默扣钱），/free/v1/models 照旧。
+    //
+    // 2026-10-30 起 AutoThink 暂时从清单里拿掉（AUTO_ROUTE_CLIENT_SWITCH）：
+    // 接管会在模型间反复切，模型的 KV 缓存绑在模型+分组上，每切一次上下文就要
+    // 重算一遍，缓存命中率暴跌。开关与判定一行未删，改那个常量就能回来。
     const paidModels = listPublicModels({ offers: split.paid, scores, settings: db.settings })
     const freeModels = listPublicModels({ offers: split.free, scores, settings: db.settings })
     const record = normalizeAutoRoute(db.settings.autoRoute)
@@ -5333,21 +5343,26 @@ async function handleProxy(req, res, url) {
       : null
     const providers = current ? current.providers : paidModels.reduce((n, m) => n + m.providers, 0)
     const healthy = current ? current.healthy : paidModels.reduce((n, m) => n + m.healthy, 0)
+    const virtualSwitch = AUTO_ROUTE_CLIENT_SWITCH
+      ? [
+          {
+            id: AUTO_THINK_MODEL,
+            object: 'model',
+            created: Math.floor(Date.now() / 1000),
+            owned_by: 'manage-api',
+            providers,
+            healthy,
+            // 非标准字段：有的客户端会把它显示在模型名旁边（不认也无害）
+            description: record.enabled
+              ? '自动路由接管中：网关按当前档位挑全场最优'
+              : '自动路由：选中即交给网关挑最优；选别的模型即关闭',
+          },
+        ]
+      : []
     return json(res, 200, {
       object: 'list',
       data: [
-        {
-          id: AUTO_THINK_MODEL,
-          object: 'model',
-          created: Math.floor(Date.now() / 1000),
-          owned_by: 'manage-api',
-          providers,
-          healthy,
-          // 非标准字段：有的客户端会把它显示在模型名旁边（不认也无害）
-          description: record.enabled
-            ? '自动路由接管中：网关按当前档位挑全场最优'
-            : '自动路由：选中即交给网关挑最优；选别的模型即关闭',
-        },
+        ...virtualSwitch,
         ...paidModels.map((m) => shape(m, 'manage-api')),
         ...freeModels.map((m) => shape(m, 'manage-api-free', FREE_PREFIX)),
       ],
