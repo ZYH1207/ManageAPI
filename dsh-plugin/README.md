@@ -51,6 +51,27 @@ ManageAPI 这个 provider 的命名空间属于 `llm-pi-ai`，第三方插件无
 3. 包内 `runtime/`（内嵌形态）
 4. 同仓开发目录（`dsh-plugin/..`）
 
+## 配置项（都在 `cordis.patch.yml` 的 `config` 里）
+
+```yaml
+- insert:
+    - id: manage-api
+      name: dsh-manage-api
+      config:
+        port: 4319              # daemon 端口（默认 4319）
+        autoStart: true         # 探不到 daemon 就自己拉起
+        runtimeDir: ""          # 显式指定 ManageAPI 目录；空则按「运行时解析顺序」找
+        waitMs: 10000           # 冷启动等待上限
+        ingestExternalUsage: true  # 把非 ManageAPI 渠道的真实用量回写给 daemon
+        promptContext: true     # 把站点/比价/用量注入系统提示词上下文
+        budget:                 # 0 = 不设限；超限后拒绝一切工具调用逼模型收尾
+          sessionTokens: 0
+          dailyTokens: 0
+```
+
+> 预算只作用于**工具调用**：模型请求由宿主直接发出，插件是旁观者。拒绝一切工具后 agent
+> 无法继续扩大动作面，配合提示词里的超限警告通常会自己收尾。
+
 ## 安装（开发期）
 
 ```bash
