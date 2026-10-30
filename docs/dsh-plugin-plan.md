@@ -51,12 +51,12 @@
 
 新用户「只装了插件端」，机器上没有 daemon、没有 `~/.manage-api/`、也没配过 patch。若插件是纯壳，装完等于空壳。ManageAPI 运行时**零依赖零构建**（且 `core/` 不含 `node:http`），随包分发成本极低。
 
-### 3.2 依赖形态（推荐 A，待确认 ManageAPI 是否已发布到 npm）
+### 3.2 依赖形态（已定：A，`manage-api@0.3.0` 已于 2026-10-30 发布到 npmjs）
 
 | 方案 | 做法 | 优点 / 缺点 |
 |---|---|---|
-| **A（推荐）** | 插件 `dependencies: { "manage-api": "^0.2.0" }`，spawn `node <pkgDir>/daemon/index.js`；开发时 `link:../` | 单一源，不漂移；依赖 npm 已发布 |
-| B | `prepack` 脚本把根仓库 `core/`、`daemon/` 拷进 `dsh-plugin/runtime/` | 可离线单包分发；多一份拷贝，需同步校验 |
+| **A（采用）** | 插件 `dependencies: { "manage-api": "^0.3.0" }`，spawn `node <pkgDir>/daemon/index.js`；开发时 `link:../` | 单一源，不漂移；已验证存在（`npm view manage-api version` = 0.3.0，46 文件/332.6 kB） |
+| B（备选） | `prepack` 脚本把根仓库 `core/`、`daemon/` 拷进 `dsh-plugin/runtime/` | 主依赖解析失败时的兜底；多一份拷贝，需同步校验 |
 
 包目录解析用 `createRequire(import.meta.url).resolve('manage-api/package.json')` + `dirname`，兼容 pnpm 的符号链接布局。
 
@@ -396,7 +396,7 @@ ctx.on('llm/stream', async function*(options, next) {
 
 ## 12. 待定
 
-1. **ManageAPI 是否已发布到 npm？** 决定了运行时是「作依赖」还是「打包内置」（§3.2）。
+1. ~~ManageAPI 是否已发布到 npm？~~ **已定**：`manage-api@0.3.0` 已于 2026-10-30 发布到 `registry.npmjs.org`（`latest` = 0.3.0，shasum `ec17d48…`，tag `v0.3.0` 已推 origin），插件依赖固定 `"^0.3.0"`，B 方案仅作解析失败兜底。
 2. **第一版范围**：只到 Phase 1，还是一路做到 Phase 2 的流量上报？
 3. **面板入口**：确认走 betterSidebar 右栏（建议）+ 缺失降级，还是直接常驻 `settings.section`。
 
