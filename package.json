@@ -1,6 +1,6 @@
 {
   "name": "manage-api",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "管理你买的多个 AI 中转站：跨站比价、降智检测、一个 Key 走全部站点",
   "type": "module",
   "license": "MIT",
