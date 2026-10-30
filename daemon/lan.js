@@ -89,10 +89,26 @@ export async function pickLanAddress(interfaces) {
 }
 
 /**
+ * TUN / 虚拟网卡模式的代理（Mihomo、Clash Meta、sing-box…）会插一张网卡，
+ * 默认 fake-ip 段往往是 198.18.0.0/15（RFC2544 benchmark 段）。
+ *
+ * 它长得像“一个 IPv4”，但它是隧道内部地址：别的设备**永远连不到**它。
+ * 以前只按网卡名判断虚拟（正则里没有 meta / mihomo 这些名字），
+ * 于是开着「虚拟网卡」模式时这里会选中 198.18.0.1，daemon 兴高采烈地绑上去，
+ * 用户看到的就是「地址填对了却连不上」。所以这一段直接硬排除。
+ */
+const TUN_FAKE_RANGE = /^198\.(18|19)\./
+
+/**
  * 自动挑一个局域网地址：优先物理网卡的私有 IPv4。
  *
  * 为什么不把地址写死在配置里：换一次 DHCP 租约地址就变了，写死的那个
  * 第二天就成了「昨天还能用今天不能」。启动时现算，重启即跟随。
+ *
+ * 排序只做两件事，都跟本机实测到的坑有关：
+ *   1. 私有网段优先——「局域网入口」只接受私有来源，绑个公网 IP 等于谁都不让进；
+ *   2. 物理网卡优先——Windows 的「本地连接* N」（Wi-Fi Direct）和 TUN 虚拟网卡
+ *      经常也拿着 192.168 地址且排在真网卡前面。
  */
 export function detectLanAddress(interfaces = networkInterfaces()) {
   const candidates = []
@@ -105,10 +121,20 @@ export function detectLanAddress(interfaces = networkInterfaces()) {
       if (!/^\d+\.\d+\.\d+\.\d+$/.test(address)) continue
       // 169.254.x.x 是拿不到 DHCP 时的自分配地址：网段里除了自己没别人
       if (address.startsWith('169.254.')) continue
-      candidates.push({ name, address, virtual: VIRTUAL_ADAPTER.test(String(name)) })
+      // 代理 TUN 的 fake-ip 段：绑上去别的设备连不到
+      if (TUN_FAKE_RANGE.test(address)) continue
+      candidates.push({
+        name,
+        address,
+        private: isPrivatePeer(address),
+        virtual: VIRTUAL_ADAPTER.test(String(name)),
+      })
     }
   }
-  candidates.sort((a, b) => Number(a.virtual) - Number(b.virtual))
+  candidates.sort(
+    (a, b) =>
+      Number(b.private) - Number(a.private) || Number(a.virtual) - Number(b.virtual),
+  )
   return candidates[0]?.address || null
 }
 

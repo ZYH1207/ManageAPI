@@ -128,6 +128,43 @@ console.log('[1] 回环 / 私有网段 / 网关路径 / 地址解析')
   ok(detectLanAddress(selfAssigned) === '192.168.1.20', '探测：跳过 169.254 自分配地址')
   ok(detectLanAddress({}) === null, '探测：什么都没有 → null')
 
+  // 代理开着「虚拟网卡 / TUN」模式时的坑：Mihomo（及 Clash Meta、sing-box）
+  // 会插一张网卡，默认 fake-ip 拿 198.18.0.0/15（RFC2544 benchmark 段）。
+  // 它是隧道内部地址，局域网里任何设备都连不到；而网卡名通常是 Meta / Mihomo，
+  // 不在虚拟名称正则里，旧逻辑会把它当“物理网卡”排在真网卡前面选中。
+  const tunMeta = {
+    Meta: [{ address: '198.18.0.1', family: 'IPv4', internal: false }],
+    WLAN: [{ address: '192.168.1.26', family: 'IPv4', internal: false }],
+  }
+  ok(detectLanAddress(tunMeta) === '192.168.1.26', '探测：代理 TUN 的 198.18.0.1 不会被选中（即便它排前面）')
+  const tunMihomo = {
+    Mihomo: [{ address: '198.18.0.1', family: 'IPv4', internal: false }],
+    以太网: [{ address: '10.0.0.7', family: 'IPv4', internal: false }],
+  }
+  ok(detectLanAddress(tunMihomo) === '10.0.0.7', '探测：TUN 只开代理时仍然选到真网卡的私有地址')
+  const tunOnly = { Meta: [{ address: '198.18.0.1', family: 'IPv4', internal: false }] }
+  ok(detectLanAddress(tunOnly) === null, '探测：只有 TUN 网卡时返回 null（不绑一个连不到的地址）')
+  ok(
+    (await resolveLanAddress('auto', tunOnly)).reason === 'not-found',
+    '解析：只有 TUN 时报 not-found，启动时会把原因说出来',
+  )
+  ok(
+    detectLanAddress({ WLAN: [{ address: '198.19.5.5', family: 'IPv4', internal: false }] }) === null,
+    '探测：198.19/16 同样算 TUN 假地址',
+  )
+  // 反过来：真实私网不能被误删（Tailscale 100.64/10、NAT64 习惯的 192.168 都不动）
+  ok(
+    detectLanAddress({ Tailscale: [{ address: '100.101.102.103', family: 'IPv4', internal: false }] }) === '100.101.102.103',
+    '探测：Tailscale 的 100.64/10 仍然可用（整机只有它时不挡死）',
+  )
+  ok(
+    detectLanAddress({
+      公网网卡: [{ address: '203.0.113.9', family: 'IPv4', internal: false }],
+      WLAN: [{ address: '192.168.1.26', family: 'IPv4', internal: false }],
+    }) === '192.168.1.26',
+    '探测：私网地址优先于公网 IP',
+  )
+
   ok(lanAddressWarning('192.168.1.26') === null, '提醒：私有地址不啰嗦')
   ok(/私有网段/.test(lanAddressWarning('8.8.8.8') || ''), '提醒：绑到公网地址要说清「所有人都连不上」')
 
