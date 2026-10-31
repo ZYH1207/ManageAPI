@@ -65,6 +65,8 @@ import {
 } from '../core/auto-route.js'
 // 缓存亲和（借鉴 Magpie）：对话指纹 + 「该不该为了缓存钉住上次那个供给」
 import { conversationFingerprint, recordFrom, listAffinityModes } from '../core/affinity.js'
+// 请求耗时细分（借鉴 Magpie 的 net 明细）：分开 own / wait / head / flow
+import { PhaseTimer, diagnosePhases } from '../core/net-timing.js'
 import {
   ensureFailoverToken,
   activeReports,
@@ -3951,6 +3953,10 @@ async function streamAttempt({
 
   const controller = new AbortController()
   const startedAt = Date.now()
+  // 分段计时：own（我们的开销）vs wait（等上游）vs head（首包）vs flow（生成）
+  // 用户说「慢」时必须能回答慢在哪，只有一个总耗时数字什么判断都做不了
+  const phase = new PhaseTimer()
+  phase.mark('dispatch')
 
   // 超时口径是「空闲」而不是「总时长」：长回答连续有字节就不该被杀掉，
   // 只有连续 STREAM_IDLE_MS 没收到任何东西才当上游卡死。
@@ -4007,6 +4013,9 @@ async function streamAttempt({
     return { committed: resume, error: `连接失败：${error.message}` }
   }
 
+  // 收到响应头了：wait 段到此结束
+  phase.mark('headers')
+
   if (!upstreamRes.ok) {
     const text = await upstreamRes.text().catch(() => '')
     cleanup()
@@ -4026,8 +4035,12 @@ async function streamAttempt({
     // usage 字段改名都在那边处理，这里只消费归一化结果
     const extracted = extractNonStream(protocol, payload)
     if (extracted.error) return { committed: resume, error: extracted.error }
+    phase.mark('done')
+    const netNonStream = phase.finish()
     return {
       payload,
+      net: netNonStream,
+      netDiag: diagnosePhases(netNonStream),
       committed: resume,
       usage: extracted.usage || null,
       ttftMs: null,
@@ -4076,6 +4089,8 @@ async function streamAttempt({
     })
     committed = true
     ttftMs = Date.now() - startedAt
+    // 首个内容字节到达：head 段到此结束
+    phase.mark('firstByte')
   }
 
   // 提交前攒下的生命周期事件（Responses 的 response.created 等）。
@@ -4214,11 +4229,15 @@ async function streamAttempt({
     }
 
     cleanup()
+    phase.mark('done')
     const { usage, contentChars, textChars, reasoningChars, hasToolCalls, finishReason, textTail } = inspector.state
+    const net = phase.finish()
     return {
       committed,
       usage: usage || null,
       ttftMs,
+      net,
+      netDiag: diagnosePhases(net),
       terminal,
       // 只有「已提交且没交付完」才带 streamError；未提交的失败走上面的 error 分支
       streamError: streamError || null,
@@ -4247,10 +4266,14 @@ async function streamAttempt({
     const reason = idleTimedOut
       ? `上游流中断（${STREAM_IDLE_MS / 1000} 秒无数据）`
       : error.message
+    phase.mark('done')
+    const net = phase.finish()
     return {
       committed,
       usage: usage || null,
       ttftMs,
+      net,
+      netDiag: diagnosePhases(net),
       terminal,
       clientAbort: clientGone,
       streamError: reason,
@@ -5135,6 +5158,10 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
             streamError: null,
             latencyMs,
             ttftMs: result.ttftMs ?? null,
+            // 耗时细分：own（网关自身）/ wait（等上游）/ head（首包）/ flow（生成）
+            // 让「为什么慢」这个问题能定位到具体一段，而不是只有一个总耗时
+            net: result.net ?? null,
+            netDiag: result.netDiag || '',
             protocol,
             stream: body.stream === true,
             usage: result.usage || null,
@@ -5206,6 +5233,9 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
           streamError: result.streamError || null,
           latencyMs,
           ttftMs: result.ttftMs ?? null,
+          // 耗时细分（失败也记）：断流时「卡在 wait 还是 flow」是定位关键
+          net: result.net ?? null,
+          netDiag: result.netDiag || '',
           // 协议 / 是否流式：详细用量页要能解释「为什么这条没有首字/没有速度」
           protocol,
           // 断流的具体成因（空闲超时 / 连接被断 / 客户端取消）：

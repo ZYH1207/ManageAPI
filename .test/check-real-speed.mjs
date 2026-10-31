@@ -81,7 +81,10 @@ check('报出最新证据是几小时前', () => {
     bucket('o1', 1, 5, 5000, now),
   ])
   const r = realTtftOf(stats, 'o1', now)
-  assert.equal(r.realTtftHoursAgo, 1, '应报最新那条')
+  // 桶的时间戳是按整小时对齐的（offerStats 的键就是「小时」），
+  // 所以 1 小时前的桶实际落在 1~2 小时之间，断言放宽到区间而不是精确值。
+  assert.ok(r.realTtftHoursAgo >= 1 && r.realTtftHoursAgo <= 2,
+    `应报最新那条（1~2 小时前），实际 ${r.realTtftHoursAgo}`)
 })
 
 check('没有任何样本 → null（不能冒充有数据）', () => {
