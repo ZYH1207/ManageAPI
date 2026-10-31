@@ -65,6 +65,8 @@ import {
 } from '../core/auto-route.js'
 // 缓存亲和（借鉴 Magpie）：对话指纹 + 「该不该为了缓存钉住上次那个供给」
 import { conversationFingerprint, recordFrom, listAffinityModes } from '../core/affinity.js'
+// 路由编排：速度模型（标定）+ 余额守卫（阈值切换）+ 兜底阶梯（绝不报错）
+import { buildRoutingContext, decideRoute } from '../core/route-orchestrator.js'
 // 请求耗时细分（借鉴 Magpie 的 net 明细）：分开 own / wait / head / flow
 import { PhaseTimer, diagnosePhases } from '../core/net-timing.js'
 import {
@@ -592,6 +594,47 @@ async function buildState({ light = false } = {}) {
     // 这里也必须报 false，否则界面上还会写「客户端点 AutoThink = 开」——一句没用的提示。
     // 另外还要排除用户自己真有个同名供给的情况（那时真供给优先，与网关同一套判定）
     autoRoute: normalizeAutoRoute(db.settings.autoRoute),
+    // 路由健康快照：标定可信度 + 各站余额状态。
+    //
+    // 为什么单独给一块：这两个是「自动路由凭什么这么选」的前提，用户看不到了解释
+    // 就没法判断该不该调阈值。特别是标定 —— 它把「探针值」翻译成「真实体感」，
+    // 没有它，面板上的首字数字和实际感受会差好几倍（实测 2~10 倍）。
+    routingHealth: (() => {
+      try {
+        const ctx = buildRoutingContext(db)
+        const bal = []
+        for (const p of (db.providers || [])) {
+          const a = ctx.balances.get(p.id)
+          if (!a) continue
+          bal.push({
+            providerId: p.id,
+            name: p.name,
+            state: a.state,
+            quota: a.quota,
+            daysLeft: a.daysLeft === null ? null : Number(a.daysLeft.toFixed(2)),
+            dailySpend: ctx.dailySpend.get(p.id) ?? null,
+            reason: a.reason,
+          })
+        }
+        bal.sort((x, y) => {
+          const rank = { empty: 0, critical: 1, low: 2, unknown: 3, healthy: 4 }
+          return (rank[x.state] ?? 9) - (rank[y.state] ?? 9)
+        })
+        return {
+          calibration: {
+            available: ctx.calibration?.global !== null,
+            ratio: ctx.calibration?.global ?? null,
+            text: ctx.calibrationText,
+            samples: ctx.calibration?.samples ?? null,
+          },
+          providerSpeedPrior: Object.fromEntries(ctx.providerSpeedPrior),
+          balances: bal,
+        }
+      } catch (error) {
+        // 健康快照算不出来不能拖垮整个 state（面板打不开比少一块数据更糟）
+        return { error: String(error?.message ?? error) }
+      }
+    })(),
     // 客户端「停在哪个模型」（身份键）：客户端选了一个具体模型、把接管关掉时记下的
     pinnedModelKey: db.settings.pinnedModelKey || null,
     // 客户端能否拨开关：清单里那个虚拟 AutoThink 是否存在（用户真有个同名的供给时
@@ -4892,12 +4935,24 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
   // 这里必须用 admissionOf 而不是 routable：两套口径分别长会直接导致
   // 「决策页说没有可用供给，网关却偷偷拿最差的去试」
   const allCandidates = candidates
-  // 候选链 = 准入的在前 + 绝境兜底的在后（见 core/router.js#candidateChain）。
-  // 兜底只收「慢速但真实成功率过得去」的：给错结果比不给更糟，
-  // 所以降智/指纹不符/不稳定一律不兜底。
-  const chain = candidateChain(candidates)
-  const admitted = chain.admitted
-  if (admitted.length === 0 && chain.lastResort.length === 0) {
+  // 候选链 = 兜底阶梯（见 core/route-orchestrator.js#decideRoute）。
+  //
+  // 这一段的语义在 2026-10-31 改过，原因是一次真实故障：
+  //   旧逻辑「准入通过 + 只收慢速兜底」在**供给没有探针数据**时会返回空链，
+  //   客户端直接收到 400。而本机库 357 个供给里 200 个（56%）没有探针记录 ——
+  //   也就是说「一个模型看似有几十条供给，实际一条都不敢用」。
+  //   更糟的是探针集体失败时（网络抖动/上游限流），所有供给同时变 no-evidence，
+  //   整条链路瞬间全崩、哪个都用不了。
+  //
+  // 新逻辑：排序回答「谁最好」，阶梯回答「实在没有好的，次好的也行」。
+  //   · 准入通过 → 首选
+  //   · 慢 / 无证据 / 降级 / 冷却已过 → 按成功率排进阶梯，仍会被尝试
+  //   · 只有余额为 0 和本次已试过 → 硬排除（试了必然白等 / 死循环）
+  //   · 阶梯空了还有 rescueFromEmpty 强制兜底
+  // **只有当「连余额不为 0 的供给都不存在」时才会报错** —— 那是真的没得选。
+  const routeCtx = buildRoutingContext(db)
+  const decision = decideRoute(candidates, routeCtx, { tried: new Set(), maxPerTier: 4 })
+  if (decision.chain.length === 0) {
     // 报错文案在 core/router.js：决策页要能显示同一句话，两处各写一遍必然漂移
     const failure = admissionFailure(candidates, {
       model,
@@ -4909,9 +4964,7 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
     }
     return openaiError(res, failure.status, failure.message, failure.type)
   }
-  // 准入候选排前面，全部失败后才轮到兜底的慢速供给。
-  // 用户宁可多等几秒，也不想看到报错——这是「不影响心流」的底线。
-  candidates = admitted.length > 0 ? [...admitted, ...chain.lastResort] : chain.lastResort
+  candidates = decision.chain
   // 人工勾选 > 一切自动排序：决策页点选的那条顶到尝试链最前（与决策页「当前选」
   // 同一份口径，见 core/router.js#applyPinnedChoice）；哪怕准入没放行也算数——
   // 这是人的明确指定，真发失败了照样沿候选链往后故障转移。
