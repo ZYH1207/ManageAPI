@@ -2796,3 +2796,100 @@ body.prov-dragging .drop-zone { display: flex; }
 .drift-val.slower { color: var(--danger); }
 .drift-val.faster { color: var(--accent); }
 .drift-val.flat { color: var(--muted); }
+
+/* ── 排序算法说明卡（智能决策页顶部） ──────────────────────────────
+   用户明确要求「把算法写清楚，否则不知道为什么首字快的站没被选」。
+   形态上用「步骤列表 + 为什么没选 + 本机实测系数」三段，
+   而不是一大段文字——扫一眼就能对上自己看到的现象。 */
+.algo-card { padding: 12px 14px; display: flex; flex-direction: column; gap: 8px; }
+.algo-body { display: flex; flex-direction: column; gap: 12px; }
+
+.algo-steps {
+  margin: 0; padding-left: 20px;
+  display: flex; flex-direction: column; gap: 5px;
+  font-size: 12px; line-height: 1.6; color: var(--muted);
+}
+.algo-steps li::marker { color: var(--faint); font-variant-numeric: tabular-nums; }
+.algo-steps b { color: var(--text); font-weight: 500; }
+
+/* 「为什么没选」这一段用左侧色条强调：它是这个卡片存在的理由 */
+.algo-why {
+  padding: 9px 12px;
+  border-left: 2px solid var(--accent-mid);
+  border-radius: 0 7px 7px 0;
+  background: var(--surface-2);
+  font-size: 12px; line-height: 1.6;
+}
+.algo-why-title { color: var(--text); font-weight: 500; margin-bottom: 4px; }
+.algo-why ul { margin: 0; padding-left: 18px; color: var(--muted); }
+.algo-why li + li { margin-top: 2px; }
+.algo-why b { color: var(--text); font-weight: 500; }
+
+/* 本机实测系数：等宽数字，方便横向对比 */
+.algo-facts {
+  display: flex; flex-direction: column; gap: 4px;
+  font-size: 11.5px;
+}
+.algo-facts > div { display: flex; gap: 10px; align-items: baseline; }
+.algo-facts .k { color: var(--faint); flex: 0 0 140px; }
+.algo-facts .v { color: var(--muted); flex: 1 1 auto; }
+
+/* ── 「依据」列 ──────────────────────────────────────────────
+   排序分是怎么算出来的。信息密度高但必须可读：
+   来源标签（实测/标定推算/仅探针/站点先验）+ 速度构成 + 惩罚项。 */
+.dec-basis { max-width: 260px; }
+.basis-cell { display: flex; flex-direction: column; gap: 2px; align-items: flex-start; }
+.basis-speed { font-size: 11px; color: var(--muted); white-space: nowrap; }
+.basis-cell .sub { font-size: 10.5px; color: var(--faint); line-height: 1.4; }
+
+/* ── 缓存亲和面板 ────────────────────────────────────────────
+   亲和是自动路由里优先级最高的一步（在选优之前），它的档位直接决定
+   「会不会经常换站、缓存能不能保住」。做成可点的分段条，而不是下拉框——
+   五个档位是互斥的价值观，摊开比藏起来诚实行。 */
+.affinity-card { padding: 12px 14px; display: flex; flex-direction: column; gap: 8px; }
+.aff-body { display: flex; flex-direction: column; gap: 10px; }
+.aff-body .hint { font-size: 11.5px; line-height: 1.6; }
+
+.aff-modes {
+  display: flex; flex-wrap: wrap; gap: 4px;
+}
+.aff-seg {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 0;
+  padding: 5px 11px 6px; border-radius: 7px;
+  background: var(--hover); border: 1px solid var(--border);
+  color: var(--muted); cursor: pointer; text-align: left;
+  transition: background 0.12s, color 0.12s, border-color 0.12s;
+}
+.aff-seg:hover { background: var(--surface-2); color: var(--text); }
+.aff-seg.active {
+  background: var(--accent-soft); border-color: var(--accent-mid);
+  color: var(--text);
+}
+.aff-seg-label { font-size: 12px; font-weight: 500; line-height: 1.3; }
+.aff-seg-hint { font-size: 10.5px; color: var(--faint); line-height: 1.3; }
+.aff-seg.active .aff-seg-hint { color: var(--muted); }
+
+/* 当前档位的一句话解释 */
+.aff-now { display: flex; gap: 10px; align-items: baseline; font-size: 11.5px; }
+.aff-now .k { color: var(--faint); flex: 0 0 44px; }
+.aff-now .v { color: var(--muted); }
+
+/* 最近被钉住的对话：证明「它真的在记」 */
+.aff-recent { display: flex; flex-direction: column; gap: 3px; }
+.aff-recent-title {
+  font-size: 11px; color: var(--faint); margin-bottom: 2px;
+  text-transform: uppercase; letter-spacing: 0.03em;
+}
+.aff-recent-row {
+  display: flex; gap: 10px; align-items: baseline;
+  font-size: 11px; padding: 3px 8px; border-radius: 5px;
+  background: var(--hover);
+}
+.aff-recent-row > span:first-child { flex: 0 0 70px; }
+.aff-recent-row > span:nth-child(2) {
+  flex: 1 1 auto; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.aff-recent-row .dim { color: var(--faint); font-variant-numeric: tabular-nums; }
+
+.aff-actions { display: flex; gap: 6px; }

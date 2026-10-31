@@ -66,6 +66,57 @@ function ttftCell(candidate, stale) {
   return `<span title="${esc(tip)}">${real}ms<div class="sub">${esc(sub)}</div></span>`
 }
 
+/**
+ * 「排序分」列：自动路由真正用来排序的那个数。
+ *
+ * 为什么要把这个数显示出来：左边「首字」列显示的是**探针/真实首字**，
+ * 而排序分是「(首字 + 生成耗时) × 余额 × 质量」——两者不同序是正常的，
+ * 甚至很常见。不给这个数，用户就会觉得「明明它更快，为什么不选它」。
+ */
+function scoreCell(candidate) {
+  const score = Number(candidate?.routeScore)
+  if (!Number.isFinite(score)) return '<span style="color:var(--faint)">—</span>'
+  // 百万级以上基本等于「速度未知」，用符号代替一长串数字更好读
+  const text = score >= 1e6 ? '未知' : score >= 1000 ? (score / 1000).toFixed(1) + 's' : Math.round(score) + 'ms'
+  const tip = Number.isFinite(score) ? t('排序分 {v}（越小越优先）', { v: Math.round(score) }) : ''
+  return `<span title="${esc(tip)}">${esc(text)}</span>`
+}
+
+/**
+ * 「依据」列：把这个分数是怎么算出来的摊开。
+ *
+ * 内容来自后端 scoreExplain，形如「实测 首字8330ms+生成5236ms · 余额×1.6 · 质量×1.05」。
+ * 前端只做展示不做翻译——口径的唯一定义在 core/route-orchestrator.js#scoreRow，
+ * 这里再算一遍必然会和网关派活的口径漂移。
+ */
+function basisCell(candidate) {
+  const explain = String(candidate?.scoreExplain || '').trim()
+  if (!explain) return '<span style="color:var(--faint)">—</span>'
+  // 拆成小标签，比一整串好读
+  const parts = explain.split(' · ')
+  const speed = parts.shift() || ''
+  const penalties = parts
+  // 探针/标定/站点先验是「推出来的」，标成不同的色，和实测区分开
+  const info = candidate?.speedInfo || {}
+  const sourceCls =
+    info.source === 'real' ? 'ok'
+      : info.source === 'calibrated' ? 'warn'
+        : info.source === 'probe' ? 'warn'
+          : 'danger'
+  const sourceTag = {
+    real: t('实测'),
+    calibrated: t('标定推算'),
+    probe: t('仅探针'),
+    'provider-prior': t('站点先验'),
+  }[info.source] || ''
+  return `
+    <div class="basis-cell">
+      ${sourceTag ? `<span class="badge ${sourceCls}" title="${esc(info.note || '')}">${esc(sourceTag)}</span>` : ''}
+      <span class="basis-speed mono">${esc(speed)}</span>
+      ${penalties.length ? `<div class="sub">${esc(penalties.join(' · '))}</div>` : ''}
+    </div>`
+}
+
 function priceSpeedText(candidate) {
   if (candidate?.status === 'stale') return '—'
   const price = Number(candidate?.price)
@@ -3923,7 +3974,9 @@ function renderDecision() {
               : `<div class="sub" title="${esc(t('本行综合成本为原厂有效成本的 {pct}（按波峰口径）', { pct: officialPctText }))}">${t('原厂')} ${officialPctText}</div>`
           }</td>
           <td class="num${sortMark('speed')}">${ttftCell(candidate, stale)}</td>
-          <td class="num${sortMark('priceSpeed')}">${priceSpeedText(candidate)}</td>
+          <td class="num">${priceSpeedText(candidate)}</td>
+          <td class="num">${scoreCell(candidate)}</td>
+          <td class="dec-basis">${basisCell(candidate)}</td>
           <td>${badges}${candidate.statusReason ? `<div class="sub">${esc(candidate.statusReason)}</div>` : ''}</td>
         </tr>`
     }).join('')
@@ -3950,7 +4003,10 @@ function renderDecision() {
           <thead><tr>
             <th style="width:30px"></th><th class="num">#</th><th>站点</th><th>分组</th>
             <th class="num${sortMark('price')}">价格</th><th class="num">质量</th>
-            <th class="num${sortMark('value')}">有效成本</th><th class="num${sortMark('speed')}">首字</th><th class="num${sortMark('priceSpeed')}">价速比</th><th>状态</th>
+            <th class="num${sortMark('value')}">有效成本</th><th class="num${sortMark('speed')}">首字</th>
+            <th class="num" title="${t('自动路由实际用的排序分：越小越优先。它已经把「真实首字 + 生成耗时 + 余额 + 质量」都算进去了，所以和左边「首字」列不一定同序')}">排序分</th>
+            <th title="${t('这个分数是怎么算出来的')}">依据</th>
+            <th>状态</th>
           </tr></thead>
           <tbody>${rows}</tbody>
         </table>`}
@@ -3966,6 +4022,8 @@ function renderDecision() {
 
   view.innerHTML = `
     ${modeCard(mode)}
+    ${algorithmCard()}
+    ${affinityCard()}
     ${gateCard()}
     <div class="toolbar">
       <input id="decision-search" class="search" type="search" placeholder="搜索模型名…" value="${esc(filters.decision)}" />
@@ -4040,6 +4098,161 @@ function modeCard(mode) {
           .join('')}
       </div>
     </div>`
+}
+
+/**
+ * 缓存亲和面板 —— 这段对话要不要钉住上次那个站。
+ *
+ * 为什么值得单独一块 UI：亲和是自动路由里**优先级最高**的一步（在选优之前），
+ * 它的档位直接决定「会不会经常换站、缓存能不能保住」。藏在 API 里只能靠 curl
+ * 设，等于这个能力对用户不存在。
+ *
+ * 档位语义见 core/affinity.js#AFFINITY_LABELS。这里不重复定义，只展示。
+ */
+function affinityCard() {
+  const collapsed = collapsedPanels.has('decision-affinity')
+  const ar = state.autoRoute || {}
+  const modes = state.affinityModes || []
+  const current = ar.affinity || ''
+  const convs = ar.conversations || {}
+  const convCount = Object.keys(convs).length
+
+  // 当前档位的说明
+  const cur = modes.find((m) => m.id === current) || modes.find((m) => m.id === '') || null
+  const curLabel = current === ''
+    ? t('自动（默认）：一个 turn 内必钉；跨 turn 只要缓存新鲜就钉')
+    : (cur?.label || current)
+
+  // 最近被钉住的记录（取最新 3 条），让人看到「它真的在记」
+  const recent = Object.entries(convs)
+    .map(([fp, r]) => ({ fp, ...r }))
+    .sort((a, b) => Number(b.at || 0) - Number(a.at || 0))
+    .slice(0, 3)
+
+  return `
+    <div class="card affinity-card">
+      <div class="group-head">
+        <button class="ghost tiny" data-act="toggle-panel" data-panel="decision-affinity">${collapsed ? '▸' : '▾'}</button>
+        <span class="mode-label">${t('缓存亲和')}</span>
+        <span class="mode-note">${t('这段对话要不要一直用同一个站')}</span>
+        <span class="grow"></span>
+        <span class="badge ${convCount ? 'ok' : ''}" title="${esc(t('已记住 {n} 段对话上次由谁服务。清空后所有对话会重新选站', { n: convCount }))}">${t('记住 {n} 段', { n: convCount })}</span>
+      </div>
+      ${collapsed ? '' : `
+      <div class="aff-body">
+        <p class="hint" style="margin:0">
+          ${t('上游的 prompt 缓存绑在「模型 + 分组 + 账号」上。换站 = 上下文要从头重算，缓存读取那部分账单（通常占输入 80~95%）直接归零。所以<b>亲和排在「选最优」之前</b>——能钉就钉。')}
+        </p>
+        <div class="aff-modes" role="tablist">
+          ${[{ id: '', label: t('自动'), hint: t('缓存新鲜就钉') }, ...modes.filter((m) => m.id !== '')]
+            .map(
+              (m) => `
+            <button class="aff-seg${(current || '') === m.id ? ' active' : ''}" role="tab"
+              aria-selected="${(current || '') === m.id}"
+              data-act="set-affinity" data-mode="${esc(m.id)}"
+              title="${esc(m.hint || m.label)}">
+              <span class="aff-seg-label">${esc(m.label)}</span>
+              ${m.hint ? `<span class="aff-seg-hint">${esc(m.hint)}</span>` : ''}
+            </button>`,
+            )
+            .join('')}
+        </div>
+        <div class="aff-now">
+          <span class="k">${t('当前')}</span>
+          <span class="v">${esc(curLabel)}</span>
+        </div>
+        ${recent.length ? `
+        <div class="aff-recent">
+          <div class="aff-recent-title">${t('最近被钉住的对话')}</div>
+          ${recent.map((r) => `
+            <div class="aff-recent-row">
+              <span class="mono dim">${esc(String(r.fp).slice(0, 8))}</span>
+              <span>${esc(r.upstreamName || r.modelKey || '—')}</span>
+              <span class="dim">${r.cacheRead ? t('缓存 {n}', { n: Math.round(r.cacheRead / 1000) + 'k' }) : ''}</span>
+              <span class="dim">${r.at ? new Date(Number(r.at)).toLocaleTimeString() : ''}</span>
+            </div>`).join('')}
+        </div>` : `<p class="hint" style="margin:0">${t('还没有记住任何对话——等下一次自动路由派活后会开始记录。')}</p>`}
+        <div class="aff-actions">
+          <button class="ghost tiny" data-act="forget-affinity" title="${esc(t('清空所有对话记录，档位保留。清空后所有对话会重新选站'))}">${t('忘记所有对话')}</button>
+        </div>
+      </div>`}
+    </div>`
+}
+
+/**
+ * 算法说明卡 —— 回答「为什么首字快的站没被选」。
+ *
+ * 这个卡片是 2026-10-31 用户明确要求的：「具体的算法写清楚，要不然使用会蒙，
+ * 为什么探测速度的这个速度很高，然后智能路由还不给我选这个」。
+ *
+ * 设计原则：**不只写抽象的规则，要带上这台机器此刻的真实系数**。
+ * 比如标定比值是 2.5 倍——不说这个数，用户看到「探针 2 秒、排序按 5 秒算」
+ * 会以为系统坏了；说了就能自己推算。
+ */
+function algorithmCard() {
+  const collapsed = collapsedPanels.has('decision-algorithm')
+  const health = state.routingHealth || {}
+  const cal = health.calibration || {}
+  const ratio = Number(cal.ratio)
+  const calText = cal.available && Number.isFinite(ratio)
+    ? t('本机实测：真实速度约为探针的 {r} 倍', { r: ratio.toFixed(1) })
+    : t('本机还没有足够的配对样本（需要同一个站既有探针又有真实流量），暂时用裸探针值')
+
+  // 各站的余额状态，压缩成一句话
+  const bal = healthyBalanceLine(health.balances)
+
+  return `
+    <div class="card algo-card">
+      <div class="group-head">
+        <button class="ghost tiny" data-act="toggle-panel" data-panel="decision-algorithm">${collapsed ? '▸' : '▾'}</button>
+        <span class="mode-label">${t('排序算法')}</span>
+        <span class="mode-note">${t('为什么「首字快」不一定被选')}</span>
+        <span class="grow"></span>
+        ${cal.available ? `<span class="badge ok" title="${esc(calText)}">${t('标定 {r}×', { r: ratio.toFixed(1) })}</span>` : `<span class="badge" title="${esc(calText)}">${t('无标定')}</span>`}
+      </div>
+      ${collapsed ? '' : `
+      <div class="algo-body">
+        <ol class="algo-steps">
+          <li><b>${t('缓存亲和')}</b> — ${t('这段对话上次由谁服务？它还能用就直接用它，<b>根本不重新选</b>。这是缓存能保住的原因。')}</li>
+          <li><b>${t('余额评估')}</b> — ${t('余额为 0 直接排除；低于「还能撑 3 天」只降优先级（仍可用），低于 1 天只作兜底。')}</li>
+          <li><b>${t('速度估计')}</b> — ${t('真实流量首字优先；没有就用探针值 × 标定比值；再没有就用「该站其它供给的中位速度」。')}</li>
+          <li><b>${t('综合评分')}</b> — ${t('(首字 + 预估输出 × 每 token 毫秒) × 余额惩罚 × 质量惩罚，越小越优。')}</li>
+          <li><b>${t('兜底阶梯')}</b> — ${t('准入 → 慢 → 无证据 → 降级 → 冷却已过 → 余额偏低，逐级往下试，<b>保证不报错</b>。')}</li>
+          <li><b>${t('迟滞')}</b> — ${t('新的比现役好不到 15% 就不换，避免反复横跳把缓存打崩。')}</li>
+        </ol>
+
+        <div class="algo-why">
+          <div class="algo-why-title">${t('所以「探针首字很快」却没被选，通常是这四个原因之一：')}</div>
+          <ul>
+            <li>${t('它的<b>真实首字</b>比探针慢很多（本机标定 {r}×）', { r: cal.available ? ratio.toFixed(1) : '2~10' })}</li>
+            <li>${t('它<b>吐字慢</b>：长回答时「首字快 + 吐字慢」会比「首字慢 + 吐字快」慢好几倍')}</li>
+            <li>${t('它<b>余额偏低</b>，被降了优先级（但没被排除）')}</li>
+            <li>${t('它<b>不是这段对话上次用的那个</b>，或比现役好不到 15%（迟滞）')}</li>
+          </ul>
+        </div>
+
+        <div class="algo-facts">
+          <div><span class="k">${t('探针 → 真实 标定')}</span><span class="v">${esc(calText)}</span></div>
+          ${bal ? `<div><span class="k">${t('余额状态')}</span><span class="v">${esc(bal)}</span></div>` : ''}
+          <div><span class="k">${t('排序分怎么读')}</span><span class="v">${t('表里「排序分」列越小越优先；「依据」列写明它是怎么算出来的')}</span></div>
+        </div>
+      </div>`}
+    </div>`
+}
+
+/** 把余额状态压成一句人话（只报低的和空的，全健康就不占篇幅）。 */
+function healthyBalanceLine(balances) {
+  const list = Array.isArray(balances) ? balances : []
+  if (!list.length) return ''
+  const bad = list.filter((b) => b.state === 'empty' || b.state === 'critical' || b.state === 'low')
+  if (!bad.length) return t('{n} 个站点余额都健康', { n: list.length })
+  return bad
+    .map((b) => {
+      const tag = { empty: t('已排除'), critical: t('仅兜底'), low: t('降优先级') }[b.state] || b.state
+      const days = b.daysLeft === null ? '' : ` ${b.daysLeft}${t('天')}`
+      return `${b.name}: ${tag}${days}`
+    })
+    .join(' · ')
 }
 
 /**
@@ -7396,6 +7609,35 @@ document.addEventListener('click', async (event) => {
   }
 
   // 决策侧重：性价比 / 价格 / 首字速度 / 价速比。只改排序口径，准入规则不变
+  if (action === 'set-affinity') {
+    // 缓存亲和档位：改了立刻生效（下一个请求就按新档位判），不用重启
+    const mode = actionButton.dataset.mode ?? ''
+    const current = state.autoRoute?.affinity ?? ''
+    if (mode === current) return
+    try {
+      state = await api('POST', '/api/auto-route/affinity', { mode })
+      render()
+      const label = mode === ''
+        ? t('自动（缓存新鲜就钉住）')
+        : ((state.affinityModes || []).find((m) => m.id === mode)?.label || mode)
+      toast(t('亲和支持已切到「{label}」，下一单请求就按新档位判', { label }))
+    } catch (error) {
+      toast(error.message, true)
+    }
+    return
+  }
+
+  if (action === 'forget-affinity') {
+    try {
+      state = await api('POST', '/api/auto-route/forget', {})
+      render()
+      toast(t('已清空对话记录。档位保留，下一单请求会重新选站'))
+    } catch (error) {
+      toast(error.message, true)
+    }
+    return
+  }
+
   if (action === 'set-decision-mode') {
     const mode = actionButton.dataset.mode || ''
     if (!mode || mode === (state.decisionMode || state.settings?.decisionMode)) return

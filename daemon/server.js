@@ -66,7 +66,7 @@ import {
 // 缓存亲和（借鉴 Magpie）：对话指纹 + 「该不该为了缓存钉住上次那个供给」
 import { conversationFingerprint, recordFrom, listAffinityModes } from '../core/affinity.js'
 // 路由编排：速度模型（标定）+ 余额守卫（阈值切换）+ 兜底阶梯（绝不报错）
-import { buildRoutingContext, decideRoute } from '../core/route-orchestrator.js'
+import { buildRoutingContext, decideRoute, scoreRow } from '../core/route-orchestrator.js'
 // 请求耗时细分（借鉴 Magpie 的 net 明细）：分开 own / wait / head / flow
 import { PhaseTimer, diagnosePhases } from '../core/net-timing.js'
 import {
@@ -496,6 +496,12 @@ async function buildState({ light = false } = {}) {
       emptyRecent.set(event.offerId, (emptyRecent.get(event.offerId) || 0) + 1)
     }
   }
+  // 路由上下文只算一次（全库共享）：标定比值 / 各站余额 / 站点速度先验。
+  // 40 多个模型各算一遍没必要——这些东西与具体模型无关，只与「站点和供给」有关。
+  const routeCtxForDecisions = (() => {
+    try { return buildRoutingContext(db) } catch { return null }
+  })()
+
   const decisions = rankedWithCache.map((group) => {
     const model = group.rows[0]?.upstreamName || group.modelKey
     const order = db.manualOrder?.[model] || db.manualOrder?.[group.modelKey] || null
@@ -513,12 +519,29 @@ async function buildState({ light = false } = {}) {
       isFaulted,
       emptyRecent,
     })
+    // 把编排层的真实评分也搬到候选上。
+    //
+    // 为什么必须下发这个：页面上显示的首字是**探针口径**，而排序用的是
+    // 「真实首字（或标定后的探针）× 余额惩罚 × 质量惩罚 × 生成耗时」。
+    // 不把这条链路显式摊开，用户就会看到「这个站速度 2 秒很快，为什么不选它」
+    // —— 实际上是它的真实速度 9 秒、或者余额只剩 2 天、或者它被亲和钉在别的站。
+    // （这正是 2026-10-31 用户提出的困惑。）
+    const routeScores = new Map()
+    if (routeCtxForDecisions) {
+      for (const c of candidates) {
+        try {
+          const s = scoreRow(c, routeCtxForDecisions)
+          routeScores.set(c.offer.id, s)
+        } catch { /* 单条算不出来不影响整页 */ }
+      }
+    }
     const rankedCandidates = explain(candidates).map((c) => {
       // 比价页已并入决策页：候选行上的「官方 xx%」要和比价页同口径，
       // 所以把 rank 算好的综合成本（含峰谷）按 offerId 搬到候选上，
       // 块头官方参照直接用同一份 group.official（officialCost，唯一口径）
       const row = costByOffer.get(c.offerId)
-      return row
+      const rs = routeScores.get(c.offerId)
+      const base = row
         ? {
             ...c,
             blendedCnyPerMtok: row.blendedCnyPerMtok ?? null,
@@ -526,7 +549,34 @@ async function buildState({ light = false } = {}) {
             hasOffPeak: Boolean(row.hasOffPeak),
           }
         : c
+      return rs
+        ? {
+            ...base,
+            // 真实排序分（越小越优）与它的组成
+            routeScore: rs.score,
+            scoreExplain: rs.explain,
+            scoreParts: rs.parts,
+            speedInfo: rs.speed,
+            balanceInfo: rs.balance,
+          }
+        : base
     })
+    // 按自动路由真正的排序分重排 —— 让页面的行号和「排序分」列一致。
+    //
+    // 为什么必须重排：网关派活走的是 decideRoute，它按 routeScore 排
+    // （真实首字 × 余额 × 质量 × 生成耗时）。如果页面仍按旧的 decision-mode
+    // 顺序显示，就会出现「第 1 行的排序分比第 2 行还高」——用户看到只会更困惑，
+    // 那正是他反馈的问题。页面必须如实反映网关会怎么派。
+    //
+    // 一个已知的细微差别：页面算 routeScore 时没有请求上下文，用历史平均输出长度
+    // 估算生成耗时；网关那边用当次请求的 max_tokens。所以长/短回答的排序可能
+    // 略有不同——这是必然的（页面无法预知未来的请求）。
+    rankedCandidates.sort((a, b) => {
+      const sa = Number.isFinite(a.routeScore) ? a.routeScore : Number.MAX_SAFE_INTEGER
+      const sb = Number.isFinite(b.routeScore) ? b.routeScore : Number.MAX_SAFE_INTEGER
+      return sa - sb
+    })
+
     // 勾选 > 排序：决策页点选的那条就是「当前选」，与顺序无关（顺序不动）。
     // 勾选的不在候选里（被暂停/删了）才回落到「第一条能登场的」。
     // 勾选的牌哪怕准入没放行也算数——人的明确指定，探针准入管不住人手点的；
@@ -585,6 +635,8 @@ async function buildState({ light = false } = {}) {
     // 决策侧重：四档的标签 / 说明由服务端下发，前端只负责画和发 PATCH
     decisionMode: normalizeDecisionMode(db.settings.decisionMode),
     decisionModes: decisionModeTable(),
+    // 亲和档位清单：前端不另抄一份（口径的唯一定义在 core/affinity.js）
+    affinityModes: listAffinityModes(),
     decisionModeText: describeDecisionMode(db.settings.decisionMode),
     // 自动路由（一键接管）：决策页的开关与「正在使用」照这份显示。
     // modelKey 之后的找补（哪个站、哪个分组、供给还活着吗）前端从
