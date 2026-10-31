@@ -112,36 +112,72 @@ function freshTraffic(row, now, maxAgeMs) {
  *
  * @returns {{realTtftMs:number|null, realTtftSamples:number, realMsPerToken:number|null}}
  */
+/**
+ * 真实流量首字的**时间窗**（小时）。
+ *
+ * 原来是硬编码 6 小时。对高频网关够用，但对**个人使用**太短：
+ * 实测这份库里 59 个小时桶中有 54 个带 ttft 样本，6 小时窗口只留下 3 个，
+ * 其余 51 个全被丢掉 —— 于是 14 个供给里只有 1 个能算出真实首字，
+ * 剩下 13 个永远退回探针口径，「真实优先」这个设计等于没生效。
+ *
+ * 现在的做法：**不设硬截止，改用指数衰减加权**（半衰期 48 小时）。
+ * 这样：
+ *   · 昨天用过的站，证据仍然算数（权重 ~0.7）
+ *   · 一周前的证据权重 ~0.09，几乎可以忽略，但不会突然消失
+ *   · 不会出现「刚过 6 小时，数据全没了」的断崖
+ *
+ * 为什么是 48 小时：个人使用的节奏通常是「这几天集中用一个站」，
+ * 一周内的时间尺度才够覆盖；再长的历史对「现在快不快」没有说服力。
+ */
+export const REAL_TTFT_HALF_LIFE_HOURS = 48
+
 export function realTtftOf(offerStats, offerId, now = Date.now()) {
-  const empty = { realTtftMs: null, realTtftSamples: 0, realMsPerToken: null }
+  const empty = { realTtftMs: null, realTtftSamples: 0, realMsPerToken: null, realTtftHoursAgo: null }
   if (!offerStats || !offerId) return empty
-  const cutoff = now - 6 * 3600_000
-  let ttftSum = 0
-  let ttftCount = 0
+
+  let ttftWeighted = 0
+  let weightSum = 0
+  let rawSamples = 0
   let genTimeSum = 0
   let genOutSum = 0
+  let newestAt = null
+
   for (const key of Object.keys(offerStats)) {
     if (!key.startsWith(`${offerId}|`)) continue
     const hour = key.slice(offerId.length + 1)
     const bucketStart = Date.parse(`${hour}:00:00Z`)
-    if (Number.isFinite(bucketStart) && bucketStart < cutoff) continue
+    if (!Number.isFinite(bucketStart)) continue
     const b = offerStats[key]
     if (!b) continue
+
+    // 指数衰减权重：半衰期 REAL_TTFT_HALF_LIFE_HOURS
+    const ageHours = Math.max(0, (now - bucketStart) / 3600_000)
+    const weight = Math.pow(0.5, ageHours / REAL_TTFT_HALF_LIFE_HOURS)
+
     if (Number(b.ttftCount) > 0) {
-      ttftSum += Number(b.ttftSum) || 0
-      ttftCount += Number(b.ttftCount)
+      const n = Number(b.ttftCount)
+      // 桶内均值 × 样本数，再乘衰减权重 —— 样本多的桶自然更有说服力
+      ttftWeighted += (Number(b.ttftSum) / n) * n * weight
+      weightSum += n * weight
+      rawSamples += n
+      if (newestAt === null || bucketStart > newestAt) newestAt = bucketStart
     }
     if (Number(b.genTimeSum) > 0 && Number(b.genOutSum) > 0) {
-      genTimeSum += Number(b.genTimeSum)
-      genOutSum += Number(b.genOutSum)
+      // 吐字速度同样加权（这里权重作用在时间/输出量上，比值仍成立）
+      genTimeSum += Number(b.genTimeSum) * weight
+      genOutSum += Number(b.genOutSum) * weight
     }
   }
-  if (ttftCount === 0) return empty
+
+  if (weightSum === 0 || rawSamples === 0) return empty
   return {
-    realTtftMs: Math.round(ttftSum / ttftCount),
-    realTtftSamples: ttftCount,
+    realTtftMs: Math.round(ttftWeighted / weightSum),
+    // 样本数报原始值（给人看「有多少条证据」），不报加权后的有效样本数
+    realTtftSamples: rawSamples,
     // 每输出 token 的吐字毫秒（越大越慢）：判断「首字快但吐字慢」用
     realMsPerToken: genOutSum > 0 ? genTimeSum / genOutSum : null,
+    // 最近一条证据是几小时前 —— 决策页用它标「这个真值有多新」
+    realTtftHoursAgo: newestAt === null ? null : Math.round((now - newestAt) / 3600_000),
   }
 }
 

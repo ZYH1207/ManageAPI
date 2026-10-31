@@ -40,14 +40,23 @@ export const DECISION_MODES = [
   {
     key: 'speed',
     label: '首字速度',
-    hint: '首字延迟',
-    desc: '完全按首字延迟排序，最快的排第一，网关也优先派给最快的站。',
+    hint: '真实首字（没有就退回探针）',
+    desc: '按首字延迟排序。**优先用真实流量的首字**（db.offerStats 逐小时桶）；'
+      + '这个站还没真实流量时退回探针首字，并在决策日志里标出口径。',
   },
   {
     key: 'priceSpeed',
     label: '价速比',
-    hint: '价格 ÷ 首字延迟',
-    desc: '按「每毫秒首字等待花多少钱」排序：价格和速度合成一个比值，贵的、慢的一起现形，综合最优的排第一。',
+    hint: '价格 ÷ 真实首字',
+    desc: '按「每毫秒首字等待花多少钱」排序。首字口径同「首字速度」：真实优先、探针兜底。',
+  },
+  {
+    key: 'realSpeed',
+    label: '实速（只信真实流量）',
+    hint: '真实首字，无样本即淘汰',
+    desc: '**只用真实流量的首字**，完全没有真实样本的站直接排到最后（不给它靠探针冒充最快的机会）。'
+      + '这是最贴近你实际体感的一档 —— 探针发的是几十 token 的小请求，'
+      + '和你几万到几十万上下文的真实耗时不是一回事。',
   },
 ]
 
@@ -110,15 +119,48 @@ export function compareByBasis(a, b, value) {
 }
 
 /** 价格 ÷ 首字延迟（价速比的标量）；首字缺失 / 非正数一律 Infinity，不冒充最优 */
-function paceOf(row) {
+function paceOf(row, speedPolicy = 'prefer-real') {
   const price = num2(row.priceUsd ?? row.price)
-  const ttft = num2(row.ttftMs)
+  const ttft = speedOf(row, speedPolicy)
   if (price === Number.POSITIVE_INFINITY || ttft === Number.POSITIVE_INFINITY || ttft <= 0) {
     return Number.POSITIVE_INFINITY
   }
   return price / ttft
 }
 const num2 = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : Number.POSITIVE_INFINITY)
+
+/**
+ * 排序用哪个首字。
+ *
+ * 为什么必须有这一层：探针发的是 45 token 的小请求，量到的 ~2 秒，
+ * 和用户 25 万上下文真实跑的 ~9 秒**不是同一个东西**。混在一起平均
+ * 会让人以为这个站很快（项目里真实踩过，见 core/score.js#realTtftOf）。
+ * 所以排序要优先用真实流量口径。
+ *
+ * @param {object} row  路由行 / explain 输出
+ * @param {'real'|'prefer-real'} policy
+ *   'real'        只用真实首字；没有真实样本就返回 Infinity（排最后）
+ *   'prefer-real' 真实优先，没有就退回探针（探针口径会在决策日志里标出来）
+ * @returns {number} 毫秒，拿不到就是 Infinity（与「不知道不能冒充最好」同口径）
+ */
+export function speedOf(row, policy = 'prefer-real') {
+  const real = num2(row?.realTtftMs)
+  const probe = num2(row?.ttftMs)
+  if (policy === 'real') return real
+  return real !== Number.POSITIVE_INFINITY ? real : probe
+}
+
+/** 这一行的首字用的是哪个口径。决策日志用它解释「凭什么说它快」。 */
+export function speedBasisOf(row, policy = 'prefer-real') {
+  const real = num2(row?.realTtftMs)
+  const probe = num2(row?.ttftMs)
+  const realOk = real !== Number.POSITIVE_INFINITY
+  const probeOk = probe !== Number.POSITIVE_INFINITY
+  if (policy === 'real') return realOk ? 'real' : 'none'
+  if (realOk) return 'real'
+  if (probeOk) return 'probe'
+  return 'none'
+}
 
 /**
  * 档位 → 跨模型可比的标量（越小越优），**唯一实现**。
@@ -133,8 +175,13 @@ const num2 = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : Number.PO
  */
 export function tierMetricOf(row, value) {
   const mode = normalizeDecisionMode(value)
-  if (mode === 'speed') return num2(row?.ttftMs)
+  // 速度类档位：口径改成「真实优先」
+  //   realSpeed     只认真实，没真实样本 → Infinity（排最后，不给它靠探针冒充）
+  //   speed / priceSpeed  真实优先，没有才退回探针
+  // 其它档位与速度无关，行为不变。
+  if (mode === 'realSpeed') return speedOf(row, 'real')
+  if (mode === 'speed') return speedOf(row, 'prefer-real')
   if (mode === 'price') return num2(row?.priceUsd ?? row?.price)
-  if (mode === 'priceSpeed') return paceOf(row ?? {})
+  if (mode === 'priceSpeed') return paceOf(row ?? {}, 'prefer-real')
   return num2(row?.effectiveUsd ?? row?.effective)
 }

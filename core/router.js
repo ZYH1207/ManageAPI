@@ -211,6 +211,21 @@ export function admissionTags(row) {
  * 慢速判定唯一口径（决策/网关、比价页、探针页三处共用）：门槛开着 + 有实测首字 + 超线。
  * 评分过期（stale）时首字是旧证据，不作数——首字列都不显示它了，
  * 准入再拿它判「慢速」就是自相矛盾；真实调用本身就是刷新证据，到时候再判。
+ *
+ * ## 为什么这里用**探针**首字，而不是真实流量首字
+ *
+ * 两者量的不是同一件事，分工也不同：
+ *
+ *   探针首字 = 这个站「本身」有多快。固定 45 token 小请求，不含上下文，
+ *              变量只有站点和网络 → 适合判「这个站是不是坏了/挂了/太慢」。
+ *   真实首字 = 你「实际」等多久。它同时受上下文长度、缓存命中、模型思考影响，
+ *              同样一个站，25 万上下文要 9 秒、2 千上下文只要 1 秒。
+ *
+ * 拿真实首字做**准入**会把「上下文长」误判成「站点烂」，把好站拉黑；
+ * 而拿探针首字做**排序**又会让小请求很快、真实很慢的站冒充最优。
+ *
+ * 所以分工是：**准入看探针（站健康），排序看真实（用户体验）**。
+ * 排序侧的口径见 core/decision-mode.js#speedOf。
  */
 export function isTooSlow(score, maxTtftMs) {
   if (!(Number(maxTtftMs) > 0)) return false
@@ -589,10 +604,14 @@ export function explain(candidates) {
     // 探针看着再健康，监控报了故障就是真故障——先用起来，证据细情看 failover 字段
     faulted: Boolean(c.faulted),
     ttftMs: c.ttftMs,
-    // 真实流量首字与样本数：决策页首字列按「真实优先、探针兑底」的规则显示
+    // 真实流量首字与样本数：决策页首字列按「真实优先、探针兜底」的规则显示
     realTtftMs: c.realTtftMs,
     realTtftSamples: c.realTtftSamples,
     realMsPerToken: c.realMsPerToken,
+    // 排序时这首字用的是哪个口径（real / probe / none）。
+    // 决策日志要能回答「凭什么说它快」——探针口径只代表站点本身，
+    // 真实口径才代表你的实际体感。两者混着看会得出相反的结论。
+    speedBasis: c.realTtftMs != null ? 'real' : (c.ttftMs != null ? 'probe' : 'none'),
     status: c.status,
     samples: c.samples,
     confidence: c.confidence,
