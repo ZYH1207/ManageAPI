@@ -261,3 +261,70 @@ export function calibrationSummary(calibration) {
     text: `真实速度约为探针的 ${g.toFixed(1)} 倍（基于 ${calibration.samples.global} 个配对样本、${calibration.samples.providers} 个站点）`,
   }
 }
+
+/**
+ * 按「预估输出长度」估算总等待时间。
+ *
+ * ## 为什么需要
+ *
+ * 只看首字会选错站。两种典型的站：
+ *
+ *   站 A：首字 1s，吐字 5 tok/s      （快启动，慢生成）
+ *   站 B：首字 4s，吐字 50 tok/s     （慢启动，快生成）
+ *
+ * 短回答（200 token）：A = 1 + 40 = 41s，B = 4 + 4 = 8s   → B 快 5 倍
+ * 长回答（2000 token）：A = 1 + 400 = 401s，B = 4 + 40 = 44s → B 快 9 倍
+ *
+ * **长回答时 B 完胜。** 但如果只看首字，A（1s）会排在 B（4s）前面 —— 完全反了。
+ *
+ * ## 怎么估输出长度
+ *
+ * 三个信号，优先级从高到低：
+ *   ① 客户端明确给了 `max_tokens` → 用它（这是硬上限，最接近真实）
+ *   ② 该站该模型的历史平均输出长度（offerStats 里有 outputTokens / requests）
+ *   ③ 兜底：一个保守的中位数（默认 500 token）
+ *
+ * 用 ② 而不是「全局平均」的原因：同一个模型在不同站上的输出长度往往相近，
+ * 但不同模型差很多（推理模型动辄几千 token，对话模型几百）。
+ *
+ * @param {number} firstTokenMs 首字延迟（毫秒）
+ * @param {number|null} msPerToken 每输出 token 的毫秒数（null = 不知道）
+ * @param {number} expectedTokens 预估输出 token 数
+ * @returns {{totalMs:number, firstTokenMs:number, genMs:number, known:boolean}}
+ */
+export function estimateTotalWait(firstTokenMs, msPerToken, expectedTokens) {
+  const first = Number(firstTokenMs)
+  const perTok = Number(msPerToken)
+  const tokens = Number(expectedTokens)
+
+  if (!Number.isFinite(first) || first <= 0) {
+    return { totalMs: Number.POSITIVE_INFINITY, firstTokenMs: first, genMs: 0, known: false }
+  }
+  // 不知道吐字速度：只能按首字算，但要标 known=false 让调用方知道这是不完整的
+  if (!Number.isFinite(perTok) || perTok <= 0) {
+    return { totalMs: first, firstTokenMs: first, genMs: 0, known: false }
+  }
+  const gen = Number.isFinite(tokens) && tokens > 0 ? perTok * tokens : 0
+  return { totalMs: first + gen, firstTokenMs: first, genMs: gen, known: true }
+}
+
+/**
+ * 从 max_tokens 或历史统计里估「这次大概输出多少 token」。
+ *
+ * @param {object} opts
+ * @param {number} [opts.maxTokens]      客户端给的硬上限
+ * @param {number} [opts.historicalAvg]  该站该模型的历史平均输出
+ * @param {number} [opts.fallback=500]   都没有时的保守估计
+ * @returns {{tokens:number, source:'max-tokens'|'historical'|'fallback'}}
+ */
+export function estimateOutputTokens({ maxTokens = null, historicalAvg = null, fallback = 500 } = {}) {
+  const max = Number(maxTokens)
+  if (Number.isFinite(max) && max > 0) {
+    // max_tokens 是上限不是预期值：真实输出通常是它的 30%~70%。
+    // 直接用上限会把「长输出」的权重放得过大，用 0.5 倍更接近实际。
+    return { tokens: Math.max(50, max * 0.5), source: 'max-tokens' }
+  }
+  const avg = Number(historicalAvg)
+  if (Number.isFinite(avg) && avg > 0) return { tokens: avg, source: 'historical' }
+  return { tokens: fallback, source: 'fallback' }
+}

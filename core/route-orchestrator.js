@@ -29,7 +29,7 @@
  */
 
 import { assessAllBalances, dailySpendByProvider, BALANCE, BALANCE_PENALTY } from './balance-guard.js'
-import { buildCalibration, estimateSpeed, speedMetric, calibrationSummary } from './speed-model.js'
+import { buildCalibration, estimateSpeed, speedMetric, calibrationSummary, estimateTotalWait, estimateOutputTokens } from './speed-model.js'
 import { buildLadder, rescueFromEmpty, ladderSummary, TIER, TIER_LABEL } from './fallback-ladder.js'
 
 /** 默认的评分权重。 */
@@ -40,6 +40,20 @@ export const SCORING = {
   qualityWeight: 0.5,
   /** 价格权重（0 = 完全不看价格，纯看速度） */
   priceWeight: 0.0,
+  /**
+   * 是否把「吐字速度」算进等待时间。
+   *
+   * 开：score = 首字 + 预估输出 × 每 token 毫秒（更接近真实体感）
+   * 关：score = 只看首字（等价于旧行为）
+   *
+   * 为什么默认开：只看首字会系统性地选错站 —— 首字快但吐字慢的站，
+   * 在长回答上要慢好几倍（实测：首字 1s/5tok/s vs 首字 4s/50tok/s，
+   * 2000 token 时前者 401 秒、后者 44 秒）。这条差异只有算进总等待才看得出来。
+   *
+   * 代价：输出长度只能估（max_tokens 的 50% 或历史均值），估错了排序会偏。
+   * 所以只在「有吐字速度数据」时才启用这一段，没有就退回只看首字。
+   */
+  includeGeneration: true,
 }
 
 /**
@@ -54,7 +68,7 @@ export const SCORING = {
  *   dailySpend: Map<string, number>,
  * }}
  */
-export function buildRoutingContext(db, { now = Date.now() } = {}) {
+export function buildRoutingContext(db, { now = Date.now(), maxTokens = null, expectedOutputTokens = null } = {}) {
   const offers = db?.offers ?? []
   const providers = db?.providers ?? []
   const offerStats = db?.offerStats ?? {}
@@ -109,13 +123,36 @@ export function buildRoutingContext(db, { now = Date.now() } = {}) {
     providerSpeedPrior.set(pid, Math.round(sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2))
   }
 
+  // ④ 预估输出长度：短回答看首字，长回答看吐字 —— 这个数字决定了哪一段更重要
+  const expectedOutput = expectedOutputTokens !== null
+    ? { tokens: expectedOutputTokens, source: 'explicit' }
+    : estimateOutputTokens({ maxTokens, historicalAvg: historicalOutputAvg(offerStats, now) })
+
   return {
     calibration,
     calibrationText: calibrationSummary(calibration).text,
     balances,
     dailySpend,
     providerSpeedPrior,
+    expectedOutput,
   }
+}
+
+/** 从 offerStats 算历史平均输出 token（近 7 天）。 */
+function historicalOutputAvg(offerStats, now, days = 7) {
+  const cutoff = new Date(now - days * 86400_000).toISOString().slice(0, 13)
+  let out = 0
+  let n = 0
+  for (const [key, b] of Object.entries(offerStats ?? {})) {
+    const sep = key.lastIndexOf('|')
+    if (sep < 0) continue
+    if (key.slice(sep + 1) < cutoff) continue
+    const reqs = Number(b?.requests) || 0
+    if (!reqs) continue
+    out += Number(b?.outputTokens) || 0
+    n += reqs
+  }
+  return n > 0 ? out / n : null
 }
 
 /** 每个供给最近一次成功探针的 ttft。 */
@@ -199,8 +236,19 @@ export function scoreRow(row, ctx, opts = {}) {
       }
     }
   }
-  const baseMs = speedMetric(speed)
-  const speedUsable = Number.isFinite(baseMs)
+  const firstTokenMs = speedMetric(speed)
+  const speedUsable = Number.isFinite(firstTokenMs)
+
+  // ①b 吐字速度：把「首字 + 生成」合成「这次大概要等多久」。
+  //     短回答时首字主导，长回答时吐字主导 —— 只有算进总等待才能正确比较。
+  const perToken = Number(row?.realMsPerToken)
+  const expected = ctx?.expectedOutput ?? null
+  let baseMs = firstTokenMs
+  let totalWait = null
+  if (cfg.includeGeneration && speedUsable && expected) {
+    totalWait = estimateTotalWait(firstTokenMs, perToken, expected.tokens)
+    if (totalWait.known) baseMs = totalWait.totalMs
+  }
 
   // ② 余额惩罚
   const balance = providerId ? (ctx?.balances?.get(providerId) ?? null) : null
@@ -227,7 +275,11 @@ export function scoreRow(row, ctx, opts = {}) {
 
   const notes = []
   const sourceLabel = { real: '实测', calibrated: '标定', probe: '探针', 'provider-prior': '站点先验' }[speed.source] ?? '未知'
-  notes.push(`${sourceLabel} ${Math.round(effective)}ms`)
+  if (totalWait?.known && totalWait.genMs > 0) {
+    notes.push(`${sourceLabel} 首字${Math.round(totalWait.firstTokenMs)}ms+生成${Math.round(totalWait.genMs)}ms`)
+  } else {
+    notes.push(`${sourceLabel} ${Math.round(effective)}ms`)
+  }
   if (balancePenalty !== 1) notes.push(`余额×${balancePenalty}`)
   if (qualityPenalty !== 1) notes.push(`质量×${qualityPenalty.toFixed(2)}`)
   if (pricePenalty !== 1) notes.push(`价格×${pricePenalty.toFixed(2)}`)

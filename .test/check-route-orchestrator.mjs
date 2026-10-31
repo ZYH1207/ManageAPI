@@ -9,7 +9,7 @@
  */
 
 import assert from 'node:assert/strict'
-import { buildCalibration, estimateSpeed, speedMetric, calibrationSummary, SOURCE_CONFIDENCE, CALIBRATION_CLAMP } from '../core/speed-model.js'
+import { buildCalibration, estimateSpeed, speedMetric, calibrationSummary, SOURCE_CONFIDENCE, CALIBRATION_CLAMP, estimateTotalWait, estimateOutputTokens } from '../core/speed-model.js'
 import { assessBalance, BALANCE, dailySpendByProvider } from '../core/balance-guard.js'
 import { tierOf, buildLadder, rescueFromEmpty, TIER, TIER_LABEL } from '../core/fallback-ladder.js'
 import { buildRoutingContext, scoreRow, decideRoute, SCORING } from '../core/route-orchestrator.js'
@@ -84,6 +84,50 @@ check('置信度越低，排序标量越保守（往上调）', () => {
   assert.equal(real, 1000)
   assert.ok(calibrated > real, '标定的应该比实测保守')
   assert.ok(probe > calibrated, '裸探针应该最保守')
+})
+
+console.log('\n[1b/4] 速度模型：吐字速度与总等待')
+
+check('长回答时吐字速度主导（首字快但吐字慢的站会输）', () => {
+  // 站A：首字 1s，吐字慢（200ms/token = 5 tok/s）
+  // 站B：首字 4s，吐字快（20ms/token = 50 tok/s）
+  const aLong = estimateTotalWait(1000, 200, 2000)
+  const bLong = estimateTotalWait(4000, 20, 2000)
+  assert.ok(aLong.totalMs > bLong.totalMs * 5,
+    `长回答时 B 应远快于 A：A=${aLong.totalMs} B=${bLong.totalMs}`)
+})
+
+check('短回答时首字还可能主导（A 仍可能赢）', () => {
+  const aShort = estimateTotalWait(1000, 200, 10)   // 只输出 10 token
+  const bShort = estimateTotalWait(4000, 20, 10)
+  assert.ok(aShort.totalMs < bShort.totalMs, '极短输出时首字快的应该赢')
+})
+
+check('没有吐字数据 → 退回只看首字，并标 known=false', () => {
+  const r = estimateTotalWait(3000, null, 1000)
+  assert.equal(r.totalMs, 3000)
+  assert.equal(r.known, false, '要知道这是不完整的估计')
+})
+
+check('首字未知 → Infinity（不参与比较）', () => {
+  assert.equal(estimateTotalWait(null, 10, 100).totalMs, Infinity)
+})
+
+check('max_tokens 按 50% 折算（上限不是预期值）', () => {
+  assert.equal(estimateOutputTokens({ maxTokens: 4000 }).tokens, 2000)
+  assert.equal(estimateOutputTokens({ maxTokens: 4000 }).source, 'max-tokens')
+})
+
+check('没有 max_tokens 用历史均值', () => {
+  const r = estimateOutputTokens({ historicalAvg: 800 })
+  assert.equal(r.tokens, 800)
+  assert.equal(r.source, 'historical')
+})
+
+check('什么都没有用保守兜底', () => {
+  const r = estimateOutputTokens({})
+  assert.equal(r.source, 'fallback')
+  assert.ok(r.tokens > 0)
 })
 
 console.log('\n[2/4] 余额守卫：阈值切换但不报错')

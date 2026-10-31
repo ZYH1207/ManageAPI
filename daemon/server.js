@@ -4950,7 +4950,9 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
   //   · 只有余额为 0 和本次已试过 → 硬排除（试了必然白等 / 死循环）
   //   · 阶梯空了还有 rescueFromEmpty 强制兜底
   // **只有当「连余额不为 0 的供给都不存在」时才会报错** —— 那是真的没得选。
-  const routeCtx = buildRoutingContext(db)
+  // max_tokens 传给编排层：短回答看首字、长回答看吐字，
+  // 同一个站在两种场景下的最优顺序可能完全不同（见 core/speed-model.js#estimateTotalWait）
+  const routeCtx = buildRoutingContext(db, { maxTokens: body?.max_tokens ?? null })
   const decision = decideRoute(candidates, routeCtx, { tried: new Set(), maxPerTier: 4 })
   if (decision.chain.length === 0) {
     // 报错文案在 core/router.js：决策页要能显示同一句话，两处各写一遍必然漂移
