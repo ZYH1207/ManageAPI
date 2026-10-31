@@ -38,6 +38,7 @@ import { normalizeModelKey, modelIdentityKey, routeableOffers } from './inventor
 import { normalizeDecisionMode, tierMetricOf } from './decision-mode.js'
 import { splitOffers } from './free.js'
 import { faultMatcher } from './failover.js'
+import { applyAffinity, readAffinity } from './affinity.js'
 
 /** 新模型至少要比现役好这个比例才值得切换（0.15 = 好 15% 以上） */
 export const AUTO_ROUTE_SWITCH_GAIN = 0.15
@@ -124,7 +125,54 @@ export function normalizeAutoRoute(value) {
     scope: Array.isArray(raw.scope)
       ? [...new Set(raw.scope.filter((key) => typeof key === 'string' && key.trim()))]
       : [],
+    // 缓存亲和档位（core/affinity.js）。空 = 默认档（缓存新鲜就钉住）
+    affinity: typeof raw.affinity === 'string' && raw.affinity ? raw.affinity : '',
+    // 每段对话上次由谁服务（对话指纹 → 记录）。上限见 AFFINITY_MAX_CONVERSATIONS
+    conversations: raw.conversations && typeof raw.conversations === 'object'
+      && !Array.isArray(raw.conversations)
+      ? raw.conversations
+      : {},
   }
+}
+
+/** 从 settings 里读亲和档位（空 = 默认档）。 */
+function affinityModeOf(settings) {
+  const raw = settings?.autoRoute
+  return raw && typeof raw === 'object' && typeof raw.affinity === 'string' ? raw.affinity : ''
+}
+
+/** 对话记录表的上限。个人使用几十段就够，多了只占 db 体积。 */
+export const AFFINITY_MAX_CONVERSATIONS = 200
+
+/**
+ * 落一段对话的服务记录（mutate 回调里用）。
+ *
+ * 为什么要淘汰：db.json 已经是 MB 级，而 conversations 每条几百字节。
+ * 不设上限的话，长期使用会慢慢把它撑大。按 `at` 最旧淘汰。
+ */
+export function recordAffinity(settings, fingerprint, record) {
+  if (!fingerprint || !record?.offerId) return null
+  const state = normalizeAutoRoute(settings.autoRoute)
+  const table = { ...state.conversations, [fingerprint]: record }
+  const keys = Object.keys(table)
+  if (keys.length > AFFINITY_MAX_CONVERSATIONS) {
+    keys.sort((a, b) => Number(table[a]?.at ?? 0) - Number(table[b]?.at ?? 0))
+    for (const k of keys.slice(0, keys.length - AFFINITY_MAX_CONVERSATIONS)) delete table[k]
+  }
+  settings.autoRoute = { ...state, conversations: table }
+  return table
+}
+
+/**
+ * 取一段对话的服务记录。
+ * 注意：与 affinity.js 的 readAffinity 不是同一件事 —— 那个读的是
+ * 内存里的 settings 快照，这个负责先 normalize。两个名字相近是刻意的：
+ * 调用方按「我要从 settings 里读一段对话」来记即可。
+ */
+export function readConversation(settings, fingerprint) {
+  if (!fingerprint) return null
+  const state = normalizeAutoRoute(settings?.autoRoute)
+  return state.conversations[fingerprint] ?? null
 }
 
 /**
@@ -139,7 +187,16 @@ export function normalizeAutoRoute(value) {
  *   整个池子连一个能登场的模型都没有时返回 null——调用方按原模型走正常
  *   报错流程（admissionFailure 的人话文案比这里能编的都准）。
  */
-export function pickAutoRoute(db, { scores, benchmarks, force = false, driftDemoted = null } = {}) {
+export function pickAutoRoute(db, {
+  scores,
+  benchmarks,
+  force = false,
+  driftDemoted = null,
+  // 缓存亲和：这一段对话的指纹，以及它是否还在同一个 turn 内。
+  // 不传 fingerprint 时行为与旧版完全一致（不做亲和）—— 保证既有调用方不受影响。
+  fingerprint = null,
+  withinTurn = false,
+} = {}) {
   const settings = db.settings || {}
   const record = normalizeAutoRoute(settings.autoRoute)
   const mode = normalizeDecisionMode(settings.decisionMode)
@@ -251,6 +308,46 @@ export function pickAutoRoute(db, { scores, benchmarks, force = false, driftDemo
   let failoverFrom = record.failoverFrom
   if (reason === 'failover') failoverFrom = record.modelKey
   else if (reason === 'fault-recovery' || (failoverFrom && failoverBack)) failoverFrom = null
+
+  // ── 缓存亲和：回答「谁最好」之后，再回答「要不要为了缓存忍一下」 ──
+  //
+  // 必须在迟滞之后：迟滞管「别乱切」，亲和管「为了缓存可以一直不切」。
+  // 顺序是「先算最优，再问亲和是否否决」。
+  if (fingerprint) {
+    const record = readAffinity(settings, fingerprint)
+    const fused = applyAffinity({
+      pick: {
+        modelKey: best.modelKey,
+        offerId: best.row.offer.id,
+        providerId: best.row.offer.providerId,
+        providerName: best.row.provider?.name ?? null,
+        upstreamName: best.row.offer.upstreamName,
+        group: best.row.offer.group || '',
+        metric: best.metric,
+      },
+      record,
+      mode: affinityModeOf(settings),
+      withinTurn,
+      now: Date.now(),
+    })
+    if (fused.held && fused.pick) {
+      return {
+        modelKey: fused.pick.modelKey,
+        offerId: fused.pick.offerId,
+        providerId: fused.pick.providerId,
+        providerName: fused.pick.providerName,
+        upstreamName: fused.pick.upstreamName,
+        group: fused.pick.group,
+        metric: fused.pick.metric,
+        bestOfferId: fused.pick.bestOfferId ?? null,
+        heldForCache: true,
+        switched: false,
+        reason: fused.pick.reason ?? 'cache',
+        why: fused.pick.why ?? '',
+        failoverFrom,
+      }
+    }
+  }
 
   return {
     modelKey: best.modelKey,

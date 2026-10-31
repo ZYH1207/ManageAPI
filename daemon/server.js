@@ -60,7 +60,11 @@ import {
   isAutoThinkModel,
   AUTO_ROUTE_CLIENT_SWITCH,
   AUTO_THINK_MODEL,
+  recordAffinity,
+  readConversation,
 } from '../core/auto-route.js'
+// 缓存亲和（借鉴 Magpie）：对话指纹 + 「该不该为了缓存钉住上次那个供给」
+import { conversationFingerprint, recordFrom, listAffinityModes } from '../core/affinity.js'
 import {
   ensureFailoverToken,
   activeReports,
@@ -2066,6 +2070,39 @@ route('POST', /^\/api\/auto-route\/scope$/, async (ctx) => {
       })
       if (pick) applyAutoRoutePick(db.settings, pick)
     }
+  })
+  return buildState()
+})
+
+/**
+ * 缓存亲和档位（借鉴 Magpie 的核心洞察）。
+ *
+ * 为什么需要它：自动路由原先只看「谁更好」，没算「换人」的代价。而上游
+ * prompt 缓存绑在「模型 + 分组 + 账号」上，一换就要全量重算，缓存读取那段
+ * 账单（通常占输入 80~95%）直接归零。
+ *
+ * 档位语义见 core/affinity.js 的 AFFINITY_LABELS。
+ */
+route('POST', /^\/api\/auto-route\/affinity$/, async (ctx) => {
+  const mode = String(ctx.body?.mode ?? '').trim()
+  const allowed = new Set(listAffinityModes().map((m) => m.id))
+  if (mode && !allowed.has(mode)) {
+    throw new HttpError(400, `不认识的亲和档位：${mode}（可用：${[...allowed].join(' / ')}）`)
+  }
+  await store.mutate((db) => {
+    const record = normalizeAutoRoute(db.settings.autoRoute)
+    record.affinity = mode
+    db.settings.autoRoute = record
+  })
+  return buildState()
+})
+
+/** 清空对话记录表（面板上的「忘记所有对话」）。档位保留。 */
+route('POST', /^\/api\/auto-route\/forget$/, async () => {
+  await store.mutate((db) => {
+    const record = normalizeAutoRoute(db.settings.autoRoute)
+    record.conversations = {}
+    db.settings.autoRoute = record
   })
   return buildState()
 })
@@ -4698,12 +4735,31 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
   // admissionFailure 的人话文案比这里现编的准。
   let autoRoutePick = null
   let model = parsed.model
+  // 缓存亲和：算这段对话的指纹，并判断这一单是不是「同一个 turn 内的后续」
+  // （判据：消息里已经有 assistant/tool 往返 —— 工具结果回传时客户端会带上它们，
+  //  用户重新开口时又是一串新的 user 消息开头）。拿不到指纹就不做亲和，
+  //  行为与旧版完全一致。
+  const conversationKey = isFree
+    ? null
+    : conversationFingerprint({
+        keyId: keyRecord?.id ?? '-',
+        messages: Array.isArray(body?.messages) ? body.messages : [],
+      })
+  const withinTurn = Array.isArray(body?.messages)
+    && body.messages.slice(-1)[0]?.role === 'tool'
   if (!isFree && normalizeAutoRoute(db.settings.autoRoute).enabled) {
     // 自动路由正在接真实流量：记活跃，驱动探针轮巡（daemon/autoprobe.js）。
     // 就算这单最终没挑到模型也算了——外部请求进来了就是「开始起作用」
     setAutoProbeActivity()
     // 漂移降级名单也要递给热路径重挑：探针说最优但真实负载已漂移的站不能选回来
-    autoRoutePick = pickAutoRoute(db, { scores, benchmarks, driftDemoted: driftDemotedSet() })
+    autoRoutePick = pickAutoRoute(db, {
+      scores,
+      benchmarks,
+      driftDemoted: driftDemotedSet(),
+      // 缓存亲和：宁可不用最优，也不废掉上游缓存（借鉴 Magpie）
+      fingerprint: conversationKey,
+      withinTurn,
+    })
     if (autoRoutePick) {
       model = autoRoutePick.modelKey
       // 换了模型才落盘：热路径拿到的是共享缓存对象，不能写；
@@ -5177,6 +5233,27 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
           // usage 账上不能标成功（那是自欺），也不会进可用率（bufferTraffic 跳过）
           ok: outcome === OUTCOME.OK,
         })
+        // 缓存亲和：记下「这段对话这一轮是谁服务的」，供下一轮判断要不要钉住。
+        // 只在真正成功时记 —— 失败的请求没有缓存可言，记了反而会让下一轮
+        // 钉在一个坏供给上。落盘失败不影响这一单（只记日志）。
+        if (outcome === OUTCOME.OK && conversationKey) {
+          const rec = recordFrom({
+            pick: {
+              offerId: candidate.offer.id,
+              providerId: candidate.offer.providerId,
+              providerName: candidate.offer.provider?.name ?? null,
+              upstreamName: candidate.offer.upstreamName,
+              modelKey: candidate.offer.modelKey || null,
+              group: candidate.offer.group || '',
+            },
+            usage: { cachedTokens: numbers?.cached, inputTokens: numbers?.input },
+          })
+          if (rec) {
+            store
+              .mutate((latest) => { recordAffinity(latest.settings, conversationKey, rec) })
+              .catch((error) => console.error('[affinity] 落盘失败:', error.message))
+          }
+        }
         // 客户端自己断开的：不进流量统计。它既不是站的成功，也不是站的失败，
         // 拿它去算可用率等于让用户的手动中断拖累站点评分
         if (outcome !== OUTCOME.CLIENT_ABORTED) {
