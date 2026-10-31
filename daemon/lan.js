@@ -213,8 +213,24 @@ export function createLanHost({
     return status()
   }
 
-  /** 按设置开/关。每次调用都幂等，重复调用不会重复绑定 */
+  /**
+   * 按设置开/关。每次调用都幂等，重复调用不会重复绑定。
+   *
+   * **单向否定（deny-wins）**：`settings.lanPanel` 存在共享的 db.json 里，多台设备
+   * 共用同一份数据时会互相覆盖。若一方开、另一方关，谁最后写谁生效——这在
+   * 局域网里是危险的（一台机器以为关了，另一台又把它打开）。
+   *
+   * 所以 `panel.deny === true` 时**无条件关闭**，与 `enabled` 无关：
+   * 任何一次「关」都留下一张否决票，必须由人显式清除才能重新打开。
+   * 这条判定放在 daemon 侧，改设置绕过不了它。
+   */
   async function apply(panel) {
+    if (panel?.deny === true) {
+      // 否决票优先于 --lan 强制：显式关过就是关着，不给命令行绕过
+      if (server && log?.info) log.info('  [lan] 已被否决（settings.lanPanel.deny），保持关闭')
+      await close()
+      return status()
+    }
     if (forced || panel?.enabled) await open()
     else await close()
     return status()

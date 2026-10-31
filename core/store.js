@@ -404,6 +404,9 @@ function ensureLanPanel(db) {
     enabled: Boolean(current?.enabled),
     token: typeof current?.token === 'string' && current.token ? current.token : null,
     address: typeof current?.address === 'string' && current.address ? current.address : null,
+    // 单向否定的否决票（deny-wins）。这里必须原样保留：它是白名单重建，
+    // 少写一行就会被每次 migrate 悄悄丢掉，否决票形同虚设。
+    deny: current?.deny === true,
   }
   return settings.lanPanel
 }

@@ -999,6 +999,17 @@ route('PATCH', /^\/api\/settings$/, async (ctx) => {
     if (ctx.body.lanPanel !== undefined) {
       const panel = db.settings.lanPanel || (db.settings.lanPanel = { enabled: false, token: null, address: null })
       const enabled = Boolean(ctx.body.lanPanel)
+      // 单向否定（deny-wins）：关 → 留否决票；开 → 若已有否决票，必须显式 force 才能清。
+      // settings 是共享数据（多设备同一份 db.json），这条规则防止
+      // 「一台关了、另一台又打开」在局域网里悄悄互相推翻。
+      if (!enabled) {
+        panel.deny = true
+      } else if (panel.deny === true) {
+        if (ctx.body.lanPanelForce !== true) {
+          throw new HttpError(409, '局域网面板已被否决（有人关过它）。要重新开启请传 lanPanelForce: true')
+        }
+        panel.deny = false
+      }
       if (enabled && !panel.token) panel.token = newPanelToken()
       panel.enabled = enabled
       lanPanelAfter = { ...panel }
@@ -5422,7 +5433,20 @@ async function serveStatic(req, res, pathname) {
  * 就会把发往 evil.com 的请求原样打到本地端口上，服务端看到的是一个完全合法的请求。
  * 校验 Host 是唯一能区分「浏览器在跟本机说话」和「浏览器以为在跟 evil.com 说话」的信号。
  */
-const LOCAL_HOSTS = new Set(['127.0.0.1', 'localhost', '[::1]', '::1'])
+// 本机自定义域名也按「本机」对待。
+//
+// 域名解析到 127.0.0.1 时，浏览器发来的 Host 就是域名本身，不在下面这张表里
+// 就会被当成「外人」拦掉（见 hostIsLocal 的 403）。所以留一个环境变量口子，
+// 不配时行为与原来完全一致 —— 不改变任何现有部署的语义。
+//
+//   MANAGE_API_LOCAL_HOSTS=manage-api.com,manage-api.test
+const LOCAL_HOSTS = new Set([
+  '127.0.0.1', 'localhost', '[::1]', '::1',
+  ...String(process.env.MANAGE_API_LOCAL_HOSTS || '')
+    .split(',')
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean),
+])
 
 function hostIsLocal(req) {
   const raw = String(req.headers.host || '').trim().toLowerCase()
