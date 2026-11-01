@@ -613,12 +613,20 @@ function applyIgnoredModels(db, body) {
   db.settings.ignoredModels = [...new Set(list)]
 }
 
+/** DSH 插件「接入」页的开关：免费池模型是否以 free/ 前缀写进 DSH provider（缺省关）。 */
+function applyDshSettings(db, body) {
+  if (body.dshFreeModels === undefined) return
+  if (typeof body.dshFreeModels !== 'boolean') throw new HttpError(400, 'dshFreeModels 必须是布尔值')
+  db.settings.dshFreeModels = body.dshFreeModels
+}
+
 /** 应用设置补丁：分组顺序与原实现一致，逐字段校验与报错文案保持不变。 */
 function applySettingsPatch(db, body) {
   applyFxSettings(db, body)
   applyProbeSettings(db, body)
   applyDisplaySettings(db, body)
   applyIgnoredModels(db, body)
+  applyDshSettings(db, body)
 }
 
 route('PATCH', /^\/api\/settings$/, async (ctx) => {
