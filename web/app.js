@@ -4057,14 +4057,7 @@ function renderDecision() {
   view.innerHTML = `
     ${modeCard(mode)}
     ${algorithmCard()}
-    <div class="decision-grid">
-      <div class="decision-col">
-        ${gateCard()}
-      </div>
-      <div class="decision-col">
-        ${affinityCard()}
-      </div>
-    </div>
+    ${gateCard()}
     <div class="toolbar">
       <input id="decision-search" class="search" type="search" placeholder="搜索模型名…" value="${esc(filters.decision)}" />
       <span class="hint" style="margin:0">${
@@ -4145,6 +4138,33 @@ function modeCard(mode) {
  *
  * 档位语义见 core/affinity.js#AFFINITY_LABELS。这里不重复定义，只展示。
  */
+/**
+ * 缓存亲和档位（内联在灰栏右侧）。
+ *
+ * 用户 2026-11-02：「这块也就是那 5 个选项，直接挪到上面那个排序算法那块灰栏里，
+ * 左边是排序算法，右边不还有空地吗？把缓存策略放右边。具体每个档位是什么意思，
+ * 鼠标悬浮上去就能看见。」
+ *
+ * 所以档位按钮只留短标签，完整说明放 title——灰栏高度不能因为多一行说明而变高。
+ */
+function affinitySegsInline() {
+  const ar = state.autoRoute || {}
+  const modes = state.affinityModes || []
+  const current = ar.affinity || ''
+  if (!modes.length) return ''
+  return `
+    <span class="aff-inline" role="tablist" aria-label="${esc(t('缓存亲和'))}">
+      ${modes
+        .map(
+          (m) => `<button class="aff-inline-seg${(current || '') === m.id ? ' active' : ''}" role="tab"
+            aria-selected="${(current || '') === m.id}"
+            data-act="set-affinity" data-mode="${esc(m.id)}"
+            title="${esc(m.hint ? `${m.label} — ${m.hint}` : m.label)}">${esc(m.label)}</button>`,
+        )
+        .join('')}
+    </span>`
+}
+
 function affinityCard() {
   const ar = state.autoRoute || {}
   const modes = state.affinityModes || []
@@ -4229,6 +4249,8 @@ function algorithmCard() {
         ${t('亲和优先')} <i>→</i> ${t('余额守卫')} <i>→</i> ${t('真实优先')} <i>→</i> ${t('兜底阶梯')} <i>→</i> ${t('迟滞 15%')}
       </span>
       ${calBadge}
+      <span class="algo-inline-spacer"></span>
+      ${affinitySegsInline()}
       <details class="algo-inline-details">
         <summary>${t('怎么算的')}</summary>
         <div class="algo-details-body">
@@ -4520,14 +4542,16 @@ function gateCard() {
         </label>
         <span class="ttft-scale-now">当前 ${esc(state.ttftLimitText || '不限')}</span>
         <span class="hint" style="margin:0">1000–20000ms 共 20 档 · 慢速即为不可用</span>
-        <span class="auto-route-side">
+        </div>
+      </div>
+      </div>
+      <div class="gate-switches">
+        <div class="gate-switch-left">
           ${autoRouteSwitch()}
           ${routeNowPill()}
           ${patrolBadge()}
-        </span>
-      </div>
-      <div class="switch-row">
-        <label class="switch">
+        </div>
+        <label class="switch gate-switch-right">
           <input type="checkbox" id="allow-untrusted" ${allowUntrusted ? 'checked' : ''} />
           <span class="switch-track"><span class="switch-knob"></span></span>
           <span class="switch-text">
@@ -4535,8 +4559,6 @@ function gateCard() {
             <span title="${esc(t('开启后，判定可疑（指纹不符 / 输出截断 / 用量虚报）的站，也可正常登场。若在意可信度，请关闭。'))}">${t('指纹不符/截断/虚报的站也允许登场')}</span>
           </span>
         </label>
-      </div>
-      </div>
       </div>
     </div>`
 }

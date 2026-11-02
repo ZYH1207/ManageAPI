@@ -3628,3 +3628,70 @@ body.prov-dragging .drop-zone { display: flex; }
   color: var(--text);
   margin-bottom: 10px;
 }
+
+/* ═══════════ 灰栏里内联的亲和档位 ═══════════
+ * 用户 2026-11-02：「那 5 个选项直接挪到上面那个排序算法那块灰栏里…
+ * 具体每个档位是什么意思，鼠标悬浮上去就能看见。」
+ * 所以只留短标签，说明放 title，灰栏高度不变。
+ */
+.algo-inline-spacer { flex: 1 1 auto; }
+
+.aff-inline {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+.aff-inline-seg {
+  font-size: 10.5px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+.aff-inline-seg:hover {
+  background: var(--panel, #fff);
+  border-color: var(--border, rgba(0, 0, 0, 0.12));
+  color: var(--text);
+}
+.aff-inline-seg.active {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent);
+  font-weight: 500;
+}
+
+/* ═══════════ 准入与开关：通栏长条 ═══════════
+ * 缓存亲和卡并入灰栏之后，这块独占整行——不再和右边卡片对齐，
+ * 所以内容可以横向铺开，两个开关左右分列。
+ */
+.gate-card {
+  width: 100%;
+}
+.gate-switches {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 32px;
+  flex-wrap: wrap;
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px dashed var(--border, rgba(0, 0, 0, 0.1));
+}
+.gate-switch-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  /* 自适应：内容（供应商名、样本数）变长时向右长，不挤压右边 */
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.gate-switch-right {
+  flex: 0 0 auto;
+  max-width: 46%;
+}
