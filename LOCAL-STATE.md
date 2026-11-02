@@ -129,7 +129,21 @@ git bundle create ~/manage-api-0.3.0.bundle --all
 git clone ~/manage-api-0.3.0.bundle ManageAPI-restored
 ```
 
-**建议现在就打一份** —— 这台机器上的 30 个 commit 是唯一的副本。
+**已经打过一份**：`~/manage-api-0.3.0.bundle`（12MB，含 250 个 commit + 两个 tag）。
+
+打的时候发现一个坑值得记下来：这个仓库原本是 **shallow clone**（浅克隆），
+`.git/shallow` 里记着一个边界提交，那个提交的父对象故意没下载。
+结果 `git bundle --all` 虽然 `verify` 报「完整历史」，但**真实 clone 会失败**：
+
+```
+error: Could not read 93a69984448822070c4e43eabb821101d67f1f1d
+fatal: Failed to traverse parents of commit ca5d289...
+```
+
+修法：`git fetch --unshallow`（历史从 88 补到 250 个 commit，缺失对象回来了）。
+**打完 bundle 一定要真实 clone 一次验证** —— `verify` 通过不等于能恢复。
+
+已验证：从 bundle clone 出来的副本能跑测试、能启动服务。
 
 ## 七、运行时实例
 
