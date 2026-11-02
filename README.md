@@ -776,6 +776,35 @@ docs/              README 用图 + 设计文档
 
 没有构建步骤，改完文件刷新浏览器即可。`daemon/index.js` 不带文件监听，改后端要重启进程。
 
+### 验收要看新端口，不要点 4319
+
+生产实例固定 4319。改完代码后，**4319 上跑的是旧进程**（后端要重启、
+前端要刷新），直接点它看到的不是「此刻这份代码」。
+
+验收另起一个实例：
+
+```bash
+node scripts/demo.mjs            # 默认 4419 起找空位，打印出地址
+node scripts/demo.mjs --fresh    # 空数据实例（验证首次上手）
+node scripts/demo.mjs --port 4420
+node scripts/demo.mjs --status
+node scripts/demo.mjs --stop
+```
+
+它会做三件事：
+
+1. **复制一份生产数据**（`db.json` + `master.key` + `benchmark.json` +
+   `probe-spend.json` + `usage.json` + `usage-detail/`）到 `.test-data/demo/home`
+2. **另起端口**（默认 4419，被占自动往后找，不会撞上 4319）
+3. **退出即弃**：验收时随便点开关、切档、开自动路由，写的是副本，不污染真实数据
+
+为什么必须复制数据目录而不是只换端口：`daemon/instance-lock.js` 禁止同一个数据目录
+起两个 daemon——两个实例会各自跑定时采集与探针，都往同一个 `db.json` 写，
+后写的覆盖先写的。端口顺延挡不住这点。
+
+`master.key` 必须一起复制：少了它，`db.json` 里所有上游 Key 都解不开，
+验收会看到满屏「解密失败」——那是假故障，不是代码坏了。
+
 ### 跑测试
 
 监控那套是自包含的——它自己起假上游、自己起服务、跑完自己退出：
