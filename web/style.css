@@ -3636,33 +3636,62 @@ body.prov-dragging .drop-zone { display: flex; }
  */
 .algo-inline-spacer { flex: 1 1 auto; }
 
+/* 分组标题胶囊：不可点，只做「这块叫什么」的标记。
+ * 用户要求「排序算法」「缓存亲和」前面都要有胶囊式小标题。 */
+.pill-label {
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--panel, #fff);
+  color: var(--muted);
+  border: 1px solid var(--border, rgba(0, 0, 0, 0.1));
+  white-space: nowrap;
+}
+
+.aff-group {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex-wrap: wrap;
+}
+
 .aff-inline {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 5px;
   flex-wrap: wrap;
 }
+
+/* 可点档位：**必须有可见的边和底**，否则用户不知道这块能点。
+ * 未选中：白底 + 细边（像按钮）；hover：主色边；选中：主色实心。 */
 .aff-inline-seg {
   font-size: 10.5px;
-  padding: 2px 8px;
+  padding: 2.5px 9px;
   border-radius: 999px;
-  border: 1px solid transparent;
-  background: transparent;
+  border: 1px solid var(--border-strong, rgba(0, 0, 0, 0.16));
+  background: var(--panel, #fff);
   color: var(--muted);
   cursor: pointer;
   white-space: nowrap;
   transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+  box-shadow: 0 1px 1px rgba(16, 24, 40, 0.04);
 }
 .aff-inline-seg:hover {
-  background: var(--panel, #fff);
-  border-color: var(--border, rgba(0, 0, 0, 0.12));
-  color: var(--text);
-}
-.aff-inline-seg.active {
-  background: var(--accent-soft);
   border-color: var(--accent);
   color: var(--accent);
+  background: var(--accent-soft);
+}
+.aff-inline-seg.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
   font-weight: 500;
+}
+.aff-inline-seg.active:hover {
+  background: var(--accent);
+  color: #fff;
 }
 
 /* ═══════════ 准入与开关：通栏长条 ═══════════

@@ -4152,17 +4152,39 @@ function affinitySegsInline() {
   const modes = state.affinityModes || []
   const current = ar.affinity || ''
   if (!modes.length) return ''
+  // 用户 2026-11-02：「缓存亲和在前面也要有一个胶囊式的小标题；
+  // 剩下这些选项也都是胶囊式的。注意要有颜色区分，要不然根本不知道这块可以选。」
+  //
+  // 所以：标题用 .pill-label（灰底不可点），档位用 .aff-inline-seg（带边框+底色，
+  // hover 变主色，选中态主色填充）——一眼能看出这是可点的控件。
   return `
-    <span class="aff-inline" role="tablist" aria-label="${esc(t('缓存亲和'))}">
-      ${modes
-        .map(
-          (m) => `<button class="aff-inline-seg${(current || '') === m.id ? ' active' : ''}" role="tab"
-            aria-selected="${(current || '') === m.id}"
-            data-act="set-affinity" data-mode="${esc(m.id)}"
-            title="${esc(m.hint ? `${m.label} — ${m.hint}` : m.label)}">${esc(m.label)}</button>`,
-        )
-        .join('')}
+    <span class="aff-group">
+      <span class="pill-label">${t('缓存亲和')}</span>
+      <span class="aff-inline" role="tablist" aria-label="${esc(t('缓存亲和'))}">
+        ${modes
+          .map(
+            (m) => `<button class="aff-inline-seg${(current || '') === m.id ? ' active' : ''}" role="tab"
+              aria-selected="${(current || '') === m.id}"
+              data-act="set-affinity" data-mode="${esc(m.id)}"
+              title="${esc(m.hint ? `${m.label} — ${m.hint}` : m.label)}">${esc(affinityShortLabel(m))}</button>`,
+          )
+          .join('')}
+      </span>
     </span>`
+}
+
+/**
+ * 档位短标签：灰栏宽度有限，长说明留给 tooltip。
+ *
+ * 「只在单个 turn 内」→「只在单个会话内」：用户 2026-11-02 指出 turn 是行话，
+ * 中文界面里应该是「会话」。语义上 tur​n 指一次用户发言到模型回答，
+ * 这里沿用「会话内」表达「这次对话进行中」，与相邻的「整段会话」形成对照。
+ */
+function affinityShortLabel(mode) {
+  const map = {
+    '只在单个 turn 内': t('只在会话内'),
+  }
+  return map[mode.label] || mode.label
 }
 
 function affinityCard() {
@@ -4243,14 +4265,23 @@ function algorithmCard() {
   // 对——它没有任何可操作控件，占一整张卡是浪费。改成**一行内联条**：
   // 左边一句「怎么算的」+ 标定徽章，右边一个 ▸ 展开看详解。
   // 高度从 155px 降到约 34px，且不再单独成卡。
+  // 2026-11-02 第二次调整（用户逐条）：
+  //   · 「排序算法前面给一个类似小胶囊一样的标志」
+  //   · 「缓存亲和在前面也要有一个胶囊式的小标题」
+  //   · 「剩下这些选项也都是胶囊式的，注意要有颜色区分，
+  //      要不然根本不知道这块可以选」
+  //   · 「怎么算的都挤到最后去了，忘了排到前面去」
+  //   · 「只在单个 turn 内不要这么写，改成只在单个会话内」
+  //
+  // 所以灰栏现在是三段：①「排序算法」标题胶囊 + 流程 + 标定 + ▸怎么算的（靠前）
+  //                    ②「缓存亲和」标题胶囊 + 5 个可点胶囊（选中态上色）
   return `
     <div class="algo-inline">
+      <span class="pill-label">${t('排序算法')}</span>
       <span class="algo-flow">
         ${t('亲和优先')} <i>→</i> ${t('余额守卫')} <i>→</i> ${t('真实优先')} <i>→</i> ${t('兜底阶梯')} <i>→</i> ${t('迟滞 15%')}
       </span>
       ${calBadge}
-      <span class="algo-inline-spacer"></span>
-      ${affinitySegsInline()}
       <details class="algo-inline-details">
         <summary>${t('怎么算的')}</summary>
         <div class="algo-details-body">
@@ -4278,6 +4309,8 @@ function algorithmCard() {
           </div>
         </div>
       </details>
+      <span class="algo-inline-spacer"></span>
+      ${affinitySegsInline()}
     </div>`
 }
 
