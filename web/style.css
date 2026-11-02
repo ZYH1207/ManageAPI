@@ -3906,3 +3906,18 @@ body.prov-dragging .drop-zone { display: flex; }
   font-weight: 500;
 }
 .route-group-hint { font-size: var(--fs-1); color: var(--faint); }
+
+/* 放行可疑供给挪到标题正下方（用户 2026-11-02：「放得太靠后了」）。
+ * 它是准入门槛的一部分，跟「慢速档位限制」是同类设置，应该贴在一起。 */
+.gate-top-switch {
+  margin-bottom: 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px dashed var(--border, rgba(0, 0, 0, 0.08));
+}
+/* 原来左右分列时右列是它；现在它上移了，剩下的自动路由独占一行 */
+.gate-switches {
+  justify-content: flex-start;
+}
+.gate-switch-left {
+  flex: 1 1 auto;
+}

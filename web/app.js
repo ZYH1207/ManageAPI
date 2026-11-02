@@ -4556,8 +4556,18 @@ function gateCard() {
   return `
     <div class="card gate-card">
       <div class="gate-body">
+      <div class="gate-title">${t('慢速档位限制')}</div>
+      <div class="gate-top-switch">
+        <label class="switch">
+          <input type="checkbox" id="allow-untrusted" ${allowUntrusted ? 'checked' : ''} />
+          <span class="switch-track"><span class="switch-knob"></span></span>
+          <span class="switch-text">
+            <b>${t('放行可疑供给')}</b>
+            <span title="${esc(t('开启后，判定可疑（指纹不符 / 输出截断 / 用量虚报）的站，也可正常登场。若在意可信度，请关闭。'))}">${t('指纹不符/截断/虚报的站也允许登场')}</span>
+          </span>
+        </label>
+      </div>
       <div class="ttft-scale">
-        <div class="gate-title">${t('慢速档位限制')}</div>
         <div class="ttft-scale-row">
         <span class="ttft-ticks">
           <button class="ttft-tick off${maxTtft === 0 ? ' active' : ''}" data-act="set-ttft" data-ms="0" title="不限：不按首字筛掉任何供给">不限</button>
@@ -4584,14 +4594,6 @@ function gateCard() {
           ${routeNowPill()}
           ${patrolBadge()}
         </div>
-        <label class="switch gate-switch-right">
-          <input type="checkbox" id="allow-untrusted" ${allowUntrusted ? 'checked' : ''} />
-          <span class="switch-track"><span class="switch-knob"></span></span>
-          <span class="switch-text">
-            <b>${t('放行可疑供给')}</b>
-            <span title="${esc(t('开启后，判定可疑（指纹不符 / 输出截断 / 用量虚报）的站，也可正常登场。若在意可信度，请关闭。'))}">${t('指纹不符/截断/虚报的站也允许登场')}</span>
-          </span>
-        </label>
       </div>
     </div>`
 }

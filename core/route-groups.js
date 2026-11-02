@@ -52,7 +52,17 @@ export const MAX_MODELS_PER_GROUP = 24
 export const MAX_GROUPS = 12
 
 /**
- * 组级算法：六档决策侧重 + 一个「尽量别换人」约束。
+ * 组级算法：对齐 Magpie 的 5 种路由方式。
+ *
+ * Magpie 的做法（从它的二进制里提取到的原话）：
+ *   Cheap first          —— 便宜的先上
+ *   Never stuck          —— 别卡死，遇挫就换（保证不报错）
+ *   Fastest              —— 按首字速度
+ *   Least used first     —— "the account or key with the most of its allowance
+ *                            left goes first"（额度剩最多的先上）
+ *   Manual / Rotate      —— 手动指定 / 轮流
+ *
+ * 映射到本网关已有的能力上（不另造平行算法）：
  *
  * `keepEligible` 对应 Magpie 的 never-stuck 精神：宁可慢一点也别频繁改派，
  * 因为每次改派都会把上游 prompt 缓存作废（见 core/affinity.js 的论证）。
@@ -107,6 +117,28 @@ export const GROUP_ALGOS = [
     keepEligible: true,
     desc: '按性价比挑，但一旦选定就尽量不换（改用更粘的缓存亲和）。'
       + '适合长对话——每次换站都要重算上下文缓存。',
+  },
+  {
+    key: 'balance',
+    label: '余量优先',
+    hint: '余额/额度剩得最多的先上',
+    mode: 'value',
+    magpie: 'Least used first',
+    balanceFirst: true,
+    desc: 'Magpie 的 Least used first：把「额度还剩多少」放在价格之前——'
+      + '余额多的站先用，避免某一家先耗尽、临时没有兜底。'
+      + '适合同时挂了多个免费额度、想平均用的场景。',
+  },
+  {
+    key: 'rotate',
+    label: '轮流',
+    hint: '每次换一个站，不钉住',
+    mode: 'value',
+    magpie: 'Manual / Rotate',
+    forceOff: true,
+    desc: 'Magpie 的 Rotate：每次都重新挑，不做缓存亲和（affinity 强制为「轮流」）。'
+      + '适合额度分散、想让各家都跑起来，或者怀疑某家变慢想尽快发现。'
+      + '代价是缓存命中率会掉——每次换站上下文都要重算。',
   },
 ]
 
@@ -208,7 +240,7 @@ export function activeGroupOf(routeGroups) {
  * 这是 auto-route 与路由组之间**唯一**的接口，判定逻辑不在这里
  * （仍然走 selectCandidates / tierMetricOf），这里只决定「看哪些、按什么排」。
  *
- * @returns {{ scope: string[]|null, decisionMode: string|null, keepEligible: boolean, group: object|null }}
+ * @returns {{ scope: string[]|null, decisionMode: string|null, keepEligible: boolean, forceOff: boolean, balanceFirst: boolean, group: object|null }}
  *   scope=null 表示全场；decisionMode=null 表示沿用 settings.decisionMode
  */
 export function routingTargetOf(routeGroups, autoRoute, settings) {
@@ -219,6 +251,10 @@ export function routingTargetOf(routeGroups, autoRoute, settings) {
       scope: group.models,
       decisionMode: normalizeDecisionMode(algo.mode),
       keepEligible: Boolean(algo.keepEligible),
+      // Magpie 的 Rotate：强制关闭缓存亲和，每次重挑。调用方据此把
+      // affinity 临时当 'off' 处理（不落库，只影响这一单的判定）
+      forceOff: Boolean(algo.forceOff),
+      balanceFirst: Boolean(algo.balanceFirst),
       group,
     }
   }
@@ -227,6 +263,8 @@ export function routingTargetOf(routeGroups, autoRoute, settings) {
     scope: legacyScope.length ? legacyScope : null,
     decisionMode: null, // 沿用 settings.decisionMode
     keepEligible: false,
+    forceOff: false,
+    balanceFirst: false,
     group: null,
   }
 }

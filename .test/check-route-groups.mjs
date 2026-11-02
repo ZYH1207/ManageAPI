@@ -67,6 +67,28 @@ console.log('[5] 新建组 id 不重复')
   ok(g1.id.startsWith('rg_'), 'id 有前缀')
 }
 
+console.log('[6] 对齐 Magpie 的 5 种路由方式')
+{
+  const keys = GROUP_ALGOS.map((a) => a.key)
+  ok(keys.includes('price'), 'Cheap first → 价格优先')
+  ok(keys.includes('value-steady'), 'Never stuck → 稳妥（少换人）')
+  ok(keys.includes('flow'), 'Fastest → 流畅度优先')
+  ok(keys.includes('balance'), 'Least used first → 余量优先')
+  ok(keys.includes('rotate'), 'Manual/Rotate → 轮流')
+  ok(algoOf('balance').balanceFirst === true, 'balance 带 balanceFirst')
+  ok(algoOf('rotate').forceOff === true, 'rotate 带 forceOff')
+
+  // forceOff 要能从 routingTargetOf 透出来（auto-route 靠它关亲和）
+  const rgRotate = normalizeRouteGroups({ groups: [{ models: ['m1'], algo: 'rotate' }], activeId: 'rg_01' })
+  const t = routingTargetOf(rgRotate, {}, {})
+  ok(t.forceOff === true, 'rotate 组的 target.forceOff=true')
+  const rgBal = normalizeRouteGroups({ groups: [{ models: ['m1'], algo: 'balance' }], activeId: 'rg_01' })
+  ok(routingTargetOf(rgBal, {}, {}).balanceFirst === true, 'balance 组的 target.balanceFirst=true')
+  // 无组时两个开关都必须是 false，否则会静默影响老用户
+  const t2 = routingTargetOf({ groups: [], activeId: null }, { scope: [] }, {})
+  ok(t2.forceOff === false && t2.balanceFirst === false, '无组时两个开关为 false')
+}
+
 console.log('')
 if (failed) { console.log(`${failed} 项失败`); process.exit(1) }
 console.log('全部通过 ✓')

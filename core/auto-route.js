@@ -332,8 +332,11 @@ export function pickAutoRoute(db, {
         metric: best.metric,
       },
       record,
-      mode: affinityModeOf(settings),
-      withinTurn,
+      // 路由组的「轮流」档强制关闭亲和（Magpie 的 Rotate）：每次重挑。
+      // 只影响这一单的判定，不改用户存的 affinity 设置——
+      // 否则用户在决策页选的档位会被一次路由组切换静默改掉。
+      mode: target.forceOff ? 'off' : affinityModeOf(settings),
+      withinTurn: target.forceOff ? false : withinTurn,
       now: Date.now(),
     })
     if (fused.held && fused.pick) {
