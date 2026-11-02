@@ -49,6 +49,7 @@ import {
   decisionModeTable,
   describeDecisionMode,
   normalizeDecisionMode,
+  tierMetricOf,
 } from '../core/decision-mode.js'
 import {
   pickAutoRoute,
@@ -79,6 +80,7 @@ import {
   routingTargetOf,
 } from '../core/route-groups.js'
 import * as usageLib from '../core/usage.js'
+import { explainAll } from '../core/why-not.js'
 // 缓存亲和（借鉴 Magpie）：对话指纹 + 「该不该为了缓存钉住上次那个供给」
 import { conversationFingerprint, recordFrom, listAffinityModes } from '../core/affinity.js'
 // 路由编排：速度模型（标定）+ 余额守卫（阈值切换）+ 兜底阶梯（绝不报错）
@@ -924,6 +926,57 @@ route('GET', /^\/api\/health$/, async () => ({ ok: true, at: new Date().toISOStr
 route('GET', /^\/api\/state$/, async (ctx) => buildState({ light: ctx.query.get('light') === '1' }))
 
 // 最近的活动（首屏用）：不订阅，拿一次快照就够画「刚才发生了什么」
+// ------------------------------------------------------------ 「为什么没选它」
+//
+// 用户 2026-11-02：判定链七步每一步都能否决一个看起来更优的候选，
+// 而用户反复问的都是「明明它更快/更便宜，为什么不选它」。
+//
+// 表格里的「依据」列是**单个候选的自述**；人要看的是**对比**。
+// 这个接口给指定模型的全场候选生成因果链：为什么冠军赢、
+// 以及**换哪个档位就会选它**（最有信息量的一句）。
+route('GET', /^\/api\/why-not$/, async (ctx) => {
+  const model = String(ctx.query.get('model') || '').trim()
+  if (!model) throw new HttpError(400, '要给 model 参数')
+  const db = await store.readDb()
+  const benchmarks = await bench.readBenchmarks()
+  const scores = scoresFor(db)
+  const settings = db.settings || {}
+  const mode = normalizeDecisionMode(settings.decisionMode)
+  const maxTtftMs = Number(settings.maxTtftMs) || 0
+
+  const offers = inv.routeableOffers(db)
+  const split = splitOffers(offers, benchmarks)
+  const rows = selectCandidates({
+    offers: split.paid,
+    providers: db.providers,
+    credentials: db.credentials,
+    scores,
+    benchmarks,
+    settings,
+    model,
+    order: db.manualOrder?.[model] || null,
+    isFaulted: faultMatcher(db.failover),
+  })
+  if (rows.length === 0) throw new HttpError(404, `网关里没有 ${model} 的供给`)
+
+  // 冠军口径与网关派活一致：准入通过 + 无故障，再按当前档位取最小。
+  // 不能只取 rows[0]——那个是「排序后的第一个」，可能没通过准入。
+  const admitted = rows.filter((r) => r.admission?.ok && !r.faulted)
+  const ranked = (admitted.length ? admitted : rows)
+    .map((r) => ({ row: r, metric: tierMetricOf(r, mode) }))
+    .sort((a, b) => (a.metric === b.metric ? 0 : a.metric < b.metric ? -1 : 1))
+  const winner = ranked[0]?.row || null
+
+  return {
+    model,
+    mode,
+    decisionModes: decisionModeTable(),
+    ...explainAll(winner, rows, mode, { maxTtftMs }),
+    winnerProvider: winner?.provider?.name || null,
+    winnerMetric: ranked[0]?.metric ?? null,
+  }
+})
+
 // ------------------------------------------------------------ 数据导出
 //
 // 用户 2026-11-02 的需求：用量、诊断、路由历史这些**留档/分析**用得上，

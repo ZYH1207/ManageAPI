@@ -4016,7 +4016,9 @@ function renderDecision() {
         <tr class="dec-row${isChosen ? ' cheapest' : ''}" data-offer="${esc(candidate.offerId)}" title="${t('点击勾选这一行为当前使用（再点一下取消勾选），顺序不动')}">
           <td class="dec-grip-cell"><span class="dec-grip" title="${t('拖动调整顺序')}">${icon('grip')}</span></td>
           <td class="num" style="color:var(--faint)">${index + 1}</td>
-          <td>${esc(candidate.providerName || '—')}${isChosen ? ' <span class="badge ok">当前</span>' : ''}${
+          <td>${esc(candidate.providerName || '—')}<button class="why-btn" data-act="why-not"
+            data-model="${esc(decision.modelKey)}" data-offer="${esc(candidate.offerId || '')}"
+            title="${esc(t('为什么没选它？点开看对比'))}">?</button>${isChosen ? ' <span class="badge ok">当前</span>' : ''}${
             candidate.faulted ? ` <span class="badge danger failover-badge" title="${t('外部监控上报了真实故障（探针没测到也以监控为准），已故障转移；保持期过后若仍是全场第一会自动提回')}">${t('故障转移')}</span>` : ''
           }${
             // 只标少数派写法：多数派每行重复一遍没信息量，
@@ -8335,6 +8337,23 @@ document.addEventListener('click', async (event) => {
     return
   }
 
+  // 「为什么没选它」：点表格里的 ? 拉后端算好的因果链，弹窗展示。
+  //
+  // 为什么在后端算而不是前端：判定链（准入/亲和/迟滞/故障）全在后端，
+  // 前端只拿得到展示字段，自己推必然和网关口径漂移。
+  if (action === 'why-not') {
+    const model = actionButton.dataset.model
+    const offerId = actionButton.dataset.offer
+    if (!model) return
+    try {
+      const data = await api('GET', `/api/why-not?model=${encodeURIComponent(model)}`)
+      openWhyNot(data, offerId)
+    } catch (error) {
+      toast(error.message, true)
+    }
+    return
+  }
+
   // 数据导出：点「导出」出一列可选集合，各给 CSV / JSON 两个下载。
   //
   // 为什么不做成页面里的按钮：导出的东西跨页（用量在用量页、故障在诊断页…），
@@ -10419,4 +10438,81 @@ try {
     <p style="color:#666">${esc(error.message)}</p>
     <p style="color:#666">请确认 daemon 还在运行：<code>node daemon/index.js</code></p>
   </div>`
+}
+
+
+/**
+ * 「为什么没选它」弹窗。
+ *
+ * 结构（每一段都是用户能自己核对的事实，不是结论）：
+ *   1. 结论一句：按当前档位，冠军凭什么赢
+ *   2. 两边数字并排（价格/有效成本/质量/首字/吐字）
+ *   3. **换哪个档位就会选它** —— 最有信息量的一段
+ *   4. 如果它压根没通过准入，单独说清卡在哪道门
+ */
+function openWhyNot(data, focusOfferId) {
+  const items = data.items || []
+  // 点的是哪一行就把它顶到最前（表格里每一行都有 ?，用户关心的是自己点的那条）
+  const focused = items.find((it) => it.offerId === focusOfferId) || items[0] || null
+  const others = items.filter((it) => it !== focused)
+
+  const rowsHtml = (it) => `
+    <div class="why-block">
+      <div class="why-head">
+        <span class="why-provider">${esc(it.providerName || '—')}</span>
+        ${it.blocked ? `<span class="badge danger">${esc(t('未通过准入'))}</span>` : ''}
+      </div>
+      <div class="why-reason">${esc(it.reason)}</div>
+      ${it.compare?.length ? `
+      <table class="why-table">
+        ${it.compare.map((c) => `<tr>
+          <th>${esc(c.label)}</th>
+          <td class="why-win">${esc(c.win ?? '—')}</td>
+          <td class="why-lose">${esc(c.lose ?? '—')}</td>
+        </tr>`).join('')}
+      </table>
+      <div class="why-legend">
+        <span><i class="dot ok"></i>${esc(t('冠军'))} ${esc(data.winnerProvider || '—')}</span>
+        <span><i class="dot bad"></i>${esc(t('这一条'))} ${esc(it.providerName || '—')}</span>
+      </div>` : ''}
+      ${it.flip?.length ? `
+      <div class="why-flip">
+        <b>${esc(t('换成这些档位就会选它：'))}</b>
+        ${it.flip.map((f) => `<span class="why-flip-chip" title="${esc(f.hint || '')}">${esc(f.label)}</span>`).join('')}
+      </div>` : (it.blocked ? '' : `<div class="why-flip why-flip-none">${esc(t('任何档位下都不会选它——它各项都更差。'))}</div>`)}
+    </div>`
+
+  const modal = document.createElement('div')
+  modal.className = 'modal-back'
+  modal.innerHTML = `
+    <div class="modal why-modal">
+      <div class="modal-head">
+        <h3>${esc(t('为什么没选它'))} · <code>${esc(data.model)}</code></h3>
+        <button class="icon-btn" data-why-close>${icon('x')}</button>
+      </div>
+      <div class="modal-body">
+        <p class="why-sub">${esc(t('当前按「{mode}」档判定。下面每个数字都能在决策页表格里核对。', {
+          mode: (data.decisionModes || []).find((m) => m.key === data.mode)?.label || data.mode,
+        }))}</p>
+        ${focused ? rowsHtml(focused) : `<p class="hint">${esc(t('这个模型没有其它候选可对比——全场只有它一条供给。'))}</p>`}
+        ${others.length ? `
+          <details class="why-others">
+            <summary>${esc(t('其它 {n} 条候选为什么也不行', { n: others.length }))}</summary>
+            ${others.map(rowsHtml).join('')}
+          </details>` : ''}
+      </div>
+    </div>`
+
+  document.body.appendChild(modal)
+  const close = () => modal.remove()
+  modal.addEventListener('click', (e) => {
+    if (e.target === modal || e.target.closest('[data-why-close]')) close()
+  })
+  const onKey = (e) => {
+    if (e.key === 'Escape') {
+      close()
+      document.removeEventListener('keydown', onKey)
+    }
+  }
+  document.addEventListener('keydown', onKey)
 }
