@@ -8238,6 +8238,86 @@ document.addEventListener('click', async (event) => {
     return
   }
 
+  // ------------------------------------------------------------ 路由组（2026-11-02）
+  if (action === 'rg-new') {
+    try {
+      await api('POST', '/api/route-groups', { name: '新路由组' })
+      state = await api('GET', '/api/state')
+      render()
+      toast(t('已新建路由组'))
+    } catch (error) {
+      toast(error.message, true)
+    }
+    return
+  }
+
+  if (action === 'rg-use') {
+    // 启用/停用：点生效中的那个 = 停用（回到全场）
+    const id = actionButton.dataset.id
+    if (!id) return
+    const isActive = state.routeGroups?.activeId === id
+    try {
+      await api('POST', '/api/route-groups/active', { id: isActive ? null : id })
+      state = await api('GET', '/api/state')
+      render()
+      toast(isActive ? t('已停用路由组：回到全场挑选') : t('已启用，自动路由按这个组工作'))
+    } catch (error) {
+      toast(error.message, true)
+    }
+    return
+  }
+
+  if (action === 'rg-del') {
+    const id = actionButton.dataset.id
+    if (!id) return
+    if (!confirm(t('删除这个路由组？组内的模型勾选会一起消失（模型本身不受影响）。'))) return
+    try {
+      await api('DELETE', `/api/route-groups/${encodeURIComponent(id)}`)
+      state = await api('GET', '/api/state')
+      render()
+      toast(t('已删除'))
+    } catch (error) {
+      toast(error.message, true)
+    }
+    return
+  }
+
+  if (action === 'rg-algo') {
+    const id = actionButton.dataset.id
+    const algo = actionButton.dataset.algo
+    if (!id || !algo) return
+    try {
+      await api('PATCH', `/api/route-groups/${encodeURIComponent(id)}`, { algo })
+      state = await api('GET', '/api/state')
+      render()
+    } catch (error) {
+      toast(error.message, true)
+    }
+    return
+  }
+
+  if (action === 'rg-toggle') {
+    // 勾/去勾一个模型。整体提交成员数组（服务端负责去重限量），
+    // 不做「增量加一个」——并发点两下也不会出现重复项
+    const id = actionButton.dataset.id
+    const model = actionButton.dataset.model
+    if (!id || !model) return
+    const group = (state.routeGroups?.groups || []).find((g) => g.id === id)
+    if (!group) return
+    const models = Array.isArray(group.models) ? [...group.models] : []
+    const i = models.indexOf(model)
+    if (i >= 0) models.splice(i, 1)
+    else models.push(model)
+    try {
+      await api('PATCH', `/api/route-groups/${encodeURIComponent(id)}`, { models })
+      state = await api('GET', '/api/state')
+      render()
+    } catch (error) {
+      toast(error.message, true)
+    }
+    return
+  }
+
   if (action === 'toggle-autoroute') {
     // 自动路由范围：勾上后只在勾选的模型里挑，全移出 = 回到全场
     const modelKey = actionButton.dataset.model
@@ -9366,6 +9446,23 @@ document.addEventListener('click', (event) => {
 }, true)
 
 document.addEventListener('change', async (event) => {
+  // 路由组改名（inout 失焦或回车触发 change）
+  const rgName = event.target.closest?.('[data-rg-name]')
+  if (rgName) {
+    const id = rgName.dataset.rgName
+    const name = rgName.value.trim()
+    if (!id || !name) return
+    try {
+      await api('PATCH', `/api/route-groups/${encodeURIComponent(id)}`, { name })
+      state = await api('GET', '/api/state')
+      render()
+      toast(t('已改名'))
+    } catch (error) {
+      toast(error.message, true)
+    }
+    return
+  }
+
   // 详细用量的筛选：站点 / 分组 / 模型。只在已经拉到的明细上重算，不再请求接口
   const udFilter = event.target.closest?.('[data-usage-filter]')
   if (udFilter) {

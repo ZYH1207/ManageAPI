@@ -407,6 +407,8 @@ export function routePaint() {
             .join('')}
         </div>
       </div>` : ''}
+
+    ${routeGroupsHtml()}
   `
 
   routePaintConn()
@@ -571,4 +573,89 @@ function routeLayoutFix() {
   // svg 本身铺满 stage，尺寸用属性写死避免第二次 reflow
   svg.setAttribute('width', String(Math.round(base.width)))
   svg.setAttribute('height', String(Math.round(base.height)))
+}
+
+
+/**
+ * 路由组（页面最下方）——学 Magpie 的编制区。
+ *
+ * 用户 2026-11-02：「路由组那个页面，直接在路由页面里就可以。因为 Magpie 也是
+ * 这么做的：最上面是正在进行的路由，中间是数据，最下面是编制路由组。」
+ *
+ * 一个组 = 一组模型 + 组级算法。点「启用」后自动路由只在这个组的模型里挑，
+ * 按这个组的算法排序。不启用任何组 = 回到全场。
+ */
+function routeGroupsHtml() {
+  const rg = deps.state.routeGroups || {}
+  const groups = Array.isArray(rg.groups) ? rg.groups : []
+  const algos = Array.isArray(rg.algos) ? rg.algos : []
+  const activeId = rg.activeId || null
+  const active = rg.active || null
+  const models = availableModels()
+
+  return `
+    <div class="route-groups">
+      <div class="route-groups-head">
+        <h3>${deps.t('路由组')}</h3>
+        <span class="route-groups-note">${
+          active
+            ? deps.t('当前按「{name}」路由：{n} 个模型 · {algo}', {
+                name: active.name,
+                n: active.models.length,
+                algo: (algos.find((a) => a.key === active.algo) || {}).label || active.algo,
+              })
+            : deps.t('没有启用路由组——自动路由在全场所有模型里挑')
+        }</span>
+        <span class="route-groups-beta">${deps.t('新建组')}</span>
+        <button class="route-group-new" data-act="rg-new">${deps.icon('plus')}${deps.t('新建')}</button>
+      </div>
+
+      ${groups.length === 0 ? `<div class="route-groups-empty">${deps.t('还没有路由组。新建一个组，勾几个模型，再选这套路由用哪种算法。')}</div>` : `
+      <div class="route-group-list">
+        ${groups.map((g) => {
+          const algo = algos.find((a) => a.key === g.algo) || {}
+          const isActive = g.id === activeId
+          return `<div class="route-group-card${isActive ? ' active' : ''}">
+            <div class="route-group-top">
+              <input class="route-group-name" value="${deps.esc(g.name)}"
+                data-rg-name="${deps.esc(g.id)}" title="${deps.t('点这里改名')}" />
+              ${isActive
+                ? `<span class="route-group-badge on">${deps.t('生效中')}</span>`
+                : `<button class="route-group-use" data-act="rg-use" data-id="${deps.esc(g.id)}">${deps.t('启用')}</button>`}
+              <button class="route-group-del" data-act="rg-del" data-id="${deps.esc(g.id)}"
+                title="${deps.t('删除这个组')}">${deps.icon('x')}</button>
+            </div>
+            <div class="route-group-algos" role="tablist">
+              ${algos.map((a) => `<button class="route-algo${a.key === g.algo ? ' active' : ''}"
+                role="tab" aria-selected="${a.key === g.algo}"
+                data-act="rg-algo" data-id="${deps.esc(g.id)}" data-algo="${deps.esc(a.key)}"
+                title="${deps.esc(a.desc || a.label)}${a.magpie ? ` · 对标 Magpie ${a.magpie}` : ''}">${deps.esc(a.label)}</button>`).join('')}
+            </div>
+            <div class="route-group-members">
+              ${models.length === 0
+                ? `<span class="route-group-hint">${deps.t('还没有可用模型——先在站点页同步模型')}</span>`
+                : models.map((m) => {
+                    const on = g.models.includes(m)
+                    return `<button class="route-member${on ? ' on' : ''}"
+                      data-act="rg-toggle" data-id="${deps.esc(g.id)}" data-model="${deps.esc(m)}"
+                      title="${deps.esc(on ? deps.t('移出这个组') : deps.t('加入这个组'))}">${deps.esc(m)}</button>`
+                  }).join('')}
+            </div>
+          </div>`
+        }).join('')}
+      </div>`}
+    </div>`
+}
+
+/** 当前有哪些模型可选（从决策数据里取，去重） */
+function availableModels() {
+  const out = []
+  const seen = new Set()
+  for (const dec of deps.state.decisions || []) {
+    const key = dec.modelKey
+    if (!key || seen.has(key)) continue
+    seen.add(key)
+    out.push(key)
+  }
+  return out.sort()
 }

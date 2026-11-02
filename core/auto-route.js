@@ -39,6 +39,7 @@ import { normalizeDecisionMode, tierMetricOf } from './decision-mode.js'
 import { splitOffers } from './free.js'
 import { faultMatcher } from './failover.js'
 import { applyAffinity, readAffinity } from './affinity.js'
+import { routingTargetOf } from './route-groups.js'
 
 /** 新模型至少要比现役好这个比例才值得切换（0.15 = 好 15% 以上） */
 export const AUTO_ROUTE_SWITCH_GAIN = 0.15
@@ -199,17 +200,22 @@ export function pickAutoRoute(db, {
 } = {}) {
   const settings = db.settings || {}
   const record = normalizeAutoRoute(settings.autoRoute)
-  const mode = normalizeDecisionMode(settings.decisionMode)
+  // 范围与档位的唯一来源（2026-11-02 加入路由组）：
+  //   有生效组 → 用组的 models + 组的算法档
+  //   没有组   → 用旧的 autoRoute.scope + settings.decisionMode
+  // 这样老配置继续有效，新功能也不必在判定层留分支。
+  const target = routingTargetOf(settings.routeGroups, record, settings)
+  const mode = target.decisionMode ? normalizeDecisionMode(target.decisionMode) : normalizeDecisionMode(settings.decisionMode)
   const paid = splitOffers(routeableOffers(db), benchmarks).paid
   // 外部监控上报的真实故障：命中即失去「最优」资格（探针的准入判定不受影响）
   const isFaulted = faultMatcher(db.failover)
 
-  // 接管范围：空 = 全场；非空 = 只在勾选的模型里挑（决策页分组上的加号）。
-  // 勾选存的是决策页的分组键（身份键口径），byModel 的键是存储键口径，
+  // 接管范围：target.scope=null 表示全场；非空 = 只在其中挑。
+  // 范围存的是决策页的分组键（身份键口径），byModel 的键是存储键口径，
   // 两边都过一遍 modelIdentityKey 再比——不然用户勾了「deepseek-4.1-flash」
   // 却勾不住站点写成「deepseek-v4.1-flash」的供给
-  const scopeIds = record.scope.length
-    ? new Set(record.scope.map((key) => modelIdentityKey(key, settings.modelAliases) || key))
+  const scopeIds = target.scope
+    ? new Set(target.scope.map((key) => modelIdentityKey(key, settings.modelAliases) || key))
     : null
   const inScope = (key) =>
     !scopeIds || scopeIds.has(modelIdentityKey(key, settings.modelAliases) || key)

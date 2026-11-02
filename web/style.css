@@ -3724,3 +3724,185 @@ body.prov-dragging .drop-zone { display: flex; }
   flex: 0 0 auto;
   max-width: 46%;
 }
+
+/* ═══════════ 路由组（路由页最下方）═══════════
+ * 用户 2026-11-02：「路由组那个页面直接在路由页面里就可以，
+ * 最上面是正在进行的路由，中间是数据，最下面是编制路由组。」
+ */
+.route-groups {
+  margin-top: 24px;
+  padding-top: 20px;
+  border-top: 1px solid var(--border, rgba(0, 0, 0, 0.08));
+}
+.route-groups-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+.route-groups-head h3 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+.route-groups-note {
+  font-size: var(--fs-1);
+  color: var(--faint);
+}
+/* 「新建组」是标题旁的小标签（Magpie 也有一个），不是按钮 */
+.route-groups-beta {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--chip, rgba(0, 0, 0, 0.05));
+  color: var(--muted);
+  letter-spacing: 0.02em;
+}
+.route-group-new {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: var(--fs-1);
+  padding: 4px 11px;
+  border-radius: 7px;
+  border: 1px solid var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent);
+  cursor: pointer;
+  font-weight: 500;
+}
+.route-group-new:hover { background: var(--accent); color: #fff; }
+.route-group-new svg { width: 12px; height: 12px; }
+
+.route-groups-empty {
+  padding: 22px;
+  text-align: center;
+  font-size: var(--fs-2);
+  color: var(--faint);
+  border: 1px dashed var(--border, rgba(0, 0, 0, 0.12));
+  border-radius: var(--radius);
+}
+
+.route-group-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 12px;
+}
+.route-group-card {
+  border: 1px solid var(--border, rgba(0, 0, 0, 0.1));
+  border-radius: 10px;
+  padding: 11px 13px;
+  background: var(--panel, #fff);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.route-group-card.active {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.route-group-top {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-bottom: 9px;
+}
+.route-group-name {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--fs-2);
+  font-weight: 600;
+  color: var(--text);
+  border: 1px solid transparent;
+  background: transparent;
+  padding: 3px 6px;
+  border-radius: 6px;
+  font-family: inherit;
+}
+.route-group-name:hover { border-color: var(--border, rgba(0, 0, 0, 0.12)); }
+.route-group-name:focus {
+  outline: none;
+  border-color: var(--accent);
+  background: var(--panel, #fff);
+}
+.route-group-badge.on {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: #fff;
+  white-space: nowrap;
+}
+.route-group-use {
+  font-size: 10.5px;
+  padding: 2.5px 9px;
+  border-radius: 999px;
+  border: 1px solid var(--border-strong, rgba(0, 0, 0, 0.16));
+  background: var(--panel, #fff);
+  color: var(--muted);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.route-group-use:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+.route-group-del {
+  border: none;
+  background: transparent;
+  color: var(--faint);
+  cursor: pointer;
+  padding: 2px;
+  display: inline-flex;
+}
+.route-group-del:hover { color: var(--danger); }
+.route-group-del svg { width: 12px; height: 12px; }
+
+.route-group-algos {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-bottom: 9px;
+  padding-bottom: 9px;
+  border-bottom: 1px dashed var(--border, rgba(0, 0, 0, 0.08));
+}
+.route-algo {
+  font-size: 10.5px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border, rgba(0, 0, 0, 0.12));
+  background: var(--panel, #fff);
+  color: var(--muted);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.route-algo:hover { border-color: var(--accent); color: var(--accent); }
+.route-algo.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+  font-weight: 500;
+}
+
+.route-group-members {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.route-member {
+  font-size: 10.5px;
+  padding: 2px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border, rgba(0, 0, 0, 0.1));
+  background: var(--chip, rgba(0, 0, 0, 0.03));
+  color: var(--faint);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.route-member:hover { border-color: var(--accent); color: var(--accent); }
+.route-member.on {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent);
+  font-weight: 500;
+}
+.route-group-hint { font-size: var(--fs-1); color: var(--faint); }

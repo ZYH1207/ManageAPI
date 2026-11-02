@@ -63,6 +63,7 @@ import {
   recordAffinity,
   readConversation,
 } from '../core/auto-route.js'
+import { GROUP_ALGOS, activeGroupOf, normalizeRouteGroups, newRouteGroup } from '../core/route-groups.js'
 // 缓存亲和（借鉴 Magpie）：对话指纹 + 「该不该为了缓存钉住上次那个供给」
 import { conversationFingerprint, recordFrom, listAffinityModes } from '../core/affinity.js'
 // 路由编排：速度模型（标定）+ 余额守卫（阈值切换）+ 兜底阶梯（绝不报错）
@@ -646,6 +647,15 @@ async function buildState({ light = false } = {}) {
     // 这里也必须报 false，否则界面上还会写「客户端点 AutoThink = 开」——一句没用的提示。
     // 另外还要排除用户自己真有个同名供给的情况（那时真供给优先，与网关同一套判定）
     autoRoute: normalizeAutoRoute(db.settings.autoRoute),
+    // 路由组（2026-11-02）：当前配置 + 可选算法档，前端一次拿全
+    routeGroups: (() => {
+      const norm = normalizeRouteGroups(db.settings.routeGroups)
+      return {
+        ...norm,
+        active: activeGroupOf(norm),
+        algos: GROUP_ALGOS,
+      }
+    })(),
     // 路由健康快照：标定可信度 + 各站余额状态。
     //
     // 为什么单独给一块：这两个是「自动路由凭什么这么选」的前提，用户看不到了解释
@@ -889,6 +899,83 @@ route('GET', /^\/api\/health$/, async () => ({ ok: true, at: new Date().toISOStr
 route('GET', /^\/api\/state$/, async (ctx) => buildState({ light: ctx.query.get('light') === '1' }))
 
 // 最近的活动（首屏用）：不订阅，拿一次快照就够画「刚才发生了什么」
+// ------------------------------------------------------------ 路由组（2026-11-02）
+//
+// 一个组 = 一组模型 + 组级算法。自动路由按 activeId 指向的那个组工作。
+// 为什么给独立端点而不是塞进 PATCH /api/settings：组的增删改是**结构化操作**
+// （要生成 id、去重、校验成员上限），塞进通用 settings 合并逻辑里迟早把
+// 一个半成品组写进库。这里每个动作都过一次 normalize。
+route('GET', /^\/api\/route-groups$/, async () => {
+  const db = await store.readDb()
+  const norm = normalizeRouteGroups(db.settings.routeGroups)
+  return { ...norm, active: activeGroupOf(norm), algos: GROUP_ALGOS }
+})
+
+route('POST', /^\/api\/route-groups$/, async (ctx) => {
+  const body = ctx.body || {}
+  let created = null
+  await store.mutate(async (db) => {
+    const norm = normalizeRouteGroups(db.settings.routeGroups)
+    created = newRouteGroup(
+      { name: body.name || '新路由组', models: body.models || [], algo: body.algo },
+      norm.groups,
+    )
+    if (norm.groups.length >= 12) throw new HttpError(400, '最多 12 个路由组')
+    norm.groups.push(created)
+    // 新建的组如果是第一个，自动设为生效——否则用户建完了发现「没反应」
+    if (!norm.activeId) norm.activeId = created.id
+    db.settings.routeGroups = norm
+  })
+  return { group: created }
+})
+
+route('PATCH', /^\/api\/route-groups\/([\w-]+)$/, async (ctx) => {
+  const id = ctx.params[0]
+  const body = ctx.body || {}
+  let updated = null
+  await store.mutate(async (db) => {
+    const norm = normalizeRouteGroups(db.settings.routeGroups)
+    const group = norm.groups.find((g) => g.id === id)
+    if (!group) throw new HttpError(404, `没有这个路由组：${id}`)
+    if (body.name !== undefined) group.name = String(body.name).trim() || group.name
+    if (body.models !== undefined) group.models = Array.isArray(body.models) ? body.models : group.models
+    if (body.algo !== undefined) group.algo = String(body.algo)
+    // 过一遍归一化：成员去重/限量、算法回落合法值
+    db.settings.routeGroups = normalizeRouteGroups(norm)
+    updated = db.settings.routeGroups.groups.find((g) => g.id === id)
+  })
+  return { group: updated }
+})
+
+route('DELETE', /^\/api\/route-groups\/([\w-]+)$/, async (ctx) => {
+  const id = ctx.params[0]
+  await store.mutate(async (db) => {
+    const norm = normalizeRouteGroups(db.settings.routeGroups)
+    norm.groups = norm.groups.filter((g) => g.id !== id)
+    // 删掉的正好是生效组 → 清空 activeId，回到「全场」
+    if (norm.activeId === id) norm.activeId = null
+    db.settings.routeGroups = norm
+  })
+  return { ok: true }
+})
+
+/** 切换生效组。activeId 传 null/空 = 不启用任何组（回到全场） */
+route('POST', /^\/api\/route-groups\/active$/, async (ctx) => {
+  const body = ctx.body || {}
+  const wanted = typeof body.id === 'string' && body.id ? body.id : null
+  let result = null
+  await store.mutate(async (db) => {
+    const norm = normalizeRouteGroups(db.settings.routeGroups)
+    if (wanted && !norm.groups.some((g) => g.id === wanted)) {
+      throw new HttpError(404, `没有这个路由组：${wanted}`)
+    }
+    norm.activeId = wanted
+    db.settings.routeGroups = norm
+    result = activeGroupOf(norm)
+  })
+  return { active: result }
+})
+
 route('GET', /^\/api\/activity$/, async (ctx) => ({
   seq: activitySeq,
   items: recentActivity(Number(ctx.query.get('limit')) || 60),
