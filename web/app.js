@@ -4,7 +4,26 @@ import { renderFreeRelayPane, vendorChipClass, vendorOf, vendorLabel } from './f
 import { renderFreePlatformPane } from './free-platform.js'
 import { ensureProtocolView } from './protocol-view.js'
 import { ensureProtocolRecordsView } from './protocol-records-view.js'
-import { bindRouteView, collapseGroup, expandGroup, routeConnect, routeDisconnect, routePaint } from './route-view.js'
+// 路由页的渲染代码（31KB）改成**按需加载**：它只有进「路由」页才用得上，
+// 而首屏（概览/站点/决策）根本不需要它。
+//
+// 为什么不做全局拆包：本项目零构建（直接 ESM），所以「拆包」= 拆文件 +
+// 动态 import。哪一块完全独立、且不是首屏必需，就值得这么拆一块。
+// route-view.js 正好符合（依赖全靠注入，不碰全局 state）。
+let routeViewMod = null
+let routeViewLoading = null
+
+/** 加载 route-view（并发调用共享同一个 Promise，不会重复下载） */
+function loadRouteView() {
+  if (routeViewMod) return Promise.resolve(routeViewMod)
+  if (!routeViewLoading) {
+    routeViewLoading = import('./route-view.js').then((m) => {
+      routeViewMod = m
+      return m
+    })
+  }
+  return routeViewLoading
+}
 
 const $ = (sel, root = document) => root.querySelector(sel)
 
@@ -3877,13 +3896,23 @@ function statusBadges(tags, { blocked = null, hide = [] } = {}) {
 function renderRoute() {
   const view = $('#view-route')
   if (!view) return
-  bindRouteView({ state, t, esc, icon, $ })
-
+  // 不在路由页就完全跳过：连模块都不下载。
+  //
+  // 否则 render() 会调到这里，首屏就把 route-view.js（31KB）拉下来了，
+  // 「按需加载」等于没做（实测：首屏 1 次请求，点进去还是 1 次）。
+  if (view.hidden && !routeViewMod) return
   const visible = !view.hidden
-  if (visible) routeConnect()
-  else routeDisconnect()
-
-  routePaint()
+  loadRouteView().then((m) => {
+    m.bindRouteView({ state, t, esc, icon, $ })
+    // 可见性在加载期间可能变了，重新取一次
+    if (!view.hidden) m.routeConnect()
+    else m.routeDisconnect()
+    m.routePaint()
+  }).catch((error) => {
+    // 加载失败要说出来，否则用户看到空白页不知道发生了什么
+    view.innerHTML = `<div class="empty"><h3>路由页加载失败</h3><p>${esc(error.message)}</p></div>`
+  })
+  return
 }
 
 function renderDecision() {
@@ -7028,12 +7057,15 @@ function setTab(name) {
   // 会走「不可见就没收」的分支，于是第一次点进路由页永远是「未连接」，
   // 得点第二次才连上（实测踩到）。切页时补这一次连接就干净了。
   if (name === 'route') {
-    routeConnect()
-    routePaint()
+    loadRouteView().then((m) => {
+      m.bindRouteView({ state, t, esc, icon, $ })
+      m.routeConnect()
+      m.routePaint()
+    }).catch(() => {})
   }
   // 离开路由页时断掉长连接（别让后台一直挂着）
-  else {
-    routeDisconnect()
+  else if (routeViewMod) {
+    routeViewMod.routeDisconnect()
   }
 
   // 监控数据比 state 重，按需拉：第一次进这个页才请求
@@ -8384,8 +8416,10 @@ document.addEventListener('click', async (event) => {
     if (expandedGroupsLocal.has(id)) expandedGroupsLocal.delete(id)
     else expandedGroupsLocal.add(id)
     // 展开状态在 route-view 里维护，这里同步过去并重绘
-    if (expandedGroupsLocal.has(id)) expandGroup(id)
-    else collapseGroup(id)
+    loadRouteView().then((m) => {
+      if (expandedGroupsLocal.has(id)) m.expandGroup(id)
+      else m.collapseGroup(id)
+    }).catch(() => {})
     render()
     return
   }
@@ -8394,7 +8428,7 @@ document.addEventListener('click', async (event) => {
     const id = actionButton.dataset.id
     if (!id) return
     expandedGroupsLocal.delete(id)
-    collapseGroup(id)
+    loadRouteView().then((m) => m.collapseGroup(id)).catch(() => {})
     render()
     toast(t('已保存'))
     return

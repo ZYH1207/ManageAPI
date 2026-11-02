@@ -87,7 +87,7 @@ console.log('[6] 带行为标记的算法档')
   ok(algoOf('order').orderFirst === true, 'order 带 orderFirst（严格按列表顺序）')
   ok(algoOf('failover').stickyMember === true, 'failover 带 stickyMember（用完再换）')
   ok(algoOf('rotate').forceOff === true, 'rotate 带 forceOff（关缓存亲和）')
-  ok(algoOf('least-used').balanceFirst === true, 'least-used 带 balanceFirst')
+  ok(algoOf('least-used').usedFirst === true, 'least-used 带 usedFirst（按已用量，不是余额）')
   ok(algoOf('until-reset').balanceFirst === true, 'until-reset 带 balanceFirst')
   ok(algoOf('free').freeFirst === true, 'free 带 freeFirst')
   ok(algoOf('weighted').weighted === true, 'weighted 带 weighted')
@@ -178,6 +178,72 @@ console.log('[8] 组的设置真的接进 pickAutoRoute 了吗')
   const tStrict = routingTargetOf(dbStrict.settings.routeGroups, dbStrict.settings.autoRoute, dbStrict.settings)
   ok(tStrict.group.sessionKeep === 'strict', 'sessionKeep 透传到 target')
   ok(tStrict.firstTokenMs === 60000, 'firstTokenMs 透传到 target')
+}
+
+console.log('[9] 三档语义真的区分开了（不是「名字不同、行为相同」）')
+{
+  const { pickAutoRoute } = await import('../core/auto-route.js')
+
+  // usedFirst 需要 offerStats（前缀是 offerId|hour）
+  const hour = new Date().toISOString().slice(0, 13)
+  const mkDb = (algo, extra = {}) => {
+    const offers = [
+      { id: 'o_a', providerId: 'p1', modelKey: 'model-a', upstreamName: 'model-a', group: '', inPrice: 1, outPrice: 1, enabled: true },
+      { id: 'o_b', providerId: 'p1', modelKey: 'model-b', upstreamName: 'model-b', group: '', inPrice: 1.2, outPrice: 1.2, enabled: true },
+    ]
+    const scores = new Map()
+    for (const o of offers) scores.set(o.id, { ttftMs: 1000, availability: 1, integrity: 1, stale: false })
+    return {
+      db: {
+        providers: [{ id: 'p1', name: '站1' }],
+        credentials: [{ id: 'c1', providerId: 'p1', label: 'x', enabled: true }],
+        offers,
+        settings: {
+          decisionMode: 'value',
+          autoRoute: { enabled: true, modelKey: null, offerId: null, pickedAt: null, reason: null, failoverFrom: null, scope: [], affinity: '', conversations: {} },
+          routeGroups: { groups: [{ id: 'rg_01', name: 'g', models: ['model-a', 'model-b'], algo, sessionKeep: 'auto', firstTokenMs: 60000, allBusyMs: 0, weights: {} }], activeId: 'rg_01' },
+        },
+        failover: { reports: [] },
+        manualOrder: {},
+        pinnedOffer: {},
+        offerStats: {},
+        ...extra,
+      },
+      scores,
+    }
+  }
+
+  // least-used：让 model-a 用过 2000 万 token → b 应该反超（尽管 a 更便宜）
+  const used = mkDb('least-used')
+  used.db.offerStats = {
+    [`o_a|${hour}`]: { inputTokens: 20_000_000, outputTokens: 0 },
+    [`o_b|${hour}`]: { inputTokens: 0, outputTokens: 0 },
+  }
+  const pUsed = pickAutoRoute(used.db, { scores: used.scores, benchmarks: {} })
+  ok(pUsed?.modelKey === 'model-b', `最少使用：a 用得多 → 换 b（${pUsed?.modelKey}）`)
+
+  // 对照：同样的用量数据，但 algo=smart（不看用量）→ 仍选便宜的 a
+  const smart = mkDb('smart')
+  smart.db.offerStats = used.db.offerStats
+  const pSmart = pickAutoRoute(smart.db, { scores: smart.scores, benchmarks: {} })
+  ok(pSmart?.modelKey === 'model-a', `智能档不看用量（${pSmart?.modelKey}）——证明差异来自 algo`)
+
+  // manual：决策页勾了 b → 只派 b
+  // manual 语义：按 modelKey 查 pinnedOffer，命中则该模型分片优先胜出。
+  // 勾 model-b → o_b，这样 model-b 分片直接赢（即使它贵）。
+  const manual = mkDb('manual', { pinnedOffer: { 'model-b': 'o_b' } })
+  const pManual = pickAutoRoute(manual.db, { scores: manual.scores, benchmarks: {} })
+  ok(pManual?.modelKey === 'model-b', `手动：勾了哪条就派哪条（${pManual?.modelKey}）`)
+
+  // manual 的对照：不勾任何东西 → 正常按价格选 a
+  const manualEmpty = mkDb('manual', { pinnedOffer: {} })
+  const pManualEmpty = pickAutoRoute(manualEmpty.db, { scores: manualEmpty.scores, benchmarks: {} })
+  ok(pManualEmpty?.modelKey === 'model-a', `手动档没勾时正常竞争（${pManualEmpty?.modelKey}）`)
+
+  // until-reset：带降级标记（站点没上报重置周期时等同余量优先）
+  const ur = algoOf('until-reset')
+  ok(ur.degradedWithout === 'resetAt', 'until-reset 明确标注降级条件')
+  ok(Boolean(ur.degradedHint), 'until-reset 有降级说明文案')
 }
 
 console.log('')

@@ -110,22 +110,31 @@ export const GROUP_ALGOS = [
   {
     key: 'least-used',
     label: '最少使用',
-    hint: '挑用得最少的那个',
+    hint: '挑近期用得最少的那个',
     mode: 'value',
     magpie: '最少使用',
-    balanceFirst: true,
-    desc: 'Magpie 的「最少使用」：按近期消耗量排序，用得最少的先上。'
-      + '和「余量优先」相近，但看的是**已用**而不是剩余。',
+    // 与「余量优先」的区别：这个看**已用掉多少**，那个看**还剩多少**。
+    // 同一件事的两种镜像，但数据源不同——used 来自用量账本（一定有），
+    // remaining 来自站点余额（可能读不到）。
+    usedFirst: true,
+    desc: 'Magpie 的「最少使用」：按近期**已用掉**的量排序，用得最少的先上。'
+      + '与「余量优先」互为镜像——那个看还剩多少，这个看用掉多少。'
+      + '数据来自本机用量账本，不依赖站点接口。',
   },
   {
     key: 'until-reset',
     label: '重置前用完',
-    hint: '优先榨干即将重置的额度',
+    hint: '优先榨干即将重置的额度（需站点提供重置周期）',
     mode: 'value',
     magpie: '重置前用完',
     balanceFirst: true,
+    // 需要站点侧上报「额度什么时候重置」。本项目只有少数站点接口能读到，
+    // 本机 43 个凭据实测**一个都没有**。没有数据时必须说清降级，
+    // 不能让用户以为它真在按「即将重置」排序。
+    degradedWithout: 'resetAt',
+    degradedHint: '站点没上报重置周期 → 等同「余量优先」',
     desc: 'Magpie 的「重置前用完」：额度快到期/快重置的先上，避免白白浪费。'
-      + '需要站点侧有重置周期数据，没有时退化为「余量优先」。',
+      + '⚠️ 需要站点侧上报重置周期；没上报时**等同余量优先**（面板会标出来）。',
   },
   {
     key: 'free',
@@ -166,12 +175,18 @@ export const GROUP_ALGOS = [
   {
     key: 'manual',
     label: '手动',
-    hint: '按你勾选的那一条',
+    hint: '只派你在决策页勾选的那一条',
     mode: 'value',
     magpie: '手动',
+    // 与「客户端点名模型」的区别：
+    //   客户端点名 = 客户端在请求里写 model，网关被动跟随；
+    //   手动档     = 你在**决策页**勾了某一条供给，不管客户端要什么，
+    //                组内都只派这一条（pinnedOffer）。
+    // 所以它读的是 db.pinnedOffer，不是客户端请求。
     manualPick: true,
-    desc: 'Magpie 的「手动」：不动，就派你手动指定的那一条。'
-      + '对应网关的「客户端点名模型」行为。',
+    desc: 'Magpie 的「手动」：只派你在**决策页勾选**的那一条供给，'
+      + '不管客户端请求里写的是什么模型。'
+      + '（与「客户端点名」不同：那个是客户端说了算，这个是你在面板里说了算。）',
   },
 ]
 
@@ -417,6 +432,7 @@ export function routingTargetOf(routeGroups, autoRoute, settings) {
       freeFirst: Boolean(algo.freeFirst),
       weighted: Boolean(algo.weighted),
       manualPick: Boolean(algo.manualPick),
+      usedFirst: Boolean(algo.usedFirst),
       // 组级运行参数（Magpie 那套）：首字超时、全忙冷却、会话保持
       firstTokenMs: group.firstTokenMs,
       allBusyMs: group.allBusyMs,
@@ -436,6 +452,7 @@ export function routingTargetOf(routeGroups, autoRoute, settings) {
     freeFirst: false,
     weighted: false,
     manualPick: false,
+    usedFirst: false,
     firstTokenMs: settings?.autoRoute?.firstTokenMs ?? 60_000,
     allBusyMs: 0,
     sessionKeep: 'auto',

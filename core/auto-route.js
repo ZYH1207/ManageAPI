@@ -218,6 +218,26 @@ export function pickAutoRoute(db, {
   const paid = target.freeFirst ? [...pools.free, ...pools.paid] : pools.paid
   // 外部监控上报的真实故障：命中即失去「最优」资格（探针的准入判定不受影响）
   const isFaulted = faultMatcher(db.failover)
+  // 「最少使用」用的近期已用量：从 offerStats 的最近 N 个小时桶聚合。
+  // 为什么限定近期而不是全 30 天：全期总量是历史沉淀，一个站用了两周
+  // 会让它永远排最后；「最少使用」要的是「最近谁被用得少」，才谈得上均摊。
+  const usedByOffer = (() => {
+    if (!target.usedFirst) return null
+    const RECENT_HOURS = 24
+    const cutoff = new Date(Date.now() - RECENT_HOURS * 3600_000).toISOString().slice(0, 13)
+    const acc = new Map()
+    for (const [key, v] of Object.entries(db.offerStats || {})) {
+      const bar = key.indexOf('|')
+      if (bar < 0) continue
+      const offerId = key.slice(0, bar)
+      const hour = key.slice(bar + 1)
+      if (hour < cutoff) continue
+      const used = (Number(v?.inputTokens) || 0) + (Number(v?.outputTokens) || 0)
+      acc.set(offerId, (acc.get(offerId) || 0) + used)
+    }
+    return acc
+  })()
+  const usageForOffer = (offerId) => (usedByOffer ? usedByOffer.get(offerId) || 0 : 0)
 
   // 接管范围：target.scope=null 表示全场；非空 = 只在其中挑。
   // 范围存的是决策页的分组键（身份键口径），byModel 的键是存储键口径，
@@ -285,6 +305,23 @@ export function pickAutoRoute(db, {
         !row.faulted &&
         !(driftDemoted && driftDemoted.has(row.offer.id)),
     )
+    // 手动档：用户在当前模型的候选里勾了某一条供给 → 组内只认它。
+    // 这不是「客户端点名」（那是请求里的 model），是面板里的人工指定。
+    if (target.manualPick) {
+      const want = db.pinnedOffer?.[modelIdentityKey(modelKey, settings.modelAliases) || modelKey]
+      if (want) {
+        const hit = rows.find((row) => row.offer.id === want && row.admission?.ok)
+        if (hit) {
+          // 人工指定**优先于一切**（包括已经算出的冠军）：这就是「手动」的意义。
+          // 所以无条件覆盖，不是「只在还没冠军时才设」——后者在遍历顺序上
+          // 依赖运气（谁先被扫到谁赢），实测踩到过。
+          best = { modelKey, row: hit, metric: tierMetricOf(hit, mode) }
+          continue
+        }
+        // 勾的那条不可用：不硬派它（会直接失败），继续正常竞争
+      }
+    }
+
     if (modelKey === record.modelKey) {
       current = winner ? { modelKey, row: winner, metric: tierMetricOf(winner, mode) } : null
       // 有供给、能登场，但全被故障上报摘了 → 是「故障转移」，不是「下线」
@@ -302,6 +339,17 @@ export function pickAutoRoute(db, {
       const ident = modelIdentityKey(modelKey, settings.modelAliases) || modelKey
       const w = Number(target.weights?.[ident]) || Number(target.weights?.[modelKey]) || 1
       if (w > 0 && Number.isFinite(metric)) metric = metric / w
+    }
+    // 最少使用：按「近期已用 token」升序。用得少的 metric 被压低，
+    // 自然先上——达到均摊负载的效果，且数据来自本机账本（不依赖站点接口）。
+    if (target.usedFirst) {
+      const used = usageForOffer(winner.offer.id)
+      if (Number.isFinite(metric)) {
+        // 把 0..∞ 的用量映射成 1..2 的惩罚因子：用得越多、罚得越重，
+        // 但不至于让「用量大但极便宜」的站永远排不上（最多罚一倍）。
+        const penalty = 1 + Math.min(1, used / 5_000_000)
+        metric = metric * penalty
+      }
     }
     // 免费优先：免费供给的 metric 直接打一折，压过同条件下的付费项。
     // 用 0.1 而不是 0：0 会让所有免费项并列第一，反而失去排序。
