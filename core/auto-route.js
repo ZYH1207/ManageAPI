@@ -106,6 +106,12 @@ export function autoThinkIntent(name, offers) {
 }
 
 /** settings.autoRoute 的缺省形状（store.js 的 settings 默认值也引用这一份口径） */
+/** 组的「会话保持」→ 缓存亲和的 mode id（同一套语义，两个入口） */
+function sessionKeepToAffinity(keep) {
+  const key = String(keep || '').trim()
+  return ['auto', 'session', 'turn', 'off', 'strict'].includes(key) ? key : 'auto'
+}
+
 export function defaultAutoRoute() {
   return { enabled: false, modelKey: null, offerId: null, pickedAt: null, reason: null, failoverFrom: null, scope: [] }
 }
@@ -206,7 +212,10 @@ export function pickAutoRoute(db, {
   // 这样老配置继续有效，新功能也不必在判定层留分支。
   const target = routingTargetOf(settings.routeGroups, record, settings)
   const mode = target.decisionMode ? normalizeDecisionMode(target.decisionMode) : normalizeDecisionMode(settings.decisionMode)
-  const paid = splitOffers(routeableOffers(db), benchmarks).paid
+  const pools = splitOffers(routeableOffers(db), benchmarks)
+  // 「免费优先」：组级开关。默认只看付费池（与旧行为一致），
+  // 开了之后免费供给也进候选，且它们的 metric 会被打折让它排前面。
+  const paid = target.freeFirst ? [...pools.free, ...pools.paid] : pools.paid
   // 外部监控上报的真实故障：命中即失去「最优」资格（探针的准入判定不受影响）
   const isFaulted = faultMatcher(db.failover)
 
@@ -235,6 +244,25 @@ export function pickAutoRoute(db, {
   let current = null // 现役模型此刻的最优行
   let currentFaulted = false // 现役模型是因故障被摘（区别于供给下线）
   let failoverBack = null // failoverFrom 的模型故障到期后的最优行
+  // 组的成员顺序（「按顺序」「用完再换」要用）：把 byModel 的遍历顺序固定成
+  // 用户排的那个顺序。Map 保插入顺序，所以重排 byModel 即可。
+  if (target.orderFirst && target.scope) {
+    const ordered = new Map()
+    for (const key of target.scope) {
+      const ident = modelIdentityKey(key, settings.modelAliases) || key
+      for (const [k, v] of byModel) {
+        if ((modelIdentityKey(k, settings.modelAliases) || k) === ident) {
+          ordered.set(k, v)
+          break
+        }
+      }
+    }
+    // 没被组显式列出的（不该有，但别丢）兜底追加
+    for (const [k, v] of byModel) if (!ordered.has(k)) ordered.set(k, v)
+    byModel.clear()
+    for (const [k, v] of ordered) byModel.set(k, v)
+  }
+
   for (const [modelKey, offers] of byModel) {
     const rows = selectCandidates({
       offers,
@@ -267,7 +295,25 @@ export function pickAutoRoute(db, {
       failoverBack = winner ? { modelKey, row: winner, metric: tierMetricOf(winner, mode) } : null
     }
     if (!winner) continue
-    const metric = tierMetricOf(winner, mode)
+    let metric = tierMetricOf(winner, mode)
+    // 按权重：权重越高越优先。metric 是「越小越好」，所以除以权重。
+    // 权重 2 的模型 effective metric 变成一半 → 自然胜出，形成分流比例。
+    if (target.weighted) {
+      const ident = modelIdentityKey(modelKey, settings.modelAliases) || modelKey
+      const w = Number(target.weights?.[ident]) || Number(target.weights?.[modelKey]) || 1
+      if (w > 0 && Number.isFinite(metric)) metric = metric / w
+    }
+    // 免费优先：免费供给的 metric 直接打一折，压过同条件下的付费项。
+    // 用 0.1 而不是 0：0 会让所有免费项并列第一，反而失去排序。
+    if (target.freeFirst && pools.free.includes(winner.offer)) {
+      if (Number.isFinite(metric)) metric = metric * 0.1
+    }
+    // 「按顺序 / 用完再换」：成员顺序就是优先级，第一个能用的直接胜出，
+    // 不做跨模型比分数——否则「按顺序」跟「智能」没区别，用户排的顺序白排了。
+    if (target.orderFirst) {
+      if (!best) best = { modelKey, row: winner, metric }
+      continue
+    }
     if (!best || metric < best.metric) best = { modelKey, row: winner, metric }
   }
 
@@ -335,7 +381,14 @@ export function pickAutoRoute(db, {
       // 路由组的「轮流」档强制关闭亲和（Magpie 的 Rotate）：每次重挑。
       // 只影响这一单的判定，不改用户存的 affinity 设置——
       // 否则用户在决策页选的档位会被一次路由组切换静默改掉。
-      mode: target.forceOff ? 'off' : affinityModeOf(settings),
+      // 会话保持的优先级：组的 forceOff（轮流）> 组的 sessionKeep > 全局亲和档。
+      // sessionKeep 存的是 key（'auto'/'session'/'turn'/'off'/'strict'），
+      // 与 affinity 的模式 id 一一对应（见 route-groups.js 的 SESSION_KEEP_OPTIONS）。
+      mode: target.forceOff
+        ? 'off'
+        : target.group?.sessionKeep
+          ? sessionKeepToAffinity(target.group.sessionKeep)
+          : affinityModeOf(settings),
       withinTurn: target.forceOff ? false : withinTurn,
       now: Date.now(),
     })

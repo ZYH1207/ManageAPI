@@ -118,6 +118,68 @@ console.log('[7] 组级设置项归一化')
   ok(g3.groups[0].patterns.length === 2, `模式去空去重（${g3.groups[0].patterns.join('|')}）`)
 }
 
+console.log('[8] 组的设置真的接进 pickAutoRoute 了吗')
+{
+  // 这个段落的目的是防止「界面能选、选了没反应」——
+  // 用户 2026-11-02 明确说过最反感这种。
+  const { pickAutoRoute } = await import('../core/auto-route.js')
+
+  const mkOffer = (id, model, price) => ({
+    id, providerId: 'p1', modelKey: model, upstreamName: model, group: '',
+    inPrice: price, outPrice: price, enabled: true,
+  })
+  const scores = new Map()
+  const baseDb = (routeGroups, autoRouteExtra = {}) => {
+    const offers = [mkOffer('o_a', 'model-a', 1), mkOffer('o_b', 'model-b', 10)]
+    for (const o of offers) scores.set(o.id, { ttftMs: 1000, availability: 1, integrity: 1, stale: false })
+    return {
+      providers: [{ id: 'p1', name: '站1' }],
+      credentials: [{ id: 'c1', providerId: 'p1', label: 'x', enabled: true }],
+      offers,
+      settings: {
+        decisionMode: 'value',
+        autoRoute: {
+          enabled: true, modelKey: null, offerId: null, pickedAt: null,
+          reason: null, failoverFrom: null, scope: [], affinity: '', conversations: {},
+          ...autoRouteExtra,
+        },
+        routeGroups,
+      },
+      failover: { reports: [] },
+      manualOrder: {},
+    }
+  }
+
+  // A) 智能（默认）：按价格，model-a 便宜 → 应选 a
+  const dbSmart = baseDb({ groups: [{ id: 'rg_01', name: 'g', models: ['model-a', 'model-b'], algo: 'smart', sessionKeep: 'auto', firstTokenMs: 60000, allBusyMs: 0, weights: {} }], activeId: 'rg_01' })
+  const pSmart = pickAutoRoute(dbSmart, { scores, benchmarks: {} })
+  ok(pSmart?.modelKey === 'model-a', `智能档按价格选便宜的（${pSmart?.modelKey}）`)
+
+  // B) 按顺序：成员顺序反过来（model-b 在前）→ 必须选 b，即使 b 贵 10 倍
+  const dbOrder = baseDb({ groups: [{ id: 'rg_01', name: 'g', models: ['model-b', 'model-a'], algo: 'order', sessionKeep: 'auto', firstTokenMs: 60000, allBusyMs: 0, weights: {} }], activeId: 'rg_01' })
+  const pOrder = pickAutoRoute(dbOrder, { scores, benchmarks: {} })
+  ok(pOrder?.modelKey === 'model-b', `按顺序：尊重成员顺序，不比分（${pOrder?.modelKey}）`)
+
+  // C) 按权重：给贵的那个 100 倍权重 → 它应该胜出
+  const dbWeight = baseDb({ groups: [{ id: 'rg_01', name: 'g', models: ['model-a', 'model-b'], algo: 'weighted', sessionKeep: 'auto', firstTokenMs: 60000, allBusyMs: 0, weights: { 'model-b': 100 } }], activeId: 'rg_01' })
+  const pWeight = pickAutoRoute(dbWeight, { scores, benchmarks: {} })
+  ok(pWeight?.modelKey === 'model-b', `按权重：高权重胜出（${pWeight?.modelKey}）`)
+
+  // D) 对照组：同样的权重但 algo=smart（不用权重）→ 应该还是 a
+  const dbNoWeight = baseDb({ groups: [{ id: 'rg_01', name: 'g', models: ['model-a', 'model-b'], algo: 'smart', sessionKeep: 'auto', firstTokenMs: 60000, allBusyMs: 0, weights: { 'model-b': 100 } }], activeId: 'rg_01' })
+  const pNoWeight = pickAutoRoute(dbNoWeight, { scores, benchmarks: {} })
+  ok(pNoWeight?.modelKey === 'model-a', `智能档不看权重（${pNoWeight?.modelKey}）——证明 C 的差异来自 algo`)
+
+  // E) sessionKeep 透传到亲和：rotate 组强制 off
+  const dbRotate = baseDb({ groups: [{ id: 'rg_01', name: 'g', models: ['model-a'], algo: 'rotate', sessionKeep: 'session', firstTokenMs: 60000, allBusyMs: 0, weights: {} }], activeId: 'rg_01' })
+  const tRotate = routingTargetOf(dbRotate.settings.routeGroups, dbRotate.settings.autoRoute, dbRotate.settings)
+  ok(tRotate.forceOff === true, 'rotate 优先生效（forceOff=true）')
+  const dbStrict = baseDb({ groups: [{ id: 'rg_01', name: 'g', models: ['model-a'], algo: 'smart', sessionKeep: 'strict', firstTokenMs: 60000, allBusyMs: 0, weights: {} }], activeId: 'rg_01' })
+  const tStrict = routingTargetOf(dbStrict.settings.routeGroups, dbStrict.settings.autoRoute, dbStrict.settings)
+  ok(tStrict.group.sessionKeep === 'strict', 'sessionKeep 透传到 target')
+  ok(tStrict.firstTokenMs === 60000, 'firstTokenMs 透传到 target')
+}
+
 console.log('')
 if (failed) { console.log(`${failed} 项失败`); process.exit(1) }
 console.log('全部通过 ✓')

@@ -75,6 +75,7 @@ import {
   activeGroupOf,
   normalizeRouteGroups,
   newRouteGroup,
+  routingTargetOf,
 } from '../core/route-groups.js'
 // 缓存亲和（借鉴 Magpie）：对话指纹 + 「该不该为了缓存钉住上次那个供给」
 import { conversationFingerprint, recordFrom, listAffinityModes } from '../core/affinity.js'
@@ -4289,6 +4290,9 @@ async function streamAttempt({
   clientSignal = null,
   protocol = 'chat',
   resume = false,
+  // 组级「迟迟不出字」：见到第一个内容字节之前的最长等待。
+  // 0 = 一直等（不做首字超时，退回原来的空闲超时）。
+  firstTokenMs = 0,
 }) {
   const apiKey = await inv.revealSecret(candidate.credential.id)
   if (!apiKey) return { error: 'Key 解密失败', committed: resume }
@@ -4322,8 +4326,12 @@ async function streamAttempt({
       controller.abort()
     }, ms)
   }
-  const touch = (ms = STREAM_IDLE_MS) => armTimer(ms)
-  armTimer(STREAM_IDLE_MS)
+  // 首字前：用组级「迟迟不出字」；还没见到内容就用它当上限（比 120s 空闲短）。
+  // 见到第一个内容字节后换成原来的空闲超时——长回答不该被首字门槛杀掉。
+  let sawFirstContent = false
+  const firstTokenWait = Number(firstTokenMs) > 0 ? Number(firstTokenMs) : STREAM_IDLE_MS
+  const touch = (ms = STREAM_IDLE_MS) => armTimer(sawFirstContent ? ms : firstTokenWait)
+  armTimer(firstTokenWait)
 
   // 客户端先走了就别再喂上游：否则对面继续生成，白烧额度还占着连接
   const onClientGone = () => {
@@ -4462,6 +4470,10 @@ async function streamAttempt({
     while (true) {
       const { value, done } = await reader.read()
       if (done) break
+      // 收到第一个字节就算「已经开口了」：从这里起改用空闲超时。
+      // 注意判的是「任何字节」而不是「正文」——思考/工具调用的帧也该算开口，
+      // 否则一个先思考 90 秒的模型会被首字门槛误杀。
+      sawFirstContent = true
       touch()
       buffer += decoder.decode(value, { stream: true })
 
@@ -4728,6 +4740,8 @@ async function forwardToUpstream({
       clientSignal,
       protocol,
       resume,
+      // 组级「迟迟不出字」；没有组时用全局默认 60s（与 Magpie 一致）
+      firstTokenMs: routeTarget?.firstTokenMs || 60_000,
     })
     // 实时活动：这一轮的结果（成功 / 失败原因）
     pushActivity({
@@ -5146,6 +5160,11 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
   // admissionFailure 的人话文案比这里现编的准。
   let autoRoutePick = null
   let model = parsed.model
+  // 本单生效的路由目标（组级设置：首字超时、全忙冷却、会话保持…）。
+  // 免费入口不受组影响（组只管付费池，避免「免费请求被组规则改道」）。
+  const routeTarget = isFree
+    ? null
+    : routingTargetOf(db.settings.routeGroups, normalizeAutoRoute(db.settings.autoRoute), db.settings)
   // 缓存亲和：算这段对话的指纹，并判断这一单是不是「同一个 turn 内的后续」
   // （判据：消息里已经有 assistant/tool 往返 —— 工具结果回传时客户端会带上它们，
   //  用户重新开口时又是一串新的 user 消息开头）。拿不到指纹就不做亲和，
@@ -5786,6 +5805,66 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
     // 游标手动推进：补问可能已经把 cursor 推到后面那家（pickFallback），
     // 再 ++ 一次就自然跳过已经用过的候选
     cursor += 1
+  }
+
+  // ── 成员全都忙：等一会再整轮重试一次 ──────────────────────────────
+  //
+  // Magpie 原文：「每个成员都失败时，智能体立刻拿到最后一个的错误。」
+  // 也就是「关闭」（allBusyMs=0）时**立刻报错**，这是默认行为；
+  // 只有显式设了等待时长，才在报错前多试一轮——否则用户点了「关闭」
+  // 却还要等一分钟，那比直接报错更糟。
+  //
+  // 为什么只重试一轮而不是循环：整轮全灭通常意味着上游集体故障或本地网络问题，
+  // 反复重试只会把客户端拖到超时。等一次、试一次，够了。
+  if (
+    routeTarget?.allBusyMs > 0 &&
+    failures.length >= candidates.length &&
+    candidates.length > 0 &&
+    !clientAbort.signal.aborted
+  ) {
+    pushActivity({
+      phase: 'pause',
+      reason: 'all-busy',
+      ms: routeTarget.allBusyMs,
+      model,
+    })
+    console.error(`[网关] 全部 ${candidates.length} 个成员都失败，按组设置等待 ${routeTarget.allBusyMs}ms 后重试一轮`)
+    await new Promise((r) => setTimeout(r, routeTarget.allBusyMs))
+    if (clientAbort.signal.aborted) return
+    // 整轮重试：游标归零，失败名单保留（诊断页要看第一次的失败原因）
+    cursor = 0
+    while (cursor < candidates.length) {
+      const index = cursor
+      const candidate = candidates[index]
+      if (clientAbort.signal.aborted) return
+      try {
+        const result = await forwardToUpstream({
+          candidate,
+          body,
+          res,
+          attemptIndex: index,
+          pool,
+          clientSignal: clientAbort.signal,
+          protocol,
+          hooks: {},
+        })
+        if (result.ok) {
+          void handleFaultSignals({
+            offerId: candidate.offer.id,
+            modelKey: candidate.offer.modelKey || null,
+            attemptCount: index + 1,
+            outcome: result.outcome,
+            deliveredChars: result.realCheck?.textChars || 0,
+            streamError: result.streamError || null,
+          })
+          return
+        }
+        bufferTraffic(candidate.offer.id, false, result.error)
+      } catch {
+        /* 第二轮失败不再扩写失败名单：诊断页已经有第一轮的完整原因 */
+      }
+      cursor += 1
+    }
   }
 
   queueRouting({
