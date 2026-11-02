@@ -18,7 +18,7 @@
  *     session  整段会话钉住
  *     turn     只在一个 turn 内钉住（工具结果回传时），用户再说话就重挑
  *     strict   死活不换（超额也报错给上游，让调用方自己决定）
- *     off      每次重新挑
+ *     off      轮流（每次都重新挑，不钉住）
  *     (默认)   一个 turn 内必钉住；跨 turn 只要缓存还新鲜就钉住
  *
  * 这份文件实现同一套语义，但**口径按 ManageAPI 的现状来**：
@@ -60,7 +60,7 @@ export const AFFINITY_LABELS = {
   [AFFINITY.SESSION]: '整段会话',
   [AFFINITY.TURN]: '只在单个 turn 内',
   [AFFINITY.STRICT]: '绝不换人',
-  [AFFINITY.OFF]: '每次重挑',
+  [AFFINITY.OFF]: '轮流',
 }
 
 /** 缓存「还新鲜」的判定阈值（毫秒）。超过就当过期，允许重挑。 */

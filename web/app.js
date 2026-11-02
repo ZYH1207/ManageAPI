@@ -118,12 +118,26 @@ function basisCell(candidate) {
     </div>`
 }
 
-function flowText(candidate) {
+/**
+ * 「吐字」列：每秒多少 token（人习惯的单位，不是毫秒）。
+ *
+ * 数据来自真实流量的 genTimeSum / genOutSum（逐小时桶累加）。
+ * **没有真实样本时显示「—」**，不拿探针冒充——探针发几十 token 的小请求，
+ * 量不出稳定的吐字速度，填个数反而是假的。
+ *
+ * 用户 2026-11-02 原话：「实测不要写那种延迟形式，要写我们人类通用的那种
+ * 「每秒多少 token」的形式，大家习惯那种，要不然看不懂。」
+ */
+function tpsCell(candidate) {
   if (candidate?.status === 'stale') return '—'
-  const price = Number(candidate?.price)
-  const ttft = Number(candidate?.ttftMs)
-  if (!Number.isFinite(price) || !Number.isFinite(ttft) || ttft <= 0) return '—'
-  return `${priceText(price / ttft * 1000)}<div class="sub">/s 首字</div>`
+  const msPerToken = Number(candidate?.realMsPerToken)
+  if (!Number.isFinite(msPerToken) || msPerToken <= 0) return '<span style="color:var(--faint)">—</span>'
+  const tps = 1000 / msPerToken
+  const tip = t('真实流量实测：每 token {ms}ms，折合 {n} token/秒', {
+    ms: msPerToken.toFixed(1),
+    n: tps.toFixed(0),
+  })
+  return `<span title="${esc(tip)}">${tps.toFixed(0)}<div class="sub">tok/s</div></span>`
 }
 // ------------------------------------------------------------------ 工具
 
@@ -3997,9 +4011,7 @@ function renderDecision() {
               : `<div class="sub" title="${esc(t('本行综合成本为原厂有效成本的 {pct}（按波峰口径）', { pct: officialPctText }))}">${t('原厂')} ${officialPctText}</div>`
           }</td>
           <td class="num${sortMark('speed')}">${ttftCell(candidate, stale)}</td>
-          <td class="num">${flowText(candidate)}</td>
-          <td class="num">${scoreCell(candidate)}</td>
-          <td class="dec-basis">${basisCell(candidate)}</td>
+          <td class="num">${tpsCell(candidate)}</td>
           <td>${badges}${candidate.statusReason ? `<div class="sub">${esc(candidate.statusReason)}</div>` : ''}</td>
         </tr>`
     }).join('')
@@ -4027,8 +4039,7 @@ function renderDecision() {
             <th style="width:30px"></th><th class="num">#</th><th>站点</th><th>分组</th>
             <th class="num${sortMark('price')}">价格</th><th class="num">质量</th>
             <th class="num${sortMark('value')}">有效成本</th><th class="num${sortMark('speed')}">首字</th>
-            <th class="num" title="${t('自动路由实际用的排序分：越小越优先。它已经把「真实首字 + 生成耗时 + 余额 + 质量」都算进去了，所以和左边「首字」列不一定同序')}">排序分</th>
-            <th title="${t('这个分数是怎么算出来的')}">依据</th>
+            <th class="num" title="${esc(t('真实流量实测的吐字速度，每秒多少 token。没有真实样本时是「—」，不拿探针冒充'))}">吐字</th>
             <th>状态</th>
           </tr></thead>
           <tbody>${rows}</tbody>
@@ -4135,38 +4146,30 @@ function modeCard(mode) {
  * 档位语义见 core/affinity.js#AFFINITY_LABELS。这里不重复定义，只展示。
  */
 function affinityCard() {
-  const collapsed = collapsedPanels.has('decision-affinity')
   const ar = state.autoRoute || {}
   const modes = state.affinityModes || []
   const current = ar.affinity || ''
-  const convs = ar.conversations || {}
-  const convCount = Object.keys(convs).length
 
   // 当前档位的说明
   const cur = modes.find((m) => m.id === current) || modes.find((m) => m.id === '') || null
-  const curLabel = current === ''
-    ? t('自动（默认）：一个 turn 内必钉；跨 turn 只要缓存新鲜就钉')
+  const curLabel = current === '' || current === 'auto'
+    ? t('自动：一个 turn 内必钉；跨 turn 只要缓存新鲜就钉')
     : (cur?.label || current)
 
-  // 最近被钉住的记录（取最新 3 条），让人看到「它真的在记」
-  const recent = Object.entries(convs)
-    .map(([fp, r]) => ({ fp, ...r }))
-    .sort((a, b) => Number(b.at || 0) - Number(a.at || 0))
-    .slice(0, 3)
-
+  // 2026-11-02 用户反馈的整理：
+  //   · 「两个自动挨着完全是重复」——前端原来硬编码了一个 { id:'', label:'自动' }，
+  //     而后端 AFFINITY.AUTO='auto' 也叫「自动」，于是并排出现两个。现在只用后端那份。
+  //   · 「第二个头边那个标题那一栏也删掉，跟左边保持风格一致」——去掉 group-head，
+  //     标题直接用正常卡标题字号。
+  //   · 「最近钉住的对话、忘记所有对话都可以不用」——这些是自动处理的，
+  //     用户不需要手动清；也省掉一大块高度。
+  //   · 「把每次重挑改成轮流」——在 core/affinity.js 的 label 里改（唯一实现）。
   return `
     <div class="card affinity-card">
-      <div class="group-head">
-        <button class="ghost tiny" data-act="toggle-panel" data-panel="decision-affinity">${collapsed ? '▸' : '▾'}</button>
-        <span class="mode-label">${t('缓存亲和')}</span>
-        <span class="mode-note">${t('这段对话要不要一直用同一个站')}</span>
-        <span class="grow"></span>
-        <span class="badge ${convCount ? 'ok' : ''}" title="${esc(t('已记住 {n} 段对话上次由谁服务。清空后所有对话会重新选站', { n: convCount }))}">${t('记住 {n} 段', { n: convCount })}</span>
-      </div>
-      ${collapsed ? '' : `
       <div class="aff-body">
+        <div class="gate-title">${t('缓存亲和')}</div>
         <div class="aff-modes" role="tablist">
-          ${[{ id: '', label: t('自动'), hint: t('缓存新鲜就钉') }, ...modes.filter((m) => m.id !== '')]
+          ${modes
             .map(
               (m) => `
             <button class="aff-seg${(current || '') === m.id ? ' active' : ''}" role="tab"
@@ -4174,36 +4177,20 @@ function affinityCard() {
               data-act="set-affinity" data-mode="${esc(m.id)}"
               title="${esc(m.hint || m.label)}">
               <span class="aff-seg-label">${esc(m.label)}</span>
-              ${m.hint ? `<span class="aff-seg-hint">${esc(m.hint)}</span>` : ''}
             </button>`,
             )
             .join('')}
         </div>
         <div class="aff-now">
-          <span class="k">${t('当前')}</span>
           <span class="v">${esc(curLabel)}</span>
         </div>
         <details class="aff-details">
-          <summary>${esc(t('原理与最近被钉住的对话'))}</summary>
+          <summary>${esc(t('原理'))}</summary>
           <p class="hint" style="margin:6px 0 0">
             ${t('上游的 prompt 缓存绑在「模型 + 分组 + 账号」上。换站 = 上下文要从头重算，缓存读取那部分账单（通常占输入 80~95%）直接归零。所以<b>亲和排在「选最优」之前</b>——能钉就钉。')}
           </p>
-          ${recent.length ? `
-          <div class="aff-recent">
-            <div class="aff-recent-title">${t('最近被钉住的对话')}</div>
-            ${recent.map((r) => `
-              <div class="aff-recent-row">
-                <span class="mono dim">${esc(String(r.fp).slice(0, 8))}</span>
-                <span>${esc(r.upstreamName || r.modelKey || '—')}</span>
-                <span class="dim">${r.cacheRead ? t('缓存 {n}', { n: Math.round(r.cacheRead / 1000) + 'k' }) : ''}</span>
-                <span class="dim">${r.at ? new Date(Number(r.at)).toLocaleTimeString() : ''}</span>
-              </div>`).join('')}
-          </div>` : `<p class="hint" style="margin:6px 0 0">${t('还没有记住任何对话——等下一次自动路由派活后会开始记录。')}</p>`}
         </details>
-        <div class="aff-actions">
-          <button class="ghost tiny" data-act="forget-affinity" title="${esc(t('清空所有对话记录，档位保留。清空后所有对话会重新选站'))}">${t('忘记所有对话')}</button>
-        </div>
-      </div>`}
+      </div>
     </div>`
 }
 
