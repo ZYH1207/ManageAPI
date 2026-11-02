@@ -232,12 +232,12 @@ function routePaintConn() {
   const el = deps.$('#route-conn')
   if (!el) return
   const map = {
-    live: { cls: 'ok', text: deps.t('实时') },
-    reconnecting: { cls: 'warn', text: deps.t('重连中…') },
+    live: { cls: 'route-conn-live', text: deps.t('实时') },
+    reconnecting: { cls: 'route-conn-warn', text: deps.t('重连中…') },
     off: { cls: '', text: deps.t('未连接') },
   }
   const info = map[routeConnState] || map.off
-  el.className = `badge ${info.cls}`
+  el.className = `route-conn ${info.cls}`
   el.textContent = info.text
 }
 
@@ -366,9 +366,16 @@ export function routePaint() {
     </div>
 
     ${latest ? routeDiagramHtml(latest) : `
-      <div class="route-idle">
-        <p>${deps.t('还没有请求进来。客户端一调网关，这里就会动起来。')}</p>
-        <p class="sub">${deps.t('网关地址')}：<code>http://127.0.0.1:${gw.port || 4319}/v1</code></p>
+      <div class="route-stage">
+        <div class="route-idle">
+          <svg class="route-idle-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="5" cy="6" r="2.5"/><circle cx="19" cy="6" r="2.5"/><circle cx="12" cy="18" r="2.5"/>
+            <path d="M7.5 6h9"/><path d="M5 8.5v4a3 3 0 0 0 3 3h2"/><path d="M19 8.5v4a3 3 0 0 1-3 3h-2"/>
+          </svg>
+          <p>${deps.t('还没有请求进来')}</p>
+          <p class="sub">${deps.t('客户端一调网关，这里就会实时点亮它走的线路。')}</p>
+          <p class="sub" style="margin-top:14px">${deps.t('网关地址')}：<code>http://127.0.0.1:${gw.port || 4319}/v1</code></p>
+        </div>
       </div>`}
 
     ${latest ? `
@@ -391,7 +398,7 @@ export function routePaint() {
               const tried = run.attempts.length
               return `<div class="route-history-row">
                 <span class="dot ${ok ? 'ok' : run.outcome ? 'bad' : 'warn'}"></span>
-                <span class="route-h-client">${deps.esc(run.client)}</span>
+                <span class="route-h-client" title="${deps.esc(run.client)}">${deps.esc(run.client)}</span>
                 <span class="route-h-model"><code>${deps.esc(run.model)}</code></span>
                 <span class="route-h-tries">${tried}${deps.t('次尝试')}</span>
                 <span class="route-h-state">${deps.esc(routeRunPhaseText(run))}</span>
@@ -403,6 +410,12 @@ export function routePaint() {
   `
 
   routePaintConn()
+  // 量布局要在下一帧：innerHTML 刚写完，本帧的 reflow 还没发生
+  if (typeof requestAnimationFrame === 'function') {
+    requestAnimationFrame(routeLayoutFix)
+  } else {
+    routeLayoutFix()
+  }
 }
 
 /**
@@ -413,60 +426,149 @@ export function routePaint() {
  */
 function routeDiagramHtml(run) {
   const lines = routeRunLines(run)
-  const rowH = 46
-  const height = Math.max(rowH, lines.length * rowH)
-  const w = 720
-  const gwX = 300
-  const rightX = 470
+  // 行高：单条时给足空间显得从容，多条时收紧但保持可读
+  const rowH = lines.length <= 1 ? 64 : lines.length <= 3 ? 58 : 52
+  const boxH = 44
+  const stageH = Math.max(120, lines.length * rowH + 32)
+  // viewBox 用固定坐标，靠 preserveAspectRatio="none" 拉伸——但在流式布局里
+  // 拉伸会扭曲曲线，所以改成 100% 宽 + 像素坐标随容器算。
+  const gwCenterY = stageH / 2
 
-  const rowsSvg = lines
+  // 曲线坐标不写死：按 CSS 里的实际布局比例算（viewBox 宽度 700 对应
+  // 客户端 148 + 左间距 88 + 网关 132 + 右间距 36 + 站点区剩下的部分）。
+  //
+  // 这里用百分比换算而不是直接量 DOM——渲染函数是纯字符串拼接，
+  // 拿不到布局；但布局的规则是固定的（见 style.css 的 .route-node*），
+  // 所以按同一套数字算不会漂。
+  const VB_W = 700
+  const LEFT_PAD = 148 // 客户端宽
+  const GAP1 = 88      // 客户端→网关
+  const GW_W = 132     // 网关宽
+  const GAP2 = 36      // 网关→站点
+  const clientRight = LEFT_PAD
+  const gwLeft = LEFT_PAD + GAP1
+  const gwRight = gwLeft + GW_W
+  const boxLeft = gwRight + GAP2
+
+  // 客户端 → 网关：一条平直略弯的线
+  const inPath = `M ${clientRight} ${gwCenterY} C ${clientRight + GAP1 * 0.45} ${gwCenterY}, ${gwLeft - GAP1 * 0.3} ${gwCenterY}, ${gwLeft} ${gwCenterY}`
+
+  const outPaths = lines
     .map((line, index) => {
-      const y = index * rowH + rowH / 2
+      const y = 16 + index * rowH + boxH / 2
       const cls = routeLineClass(line.state)
-      const dash = line.state === 'pending' ? ' stroke-dasharray="4 4"' : ''
-      const path = `M ${gwX + 40} ${height / 2} C ${gwX + 120} ${height / 2}, ${rightX - 60} ${y}, ${rightX} ${y}`
-      return `<path class="${cls}" d="${path}"${dash} fill="none"/>`
+      // 网关 → 各站：先平推一段再柔和地弯到目标行（Magpie 那种 S 形）
+      const mid = gwRight + (boxLeft - gwRight) * 0.55
+      const d = `M ${gwRight} ${gwCenterY} C ${mid} ${gwCenterY}, ${mid} ${y}, ${boxLeft} ${y}`
+      return `<path class="${cls}" d="${d}"/>`
     })
     .join('')
 
-  const rightBoxes = lines
+  const boxes = lines
     .map((line, index) => {
-      const y = index * rowH
-      const stateLabel =
+      const y = 16 + index * rowH
+      const label =
         line.state === 'running'
           ? deps.t('请求中…')
           : line.state === 'ok'
-            ? deps.t('答完了') + (line.ms ? ` ${line.ms}ms` : '')
+            ? deps.t('答完了') + (line.ms != null ? ` · ${line.ms}ms` : '')
             : line.state === 'fail'
-              ? deps.t('失败') + (line.ms ? ` ${line.ms}ms` : '')
+              ? deps.t('失败') + (line.ms != null ? ` · ${line.ms}ms` : '')
               : deps.t('待发')
-      const errLine =
+      const err =
         line.state === 'fail' && line.error
-          ? `<div class="route-box-err" title="${deps.esc(line.error)}">${deps.esc(line.error.slice(0, 46))}</div>`
+          ? `<div class="route-box-err" title="${deps.esc(line.error)}">${deps.esc(String(line.error).slice(0, 52))}</div>`
           : ''
-      return `<div class="route-box route-box-${line.state}" style="top:${y}px">
-        <div class="route-box-name">${deps.esc(line.provider)}</div>
-        <div class="route-box-state">${deps.esc(stateLabel)}</div>
-        ${errLine}
+      return `<div class="route-box route-box-${line.state}" style="top:${y}px;height:${boxH}px">
+        <div class="route-box-name"><span class="route-dot"></span>${deps.esc(line.provider)}</div>
+        <div class="route-box-state">${deps.esc(label)}</div>
+        ${err}
       </div>`
     })
     .join('')
 
+  const anyRunning = lines.some((l) => l.state === 'running')
+  const port = (deps.state.gateway && deps.state.gateway.port) || 4319
+
   return `
-    <div class="route-diagram" style="height:${height + 24}px">
-      <div class="route-node route-node-client">
-        <div class="route-node-title">${deps.esc(run.client)}</div>
-        <div class="route-node-sub"><code>${deps.esc(run.model)}</code></div>
+    <div class="route-stage">
+      <div class="route-diagram" style="height:${stageH}px">
+        <div class="route-node route-node-client" style="align-self:center">
+          <div class="route-node-title">${deps.esc(run.client)}</div>
+          <div class="route-node-sub"><code>${deps.esc(run.model)}</code></div>
+        </div>
+        <svg class="route-svg" data-route-svg="1">
+          <path class="route-line route-line-in" data-route-in="1"/>
+          ${outPaths.replace('<path class="', '<path data-route-out="1" class="')}
+        </svg>
+        <div class="route-node route-node-gateway${anyRunning ? ' is-active' : ''}" style="align-self:center">
+          <span class="route-node-ripple"></span>
+          <div class="route-node-title">${deps.t('网关')}</div>
+          <div class="route-node-sub">127.0.0.1:${port}</div>
+          <div class="route-node-badge">${run.pick?.mode === 'auto' ? deps.t('接管') : deps.t('直派')}</div>
+        </div>
+        <div class="route-boxes" style="height:${stageH}px">${boxes}</div>
       </div>
-      <svg class="route-svg" viewBox="0 0 ${w} ${height + 24}" preserveAspectRatio="none">
-        <path class="route-line route-line-in" d="M 150 ${(height + 24) / 2} L ${gwX - 40} ${(height + 24) / 2}" fill="none"/>
-        ${rowsSvg}
-      </svg>
-      <div class="route-node route-node-gateway">
-        <div class="route-node-title">${deps.t('网关')}</div>
-        <div class="route-node-sub">127.0.0.1:${(deps.state.gateway && deps.state.gateway.port) || 4319}</div>
-        <div class="route-node-badge">${run.pick?.mode === 'auto' ? deps.t('接管') : deps.t('直派')}</div>
-      </div>
-      <div class="route-boxes" style="width:${w - rightX}px">${rightBoxes}</div>
     </div>`
+}
+
+/**
+ * 把 SVG 曲线对齐到真实布局。
+ *
+ * 为什么必须测量而不能算：左边是固定 px（客户端 148 + 间距 + 网关 132 + 间距），
+ * 右边站点区是 flex 撑开的，宽度取决于窗口。用 viewBox 拉伸会让左侧的
+ * 固定 px 节点和曲线对不上（曲线被等比缩放，节点没有）。
+ * 所以 SVG 不用 viewBox（用户单位 = CSS px），画完量一次再写 d。
+ *
+ * 代价是每次重绘要读一次布局（一次 reflow）——路由页只在有帧来时重绘，
+ * 频率远低于其他页面的轮询，可以接受。
+ */
+function routeLayoutFix() {
+  const stage = deps.$('#view-route .route-stage')
+  if (!stage) return
+  const svg = stage.querySelector('svg[data-route-svg]')
+  const client = stage.querySelector('.route-node-client')
+  const gw = stage.querySelector('.route-node-gateway')
+  const boxes = stage.querySelector('.route-boxes')
+  if (!svg || !client || !gw || !boxes) return
+
+  const base = stage.getBoundingClientRect()
+  const rel = (el) => {
+    const r = el.getBoundingClientRect()
+    return { left: r.left - base.left, right: r.right - base.left, midY: r.top - base.top + r.height / 2 }
+  }
+  const c = rel(client)
+  const g = rel(gw)
+  const b = rel(boxes)
+  const gwY = g.midY
+
+  // 客户端 → 网关
+  const inPath = svg.querySelector('[data-route-in]')
+  if (inPath) {
+    const x1 = c.right
+    const x2 = g.left
+    const dx = x2 - x1
+    inPath.setAttribute(
+      'd',
+      `M ${x1} ${gwY} C ${x1 + dx * 0.45} ${gwY}, ${x2 - dx * 0.28} ${gwY}, ${x2} ${gwY}`,
+    )
+  }
+
+  // 网关 → 每个站点卡片
+  const outPaths = svg.querySelectorAll('[data-route-out]')
+  const boxEls = boxes.querySelectorAll('.route-box')
+  outPaths.forEach((path, index) => {
+    const box = boxEls[index]
+    if (!box) return
+    const br = box.getBoundingClientRect()
+    const y = br.top - base.top + br.height / 2
+    const x1 = g.right
+    const x2 = b.left
+    const mid = x1 + (x2 - x1) * 0.55
+    path.setAttribute('d', `M ${x1} ${gwY} C ${mid} ${gwY}, ${mid} ${y}, ${x2} ${y}`)
+  })
+
+  // svg 本身铺满 stage，尺寸用属性写死避免第二次 reflow
+  svg.setAttribute('width', String(Math.round(base.width)))
+  svg.setAttribute('height', String(Math.round(base.height)))
 }
