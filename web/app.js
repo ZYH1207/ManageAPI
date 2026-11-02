@@ -4048,10 +4048,10 @@ function renderDecision() {
     ${algorithmCard()}
     <div class="decision-grid">
       <div class="decision-col">
-        ${affinityCard()}
+        ${gateCard()}
       </div>
       <div class="decision-col">
-        ${gateCard()}
+        ${affinityCard()}
       </div>
     </div>
     <div class="toolbar">
@@ -4513,13 +4513,9 @@ function gateCard() {
   const allowUntrusted = Boolean(state.settings.allowUntrusted)
   return `
     <div class="card gate-card">
-      <div class="group-head">
-        <span class="mode-label">${t('准入与开关')}</span>
-        <span class="mode-note">${t('谁能登场、自动路由、放行策略')}</span>
-      </div>
       <div class="gate-body">
       <div class="ttft-scale">
-        <div class="ttft-scale-label">${t('慢速档位限制')}</div>
+        <div class="gate-title">${t('慢速档位限制')}</div>
         <div class="ttft-scale-row">
         <span class="ttft-ticks">
           <button class="ttft-tick off${maxTtft === 0 ? ' active' : ''}" data-act="set-ttft" data-ms="0" title="不限：不按首字筛掉任何供给">不限</button>

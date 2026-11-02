@@ -3367,7 +3367,7 @@ body.prov-dragging .drop-zone { display: flex; }
  */
 .decision-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1.15fr) minmax(0, 0.85fr);
+  grid-template-columns: minmax(0, 1.05fr) minmax(0, 0.95fr);
   gap: 12px;
   align-items: start;
   margin-bottom: 12px;
@@ -3602,16 +3602,29 @@ body.prov-dragging .drop-zone { display: flex; }
   flex-direction: column;
   gap: 12px;
 }
+/* 两列等高由 grid 的 stretch 保证；**卡片本身按内容高度**，不要 flex:1。
+ *
+ * 踩过的坑：上一版给 .card 加了 flex:1 想「撑满列高与另一列对齐」，结果内容少的
+ * 那张卡被拉长，下方空出一大块（用户 2026-11-02：「缓存亲和最后面为啥空那么一大块地」）。
+ * 正确做法是让列等高、卡按内容长——两列的视觉底边由列背景/间距对齐，
+ * 不靠把卡片拉长来对齐。 */
 .decision-col > .card {
   margin: 0;
-  flex: 1;              /* 撑满列高，与另一列对齐 */
+  flex: none;
   display: flex;
   flex-direction: column;
 }
-/* 卡内容区自己撑开，按钮组贴底 */
 .decision-col > .card > .aff-body,
 .decision-col > .card > .gate-body {
   display: flex;
   flex-direction: column;
-  flex: 1;
+}
+
+/* 慢速档位限制的标题：原来被套在「准入与开关」卡头下面，字被压小了。
+ * 现在卡片没有额外卡头，这个标题就是卡的主标题，字号直接给到正常卡标题大小。 */
+.gate-title {
+  font-size: var(--fs-2);
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 10px;
 }
