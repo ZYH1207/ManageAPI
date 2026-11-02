@@ -1513,7 +1513,8 @@ function render() {
     const gw = state.gateway
     badges.innerHTML = `
       <span class="badge ${healthy ? 'ok' : ''}">${healthy} 条供给可路由</span>
-      <span class="badge ${gw?.enabled ? 'ok' : ''}">网关${gw?.enabled ? '运行中' : '已关闭'}</span>`
+      <span class="badge ${gw?.enabled ? 'ok' : ''}">网关${gw?.enabled ? '运行中' : '已关闭'}</span>
+      <button class="badge export-btn" data-act="export-menu" title="${esc(t('导出用量 / 路由历史 / 故障 / 探针 / 供给（CSV 或 JSON）'))}">${icon('table')}${t('导出')}</button>`
   }
   renderNotifications()
   // 所有页面都渲染完之后统一过一遍文案，把中文换成英文（中文模式下是空操作）
@@ -8301,6 +8302,80 @@ document.addEventListener('click', async (event) => {
     return
   }
 
+  // 数据导出：点「导出」出一列可选集合，各给 CSV / JSON 两个下载。
+  //
+  // 为什么不做成页面里的按钮：导出的东西跨页（用量在用量页、故障在诊断页…），
+  // 集中在一处比每页各塞一个更清楚，也不会把页面撑长。
+  if (action === 'export-menu') {
+    const wrap = actionButton.closest('.export-wrap') || actionButton
+    const existing = document.querySelector('.export-pop')
+    if (existing) {
+      existing.remove()
+      return
+    }
+    const sets = [
+      ['usage', t('用量')],
+      ['routing', t('路由历史')],
+      ['faults', t('故障与错误')],
+      ['probes', t('探针记录')],
+      ['offers', t('供给与报价')],
+    ]
+    const pop = document.createElement('div')
+    pop.className = 'export-pop'
+    pop.innerHTML = sets
+      .map(
+        ([k, label]) => `<div class="export-row">
+          <span class="export-name">${esc(label)}</span>
+          <a class="export-link" href="/api/export/${k}?format=csv" download>CSV</a>
+          <a class="export-link" href="/api/export/${k}?format=json" download>JSON</a>
+        </div>`,
+      )
+      .join('')
+    wrap.appendChild(pop)
+    // 点别处收起
+    setTimeout(() => {
+      const off = (e) => {
+        if (!pop.contains(e.target) && e.target !== actionButton) {
+          pop.remove()
+          document.removeEventListener('click', off)
+        }
+      }
+      document.addEventListener('click', off)
+    }, 0)
+    return
+  }
+
+  // ---------------------------------------------------------- 全局搜索结果
+  //
+  // 一个输入框搜遍站点/模型/分组/Key/路由组/错误指纹（后端 /api/search）。
+  // 点结果跳对应页；这里只负责跳页，不做页内定位高亮——
+  // 每个页面的搜索框已有自己的筛选逻辑，重复实现一套定位反而容易失配。
+  if (action === 'gs-hit') {
+    // 注意不能叫 data-tab：主点击处理器里「切页」的分支更靠前，
+    // 会先劫持带 data-tab 的元素然后 return，永远走不到这里（实测踩到）。
+    const tab = actionButton.dataset.gsTab
+    const model = actionButton.dataset.model
+    const providerId = actionButton.dataset.providerIdPattern
+    if (tab) setTab(tab)
+    // 模型结果：顺手把决策页的搜索框填上，用户落地就能看到那一个模型
+    if (model) {
+      filters.decision = model
+      render()
+    } else if (providerId) {
+      filters.site = providerId
+      render()
+    }
+    const box = $('#global-search')
+    if (box) box.value = ''
+    // 取消在途的搜索：input 有 220ms 防抖，落地页时那个回调可能还没跑完，
+    // 跑完会把面板又打开（实测踩到）。作废序号即可让它自己放弃。
+    clearTimeout(globalSearchTimer)
+    globalSearchSeq += 1
+    const panel = $('#global-search-results')
+    if (panel) panel.hidden = true
+    return
+  }
+
   // 路由组展开 / 收起（用户：「点完保存就可以缩上去，变成一个小组」）
   if (action === 'rg-expand') {
     const id = actionButton.dataset.id
@@ -9552,6 +9627,60 @@ document.addEventListener('click', (event) => {
     void bulkIgnoreGroup(bulk.dataset.group, bulk.dataset.igBulk === 'ignore')
   }
 }, true)
+
+// ---------------------------------------------------------- 全局搜索
+//
+// 输入即搜（防抖 220ms）。刻意不做「回车才搜」：这个框是给「我想知道
+// 这个词在哪儿出现过」用的，边打边出结果比按回车快得多。
+let globalSearchTimer = null
+let globalSearchSeq = 0
+
+document.addEventListener('input', async (event) => {
+  const box = event.target.closest?.('#global-search')
+  if (!box) return
+  const q = box.value.trim()
+  const panel = $('#global-search-results')
+  if (!panel) return
+  clearTimeout(globalSearchTimer)
+  if (!q) {
+    panel.hidden = true
+    return
+  }
+  const seq = ++globalSearchSeq
+  globalSearchTimer = setTimeout(async () => {
+    try {
+      const data = await api('GET', `/api/search?q=${encodeURIComponent(q)}`)
+      if (seq !== globalSearchSeq) return // 更晚的输入已经在路上了
+      const hits = data.hits || []
+      if (hits.length === 0) {
+        panel.innerHTML = `<div class="gs-empty">${t('没有匹配「{q}」的内容', { q })}</div>`
+      } else {
+        panel.innerHTML = hits
+          .map(
+            (h) => `<button class="gs-hit" data-act="gs-hit"
+              data-gs-tab="${esc(h.tab || 'overview')}"
+              ${h.model ? `data-model="${esc(h.model)}"` : ''}
+              ${h.providerId ? `data-provider-id-pattern="${esc(h.providerId)}"` : ''}>
+              <span class="gs-type">${esc(h.type)}</span>
+              <span class="gs-title">${esc(h.title)}</span>
+              ${h.subtitle ? `<span class="gs-sub">${esc(h.subtitle)}</span>` : ''}
+            </button>`,
+          )
+          .join('')
+      }
+      panel.hidden = false
+    } catch {
+      panel.hidden = true
+    }
+  }, 220)
+})
+
+// 点别处收起结果面板
+document.addEventListener('click', (event) => {
+  if (event.target.closest?.('.global-search-wrap')) return
+  const panel = $('#global-search-results')
+  if (panel) panel.hidden = true
+})
 
 document.addEventListener('change', async (event) => {
   // 组成员：下拉选择添加

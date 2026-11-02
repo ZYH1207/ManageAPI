@@ -75,8 +75,10 @@ import {
   activeGroupOf,
   normalizeRouteGroups,
   newRouteGroup,
+  algoOf,
   routingTargetOf,
 } from '../core/route-groups.js'
+import * as usageLib from '../core/usage.js'
 // 缓存亲和（借鉴 Magpie）：对话指纹 + 「该不该为了缓存钉住上次那个供给」
 import { conversationFingerprint, recordFrom, listAffinityModes } from '../core/affinity.js'
 // 路由编排：速度模型（标定）+ 余额守卫（阈值切换）+ 兜底阶梯（绝不报错）
@@ -922,6 +924,197 @@ route('GET', /^\/api\/health$/, async () => ({ ok: true, at: new Date().toISOStr
 route('GET', /^\/api\/state$/, async (ctx) => buildState({ light: ctx.query.get('light') === '1' }))
 
 // 最近的活动（首屏用）：不订阅，拿一次快照就够画「刚才发生了什么」
+// ------------------------------------------------------------ 数据导出
+//
+// 用户 2026-11-02 的需求：用量、诊断、路由历史这些**留档/分析**用得上，
+// 现在只能手抄。导出成 CSV（表格工具直接开）或 JSON（脚本处理）。
+//
+// 刻意不导出：凭据明文、adminToken、master.key —— 导出物是要发出去/存起来的，
+// 带上这些等于把全部上游 Key 送人。要备份完整配置走「备份」那条路（带加密）。
+const EXPORT_DATASETS = {
+  usage: { label: '用量', build: (db) => null, async: true },
+  routing: { label: '路由历史', build: (db) => (db.routing || []).slice(-2000) },
+  faults: { label: '故障与错误', build: (db) => ({ events: db.faultEvents || [], signals: db.faultSignals || [], errorbook: db.errorbook || {} }) },
+  probes: { label: '探针记录', build: (db) => (db.probes || []).slice(-2000) },
+  offers: { label: '供给与报价', build: (db) => buildOfferExport(db) },
+}
+
+route('GET', /^\/api\/export\/([a-z]+)$/, async (ctx) => {
+  const name = ctx.params[0]
+  const ds = EXPORT_DATASETS[name]
+  if (!ds) throw new HttpError(404, `没有这个导出集：${name}（可选 ${Object.keys(EXPORT_DATASETS).join(' / ')}）`)
+  const db = await store.readDb()
+  const format = String(ctx.query.get('format') || 'csv')
+  // 用量存在独立的 usage.json（不在 db.json 里），要异步读
+  const rows = ds.async ? await buildUsageExport() : ds.build(db)
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
+
+  if (format === 'json') {
+    const { res } = ctx
+    res.writeHead(200, {
+      'Content-Type': 'application/json; charset=utf-8',
+      'Content-Disposition': `attachment; filename="manage-api-${name}-${stamp}.json"`,
+    })
+    res.end(JSON.stringify(rows, null, 2))
+    return undefined
+  }
+
+  // CSV：列取所有行键的并集（不同行字段可能不同，比如失败记录没有 ttft）
+  const list = Array.isArray(rows) ? rows : [rows]
+  const cols = []
+  const seen = new Set()
+  for (const row of list.slice(0, 200)) {
+    for (const k of Object.keys(row || {})) {
+      if (seen.has(k)) continue
+      seen.add(k)
+      cols.push(k)
+    }
+  }
+  const cell = (v) => {
+    if (v === null || v === undefined) return ''
+    const s2 = typeof v === 'object' ? JSON.stringify(v) : String(v)
+    // CSV 转义：含逗号/引号/换行必须括起来并把引号翻倍
+    return /[",\n\r]/.test(s2) ? `"${s2.replace(/"/g, '""')}"` : s2
+  }
+  const csv = [cols.join(','), ...list.map((row) => cols.map((c) => cell(row?.[c])).join(','))].join('\n')
+  const { res } = ctx
+  res.writeHead(200, {
+    'Content-Type': 'text/csv; charset=utf-8',
+    // BOM：Excel 打开中文不乱码（没有它就是乱码，实测很常见）
+    'Content-Disposition': `attachment; filename="manage-api-${name}-${stamp}.csv"`,
+  })
+  res.end('\uFEFF' + csv)
+  return undefined
+})
+
+/**
+ * 用量展开成扁平行（每行一个 天 × 供给 的聚合）。
+ *
+ * 数据在独立的 usage.json（core/usage.js 管的），不在 db.json 里。
+ * 复合键是 `keyId|providerId|model`（竖线分隔，不是 \u0001 —— 那是老格式）。
+ */
+async function buildUsageExport() {
+  const usage = await usageLib.readUsage()
+  const db = await store.readDb()
+  const providers = new Map((db.providers || []).map((p) => [p.id, p.name]))
+  const models = new Map()
+  for (const o of db.offers || []) {
+    for (const key of [o.modelKey, o.upstreamName]) {
+      if (key && !models.has(key)) models.set(key, o.modelKey || o.upstreamName)
+    }
+  }
+  const out = []
+  for (const [day, buckets] of Object.entries(usage?.days || {})) {
+    for (const [key, v] of Object.entries(buckets || {})) {
+      // 兼容两种分隔符：新库用 `\u0001`，老库用 `|`
+      const parts = String(key).includes('\u0001') ? String(key).split('\u0001') : String(key).split('|')
+      const providerId = parts.length >= 3 ? parts[1] : ''
+      const model = parts.length >= 3 ? parts[2] : parts[1] || ''
+      out.push({
+        day,
+        provider: providers.get(providerId) || providerId || '',
+        model: models.get(model) || model || '',
+        requests: v.requests || 0,
+        errors: v.errors || 0,
+        input: v.input || 0,
+        output: v.output || 0,
+        cached: v.cached || 0,
+        reasoning: v.reasoning || 0,
+      })
+    }
+  }
+  return out
+}
+
+/** 供给展开成扁平行（含价格，方便自己算账） */
+function buildOfferExport(db) {
+  const providers = new Map((db.providers || []).map((p) => [p.id, p.name]))
+  return (db.offers || []).map((o) => ({
+    offerId: o.id,
+    provider: providers.get(o.providerId) || o.providerId,
+    group: o.group || '',
+    model: o.modelKey || o.upstreamName || '',
+    upstreamName: o.upstreamName || '',
+    inPrice: o.inPrice ?? '',
+    outPrice: o.outPrice ?? '',
+    enabled: o.enabled === false ? 'no' : 'yes',
+  }))
+}
+
+// ------------------------------------------------------------ 全局搜索
+//
+// 一个输入框搜遍：站点 / 模型 / 分组 / Key / 路由组 / 错误指纹。
+//
+// 为什么需要（用户 2026-11-02 的痛点）：每个页面各有一个搜索框，
+// 但想找「glm 这个模型在我这儿到底什么状况」得分别去站点、决策、探针、
+// 用量各搜一遍。跨页搜是纯收益、不改变任何判定逻辑——只读不写。
+//
+// 返回结构统一成 { type, title, subtitle, tab, anchor }，
+// 前端据此跳页并可选高亮。tab 是本项目的视图 id（overview/monitor/...）。
+route('GET', /^\/api\/search$/, async (ctx) => {
+  const q = String(ctx.query.get('q') || '').trim().toLowerCase()
+  if (!q) return { q: '', hits: [] }
+  const db = await store.readDb()
+  const hits = []
+  const hit = (type, title, subtitle, tab, extra = {}) => {
+    if (hits.length >= 60) return
+    hits.push({ type, title, subtitle: subtitle || '', tab, ...extra })
+  }
+  const match = (text) => String(text || '').toLowerCase().includes(q)
+
+  // 站点
+  for (const p of db.providers || []) {
+    if (match(p.name) || match(p.baseUrl))
+      hit('站点', p.name, p.baseUrl, 'monitor', { providerId: p.id })
+  }
+
+  // 凭据（只露尾号，不露明文）
+  for (const c of db.credentials || []) {
+    const prov = (db.providers || []).find((p) => p.id === c.providerId)
+    if (match(c.label) || match(c.tail) || match(`${prov?.name || ''} ${c.label}`))
+      hit('凭据', `${prov?.name || '?'} · ${c.label}`, `尾号 …${c.tail || '?'}`, 'monitor', {
+        providerId: c.providerId,
+      })
+  }
+
+  // 模型 / 分组（从供给里取，去重）
+  const seenModel = new Set()
+  const seenGroup = new Set()
+  for (const o of db.offers || []) {
+    const model = o.modelKey || o.upstreamName
+    if (model && match(model) && !seenModel.has(model)) {
+      seenModel.add(model)
+      const prov = (db.providers || []).find((p) => p.id === o.providerId)
+      hit('模型', model, prov?.name || '', 'decision', { model })
+    }
+    if (o.group && match(o.group) && !seenGroup.has(o.group)) {
+      seenGroup.add(o.group)
+      hit('分组', o.group, (db.providers || []).find((p) => p.id === o.providerId)?.name || '', 'decision')
+    }
+  }
+
+  // 路由组
+  for (const g of normalizeRouteGroups(db.settings.routeGroups).groups) {
+    if (match(g.name) || g.models.some((m) => match(m)))
+      hit('路由组', g.name, `${g.models.length} 个模型 · ${algoOf(g.algo).label}`, 'route')
+  }
+
+  // 错误指纹（诊断页的 errorbook）
+  for (const [fp, entry] of Object.entries(db.errorbook || {})) {
+    const msg = String(entry?.sample || entry?.message || entry?.lastMessage || '')
+    if (match(msg) || match(fp))
+      hit('错误指纹', (entry?.kind || fp).slice(0, 40), msg.slice(0, 80), 'diagnosis')
+  }
+
+  // 网关 Key（只露名字+尾号）
+  for (const k of db.settings.gateway?.keys || []) {
+    if (match(k.name))
+      hit('网关 Key', k.name, `尾号 …${String(k.key || '').slice(-6)}`, 'gateway')
+  }
+
+  return { q: ctx.query.get('q'), hits }
+})
+
 // ------------------------------------------------------------ 路由组（2026-11-02）
 //
 // 一个组 = 一组模型 + 组级算法。自动路由按 activeId 指向的那个组工作。
