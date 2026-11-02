@@ -589,6 +589,7 @@ function routeGroupsHtml() {
   const rg = deps.state.routeGroups || {}
   const groups = Array.isArray(rg.groups) ? rg.groups : []
   const algos = Array.isArray(rg.algos) ? rg.algos : []
+  const opts = rg.options || {}
   const activeId = rg.activeId || null
   const active = rg.active || null
   const models = availableModels()
@@ -599,55 +600,117 @@ function routeGroupsHtml() {
         <h3>${deps.t('路由组')}</h3>
         <span class="route-groups-note">${
           active
-            ? deps.t('当前按「{name}」路由：{n} 个模型 · {algo}', {
-                name: active.name,
-                n: active.models.length,
-                algo: (algos.find((a) => a.key === active.algo) || {}).label || active.algo,
-              })
+            ? deps.t('当前按「{name}」路由：{n} 个模型', { name: active.name, n: active.models.length })
             : deps.t('没有启用路由组——自动路由在全场所有模型里挑')
         }</span>
-        <span class="route-groups-beta">${deps.t('新建组')}</span>
-        <button class="route-group-new" data-act="rg-new">${deps.icon('plus')}${deps.t('新建')}</button>
+        <button class="route-group-new" data-act="rg-new">${deps.icon('plus')}${deps.t('新建组')}</button>
       </div>
 
       ${groups.length === 0 ? `<div class="route-groups-empty">${deps.t('还没有路由组。新建一个组，勾几个模型，再选这套路由用哪种算法。')}</div>` : `
       <div class="route-group-list">
-        ${groups.map((g) => {
-          const algo = algos.find((a) => a.key === g.algo) || {}
-          const isActive = g.id === activeId
-          return `<div class="route-group-card${isActive ? ' active' : ''}">
-            <div class="route-group-top">
-              <input class="route-group-name" value="${deps.esc(g.name)}"
-                data-rg-name="${deps.esc(g.id)}" title="${deps.t('点这里改名')}" />
-              ${isActive
-                ? `<span class="route-group-badge on">${deps.t('生效中')}</span>`
-                : `<button class="route-group-use" data-act="rg-use" data-id="${deps.esc(g.id)}">${deps.t('启用')}</button>`}
-              <button class="route-group-del" data-act="rg-del" data-id="${deps.esc(g.id)}"
-                title="${deps.t('删除这个组')}">${deps.icon('x')}</button>
-            </div>
-            <div class="route-group-algos" role="tablist">
-              ${algos.map((a) => `<button class="route-algo${a.key === g.algo ? ' active' : ''}"
-                role="tab" aria-selected="${a.key === g.algo}"
-                data-act="rg-algo" data-id="${deps.esc(g.id)}" data-algo="${deps.esc(a.key)}"
-                title="${deps.esc(a.desc || a.label)}${a.magpie ? ` · 对标 Magpie ${a.magpie}` : ''}">${deps.esc(a.label)}</button>`).join('')}
-            </div>
-            <div class="route-group-members">
-              ${models.length === 0
-                ? `<span class="route-group-hint">${deps.t('还没有可用模型——先在站点页同步模型')}</span>`
-                : models.map((m) => {
-                    const on = g.models.includes(m)
-                    return `<button class="route-member${on ? ' on' : ''}"
-                      data-act="rg-toggle" data-id="${deps.esc(g.id)}" data-model="${deps.esc(m)}"
-                      title="${deps.esc(on ? deps.t('移出这个组') : deps.t('加入这个组'))}">${deps.esc(m)}</button>`
-                  }).join('')}
-            </div>
-          </div>`
-        }).join('')}
+        ${groups.map((g) => routeGroupCard(g, algos, opts, models, activeId === g.id)).join('')}
       </div>`}
     </div>`
 }
 
-/** 当前有哪些模型可选（从决策数据里取，去重） */
+/**
+ * 一个组的完整编辑卡（对标 Magpie 的路由组设置页）。
+ *
+ * Magpie 那一页有的项，这里一一对应：
+ *   名称 / 成员列表（可上下移、移除、+ 添加）/ 模式匹配 / 模型列表展示 /
+ *   路由方式 / 迟迟不出字 / 成员全都忙 / 上下文 / 会话保持 / 推理强度 / 推理档位
+ *
+ * 「规则」那一项（+ 添加规则）暂不做：它是 Magpie 自己的条件表达式引擎
+ * （按 token 数/时间/模型切换路由），本项目没有对应能力，硬做一个空壳
+ * 只会让人以为能用。等真有需求再补，不假装。
+ */
+function routeGroupCard(g, algos, opts, models, isActive) {
+  const seg = (list, current, act, extra = {}) =>
+    list
+      .map((o) => {
+        const data = Object.entries({ ...extra, [act]: o.key })
+          .map(([k, v]) => `data-${k}="${deps.esc(String(v))}"`)
+          .join(' ')
+        return `<button class="rg-seg${o.key === current ? ' active' : ''}" data-act="${act}" ${data}
+          title="${deps.esc(o.desc || o.hint || o.label)}">${deps.esc(o.label)}</button>`
+      })
+      .join('')
+
+  const row = (label, hint, body) => `
+    <div class="rg-row">
+      <div class="rg-row-label">${deps.t(label)}</div>
+      <div class="rg-row-body">${body}${hint ? `<div class="rg-row-hint">${deps.t(hint)}</div>` : ''}</div>
+    </div>`
+
+  return `
+    <div class="route-group-card${isActive ? ' active' : ''}" data-rg="${deps.esc(g.id)}">
+      <div class="route-group-top">
+        <input class="route-group-name" value="${deps.esc(g.name)}"
+          data-rg-name="${deps.esc(g.id)}" title="${deps.t('点这里改名')}" />
+        <span class="rg-id">${deps.esc(g.id)}</span>
+        ${isActive
+          ? `<span class="route-group-badge on">${deps.t('生效中')}</span>
+             <button class="route-group-use off" data-act="rg-use" data-id="${deps.esc(g.id)}">${deps.t('停用')}</button>`
+          : `<button class="route-group-use" data-act="rg-use" data-id="${deps.esc(g.id)}">${deps.t('启用')}</button>`}
+        <button class="route-group-del" data-act="rg-del" data-id="${deps.esc(g.id)}"
+          title="${deps.t('删除这个组')}">${deps.icon('x')}</button>
+      </div>
+
+      ${row('模型', '排第一的模型决定本组对外的能力；按顺序模式下从上往下尝试。', `
+        <div class="rg-members">
+          ${(g.models || []).length === 0
+            ? `<span class="route-group-hint">${deps.t('还没有成员——点下面的「+ 添加模型」')}</span>`
+            : (g.models || []).map((m, i) => `
+              <span class="rg-member">
+                <span class="rg-member-idx">${i + 1}</span>
+                <span class="rg-member-name">${deps.esc(m)}</span>
+                <button class="rg-mini" data-act="rg-up" data-id="${deps.esc(g.id)}" data-model="${deps.esc(m)}"
+                  title="${deps.t('上移')}" ${i === 0 ? 'disabled' : ''}>↑</button>
+                <button class="rg-mini" data-act="rg-down" data-id="${deps.esc(g.id)}" data-model="${deps.esc(m)}"
+                  title="${deps.t('下移')}" ${i === g.models.length - 1 ? 'disabled' : ''}>↓</button>
+                <button class="rg-mini danger" data-act="rg-toggle" data-id="${deps.esc(g.id)}" data-model="${deps.esc(m)}"
+                  title="${deps.t('移出这个组')}">×</button>
+              </span>`).join('')}
+        </div>
+        <select class="rg-add-model" data-act="rg-add" data-id="${deps.esc(g.id)}">
+          <option value="">+ ${deps.t('添加模型')}</option>
+          ${models.filter((m) => !(g.models || []).includes(m)).map((m) => `<option value="${deps.esc(m)}">${deps.esc(m)}</option>`).join('')}
+        </select>`)}
+
+      ${row('模式', '模式匹配的模型均入组（含供应商日后新增的），排在显式成员之后。* 匹配 provider/model 中任意字符，re: 开头表示正则。', `
+        <div class="rg-patterns">
+          ${(g.patterns || []).map((p) => `<span class="rg-pattern">${deps.esc(p)}
+            <button class="rg-mini" data-act="rg-unpattern" data-id="${deps.esc(g.id)}" data-pattern="${deps.esc(p)}">×</button></span>`).join('')}
+        </div>
+        <input class="rg-pattern-input" placeholder="${deps.t('例如 openrouter/*:free 或 re:...')}"
+          data-rg-pattern="${deps.esc(g.id)}" />`)}
+
+      ${row('模型列表', 'Agent 的模型列表和网关 /v1/models 里怎么呈现本组。', seg(opts.modelList || [], g.modelListMode, 'rg-model-list', { id: g.id }))}
+
+      ${row('路由方式', '', seg(algos, g.algo, 'rg-algo', { id: g.id }))}
+
+      ${row('迟迟不出字', '成员超过这个时间仍未开始回答（无文字、思考或工具调用）时改问下一个。仅对流式请求生效。',
+        seg(opts.firstToken || [], g.firstTokenMs, 'rg-first-token', { id: g.id })
+        .replace(/data-rg-first-token="([a-z0-9]+)"/g, 'data-rg-first-token="$1"'))}
+
+      ${row('成员全都忙', '每个成员都失败时，隔这么久再试；关闭则立刻把最后一个错误交出去。',
+        seg(opts.allBusy || [], g.allBusyMs, 'rg-all-busy', { id: g.id }))}
+
+      ${row('上下文', '告诉 agent 本组最大/最小的上下文窗口；某个成员放不下的对话会交给放得下的成员。',
+        seg(opts.context || [], g.contextMode, 'rg-context', { id: g.id }))}
+
+      ${row('会话保持', '厂商缓存仍有价值时，会话留在回答过它的成员上。与决策页的「缓存亲和」是同一件事的两种粒度，组级这里作默认值。',
+        seg(opts.sessionKeep || [], g.sessionKeep, 'rg-session-keep', { id: g.id }))}
+
+      ${row('推理强度', '按 agent 传的值，或每轮重新判断。',
+        seg(opts.effort || [], g.effort, 'rg-effort', { id: g.id }))}
+
+      ${row('推理档位', '对 Agent 提供所有模型都有的档位（成员共有），或各自自定。',
+        seg(opts.effortLevel || [], g.effortLevel, 'rg-effort-level', { id: g.id }))}
+    </div>`
+}
+
+/** 当前有哪些模型可选（从决策数据里取，去重） *//** 当前有哪些模型可选（从决策数据里取，去重） */
 function availableModels() {
   const out = []
   const seen = new Set()

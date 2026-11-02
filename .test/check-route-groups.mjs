@@ -14,7 +14,7 @@ console.log('[1] 归一化')
   const r = normalizeRouteGroups({ groups: [{ name: 'A', models: ['x', 'x', 'y'], algo: 'nonsense' }], activeId: 'rg_01' })
   ok(r.groups.length === 1, '一个组')
   ok(r.groups[0].models.length === 2, `成员去重（${r.groups[0].models.join(',')}）`)
-  ok(r.groups[0].algo === 'value', `非法算法回落默认（${r.groups[0].algo}）`)
+  ok(r.groups[0].algo === 'smart', `非法算法回落默认（${r.groups[0].algo}）`)
   ok(r.activeId === 'rg_01', 'activeId 保留')
   ok(normalizeRouteGroups({ activeId: 'ghost' }).activeId === null, 'activeId 指向不存在的组 → null')
 }
@@ -28,14 +28,14 @@ console.log('[2] 成员上限')
 
 console.log('[3] 生效组与回退')
 {
-  const withGroup = normalizeRouteGroups({ groups: [{ name: '日常', models: ['a', 'b'], algo: 'price' }], activeId: 'rg_01' })
+  const withGroup = normalizeRouteGroups({ groups: [{ name: '日常', models: ['a', 'b'], algo: 'cheap' }], activeId: 'rg_01' })
   ok(activeGroupOf(withGroup)?.name === '日常', '有生效组')
   ok(activeGroupOf({ groups: [], activeId: null }) === null, '没有生效组')
 
   // 有组：用组的范围和档位
   const t1 = routingTargetOf(withGroup, { scope: ['z'] }, { decisionMode: 'flow' })
   ok(JSON.stringify(t1.scope) === '["a","b"]', '组范围优先于旧 scope')
-  ok(t1.decisionMode === 'price', '组算法优先于全局档位')
+  ok(t1.decisionMode === 'price', '组算法优先于全局档位（cheap→price）')
 
   // 没组：回到旧行为
   const t2 = routingTargetOf({ groups: [], activeId: null }, { scope: ['z'] }, { decisionMode: 'flow' })
@@ -48,15 +48,30 @@ console.log('[3] 生效组与回退')
   ok(t3.group === null, '空成员的组不生效')
 }
 
-console.log('[4] 算法档 → 决策档位映射')
+console.log('[4] 算法档 → 决策档位映射（对齐 Magpie 的 11 种）')
 {
   for (const a of GROUP_ALGOS) {
     const m = algoOf(a.key)
-    ok(m.key === a.key && typeof m.mode === 'string', `${a.key} → ${m.mode}${a.keepEligible ? ' +keep' : ''}`)
+    ok(m.key === a.key && typeof m.mode === 'string', `${a.key}(${a.label}) → ${m.mode}`)
   }
-  ok(algoOf('price').magpie === 'cheap first', 'price 对应 Magpie cheap first')
-  ok(algoOf('flow').magpie === 'fastest', 'flow 对应 Magpie fastest')
-  ok(algoOf('value-steady').keepEligible === true, 'value-steady 带 keepEligible')
+  // Magpie 原话到这里的映射，逐条钉住
+  const MAGPIE_MAP = {
+    '智能': 'smart',
+    '按顺序': 'order',
+    '用完再换': 'failover',
+    '轮流': 'rotate',
+    '最少使用': 'least-used',
+    '重置前用完': 'until-reset',
+    '免费优先': 'free',
+    '速度优先': 'speed',
+    '最便宜': 'cheap',
+    '按权重': 'weighted',
+    '手动': 'manual',
+  }
+  for (const [magpie, key] of Object.entries(MAGPIE_MAP)) {
+    const hit = GROUP_ALGOS.find((a) => a.magpie === magpie)
+    ok(hit?.key === key, `Magpie「${magpie}」→ ${key}`)
+  }
 }
 
 console.log('[5] 新建组 id 不重复')
@@ -67,26 +82,40 @@ console.log('[5] 新建组 id 不重复')
   ok(g1.id.startsWith('rg_'), 'id 有前缀')
 }
 
-console.log('[6] 对齐 Magpie 的 5 种路由方式')
+console.log('[6] 带行为标记的算法档')
 {
-  const keys = GROUP_ALGOS.map((a) => a.key)
-  ok(keys.includes('price'), 'Cheap first → 价格优先')
-  ok(keys.includes('value-steady'), 'Never stuck → 稳妥（少换人）')
-  ok(keys.includes('flow'), 'Fastest → 流畅度优先')
-  ok(keys.includes('balance'), 'Least used first → 余量优先')
-  ok(keys.includes('rotate'), 'Manual/Rotate → 轮流')
-  ok(algoOf('balance').balanceFirst === true, 'balance 带 balanceFirst')
-  ok(algoOf('rotate').forceOff === true, 'rotate 带 forceOff')
+  ok(algoOf('order').orderFirst === true, 'order 带 orderFirst（严格按列表顺序）')
+  ok(algoOf('failover').stickyMember === true, 'failover 带 stickyMember（用完再换）')
+  ok(algoOf('rotate').forceOff === true, 'rotate 带 forceOff（关缓存亲和）')
+  ok(algoOf('least-used').balanceFirst === true, 'least-used 带 balanceFirst')
+  ok(algoOf('until-reset').balanceFirst === true, 'until-reset 带 balanceFirst')
+  ok(algoOf('free').freeFirst === true, 'free 带 freeFirst')
+  ok(algoOf('weighted').weighted === true, 'weighted 带 weighted')
+  ok(algoOf('manual').manualPick === true, 'manual 带 manualPick')
 
-  // forceOff 要能从 routingTargetOf 透出来（auto-route 靠它关亲和）
   const rgRotate = normalizeRouteGroups({ groups: [{ models: ['m1'], algo: 'rotate' }], activeId: 'rg_01' })
   const t = routingTargetOf(rgRotate, {}, {})
   ok(t.forceOff === true, 'rotate 组的 target.forceOff=true')
-  const rgBal = normalizeRouteGroups({ groups: [{ models: ['m1'], algo: 'balance' }], activeId: 'rg_01' })
-  ok(routingTargetOf(rgBal, {}, {}).balanceFirst === true, 'balance 组的 target.balanceFirst=true')
-  // 无组时两个开关都必须是 false，否则会静默影响老用户
+  ok(t.firstTokenMs === 60_000, '组带默认首字超时 60s')
+
   const t2 = routingTargetOf({ groups: [], activeId: null }, { scope: [] }, {})
-  ok(t2.forceOff === false && t2.balanceFirst === false, '无组时两个开关为 false')
+  ok(t2.forceOff === false && t2.balanceFirst === false, '无组时行为开关全 false')
+}
+
+console.log('[7] 组级设置项归一化')
+{
+  const g = newRouteGroup({ name: 'x', models: ['a'], firstTokenMs: '30s', allBusyMs: '2m', contextMode: 'bad', sessionKeep: 'strict' }, [])
+  ok(g.firstTokenMs === 30_000, `firstTokenMs 从 key 换成 ms（${g.firstTokenMs}）`)
+  ok(g.allBusyMs === 120_000, `allBusyMs 从 key 换成 ms（${g.allBusyMs}）`)
+  ok(g.contextMode === 'max', `非法 contextMode 回落（${g.contextMode}）`)
+  ok(g.sessionKeep === 'strict', 'sessionKeep 保留合法值')
+  ok(g.weights.a === 1, '权重缺省为 1')
+
+  const g2 = normalizeRouteGroups({ groups: [{ models: ['a', 'b'], weights: { a: 3 } }] })
+  ok(g2.groups[0].weights.a === 3 && g2.groups[0].weights.b === 1, '权重部分给出时其余补 1')
+
+  const g3 = normalizeRouteGroups({ groups: [{ patterns: [' openrouter/*:free ', '', 'x', 'x'] }] })
+  ok(g3.groups[0].patterns.length === 2, `模式去空去重（${g3.groups[0].patterns.join('|')}）`)
 }
 
 console.log('')

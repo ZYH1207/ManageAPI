@@ -69,77 +69,171 @@ export const MAX_GROUPS = 12
  */
 export const GROUP_ALGOS = [
   {
-    key: 'value',
-    label: '性价比',
-    hint: '价格 ÷ 质量',
+    key: 'smart',
+    label: '智能',
+    hint: '按评分自动挑最优',
     mode: 'value',
-    magpie: 'smart-split',
-    desc: '降智的站名义价再低，除下来也更贵。适合「不想动脑、交给程序」的日常场景。',
+    magpie: '智能',
+    desc: 'Magpie 的「智能」：按当前判定口径挑全场最优（评分=价格÷质量×余额×速度）。日常默认。',
   },
   {
-    key: 'price',
-    label: '价格优先',
-    hint: '最便宜的先上',
-    mode: 'price',
-    magpie: 'cheap first',
-    desc: '只比名义单价，质量只用来挡不合格的。适合「省钱为主，慢点没关系」。',
-  },
-  {
-    key: 'flow',
-    label: '流畅度优先',
-    hint: '一屏回答谁先读完',
-    mode: 'flow',
-    magpie: 'fastest',
-    desc: '按「首字 + 吐字」算一屏回答要多久。适合交互式、要手感快的场景。',
-  },
-  {
-    key: 'speed',
-    label: '首字优先',
-    hint: '第一个字最快出来',
-    mode: 'speed',
-    magpie: 'fastest',
-    desc: '只看首字延迟。适合短问答；长回答可能被「首字快但吐字慢」的站坑到。',
-  },
-  {
-    key: 'realSpeed',
-    label: '只信实测',
-    hint: '没真实样本直接淘汰',
-    mode: 'realSpeed',
-    magpie: 'fastest',
-    desc: '只用真实流量的首字，无样本的站排最后。适合「探针不可信、只认自己跑过」的人。',
-  },
-  {
-    key: 'value-steady',
-    label: '稳妥（少换人）',
-    hint: '性价比 + 尽量钉住现役',
+    key: 'order',
+    label: '按顺序',
+    hint: '从上往下挨个试',
     mode: 'value',
-    magpie: 'never stuck',
-    keepEligible: true,
-    desc: '按性价比挑，但一旦选定就尽量不换（改用更粘的缓存亲和）。'
-      + '适合长对话——每次换站都要重算上下文缓存。',
+    magpie: '按顺序',
+    orderFirst: true,
+    desc: 'Magpie 的「按顺序」：不评分，严格按成员列表从上往下试，第一个能用就用。'
+      + '适合「我有明确偏好，只想要这家，它不行才往下」的场景。',
   },
   {
-    key: 'balance',
-    label: '余量优先',
-    hint: '余额/额度剩得最多的先上',
+    key: 'failover',
+    label: '用完再换',
+    hint: '当前这家用尽额度才换',
     mode: 'value',
-    magpie: 'Least used first',
-    balanceFirst: true,
-    desc: 'Magpie 的 Least used first：把「额度还剩多少」放在价格之前——'
-      + '余额多的站先用，避免某一家先耗尽、临时没有兜底。'
-      + '适合同时挂了多个免费额度、想平均用的场景。',
+    magpie: '用完再换',
+    orderFirst: true,
+    stickyMember: true,
+    desc: 'Magpie 的「用完再换」：钉住当前这家，直到它额度耗尽/不可用才换下一家。'
+      + '最省缓存，也最省心——但某家慢的时候你也得跟着慢。',
   },
   {
     key: 'rotate',
     label: '轮流',
-    hint: '每次换一个站，不钉住',
+    hint: '每次换一个，均摊负载',
     mode: 'value',
-    magpie: 'Manual / Rotate',
+    magpie: '轮流',
     forceOff: true,
-    desc: 'Magpie 的 Rotate：每次都重新挑，不做缓存亲和（affinity 强制为「轮流」）。'
-      + '适合额度分散、想让各家都跑起来，或者怀疑某家变慢想尽快发现。'
-      + '代价是缓存命中率会掉——每次换站上下文都要重算。',
+    desc: 'Magpie 的「轮流」：每一轮交给下一个成员，均摊负载。'
+      + '不做缓存亲和（强制关闭）——适合额度分散、想让各家都跑起来。',
   },
+  {
+    key: 'least-used',
+    label: '最少使用',
+    hint: '挑用得最少的那个',
+    mode: 'value',
+    magpie: '最少使用',
+    balanceFirst: true,
+    desc: 'Magpie 的「最少使用」：按近期消耗量排序，用得最少的先上。'
+      + '和「余量优先」相近，但看的是**已用**而不是剩余。',
+  },
+  {
+    key: 'until-reset',
+    label: '重置前用完',
+    hint: '优先榨干即将重置的额度',
+    mode: 'value',
+    magpie: '重置前用完',
+    balanceFirst: true,
+    desc: 'Magpie 的「重置前用完」：额度快到期/快重置的先上，避免白白浪费。'
+      + '需要站点侧有重置周期数据，没有时退化为「余量优先」。',
+  },
+  {
+    key: 'free',
+    label: '免费优先',
+    hint: '先免费，不够才付费',
+    mode: 'value',
+    magpie: '免费优先',
+    freeFirst: true,
+    desc: 'Magpie 的「免费优先」：先用免费额度/免费站，用完了才轮到付费。'
+      + '与网关的 allowPaidFallback 配合——这里只是把这个偏好下推到组级。',
+  },
+  {
+    key: 'speed',
+    label: '速度优先',
+    hint: '首字最快出来',
+    mode: 'flow',
+    magpie: '速度优先',
+    desc: 'Magpie 的「速度优先」：按首字+吐字算出的流畅度排。交互场景首选。',
+  },
+  {
+    key: 'cheap',
+    label: '最便宜',
+    hint: '名义单价最低',
+    mode: 'price',
+    magpie: '最便宜',
+    desc: 'Magpie 的「最便宜」：只看名义单价，质量只用来挡不合格的。',
+  },
+  {
+    key: 'weighted',
+    label: '按权重',
+    hint: '按成员设置的权重分流',
+    mode: 'value',
+    magpie: '按权重',
+    weighted: true,
+    desc: 'Magpie 的「按权重」：每个成员带一个权重，按比例分流。'
+      + '适合「主力站 70%、备用 30%」这种配置。',
+  },
+  {
+    key: 'manual',
+    label: '手动',
+    hint: '按你勾选的那一条',
+    mode: 'value',
+    magpie: '手动',
+    manualPick: true,
+    desc: 'Magpie 的「手动」：不动，就派你手动指定的那一条。'
+      + '对应网关的「客户端点名模型」行为。',
+  },
+]
+
+/**
+ * 「迟迟不出字」：多久没见到第一个字就换下一个成员。
+ *
+ * Magpie 原文：「成员超过 60 秒仍未开始回答（无文字、思考或工具调用）时，
+ * 改问下一个，此时尚无内容发给 agent。偶尔一次不休息；连续两次，
+ * 该模型在这个账号上休息，从一分钟起每次更久，直到它再次回答。」
+ *
+ * 这里的 holdMs = 0 表示「一直等」（不做首字超时）。
+ */
+export const FIRST_TOKEN_OPTIONS = [
+  { key: 'forever', label: '一直等', ms: 0 },
+  { key: '30s', label: '30 秒', ms: 30_000 },
+  { key: '60s', label: '1 分钟', ms: 60_000 },
+  { key: '120s', label: '2 分钟', ms: 120_000 },
+]
+
+/** 「成员全都忙」：全部失败后，隔多久再试。0 = 关闭（立刻把最后一个错误交出去） */
+export const ALL_BUSY_OPTIONS = [
+  { key: 'off', label: '关闭', ms: 0 },
+  { key: '1m', label: '1 分钟', ms: 60_000 },
+  { key: '2m', label: '2 分钟', ms: 120_000 },
+  { key: '4m', label: '4 分钟', ms: 240_000 },
+]
+
+/** 「上下文」：本组对外的上下文窗口怎么报 */
+export const CONTEXT_OPTIONS = [
+  { key: 'max', label: '最大模型的' },
+  { key: 'min', label: '最小模型的' },
+  { key: 'custom', label: '自定义' },
+]
+
+/**
+ * 「会话保持」：这段对话要不要一直用同一个成员。
+ *
+ * 与 core/affinity.js 的 AFFINITY 是同一件事的两种粒度：
+ * 这里是**组级**默认，个体的手动设置优先。
+ */
+export const SESSION_KEEP_OPTIONS = [
+  { key: 'auto', label: '自动', affinity: 'auto' },
+  { key: 'session', label: '整个会话', affinity: 'session' },
+  { key: 'turn', label: '一轮之内', affinity: 'turn' },
+  { key: 'off', label: '关闭', affinity: 'off' },
+  { key: 'strict', label: '严格', affinity: 'strict' },
+]
+
+/** 「模型列表」：Agent 的模型清单里露什么 */
+export const MODEL_LIST_OPTIONS = [
+  { key: 'list-members', label: '也列出成员模型' },
+  { key: 'only-group', label: '只列出本组' },
+]
+
+/** 推理强度 / 档位（Magpie 的 thinking levels） */
+export const EFFORT_OPTIONS = [
+  { key: 'agent', label: '按 agent' },
+  { key: 'per-turn', label: '每轮判断' },
+]
+export const EFFORT_LEVEL_OPTIONS = [
+  { key: 'shared', label: '成员共有' },
+  { key: 'custom', label: '自定' },
 ]
 
 /** 算法 key → 完整定义（非法 key 回落第一条） */
@@ -160,14 +254,65 @@ function newGroupId(existing = []) {
 }
 
 /** 空组（新建时用） */
-export function newRouteGroup({ name = '新路由组', models = [], algo = 'value' } = {}, existing = []) {
+export function newRouteGroup({ name = '新路由组', models = [], algo = 'smart', ...rest } = {}, existing = []) {
   return {
     id: newGroupId(existing),
     name: String(name).trim() || '新路由组',
     models: normalizeModels(models),
     algo: algoOf(algo).key,
+    // ── Magpie 的组级设置（2026-11-02 补全）──
+    patterns: normalizePatterns(rest.patterns),          // 模式匹配
+    modelListMode: normalizeChoice(MODEL_LIST_OPTIONS, rest.modelListMode, 'only-group'),
+    firstTokenMs: normalizeOptionMs(FIRST_TOKEN_OPTIONS, rest.firstTokenMs, 60_000),
+    allBusyMs: normalizeOptionMs(ALL_BUSY_OPTIONS, rest.allBusyMs, 0),
+    contextMode: normalizeChoice(CONTEXT_OPTIONS, rest.contextMode, 'max'),
+    contextCustom: Number.isFinite(Number(rest.contextCustom)) ? Number(rest.contextCustom) : null,
+    sessionKeep: normalizeChoice(SESSION_KEEP_OPTIONS, rest.sessionKeep, 'auto'),
+    effort: normalizeChoice(EFFORT_OPTIONS, rest.effort, 'agent'),
+    effortLevel: normalizeChoice(EFFORT_LEVEL_OPTIONS, rest.effortLevel, 'shared'),
+    weights: normalizeWeights(rest.weights, models),
     createdAt: new Date().toISOString(),
   }
+}
+
+/** 模式列表归一化：只留非空字符串，去掉首尾空白，限量 */
+function normalizePatterns(patterns) {
+  if (!Array.isArray(patterns)) return []
+  const out = []
+  for (const p of patterns) {
+    if (typeof p !== 'string') continue
+    const v = p.trim()
+    if (!v) continue
+    if (!out.includes(v)) out.push(v)
+    if (out.length >= 12) break
+  }
+  return out
+}
+
+/** 选项 key 合法性：非法回落默认（绝不让拼错的值悄悄存进去） */
+function normalizeChoice(options, value, fallbackKey) {
+  const key = String(value || '').trim()
+  return options.some((o) => o.key === key) ? key : fallbackKey
+}
+
+/** 毫秒选项：允许直接传数字（自定义），非法回落默认 */
+function normalizeOptionMs(options, value, fallbackMs) {
+  const n = Number(value)
+  if (Number.isFinite(n) && n >= 0) return Math.min(Math.round(n), 60 * 60_000)
+  const key = String(value || '').trim()
+  const hit = options.find((o) => o.key === key)
+  return hit ? hit.ms : fallbackMs
+}
+
+/** 权重归一化：每个成员一个权重，缺省 1 */
+function normalizeWeights(weights, models) {
+  const src = weights && typeof weights === 'object' ? weights : {}
+  const out = {}
+  for (const m of normalizeModels(models)) {
+    const w = Number(src[m])
+    out[m] = Number.isFinite(w) && w > 0 ? Math.min(w, 100) : 1
+  }
+  return out
 }
 
 /** 模型列表归一化：去重、去空、限量 */
@@ -201,13 +346,26 @@ export function normalizeRouteGroups(raw) {
     ? raw.groups
         .filter((g) => g && typeof g === 'object')
         .slice(0, MAX_GROUPS)
-        .map((g, index) => ({
-          id: typeof g.id === 'string' && g.id ? g.id : `${GROUP_PREFIX}${String(index + 1).padStart(2, '0')}`,
-          name: String(g.name || '').trim() || `路由组 ${index + 1}`,
-          models: normalizeModels(g.models),
-          algo: algoOf(g.algo).key,
-          createdAt: g.createdAt || new Date().toISOString(),
-        }))
+        .map((g, index) => {
+          const models = normalizeModels(g.models)
+          return {
+            id: typeof g.id === 'string' && g.id ? g.id : `${GROUP_PREFIX}${String(index + 1).padStart(2, '0')}`,
+            name: String(g.name || '').trim() || `路由组 ${index + 1}`,
+            models,
+            algo: algoOf(g.algo).key,
+            patterns: normalizePatterns(g.patterns),
+            modelListMode: normalizeChoice(MODEL_LIST_OPTIONS, g.modelListMode, 'only-group'),
+            firstTokenMs: normalizeOptionMs(FIRST_TOKEN_OPTIONS, g.firstTokenMs, 60_000),
+            allBusyMs: normalizeOptionMs(ALL_BUSY_OPTIONS, g.allBusyMs, 0),
+            contextMode: normalizeChoice(CONTEXT_OPTIONS, g.contextMode, 'max'),
+            contextCustom: Number.isFinite(Number(g.contextCustom)) ? Number(g.contextCustom) : null,
+            sessionKeep: normalizeChoice(SESSION_KEEP_OPTIONS, g.sessionKeep, 'auto'),
+            effort: normalizeChoice(EFFORT_OPTIONS, g.effort, 'agent'),
+            effortLevel: normalizeChoice(EFFORT_LEVEL_OPTIONS, g.effortLevel, 'shared'),
+            weights: normalizeWeights(g.weights, models),
+            createdAt: g.createdAt || new Date().toISOString(),
+          }
+        })
     : []
   // id 去重（手工改库时可能出现重复，留第一个）
   const seen = new Set()
@@ -255,6 +413,15 @@ export function routingTargetOf(routeGroups, autoRoute, settings) {
       // affinity 临时当 'off' 处理（不落库，只影响这一单的判定）
       forceOff: Boolean(algo.forceOff),
       balanceFirst: Boolean(algo.balanceFirst),
+      orderFirst: Boolean(algo.orderFirst),
+      freeFirst: Boolean(algo.freeFirst),
+      weighted: Boolean(algo.weighted),
+      manualPick: Boolean(algo.manualPick),
+      // 组级运行参数（Magpie 那套）：首字超时、全忙冷却、会话保持
+      firstTokenMs: group.firstTokenMs,
+      allBusyMs: group.allBusyMs,
+      sessionKeep: group.sessionKeep,
+      weights: group.weights,
       group,
     }
   }
@@ -265,6 +432,14 @@ export function routingTargetOf(routeGroups, autoRoute, settings) {
     keepEligible: false,
     forceOff: false,
     balanceFirst: false,
+    orderFirst: false,
+    freeFirst: false,
+    weighted: false,
+    manualPick: false,
+    firstTokenMs: settings?.autoRoute?.firstTokenMs ?? 60_000,
+    allBusyMs: 0,
+    sessionKeep: 'auto',
+    weights: {},
     group: null,
   }
 }

@@ -3921,3 +3921,154 @@ body.prov-dragging .drop-zone { display: flex; }
 .gate-switch-left {
   flex: 1 1 auto;
 }
+
+/* ═══════════ 路由组编辑卡（对标 Magpie 的设置页）═══════════
+ * 用户 2026-11-02：「人家 Magpie 里路由组能有那么多设置，
+ * 为什么咱们就只能选择谁，什么选项都没有？去抄个一模一样的来。」
+ *
+ * 布局照抄 Magpie：每行「左标签 / 右内容 + 说明」，
+ * 单选项用一排可点胶囊，成员用带序号的行。
+ */
+.rg-id {
+  font-size: 10px;
+  font-family: var(--mono, ui-monospace, monospace);
+  color: var(--faint);
+  padding: 1px 6px;
+  border-radius: 5px;
+  background: var(--chip, rgba(0, 0, 0, 0.04));
+}
+.route-group-use.off {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.rg-row {
+  display: grid;
+  grid-template-columns: 88px minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+  padding: 9px 0;
+  border-top: 1px dashed var(--border, rgba(0, 0, 0, 0.07));
+}
+.rg-row:first-of-type { border-top: none; }
+.rg-row-label {
+  font-size: var(--fs-1);
+  color: var(--muted);
+  padding-top: 3px;
+  text-align: right;
+  white-space: nowrap;
+}
+.rg-row-body { min-width: 0; }
+.rg-row-hint {
+  font-size: 10.5px;
+  color: var(--faint);
+  line-height: 1.55;
+  margin-top: 5px;
+}
+
+/* 单选项胶囊 */
+.rg-seg {
+  font-size: 10.5px;
+  padding: 2.5px 9px;
+  border-radius: 999px;
+  border: 1px solid var(--border, rgba(0, 0, 0, 0.12));
+  background: var(--panel, #fff);
+  color: var(--muted);
+  cursor: pointer;
+  white-space: nowrap;
+  margin: 0 4px 4px 0;
+}
+.rg-seg:hover { border-color: var(--accent); color: var(--accent); }
+.rg-seg.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+  font-weight: 500;
+}
+.rg-row-body > .rg-seg:last-child { margin-right: 0; }
+
+/* 成员行：序号 + 名字 + 上移/下移/移除 */
+.rg-members {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.rg-member {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  border-radius: 6px;
+  background: var(--chip, rgba(0, 0, 0, 0.03));
+  font-size: 11px;
+}
+.rg-member-idx {
+  font-size: 10px;
+  color: var(--faint);
+  font-variant-numeric: tabular-nums;
+  min-width: 12px;
+}
+.rg-member-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 10.5px;
+}
+.rg-mini {
+  border: none;
+  background: transparent;
+  color: var(--faint);
+  cursor: pointer;
+  font-size: 11px;
+  line-height: 1;
+  padding: 1px 4px;
+  border-radius: 4px;
+}
+.rg-mini:hover:not(:disabled) { background: var(--panel, #fff); color: var(--text); }
+.rg-mini:disabled { opacity: 0.25; cursor: default; }
+.rg-mini.danger:hover { color: var(--danger); }
+
+.rg-add-model {
+  margin-top: 6px;
+  font-size: 10.5px;
+  padding: 3px 7px;
+  border-radius: 6px;
+  border: 1px dashed var(--border-strong, rgba(0, 0, 0, 0.16));
+  background: transparent;
+  color: var(--accent);
+  cursor: pointer;
+  font-family: inherit;
+  max-width: 100%;
+}
+
+/* 模式匹配 */
+.rg-patterns { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 5px; }
+.rg-pattern {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10.5px;
+  font-family: var(--mono, ui-monospace, monospace);
+  padding: 2px 4px 2px 8px;
+  border-radius: 5px;
+  background: var(--info-soft, #eef1fd);
+  color: var(--info, #3b5bdb);
+}
+.rg-pattern-input {
+  width: 100%;
+  font-size: 10.5px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border, rgba(0, 0, 0, 0.12));
+  background: var(--panel, #fff);
+  color: var(--text);
+  font-family: inherit;
+}
+.rg-pattern-input:focus { outline: none; border-color: var(--accent); }
+
+/* 组卡片独占一行（设置项多，两列放不下） */
+.route-group-list { grid-template-columns: minmax(0, 1fr); }

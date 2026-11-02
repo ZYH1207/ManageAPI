@@ -63,7 +63,19 @@ import {
   recordAffinity,
   readConversation,
 } from '../core/auto-route.js'
-import { GROUP_ALGOS, activeGroupOf, normalizeRouteGroups, newRouteGroup } from '../core/route-groups.js'
+import {
+  ALL_BUSY_OPTIONS,
+  CONTEXT_OPTIONS,
+  EFFORT_LEVEL_OPTIONS,
+  EFFORT_OPTIONS,
+  FIRST_TOKEN_OPTIONS,
+  GROUP_ALGOS,
+  MODEL_LIST_OPTIONS,
+  SESSION_KEEP_OPTIONS,
+  activeGroupOf,
+  normalizeRouteGroups,
+  newRouteGroup,
+} from '../core/route-groups.js'
 // 缓存亲和（借鉴 Magpie）：对话指纹 + 「该不该为了缓存钉住上次那个供给」
 import { conversationFingerprint, recordFrom, listAffinityModes } from '../core/affinity.js'
 // 路由编排：速度模型（标定）+ 余额守卫（阈值切换）+ 兜底阶梯（绝不报错）
@@ -654,6 +666,16 @@ async function buildState({ light = false } = {}) {
         ...norm,
         active: activeGroupOf(norm),
         algos: GROUP_ALGOS,
+        // 组级设置的选项表（Magpie 那套的完整对照）
+        options: {
+          firstToken: FIRST_TOKEN_OPTIONS,
+          allBusy: ALL_BUSY_OPTIONS,
+          context: CONTEXT_OPTIONS,
+          sessionKeep: SESSION_KEEP_OPTIONS,
+          modelList: MODEL_LIST_OPTIONS,
+          effort: EFFORT_OPTIONS,
+          effortLevel: EFFORT_LEVEL_OPTIONS,
+        },
       }
     })(),
     // 路由健康快照：标定可信度 + 各站余额状态。
@@ -908,7 +930,20 @@ route('GET', /^\/api\/state$/, async (ctx) => buildState({ light: ctx.query.get(
 route('GET', /^\/api\/route-groups$/, async () => {
   const db = await store.readDb()
   const norm = normalizeRouteGroups(db.settings.routeGroups)
-  return { ...norm, active: activeGroupOf(norm), algos: GROUP_ALGOS }
+  return {
+    ...norm,
+    active: activeGroupOf(norm),
+    algos: GROUP_ALGOS,
+    options: {
+      firstToken: FIRST_TOKEN_OPTIONS,
+      allBusy: ALL_BUSY_OPTIONS,
+      context: CONTEXT_OPTIONS,
+      sessionKeep: SESSION_KEEP_OPTIONS,
+      modelList: MODEL_LIST_OPTIONS,
+      effort: EFFORT_OPTIONS,
+      effortLevel: EFFORT_LEVEL_OPTIONS,
+    },
+  }
 })
 
 route('POST', /^\/api\/route-groups$/, async (ctx) => {
@@ -940,6 +975,21 @@ route('PATCH', /^\/api\/route-groups\/([\w-]+)$/, async (ctx) => {
     if (body.name !== undefined) group.name = String(body.name).trim() || group.name
     if (body.models !== undefined) group.models = Array.isArray(body.models) ? body.models : group.models
     if (body.algo !== undefined) group.algo = String(body.algo)
+    // Magpie 那套组级设置：原样透传，靠 normalizeRouteGroups 校验合法性
+    for (const field of [
+      'patterns',
+      'modelListMode',
+      'firstTokenMs',
+      'allBusyMs',
+      'contextMode',
+      'contextCustom',
+      'sessionKeep',
+      'effort',
+      'effortLevel',
+      'weights',
+    ]) {
+      if (body[field] !== undefined) group[field] = body[field]
+    }
     // 过一遍归一化：成员去重/限量、算法回落合法值
     db.settings.routeGroups = normalizeRouteGroups(norm)
     updated = db.settings.routeGroups.groups.find((g) => g.id === id)

@@ -8284,6 +8284,72 @@ document.addEventListener('click', async (event) => {
     return
   }
 
+  // 组成员排序：上移/下移（Magpie 的「排第一的模型决定本组对外的能力」）
+  if (action === 'rg-up' || action === 'rg-down') {
+    const id = actionButton.dataset.id
+    const model = actionButton.dataset.model
+    if (!id || !model) return
+    const group = (state.routeGroups?.groups || []).find((g) => g.id === id)
+    if (!group) return
+    const models = [...(group.models || [])]
+    const i = models.indexOf(model)
+    if (i < 0) return
+    const j = action === 'rg-up' ? i - 1 : i + 1
+    if (j < 0 || j >= models.length) return
+    ;[models[i], models[j]] = [models[j], models[i]]
+    try {
+      await api('PATCH', `/api/route-groups/${encodeURIComponent(id)}`, { models })
+      state = await api('GET', '/api/state')
+      render()
+    } catch (error) {
+      toast(error.message, true)
+    }
+    return
+  }
+
+  if (action === 'rg-unpattern') {
+    const id = actionButton.dataset.id
+    const pattern = actionButton.dataset.pattern
+    if (!id || !pattern) return
+    const group = (state.routeGroups?.groups || []).find((g) => g.id === id)
+    if (!group) return
+    const patterns = (group.patterns || []).filter((p) => p !== pattern)
+    try {
+      await api('PATCH', `/api/route-groups/${encodeURIComponent(id)}`, { patterns })
+      state = await api('GET', '/api/state')
+      render()
+    } catch (error) {
+      toast(error.message, true)
+    }
+    return
+  }
+
+  // 组级设置的单选项（路由方式之外的 7 组）
+  const RG_SEG_FIELDS = {
+    'rg-model-list': 'modelListMode',
+    'rg-first-token': 'firstTokenMs',
+    'rg-all-busy': 'allBusyMs',
+    'rg-context': 'contextMode',
+    'rg-session-keep': 'sessionKeep',
+    'rg-effort': 'effort',
+    'rg-effort-level': 'effortLevel',
+  }
+  if (RG_SEG_FIELDS[action]) {
+    const id = actionButton.dataset.id
+    if (!id) return
+    const field = RG_SEG_FIELDS[action]
+    // 首字/全忙是毫秒值，服务端 normalize 会用选项表换成 ms
+    const raw = actionButton.dataset[action] ?? actionButton.getAttribute(`data-${action}`)
+    try {
+      await api('PATCH', `/api/route-groups/${encodeURIComponent(id)}`, { [field]: raw })
+      state = await api('GET', '/api/state')
+      render()
+    } catch (error) {
+      toast(error.message, true)
+    }
+    return
+  }
+
   if (action === 'rg-algo') {
     const id = actionButton.dataset.id
     const algo = actionButton.dataset.algo
@@ -9448,6 +9514,45 @@ document.addEventListener('click', (event) => {
 }, true)
 
 document.addEventListener('change', async (event) => {
+  // 组成员：下拉选择添加
+  const rgAdd = event.target.closest?.('[data-act="rg-add"]')
+  if (rgAdd) {
+    const id = rgAdd.dataset.id
+    const model = rgAdd.value
+    if (!id || !model) return
+    const group = (state.routeGroups?.groups || []).find((g) => g.id === id)
+    if (!group) return
+    const models = [...(group.models || []), model]
+    try {
+      await api('PATCH', `/api/route-groups/${encodeURIComponent(id)}`, { models })
+      state = await api('GET', '/api/state')
+      render()
+    } catch (error) {
+      toast(error.message, true)
+    }
+    return
+  }
+
+  // 模式匹配：回车/失焦时加入
+  const rgPattern = event.target.closest?.('[data-rg-pattern]')
+  if (rgPattern) {
+    const id = rgPattern.dataset.rgPattern
+    const value = rgPattern.value.trim()
+    if (!id || !value) return
+    const group = (state.routeGroups?.groups || []).find((g) => g.id === id)
+    if (!group) return
+    const patterns = [...(group.patterns || []), value]
+    try {
+      await api('PATCH', `/api/route-groups/${encodeURIComponent(id)}`, { patterns })
+      rgPattern.value = ''
+      state = await api('GET', '/api/state')
+      render()
+    } catch (error) {
+      toast(error.message, true)
+    }
+    return
+  }
+
   // 路由组改名（inout 失焦或回车触发 change）
   const rgName = event.target.closest?.('[data-rg-name]')
   if (rgName) {
