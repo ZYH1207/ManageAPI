@@ -124,7 +124,14 @@ export function admissionOf(row) {
       }
     }
     if (row.status === 'unstable') {
-      return { ok: false, kind: 'unstable', text: '不稳定：可用率低于 80%' }
+      // 带上实际数值：只说「低于 80%」用户没法判断是 79% 还是 20%，
+      // 前者等一轮探针就可能恢复，后者是这家真的坏了——处置完全不同。
+      const pct = typeof row.availability === 'number' ? Math.round(row.availability * 100) : null
+      return {
+        ok: false,
+        kind: 'unstable',
+        text: pct === null ? '不稳定：可用率低于 80%' : `不稳定：可用率 ${pct}%（门槛 80%）`,
+      }
     }
   }
   // 可用率是 null 有三种来源，别一锅端：

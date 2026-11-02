@@ -7019,6 +7019,21 @@ function setTab(name) {
     // 重绘发生在 render() 的 translateDom 之后，得自己补一次翻译
     translateDom($('#view-free') || document.body)
   }
+  // 路由页：进页就接上活动流。
+  //
+  // 为什么必须在这里显式连一次：首次 render() 发生在 setTab() **之前**，
+  // 那时 #view-route 还是 hidden，renderRoute 里的 routePaint/routeConnect
+  // 会走「不可见就没收」的分支，于是第一次点进路由页永远是「未连接」，
+  // 得点第二次才连上（实测踩到）。切页时补这一次连接就干净了。
+  if (name === 'route') {
+    routeConnect()
+    routePaint()
+  }
+  // 离开路由页时断掉长连接（别让后台一直挂着）
+  else {
+    routeDisconnect()
+  }
+
   // 监控数据比 state 重，按需拉：第一次进这个页才请求
   if (name === 'monitor' && !monitorData) void loadMonitor(monitorDays)
   // 诊断系统页按需拉：结论、账本、故障上报、空回合守卫四份数据
