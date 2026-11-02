@@ -46,6 +46,147 @@ node daemon/index.js --open        # 启动后自动开浏览器
 
 之后网关就会自动选站了；也可以在 **智能决策**页手动调整先后。
 
+## 在 Windows 上跑 / 从 Mac 迁移过去
+
+代码本身是跨平台的（只有「打开浏览器」一处分支），**没有平台相关的依赖或二进制**。
+所以迁移的核心是两件事：**拿到同一份代码** + **搬对数据目录**。
+
+### 1. 拉代码
+
+```bat
+git clone https://github.com/ZYH1207/ManageAPI.git
+cd ManageAPI
+node daemon\index.js
+```
+
+需要 Node.js ≥ 20（<https://nodejs.org/> 装 LTS 即可）。**不用 `npm install`** —— 本项目零第三方依赖。
+
+> 如果你在 Windows 上开发时用的是另一份检出，注意别和 Mac 那份混：`git status` 确认干净，
+> 需要合的分支先推到远端，再在另一边 `git pull`。
+
+### 2. 数据目录在哪
+
+| 平台 | 默认数据目录 |
+|---|---|
+| Windows | `C:\Users\<你的用户名>\.manage-api\` |
+| macOS / Linux | `~/.manage-api/` |
+
+可以用 `MANAGE_API_HOME` 覆盖（两个平台写法不同）：
+
+```bat
+:: Windows
+set MANAGE_API_HOME=D:\AgentWorkPlace\DSH\manage-api-data
+node daemon\index.js
+```
+
+```bash
+# macOS / Linux
+export MANAGE_API_HOME=/Users/you/manage-api-data
+node daemon/index.js
+```
+
+### 3. 从 Mac 搬到 Windows
+
+**要搬的只有数据目录**，代码走 git。四个文件缺一不可：
+
+| 文件 | 为什么不能少 |
+|---|---|
+| `master.key` | **加密主密钥**。缺了它，`db.json` 里所有上游 Key 全部解不开 |
+| `db.json` | 站点 / 凭据 / 供给 / 设置 |
+| `benchmark.json` | 官方基准价，缺了比价会失真 |
+| `probe-spend.json` | 探针花费统计 |
+
+**步骤：**
+
+1. **Mac 上先停服务**，避免拷到写一半的 `db.json`
+   ```bash
+   launchctl unload ~/Library/LaunchAgents/com.sakura.manage-api.plist   # 若用 launchd 托管
+   # 或者：kill <pid>
+   ```
+2. Mac 上打包（带上全部四个文件）
+   ```bash
+   cd ~ && tar czf manage-api-migrate.tgz \
+     -C "$HOME" .manage-api/db.json \
+     .manage-api/master.key \
+     .manage-api/benchmark.json \
+     .manage-api/probe-spend.json
+   ```
+3. 传到 Windows，解到 Windows 的数据目录
+   ```bat
+   :: 假设解压到 D:\migrate\ 下，目录里是 .manage-api\d b.json 等
+   mkdir "%USERPROFILE%\.manage-api"
+   copy /Y D:\migrate\.manage-api\* "%USERPROFILE%\.manage-api\"
+   ```
+4. 启动，浏览器开 <http://127.0.0.1:4319/>
+
+**验收**：站点页能看到你的站、每张卡的 Key 显示为「已配置」（不是「解密失败」），
+就说明 `master.key` 配对成功。
+
+> ⚠️ **`master.key` 就是数据本身**。它和 `db.json` 一起泄露 = 43 个上游 Key 全部泄露。
+> 传输别走公共网盘；迁移完把中转用的压缩包删掉。
+>
+> ⚠️ **`master.key` 一旦丢失不可恢复**。项目曾做过「主密码派生密钥」，因为
+> 「忘记密码 = 数据全毁」且每次启动都要输密码，最终移除了。所以**单独备份 `master.key`**。
+
+### 4. Windows 上的常驻
+
+Windows 没有 `launchd`，两种做法：
+
+**方式 A：计划任务（推荐）**
+
+1. 打开「任务计划程序」→ 创建任务
+2. 触发器：登录时
+3. 操作：启动程序 `node.exe`，参数 `daemon\index.js`，起始于 `D:\AgentWorkPlace\DSH\ManageAPI`
+4. 勾选「不管用户是否登录都要运行」按需
+
+**方式 B：启动文件夹放一个 vbs（静默、无黑框）**
+
+新建 `start-hidden.vbs`，放在
+`%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\`：
+
+```vbs
+Set sh = CreateObject("WScript.Shell")
+sh.CurrentDirectory = "D:\AgentWorkPlace\DSH\ManageAPI"
+sh.Run "node daemon\index.js", 0, False
+```
+
+> `0` = 不显示窗口，`False` = 不等它结束。
+> **注意 `CurrentDirectory` 必须写对**，否则 `daemon\index.js` 找不到。
+>
+> 这个文件写死了本机路径，所以它**不进仓库**（`.gitignore` 里已排除 `start-hidden.vbs` / `start.cmd`），
+> 每台机器自己建一份。
+
+### 5. 端口被占用
+
+默认 4319，被占会**自动往后找**（4320、4321…），并在启动日志里打警告：
+
+```
+⚠️  端口 4319 已被占用，已顺延到 4320。
+   指向旧端口的客户端会连不上。查占用者：
+     lsof -nP -iTCP:4319 -sTCP:LISTEN
+```
+
+Windows 上查占用：
+
+```bat
+net stop winnat
+netstat -ano | findstr :4319
+tasklist /FI "PID eq <上面查到的PID>"
+```
+
+指定端口：`node daemon\index.js --port 5000`
+
+### 6. 迁移后要同步的东西
+
+数据搬过去之后，**客户端那边的网关 Key 不用重配**（Key 存在 `db.json` 里，一起搬了）。
+但下面这些**不在数据目录里**，需要单独确认：
+
+| 项目 | 说明 |
+|---|---|
+| 局域网访问 | `settings.lanPanel` 在 `db.json` 里会跟着过去，但**网卡地址会变**——新机器要重新探测 |
+| 常驻配置 | Mac 的 launchd plist 不能直接用，Windows 要按上面第 4 节重建 |
+| 客户端 base_url | 若之前写的是 Mac 的局域网 IP（如 `192.168.1.82:4319`），Windows 上要换成新机器的地址 |
+
 ## 它解决什么问题
 
 同时买了几个中转站的人都会遇到这三件事：
