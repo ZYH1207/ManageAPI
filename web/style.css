@@ -4072,3 +4072,97 @@ body.prov-dragging .drop-zone { display: flex; }
 
 /* 组卡片独占一行（设置项多，两列放不下） */
 .route-group-list { grid-template-columns: minmax(0, 1fr); }
+
+/* ═══════════ 路由组折叠卡 ═══════════
+ * 用户 2026-11-02：「点完保存就可以缩上去，变成一个小组。
+ * 你这个一直是默认大卡片、大网页。」
+ *
+ * 收起态只有一行：名称 + 成员数 + 路由方式 + 生效徽章 + 动作按钮。
+ * 点「设置」才展开完整表单，改完点「保存并收起」缩回去。
+ */
+.route-group-card { padding: 9px 12px; }
+.route-group-card.expanded { padding: 11px 13px; }
+
+.rg-summary {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  flex-wrap: wrap;
+  min-width: 0;
+  flex: 1;
+}
+.rg-summary-name {
+  font-size: var(--fs-2);
+  font-weight: 600;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.rg-summary-meta {
+  font-size: var(--fs-1);
+  color: var(--faint);
+  white-space: nowrap;
+}
+.rg-summary-algo {
+  font-size: 10.5px;
+  padding: 1.5px 8px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.rg-top-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+}
+
+.rg-expand {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10.5px;
+  padding: 2.5px 9px;
+  border-radius: 999px;
+  border: 1px solid var(--border, rgba(0, 0, 0, 0.12));
+  background: var(--panel, #fff);
+  color: var(--muted);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.rg-expand:hover { border-color: var(--accent); color: var(--accent); }
+.rg-caret {
+  font-size: 8px;
+  transition: transform 0.15s ease;
+  display: inline-block;
+}
+.rg-caret.open { transform: rotate(180deg); }
+
+.rg-settings {
+  margin-top: 10px;
+  padding-top: 4px;
+}
+.rg-name-full { width: 100%; }
+
+.rg-save-row {
+  display: flex;
+  justify-content: flex-end;
+  padding-top: 11px;
+  margin-top: 4px;
+  border-top: 1px dashed var(--border, rgba(0, 0, 0, 0.08));
+}
+.rg-save {
+  font-size: var(--fs-1);
+  font-weight: 500;
+  padding: 5px 16px;
+  border-radius: 7px;
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: #fff;
+  cursor: pointer;
+}
+.rg-save:hover { filter: brightness(1.08); }

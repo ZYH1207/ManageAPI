@@ -43,6 +43,27 @@ let routeConnState = 'off'
 let routeRuns = []
 /** 正在进行的 run，key → run */
 const routeActive = new Map()
+/** 展开一个组（app.js 的事件处理器调用） */
+export function expandGroup(id) {
+  expandedGroups.add(id)
+}
+
+/** 收起一个组 */
+export function collapseGroup(id) {
+  expandedGroups.delete(id)
+}
+
+/**
+ * 哪些路由组是展开的。
+ *
+ * 用户 2026-11-02：「它那个如果点完保存就可以缩上去，变成一个小组。
+ * 你这个一直是默认大卡片、大网页。」
+ *
+ * 所以默认全部收起，只显示一行摘要（名称/成员数/路由方式/生效态）；
+ * 点「设置」才展开完整表单；改完点「保存并收起」缩回去。
+ */
+const expandedGroups = new Set()
+
 let routeSource = null
 let routeReconnectTimer = null
 
@@ -625,6 +646,10 @@ function routeGroupsHtml() {
  * 只会让人以为能用。等真有需求再补，不假装。
  */
 function routeGroupCard(g, algos, opts, models, isActive) {
+  const expanded = expandedGroups.has(g.id)
+  const algoDef = algos.find((a) => a.key === g.algo) || {}
+  const memberCount = (g.models || []).length
+
   const seg = (list, current, act, extra = {}) =>
     list
       .map((o) => {
@@ -642,75 +667,98 @@ function routeGroupCard(g, algos, opts, models, isActive) {
       <div class="rg-row-body">${body}${hint ? `<div class="rg-row-hint">${deps.t(hint)}</div>` : ''}</div>
     </div>`
 
+  // ── 收起态：一行摘要 ────────────────────────────────────────────
+  const summary = `
+    <div class="rg-summary">
+      <span class="rg-summary-name">${deps.esc(g.name)}</span>
+      <span class="rg-summary-meta">${deps.t('{n} 个模型', { n: memberCount })}</span>
+      <span class="rg-summary-algo">${deps.esc(algoDef.label || g.algo)}</span>
+      ${isActive ? `<span class="route-group-badge on">${deps.t('生效中')}</span>` : ''}
+    </div>`
+
+  // ── 收起态的头部动作 ────────────────────────────────────────────
+  const headActions = `
+    <button class="rg-expand" data-act="rg-expand" data-id="${deps.esc(g.id)}">
+      ${expanded ? deps.t('收起') : deps.t('设置')}
+      <span class="rg-caret${expanded ? ' open' : ''}">▾</span>
+    </button>
+    ${isActive
+      ? `<button class="route-group-use off" data-act="rg-use" data-id="${deps.esc(g.id)}">${deps.t('停用')}</button>`
+      : `<button class="route-group-use" data-act="rg-use" data-id="${deps.esc(g.id)}">${deps.t('启用')}</button>`}
+    <button class="route-group-del" data-act="rg-del" data-id="${deps.esc(g.id)}"
+      title="${deps.t('删除这个组')}">${deps.icon('x')}</button>`
+
   return `
-    <div class="route-group-card${isActive ? ' active' : ''}" data-rg="${deps.esc(g.id)}">
+    <div class="route-group-card${isActive ? ' active' : ''}${expanded ? ' expanded' : ''}" data-rg="${deps.esc(g.id)}">
       <div class="route-group-top">
-        <input class="route-group-name" value="${deps.esc(g.name)}"
-          data-rg-name="${deps.esc(g.id)}" title="${deps.t('点这里改名')}" />
-        <span class="rg-id">${deps.esc(g.id)}</span>
-        ${isActive
-          ? `<span class="route-group-badge on">${deps.t('生效中')}</span>
-             <button class="route-group-use off" data-act="rg-use" data-id="${deps.esc(g.id)}">${deps.t('停用')}</button>`
-          : `<button class="route-group-use" data-act="rg-use" data-id="${deps.esc(g.id)}">${deps.t('启用')}</button>`}
-        <button class="route-group-del" data-act="rg-del" data-id="${deps.esc(g.id)}"
-          title="${deps.t('删除这个组')}">${deps.icon('x')}</button>
+        ${summary}
+        <span class="rg-top-actions">${headActions}</span>
       </div>
 
-      ${row('模型', '排第一的模型决定本组对外的能力；按顺序模式下从上往下尝试。', `
-        <div class="rg-members">
-          ${(g.models || []).length === 0
-            ? `<span class="route-group-hint">${deps.t('还没有成员——点下面的「+ 添加模型」')}</span>`
-            : (g.models || []).map((m, i) => `
-              <span class="rg-member">
-                <span class="rg-member-idx">${i + 1}</span>
-                <span class="rg-member-name">${deps.esc(m)}</span>
-                <button class="rg-mini" data-act="rg-up" data-id="${deps.esc(g.id)}" data-model="${deps.esc(m)}"
-                  title="${deps.t('上移')}" ${i === 0 ? 'disabled' : ''}>↑</button>
-                <button class="rg-mini" data-act="rg-down" data-id="${deps.esc(g.id)}" data-model="${deps.esc(m)}"
-                  title="${deps.t('下移')}" ${i === g.models.length - 1 ? 'disabled' : ''}>↓</button>
-                <button class="rg-mini danger" data-act="rg-toggle" data-id="${deps.esc(g.id)}" data-model="${deps.esc(m)}"
-                  title="${deps.t('移出这个组')}">×</button>
-              </span>`).join('')}
+      ${expanded ? `
+      <div class="rg-settings">
+        ${row('名称', '', `<input class="route-group-name rg-name-full" value="${deps.esc(g.name)}"
+          data-rg-name="${deps.esc(g.id)}" />`)}
+
+        ${row('模型', '排第一的模型决定本组对外的能力；按顺序模式下从上往下尝试。', `
+          <div class="rg-members">
+            ${(g.models || []).length === 0
+              ? `<span class="route-group-hint">${deps.t('还没有成员——点下面的「添加模型」')}</span>`
+              : (g.models || []).map((m, i) => `
+                <span class="rg-member">
+                  <span class="rg-member-idx">${i + 1}</span>
+                  <span class="rg-member-name">${deps.esc(m)}</span>
+                  <button class="rg-mini" data-act="rg-up" data-id="${deps.esc(g.id)}" data-model="${deps.esc(m)}"
+                    title="${deps.t('上移')}" ${i === 0 ? 'disabled' : ''}>↑</button>
+                  <button class="rg-mini" data-act="rg-down" data-id="${deps.esc(g.id)}" data-model="${deps.esc(m)}"
+                    title="${deps.t('下移')}" ${i === g.models.length - 1 ? 'disabled' : ''}>↓</button>
+                  <button class="rg-mini danger" data-act="rg-toggle" data-id="${deps.esc(g.id)}" data-model="${deps.esc(m)}"
+                    title="${deps.t('移出这个组')}">×</button>
+                </span>`).join('')}
+          </div>
+          <select class="rg-add-model" data-act="rg-add" data-id="${deps.esc(g.id)}">
+            <option value="">+ ${deps.t('添加模型')}</option>
+            ${models.filter((m) => !(g.models || []).includes(m)).map((m) => `<option value="${deps.esc(m)}">${deps.esc(m)}</option>`).join('')}
+          </select>`)}
+
+        ${row('模式', '模式匹配的模型均入组（含供应商日后新增的），排在显式成员之后。* 匹配 provider/model 中任意字符，re: 开头表示正则。', `
+          <div class="rg-patterns">
+            ${(g.patterns || []).map((p) => `<span class="rg-pattern">${deps.esc(p)}
+              <button class="rg-mini" data-act="rg-unpattern" data-id="${deps.esc(g.id)}" data-pattern="${deps.esc(p)}">×</button></span>`).join('')}
+          </div>
+          <input class="rg-pattern-input" placeholder="${deps.t('例如 openrouter/*:free 或 re:...')}"
+            data-rg-pattern="${deps.esc(g.id)}" />`)}
+
+        ${row('模型列表', 'Agent 的模型列表和网关 /v1/models 里怎么呈现本组。', seg(opts.modelList || [], g.modelListMode, 'rg-model-list', { id: g.id }))}
+
+        ${row('路由方式', '', seg(algos, g.algo, 'rg-algo', { id: g.id }))}
+
+        ${row('迟迟不出字', '成员超过这个时间仍未开始回答（无文字、思考或工具调用）时改问下一个。仅对流式请求生效。',
+          seg(opts.firstToken || [], g.firstTokenMs, 'rg-first-token', { id: g.id }))}
+
+        ${row('成员全都忙', '每个成员都失败时，隔这么久再试；关闭则立刻把最后一个错误交出去。',
+          seg(opts.allBusy || [], g.allBusyMs, 'rg-all-busy', { id: g.id }))}
+
+        ${row('上下文', '告诉 agent 本组最大/最小的上下文窗口；某个成员放不下的对话会交给放得下的成员。',
+          seg(opts.context || [], g.contextMode, 'rg-context', { id: g.id }))}
+
+        ${row('会话保持', '厂商缓存仍有价值时，会话留在回答过它的成员上。与决策页的「缓存亲和」是同一件事的两种粒度，组级这里作默认值。',
+          seg(opts.sessionKeep || [], g.sessionKeep, 'rg-session-keep', { id: g.id }))}
+
+        ${row('推理强度', '按 agent 传的值，或每轮重新判断。',
+          seg(opts.effort || [], g.effort, 'rg-effort', { id: g.id }))}
+
+        ${row('推理档位', '对 Agent 提供所有模型都有的档位（成员共有），或各自自定。',
+          seg(opts.effortLevel || [], g.effortLevel, 'rg-effort-level', { id: g.id }))}
+
+        <div class="rg-save-row">
+          <button class="rg-save" data-act="rg-collapse" data-id="${deps.esc(g.id)}">${deps.t('保存并收起')}</button>
         </div>
-        <select class="rg-add-model" data-act="rg-add" data-id="${deps.esc(g.id)}">
-          <option value="">+ ${deps.t('添加模型')}</option>
-          ${models.filter((m) => !(g.models || []).includes(m)).map((m) => `<option value="${deps.esc(m)}">${deps.esc(m)}</option>`).join('')}
-        </select>`)}
-
-      ${row('模式', '模式匹配的模型均入组（含供应商日后新增的），排在显式成员之后。* 匹配 provider/model 中任意字符，re: 开头表示正则。', `
-        <div class="rg-patterns">
-          ${(g.patterns || []).map((p) => `<span class="rg-pattern">${deps.esc(p)}
-            <button class="rg-mini" data-act="rg-unpattern" data-id="${deps.esc(g.id)}" data-pattern="${deps.esc(p)}">×</button></span>`).join('')}
-        </div>
-        <input class="rg-pattern-input" placeholder="${deps.t('例如 openrouter/*:free 或 re:...')}"
-          data-rg-pattern="${deps.esc(g.id)}" />`)}
-
-      ${row('模型列表', 'Agent 的模型列表和网关 /v1/models 里怎么呈现本组。', seg(opts.modelList || [], g.modelListMode, 'rg-model-list', { id: g.id }))}
-
-      ${row('路由方式', '', seg(algos, g.algo, 'rg-algo', { id: g.id }))}
-
-      ${row('迟迟不出字', '成员超过这个时间仍未开始回答（无文字、思考或工具调用）时改问下一个。仅对流式请求生效。',
-        seg(opts.firstToken || [], g.firstTokenMs, 'rg-first-token', { id: g.id })
-        .replace(/data-rg-first-token="([a-z0-9]+)"/g, 'data-rg-first-token="$1"'))}
-
-      ${row('成员全都忙', '每个成员都失败时，隔这么久再试；关闭则立刻把最后一个错误交出去。',
-        seg(opts.allBusy || [], g.allBusyMs, 'rg-all-busy', { id: g.id }))}
-
-      ${row('上下文', '告诉 agent 本组最大/最小的上下文窗口；某个成员放不下的对话会交给放得下的成员。',
-        seg(opts.context || [], g.contextMode, 'rg-context', { id: g.id }))}
-
-      ${row('会话保持', '厂商缓存仍有价值时，会话留在回答过它的成员上。与决策页的「缓存亲和」是同一件事的两种粒度，组级这里作默认值。',
-        seg(opts.sessionKeep || [], g.sessionKeep, 'rg-session-keep', { id: g.id }))}
-
-      ${row('推理强度', '按 agent 传的值，或每轮重新判断。',
-        seg(opts.effort || [], g.effort, 'rg-effort', { id: g.id }))}
-
-      ${row('推理档位', '对 Agent 提供所有模型都有的档位（成员共有），或各自自定。',
-        seg(opts.effortLevel || [], g.effortLevel, 'rg-effort-level', { id: g.id }))}
+      </div>` : ''}
     </div>`
 }
 
-/** 当前有哪些模型可选（从决策数据里取，去重） *//** 当前有哪些模型可选（从决策数据里取，去重） */
+/** 当前有哪些模型可选（从决策数据里取，去重） *//** 当前有哪些模型可选（从决策数据里取，去重） *//** 当前有哪些模型可选（从决策数据里取，去重） */
 function availableModels() {
   const out = []
   const seen = new Set()

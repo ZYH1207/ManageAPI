@@ -4,7 +4,7 @@ import { renderFreeRelayPane, vendorChipClass, vendorOf, vendorLabel } from './f
 import { renderFreePlatformPane } from './free-platform.js'
 import { ensureProtocolView } from './protocol-view.js'
 import { ensureProtocolRecordsView } from './protocol-records-view.js'
-import { bindRouteView, routeConnect, routeDisconnect, routePaint } from './route-view.js'
+import { bindRouteView, collapseGroup, expandGroup, routeConnect, routeDisconnect, routePaint } from './route-view.js'
 
 const $ = (sel, root = document) => root.querySelector(sel)
 
@@ -6872,6 +6872,8 @@ const AUTO_ROUTE_UI_HIDDEN = false
 
 /** 折叠状态：'provider:xxx' / 'pricing:模型名' / 'probe:站点id' */
 const collapsedPanels = new Set()
+/** 与 route-view 的 expandedGroups 同步的本地镜像（判断用） */
+const expandedGroupsLocal = new Set()
 
 /** 探针页「探测」的筛选条件：站点 / 分组 / 模型，三个取交集，可单独用也可叠加。
  *  存模块级变量：探测完 re-render 不丢，切页回来也还在。 */
@@ -8281,6 +8283,29 @@ document.addEventListener('click', async (event) => {
     } catch (error) {
       toast(error.message, true)
     }
+    return
+  }
+
+  // 路由组展开 / 收起（用户：「点完保存就可以缩上去，变成一个小组」）
+  if (action === 'rg-expand') {
+    const id = actionButton.dataset.id
+    if (!id) return
+    if (expandedGroupsLocal.has(id)) expandedGroupsLocal.delete(id)
+    else expandedGroupsLocal.add(id)
+    // 展开状态在 route-view 里维护，这里同步过去并重绘
+    if (expandedGroupsLocal.has(id)) expandGroup(id)
+    else collapseGroup(id)
+    render()
+    return
+  }
+
+  if (action === 'rg-collapse') {
+    const id = actionButton.dataset.id
+    if (!id) return
+    expandedGroupsLocal.delete(id)
+    collapseGroup(id)
+    render()
+    toast(t('已保存'))
     return
   }
 
