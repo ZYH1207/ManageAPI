@@ -4003,10 +4003,32 @@ function authorizeGateway(req, db) {
   if (!gateway.enabled) return { ok: false, status: 503, message: '网关已在设置中关闭' }
   const header = String(req.headers.authorization || '')
   const token = header.replace(/^Bearer\s+/i, '').trim()
-  if (!token) return { ok: false, status: 401, message: '缺少 API Key，请在 Authorization 头里带上 Bearer <网关 Key>' }
+  // 这些错误都是「客户端 → 网关」这一段的问题，和上游中转站无关。
+  // 一定把段位说出来：否则用户看到「API Key 无效」会去中转站那边找，白费半天。
+  if (!token) {
+    return {
+      ok: false,
+      status: 401,
+      message: '[客户端→网关] 没带 Key：请在 Authorization 头里写 Bearer <网关 Key>。网关 Key 在 面板 → 网关 里，和中转站的 Key 不是同一个。',
+    }
+  }
   const keyRecord = gateway.keys.find((k) => k.key === token)
-  if (!keyRecord) return { ok: false, status: 401, message: 'API Key 无效' }
-  if (!keyRecord.enabled) return { ok: false, status: 403, message: `Key「${keyRecord.name}」已被禁用` }
+  if (!keyRecord) {
+    return {
+      ok: false,
+      status: 401,
+      message: `[客户端→网关] 这个 Key 不是本网关签发的（收到 ${token.slice(0, 12)}…）。` +
+        '排查：①是不是还在用另一台机器/旧版本导出的 Key？②面板 → 网关 里那把现在是否已轮换？' +
+        '注意这一段和中转站无关，中转站 Key 不用改。',
+    }
+  }
+  if (!keyRecord.enabled) {
+    return {
+      ok: false,
+      status: 403,
+      message: `[客户端→网关] Key「${keyRecord.name}」已被禁用。去 面板 → 网关 启用它，或换一把。`,
+    }
+  }
   return { ok: true, keyRecord }
 }
 
@@ -4974,10 +4996,15 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
 
   if (candidates.length === 0) {
     const available = listPublicModels({ offers: split.paid, scores, settings: db.settings }).map((m) => m.id)
+    // 这一段是「网关 → 中转站」的问题：网关自己的库里没有这个模型的可路由供给。
+    // 要先说清「不是客户端 Key 的问题」，否则用户会去改客户端的 Key，越改越乱。
     return openaiError(
       res,
       404,
-      `没有可用的 ${model}。已同步的模型：${available.slice(0, 20).join(', ') || '（无，先去同步模型列表）'}`,
+      `[网关→中转站] 网关里没有可用的 ${model}（不是你的客户端 Key 有问题）。` +
+        `网关当前已同步的模型：${available.slice(0, 20).join(', ') || '（一个都没有，先去面板同步模型列表）'}。` +
+        '排查：①面板里这个模型的站点是否还有可用 Key/额度？②站点同步是否成功？' +
+        '③若你刚删过数据，需要重新同步模型列表。',
       'model_not_found',
     )
   }
@@ -5508,9 +5535,41 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
   return openaiError(
     res,
     502,
-    '上游暂时不可用，请稍后重试（网关已记录并提供应商）',
+    `[网关→中转站] 上游全部失败（共试了 ${failures.length} 个供给）。${classifyFailures(failures)}` +
+      '这一段的故障在中转站侧，改客户端 Key 没用。明细见 面板 → 智能决策 页与错误账本。',
     'upstream_error',
   )
+}
+
+/**
+ * 把一串上游失败归类成「人话」，让用户一眼看出该去哪边修。
+ *
+ * 为什么需要：原来这里只有一句「上游暂时不可用」，用户分不清是
+ *   - 中转站限速（等一会儿就好）
+ *   - 中转站余额/quota 用完（要去充值）
+ *   - 中转站 Key 失效（要去换 Key）
+ *   - 网络不通（查代理/DNS）
+ * 这四类处理方式完全不同，含糊话会把用户引到错误的方向。
+ *
+ * @param {{error?: string}[]} failures
+ * @returns {string}
+ */
+function classifyFailures(failures) {
+  const textOf = (f) => String(f?.error || '')
+  const buckets = [
+    { key: '限速', test: /429|rate.?limit|too many requests|throttl/i, advice: '被中转站限速，稍后重试或分流到别的站' },
+    { key: '余额/quota', test: /402|insufficient|quota|balance|余额|额度|欠费/i, advice: '中转站余额或额度不足，去对应站点充值' },
+    { key: '中转站鉴权', test: /401|403|unauthorized|invalid.?key|forbidden|invalid.?token/i, advice: '中转站的 Key 失效或无权限，去面板对应站点换 Key' },
+    { key: '超时/断流', test: /timeout|timed.?out|ECONNRESET|socket hang up|aborted|first token/i, advice: '中转站超时或断流，可能是网络或对方负载高' },
+    { key: '网络不通', test: /ENOTFOUND|ECONNREFUSED|EAI_AGAIN|getaddrinfo|connect/i, advice: '连不上中转站：查代理、DNS 或站点地址是否写错' },
+  ]
+  const hits = []
+  for (const b of buckets) {
+    const n = failures.filter((f) => b.test.test(textOf(f))).length
+    if (n) hits.push(`${b.key} ${n} 个（${b.advice}）`)
+  }
+  if (!hits.length) return '未识别的上游错误，请查看错误账本明细。'
+  return hits.join('；') + '。'
 }
 
 async function handleProxy(req, res, url) {
