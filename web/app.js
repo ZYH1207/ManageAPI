@@ -4045,8 +4045,10 @@ function renderDecision() {
 
   view.innerHTML = `
     ${modeCard(mode)}
-    ${algorithmCard()}
-    ${affinityCard()}
+    <div class="decision-pair">
+      ${algorithmCard()}
+      ${affinityCard()}
+    </div>
     ${gateCard()}
     <div class="toolbar">
       <input id="decision-search" class="search" type="search" placeholder="搜索模型名…" value="${esc(filters.decision)}" />
@@ -4163,9 +4165,6 @@ function affinityCard() {
       </div>
       ${collapsed ? '' : `
       <div class="aff-body">
-        <p class="hint" style="margin:0">
-          ${t('上游的 prompt 缓存绑在「模型 + 分组 + 账号」上。换站 = 上下文要从头重算，缓存读取那部分账单（通常占输入 80~95%）直接归零。所以<b>亲和排在「选最优」之前</b>——能钉就钉。')}
-        </p>
         <div class="aff-modes" role="tablist">
           ${[{ id: '', label: t('自动'), hint: t('缓存新鲜就钉') }, ...modes.filter((m) => m.id !== '')]
             .map(
@@ -4184,17 +4183,23 @@ function affinityCard() {
           <span class="k">${t('当前')}</span>
           <span class="v">${esc(curLabel)}</span>
         </div>
-        ${recent.length ? `
-        <div class="aff-recent">
-          <div class="aff-recent-title">${t('最近被钉住的对话')}</div>
-          ${recent.map((r) => `
-            <div class="aff-recent-row">
-              <span class="mono dim">${esc(String(r.fp).slice(0, 8))}</span>
-              <span>${esc(r.upstreamName || r.modelKey || '—')}</span>
-              <span class="dim">${r.cacheRead ? t('缓存 {n}', { n: Math.round(r.cacheRead / 1000) + 'k' }) : ''}</span>
-              <span class="dim">${r.at ? new Date(Number(r.at)).toLocaleTimeString() : ''}</span>
-            </div>`).join('')}
-        </div>` : `<p class="hint" style="margin:0">${t('还没有记住任何对话——等下一次自动路由派活后会开始记录。')}</p>`}
+        <details class="aff-details">
+          <summary>${esc(t('原理与最近被钉住的对话'))}</summary>
+          <p class="hint" style="margin:6px 0 0">
+            ${t('上游的 prompt 缓存绑在「模型 + 分组 + 账号」上。换站 = 上下文要从头重算，缓存读取那部分账单（通常占输入 80~95%）直接归零。所以<b>亲和排在「选最优」之前</b>——能钉就钉。')}
+          </p>
+          ${recent.length ? `
+          <div class="aff-recent">
+            <div class="aff-recent-title">${t('最近被钉住的对话')}</div>
+            ${recent.map((r) => `
+              <div class="aff-recent-row">
+                <span class="mono dim">${esc(String(r.fp).slice(0, 8))}</span>
+                <span>${esc(r.upstreamName || r.modelKey || '—')}</span>
+                <span class="dim">${r.cacheRead ? t('缓存 {n}', { n: Math.round(r.cacheRead / 1000) + 'k' }) : ''}</span>
+                <span class="dim">${r.at ? new Date(Number(r.at)).toLocaleTimeString() : ''}</span>
+              </div>`).join('')}
+          </div>` : `<p class="hint" style="margin:6px 0 0">${t('还没有记住任何对话——等下一次自动路由派活后会开始记录。')}</p>`}
+        </details>
         <div class="aff-actions">
           <button class="ghost tiny" data-act="forget-affinity" title="${esc(t('清空所有对话记录，档位保留。清空后所有对话会重新选站'))}">${t('忘记所有对话')}</button>
         </div>
@@ -4235,6 +4240,15 @@ function algorithmCard() {
       </div>
       ${collapsed ? '' : `
       <div class="algo-body">
+        <div class="algo-compact">
+          <span class="algo-chip" title="${esc(t('缓存亲和——这段对话上次由谁服务，它还能用就直接用它'))}">${t('亲和优先')}</span>
+          <span class="algo-chip" title="${esc(t('余额为 0 直接排除；低于 3 天只降优先级；低于 1 天只作兜底'))}">${t('余额守卫')}</span>
+          <span class="algo-chip" title="${esc(t('真实首字优先，没有才用探针值 × 标定比值'))}">${t('真实优先')}</span>
+          <span class="algo-chip" title="${esc(t('准入 → 慢 → 无证据 → 降级 → 冷却已过 → 余额偏低，逐级往下试，保证不报错'))}">${t('兜底阶梯')}</span>
+          <span class="algo-chip" title="${esc(t('新的比现役好不到 15% 就不换，避免反复横跳把缓存打崩'))}">${t('迟滞 15%')}</span>
+        </div>
+        <details class="algo-details">
+          <summary>${t('六步怎么算的 · 为什么「首字快」没被选')}</summary>
         <ol class="algo-steps">
           <li><b>${t('缓存亲和')}</b> — ${t('这段对话上次由谁服务？它还能用就直接用它，<b>根本不重新选</b>。这是缓存能保住的原因。')}</li>
           <li><b>${t('余额评估')}</b> — ${t('余额为 0 直接排除；低于「还能撑 3 天」只降优先级（仍可用），低于 1 天只作兜底。')}</li>
@@ -4259,6 +4273,7 @@ function algorithmCard() {
           ${bal ? `<div><span class="k">${t('余额状态')}</span><span class="v">${esc(bal)}</span></div>` : ''}
           <div><span class="k">${t('排序分怎么读')}</span><span class="v">${t('表里「排序分」列越小越优先；「依据」列写明它是怎么算出来的')}</span></div>
         </div>
+        </details>
       </div>`}
     </div>`
 }
@@ -4315,10 +4330,16 @@ function routeNowPill() {
  * 服务端按身份键匹配——站点把同一模型写成别的名字也能勾得住。
  */
 function autorouteScopeButton(decision) {
-  // 界面暂藏（见 AUTO_ROUTE_UI_HIDDEN）：勾选范围只对自动路由有意义，
-  // 开关不在台面上时一排加号只会让人猜「这个加号加的是什么」。
-  // 接管正在生效时照旧露出——那是它的配套控件
-  if (AUTO_ROUTE_UI_HIDDEN && !state.autoRoute?.enabled) return ''
+  // 2026-11-02：不再按「自动路由是否开着」藏这个加号。
+  //
+  // 原来只在开关生效时才露出一排加号，理由是「开关不在台面上时，一排加号会让人
+  // 猜它在加什么」。但用户 2026-11-02 反馈「找不到编制路由组的功能」——那排加号
+  // 正是**路由组的编制入口**，藏起来等于功能不存在。
+  //
+  // 现在改成常驻：加号的 title 已经写明「勾选后自动路由只在勾选的模型里挑」，
+  // 自己解释自己，不需要靠开关来暗示。没开自动路由时勾选也不会立刻生效，
+  // 但范围记在 settings.autoRoute.scope 里，开开关那一刻就用上——这是用户
+  // 一个个勾出来的偏好，不该因为开关状态被丢掉（同 createAutoRoute 的注释）。
   const scope = Array.isArray(state.autoRoute?.scope) ? state.autoRoute.scope : []
   const enrolled = scope.includes(decision.modelKey)
   const title = enrolled

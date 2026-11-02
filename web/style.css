@@ -3353,3 +3353,149 @@ body.prov-dragging .drop-zone { display: flex; }
 [data-theme="dark"] .route-box {
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
 }
+
+/* ═══════════ 智能决策页：算法 + 亲和 并排 ═══════════
+ *
+ * 2026-11-02 用户反馈：「算法、缓存亲和每一个都占这么一长趟，还占一半，太浪费了。
+ * 搞两个按钮不行吗？或者做成并排的卡片。」
+ *
+ * 所以：两块并排、各自内部只留一行结论 + 一行档位，详细文字收进 details。
+ * 窄屏（<1100px）自动堆叠——并排时两列都挤不下表格那种宽度就没意义了。
+ */
+.decision-pair {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+  margin-bottom: 12px;
+}
+@media (max-width: 1100px) {
+  .decision-pair { grid-template-columns: minmax(0, 1fr); }
+}
+.decision-pair > .card { margin: 0; }
+
+/* 算法卡：一行胶囊概括六步，点开才看长文 */
+.algo-compact {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+.algo-chip {
+  font-size: var(--fs-1);
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: var(--chip, rgba(0, 0, 0, 0.05));
+  color: var(--muted);
+  cursor: help;
+  white-space: nowrap;
+}
+.algo-chip:hover { background: var(--accent-soft); color: var(--accent); }
+
+/* details：两块卡片共用一套观感，默认收起，点开才占地方 */
+.algo-details,
+.aff-details {
+  margin-top: 8px;
+}
+.algo-details > summary,
+.aff-details > summary {
+  cursor: pointer;
+  font-size: var(--fs-1);
+  color: var(--faint);
+  padding: 3px 0;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  user-select: none;
+}
+.algo-details > summary::-webkit-details-marker,
+.aff-details > summary::-webkit-details-marker {
+  display: none;
+}
+.algo-details > summary::before,
+.aff-details > summary::before {
+  content: '▸';
+  font-size: 9px;
+  transition: transform 0.15s ease;
+}
+.algo-details[open] > summary::before,
+.aff-details[open] > summary::before {
+  transform: rotate(90deg);
+}
+.algo-details > summary:hover,
+.aff-details > summary:hover {
+  color: var(--text);
+}
+.algo-details[open] > summary,
+.aff-details[open] > summary {
+  margin-bottom: 8px;
+  color: var(--muted);
+}
+
+/* 亲和档位按钮：并排时收紧，六个档位一行放得下 */
+.aff-modes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+.aff-seg {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  padding: 5px 10px;
+  border: 1px solid var(--border, rgba(0, 0, 0, 0.12));
+  border-radius: 8px;
+  background: var(--panel, #fff);
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease;
+  text-align: left;
+}
+.aff-seg:hover { border-color: var(--border-strong, rgba(0, 0, 0, 0.22)); }
+.aff-seg.active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.aff-seg-label {
+  font-size: var(--fs-1);
+  font-weight: 500;
+  color: var(--text);
+  white-space: nowrap;
+}
+.aff-seg.active .aff-seg-label { color: var(--accent); }
+.aff-seg-hint {
+  font-size: 10px;
+  color: var(--faint);
+  white-space: nowrap;
+}
+
+/* 「当前」一行压成细线，不占一整行卡片高度 */
+.aff-now {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  font-size: var(--fs-1);
+  color: var(--faint);
+  margin-bottom: 2px;
+}
+.aff-now .k { flex: none; }
+.aff-now .v { color: var(--muted); }
+
+/* 最近记录：details 内部，行高压紧 */
+.aff-recent { margin-top: 8px; }
+.aff-recent-title {
+  font-size: var(--fs-1);
+  color: var(--faint);
+  margin-bottom: 4px;
+}
+.aff-recent-row {
+  display: grid;
+  grid-template-columns: 70px 1fr 70px 64px;
+  gap: 8px;
+  font-size: var(--fs-1);
+  padding: 2px 0;
+  align-items: baseline;
+}
+.aff-actions { margin-top: 8px; }
