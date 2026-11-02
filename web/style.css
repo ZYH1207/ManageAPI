@@ -2893,3 +2893,222 @@ body.prov-dragging .drop-zone { display: flex; }
 .aff-recent-row .dim { color: var(--faint); font-variant-numeric: tabular-nums; }
 
 .aff-actions { display: flex; gap: 6px; }
+
+/* ─────────────────────────── 路由页（实时线路图） ─────────────────────────── */
+
+.route-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-bottom: 18px;
+}
+.route-head-left h2 {
+  margin: 0 0 4px;
+  font-size: 18px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.route-head-left .sub { margin: 0; }
+.route-head-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.route-idle {
+  padding: 48px 24px;
+  text-align: center;
+  border: 1px dashed var(--line, rgba(0, 0, 0, 0.14));
+  border-radius: 12px;
+  color: var(--ink-2, #666);
+}
+.route-idle p { margin: 0 0 8px; }
+
+/* 线路图：三栏（客户端 / 网关 / 站点箱），中间用 SVG 画连线 */
+.route-diagram {
+  position: relative;
+  display: flex;
+  align-items: stretch;
+  gap: 0;
+  margin-bottom: 20px;
+}
+.route-node {
+  position: relative;
+  z-index: 2;
+  width: 150px;
+  margin: auto 0;
+  padding: 10px 12px;
+  border: 1px solid var(--line, rgba(0, 0, 0, 0.14));
+  border-radius: 10px;
+  background: var(--panel, #fff);
+  text-align: center;
+}
+.route-node-title {
+  font-weight: 600;
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.route-node-sub {
+  font-size: 11px;
+  color: var(--ink-3, #888);
+  margin-top: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.route-node-badge {
+  margin-top: 6px;
+  font-size: 10px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--chip, rgba(0, 0, 0, 0.06));
+  display: inline-block;
+}
+.route-node-client { margin-left: 0; }
+.route-node-gateway { margin-left: 200px; width: 140px; }
+
+.route-svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 1;
+  overflow: visible;
+  pointer-events: none;
+}
+
+/* 线的状态：running 亮、ok 绿、fail 红、pending 灰虚线 */
+.route-line {
+  stroke-width: 2;
+  stroke-linecap: round;
+  transition: stroke 0.2s ease;
+}
+.route-line-in { stroke: var(--line, rgba(0, 0, 0, 0.18)); }
+.route-line-running {
+  stroke: var(--accent, #2563eb);
+  stroke-width: 2.5;
+  filter: drop-shadow(0 0 4px rgba(37, 99, 235, 0.55));
+  animation: route-dash 1.1s linear infinite;
+  stroke-dasharray: 7 5;
+}
+.route-line-ok { stroke: #16a34a; }
+.route-line-fail { stroke: #dc2626; stroke-dasharray: 3 3; }
+.route-line-pending { stroke: var(--line, rgba(0, 0, 0, 0.22)); }
+
+@keyframes route-dash {
+  to { stroke-dashoffset: -24; }
+}
+
+/* 右侧每条线路对应的站箱 */
+.route-boxes {
+  position: relative;
+  flex: 1;
+  min-width: 220px;
+}
+.route-box {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 40px;
+  padding: 5px 10px;
+  border: 1px solid var(--line, rgba(0, 0, 0, 0.14));
+  border-radius: 8px;
+  background: var(--panel, #fff);
+  z-index: 2;
+  overflow: hidden;
+}
+.route-box-name {
+  font-weight: 600;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.route-box-state {
+  font-size: 10.5px;
+  color: var(--ink-3, #888);
+}
+.route-box-err {
+  font-size: 10px;
+  color: #dc2626;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.route-box-running {
+  border-color: var(--accent, #2563eb);
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.16);
+}
+.route-box-ok { border-color: #16a34a; }
+.route-box-fail {
+  border-color: #dc2626;
+  background: rgba(220, 38, 38, 0.05);
+}
+.route-box-pending { border-style: dashed; }
+
+/* 说明区：这一单到底怎么路由的 */
+.route-explain {
+  padding: 14px 16px;
+  border-radius: 10px;
+  background: var(--chip, rgba(0, 0, 0, 0.03));
+  margin-bottom: 18px;
+}
+.route-explain h3 {
+  margin: 0 0 8px;
+  font-size: 13px;
+  font-weight: 600;
+}
+.route-explain-list {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 12.5px;
+  line-height: 1.9;
+  color: var(--ink-2, #555);
+}
+.route-explain-list code {
+  font-size: 11.5px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--panel, #fff);
+}
+
+/* 历史上最近几单 */
+.route-history h3 {
+  margin: 0 0 8px;
+  font-size: 13px;
+  font-weight: 600;
+}
+.route-history-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.route-history-row {
+  display: grid;
+  grid-template-columns: 14px 120px 1fr 80px 150px;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  font-size: 12px;
+}
+.route-history-row:hover { background: var(--chip, rgba(0, 0, 0, 0.03)); }
+.route-h-client { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.route-h-model code { font-size: 11.5px; }
+.route-h-tries, .route-h-state { color: var(--ink-3, #888); font-size: 11.5px; }
+
+.route-history-row .dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--ink-3, #999);
+}
+.route-history-row .dot.ok { background: #16a34a; }
+.route-history-row .dot.warn { background: #f59e0b; }
+.route-history-row .dot.bad { background: #dc2626; }

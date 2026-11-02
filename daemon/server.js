@@ -888,6 +888,58 @@ function route(method, pattern, handler) {
 route('GET', /^\/api\/health$/, async () => ({ ok: true, at: new Date().toISOString() }))
 route('GET', /^\/api\/state$/, async (ctx) => buildState({ light: ctx.query.get('light') === '1' }))
 
+// 最近的活动（首屏用）：不订阅，拿一次快照就够画「刚才发生了什么」
+route('GET', /^\/api\/activity$/, async (ctx) => ({
+  seq: activitySeq,
+  items: recentActivity(Number(ctx.query.get('limit')) || 60),
+}))
+
+/**
+ * 实时活动流（SSE）。
+ *
+ * 为什么不复用轮询：路由图要的是「谁正在派给谁」的**瞬时**状态，
+ * 轮询 1 秒一次既不够快、又白烧 CPU；SSE 一条长连接推一帧就是一行数据。
+ *
+ * 为什么用 `retry` + 心跳：中间隔了代理/休眠时连接会静默断掉，
+ * 没有心跳前端就永远停在最后一帧；`retry` 让浏览器自己重连。
+ */
+route('GET', /^\/api\/activity\/stream$/, async (ctx) => {
+  const { req, res } = ctx
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream; charset=utf-8',
+    'Cache-Control': 'no-cache, no-transform',
+    Connection: 'keep-alive',
+    // 明确关掉 nginx 之类的缓冲：否则帧会攒一批才吐，实时性没了
+    'X-Accel-Buffering': 'no',
+  })
+  res.write('retry: 3000\n\n')
+  // 首帧把游标和最近的历史发过去：前端据此补齐「断线期间漏掉的」
+  res.write(`event: hello\ndata: ${JSON.stringify({ seq: activitySeq, items: recentActivity(40) })}\n\n`)
+
+  const send = (entry) => {
+    res.write(`data: ${JSON.stringify(entry)}\n\n`)
+  }
+  activitySubscribers.add(send)
+
+  // 心跳：15 秒一个注释行，既保活又不会污染前端的 data 解析
+  const heartbeat = setInterval(() => {
+    try {
+      res.write(': ping\n\n')
+    } catch {
+      /* 连接已断，close 会来收尾 */
+    }
+  }, 15_000)
+  heartbeat.unref?.()
+
+  const cleanup = () => {
+    clearInterval(heartbeat)
+    activitySubscribers.delete(send)
+  }
+  req.on('close', cleanup)
+  res.on('close', cleanup)
+  return undefined // 已经自己写完了，别再让上层 json()
+})
+
 route('PATCH', /^\/api\/settings$/, async (ctx) => {
   let lanPanelAfter = null
   await store.mutate(async (db) => {
@@ -3903,6 +3955,53 @@ function noteEmptyHit({ providerId = null, modelKey = null }) {
 const trafficBuffer = new Map()
 let trafficTimer = null
 
+// ------------------------------------------------------------ 实时活动流
+//
+// 给「路由页」做实时可视化用（对标 Magpie 那个动态线路图）：
+// 每单进来 → 选路 → 派给谁 → 成功/失败，都往这里推一帧，前端走 SSE 订阅。
+//
+// 为什么放内存、不写 db：
+//   1. 这是**瞬态**数据，只有「正在发生」有意义，历史在 routing / faultEvents 里
+//   2. 每单都写 db.json 会把这个网关自己变成瓶颈（7MB 文件）
+//   3. 环形缓冲天然限内存，进程重启就清空——正是想要的语义
+//
+// 为什么用下标而不是时间戳做游标：同一毫秒可能有多帧（并发请求），
+// 用 ts 去重会丢帧。seq 单调递增，客户端记它就行。
+const ACTIVITY_MAX = 200
+const activityLog = []
+let activitySeq = 0
+/** 已连接的 SSE 订阅者：调用 send(帧) */
+const activitySubscribers = new Set()
+
+/**
+ * 推一帧活动。
+ * @param {object} frame  {phase, ...}
+ *   phase: 'recv'      收到客户端请求
+ *          'pick'      选路完成（自动路由/候选确定）
+ *          'attempt'   正在尝试某个供给
+ *          'ok'        成功完成
+ *          'fail'      该供给失败，准备换下一个
+ *          'done'      整单结束（不论成败）
+ */
+function pushActivity(frame) {
+  activitySeq += 1
+  const entry = { seq: activitySeq, at: new Date().toISOString(), ...frame }
+  activityLog.push(entry)
+  if (activityLog.length > ACTIVITY_MAX) activityLog.splice(0, activityLog.length - ACTIVITY_MAX)
+  for (const send of activitySubscribers) {
+    try {
+      send(entry)
+    } catch {
+      // 订阅者已经走了：下面的 close 处理器会摘掉，这里不打断主流程
+    }
+  }
+}
+
+/** 已结束的整单活动（前端首屏要能画出「最近发生了什么」） */
+function recentActivity(limit = 60) {
+  return activityLog.slice(-limit)
+}
+
 function bufferTraffic(offerId, ok, error, quality) {
   if (!offerId) return
   const entry = trafficBuffer.get(offerId) || { ok: 0, fail: 0, kinds: {}, quality: { samples: 0, bad: 0 } }
@@ -4472,6 +4571,17 @@ async function forwardToUpstream({
   while (true) {
     tries += 1
     const attemptStarted = Date.now()
+    // 实时活动：这一轮要打谁（路由图据此点亮线路）
+    pushActivity({
+      phase: 'attempt',
+      attempt: attemptIndex + 1,
+      tries,
+      model: current.offer.upstreamName || current.offer.modelKey,
+      provider: current.provider.name,
+      providerId: current.provider.id,
+      offerId: current.offer.id,
+      pool: pool || 'paid',
+    })
     const outcome = await streamAttempt({
       candidate: current,
       body,
@@ -4481,6 +4591,19 @@ async function forwardToUpstream({
       clientSignal,
       protocol,
       resume,
+    })
+    // 实时活动：这一轮的结果（成功 / 失败原因）
+    pushActivity({
+      phase: outcome.error ? 'fail' : 'ok',
+      attempt: attemptIndex + 1,
+      tries,
+      model: current.offer.upstreamName || current.offer.modelKey,
+      provider: current.provider.name,
+      providerId: current.provider.id,
+      offerId: current.offer.id,
+      ms: Date.now() - attemptStarted,
+      committed: Boolean(outcome.committed),
+      error: outcome.error ? String(outcome.error).slice(0, 160) : null,
     })
 
     // 连接层/HTTP 层失败：不 commit 的照旧让上层换站；已 commit 的只能收尾
@@ -4798,6 +4921,17 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
   // 前缀必须在这里判——body 是在这个函数里才读出来的，调用方看不到 model。
   const parsed = resolvePool({ pathname: '', model: rawModel })
   const isFree = isFreeEntry || parsed.isFree
+  // 实时活动：一次请求从这里开始。带 stream 标记，路由图据此区分流式/非流式
+  const activityStarted = Date.now()
+  pushActivity({
+    phase: 'recv',
+    client: keyRecord?.name || 'unknown',
+    keyId: keyRecord?.id || null,
+    model: rawModel,
+    pool: isFree ? 'free' : 'paid',
+    stream: Boolean(body?.stream),
+    protocol,
+  })
 
   // 月度 token 上限（可选，Key 上配置）。「本月」按用户本地时区归属——
   // 用 UTC 月的话，东八区月底最后 8 小时的用量会算进下个月的额度
@@ -4902,6 +5036,19 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
     })
     if (autoRoutePick) {
       model = autoRoutePick.modelKey
+      // 实时活动：自动路由的决策（路由图要显示「为什么派给它」）
+      pushActivity({
+        phase: 'pick',
+        mode: 'auto',
+        requested: rawModel,
+        picked: autoRoutePick.modelKey,
+        provider: autoRoutePick.row?.provider?.name || null,
+        offerId: autoRoutePick.row?.offer?.id || null,
+        reason: autoRoutePick.reason,
+        switched: Boolean(autoRoutePick.switched),
+        switchedFrom: autoRoutePick.switched ? autoRoutePick.fromModelKey || null : null,
+        basis: autoRoutePick.row ? autoRoutePick.row.speedBasis || null : null,
+      })
       // 换了模型才落盘：热路径拿到的是共享缓存对象，不能写；
       // mutate 失败只影响「正在使用」的显示，不能拦住这一单，所以只记日志
       if (autoRoutePick.switched) {
@@ -5046,6 +5193,18 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
     return openaiError(res, failure.status, failure.message, failure.type)
   }
   candidates = decision.chain
+  // 实时活动：非接管路径的选路结果。路由图要显示「这一单排了几条、先打谁」
+  pushActivity({
+    phase: 'pick',
+    mode: 'direct',
+    requested: rawModel,
+    picked: model,
+    candidates: candidates.length,
+    provider: candidates[0]?.provider?.name || null,
+    offerId: candidates[0]?.offer?.id || null,
+    reason: 'direct',
+    basis: candidates[0]?.speedBasis || null,
+  })
   // 人工勾选 > 一切自动排序：决策页点选的那条顶到尝试链最前（与决策页「当前选」
   // 同一份口径，见 core/router.js#applyPinnedChoice）；哪怕准入没放行也算数——
   // 这是人的明确指定，真发失败了照样沿候选链往后故障转移。
@@ -6083,7 +6242,10 @@ export function createAppServer(options = {}) {
           req,
           res,
         })
-        if (res.writableEnded) return
+        // 两条都可能：普通 handler 已经 json 完（writableEnded），
+        // 或者它自己写了一个**长连接**（SSE：headers 已发但连接还在，
+        // 此时再 json 就是 ERR_HTTP_HEADERS_SENT，会把整个守护进程拖崩）。
+        if (res.writableEnded || res.headersSent) return
         json(res, 200, result ?? { ok: true })
         return
       }

@@ -4,6 +4,7 @@ import { renderFreeRelayPane, vendorChipClass, vendorOf, vendorLabel } from './f
 import { renderFreePlatformPane } from './free-platform.js'
 import { ensureProtocolView } from './protocol-view.js'
 import { ensureProtocolRecordsView } from './protocol-records-view.js'
+import { bindRouteView, routeConnect, routeDisconnect, routePaint } from './route-view.js'
 
 const $ = (sel, root = document) => root.querySelector(sel)
 
@@ -1480,6 +1481,7 @@ function render() {
   renderOverview()
   renderMonitor()
   renderFree()
+  renderRoute()
   renderDecision()
   renderProbes()
   renderGateway()
@@ -3846,6 +3848,27 @@ function statusBadges(tags, { blocked = null, hide = [] } = {}) {
       return `<span class="badge${spec.cls ? ` ${spec.cls}` : ''}">${label}</span>`
     })
   return html.join(' ')
+}
+
+/**
+ * 路由页（实时）。
+ *
+ * 连接的生命周期挂在这里：只有路由页可见时才连 SSE——其他页面开着时
+ * 没必要一直占一条长连接（也不会有人看那些帧）。
+ *
+ * 依赖注入而不是全局引用，和 free-relay.js / free-platform.js 一样，
+ * 这样 route-view.js 在 Node 里也能跑（自检脚本要用）。
+ */
+function renderRoute() {
+  const view = $('#view-route')
+  if (!view) return
+  bindRouteView({ state, t, esc, icon, $ })
+
+  const visible = !view.hidden
+  if (visible) routeConnect()
+  else routeDisconnect()
+
+  routePaint()
 }
 
 function renderDecision() {
@@ -6751,7 +6774,7 @@ const SIDEBAR_KEY = 'manageapi.sidebarCollapsed'
   }
 })()
 
-const TABS = ['overview', 'monitor', 'decision', 'probes', 'protocol', 'gateway', 'usage', 'benchmark', 'diagnosis']
+const TABS = ['overview', 'monitor', 'route', 'decision', 'probes', 'protocol', 'gateway', 'usage', 'benchmark', 'diagnosis']
 
 /** 暂时隐藏但代码全部保留的 tab：恢复 = index.html 取消导航注释 + 从这里移除。
  *  隐藏视图的循环必须包含它们，否则切页时 #view-free 不会被动收起来。 */
@@ -6854,6 +6877,7 @@ const TAB_META = {
   monitor: { title: '站点', sub: '余额趋势、倍率变动与站点管理' },
   free: { title: '免费', sub: '免费额度与平台积分，不参与付费比价' },
   pricing: { title: '比价', sub: '同一模型跨站对比' },
+  route: { title: '路由', sub: '实时 · 网关正在做的决定' },
   decision: { title: '智能决策', sub: '候选排序与手动调整' },
   probes: { title: '探针', sub: '指纹 / 截断 / 计费 / 缓存' },
   protocol: { title: '协议探查', sub: '表面协议 · 真实协议 · 原生能力差异' },
