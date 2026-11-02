@@ -58,6 +58,16 @@ export const DECISION_MODES = [
       + '这是最贴近你实际体感的一档 —— 探针发的是几十 token 的小请求，'
       + '和你几万到几十万上下文的真实耗时不是一回事。',
   },
+  {
+    key: 'flow',
+    label: '流畅度',
+    hint: '首字 + 吐字速度（一屏回答要多久）',
+    desc: '**回答「哪个用起来真的更顺」**，而不只是「谁第一个字快」。'
+      + '算法：首字 + 参照 500 token 的吐字时间，单位毫秒，越小越流畅。'
+      + '为什么要它：首字只说明开头快慢，不说明后面吐得快不快——实测本机库就有一对反例，'
+      + '首字 15.5 秒但吐字 227 tok/s 的站，实际读完比首字 5.8 秒但只吐 45 tok/s 的更快。'
+      + '探针首字会按标定比值放大（本机约 2.7×），因为探针发的是几十 token 的小请求。',
+  },
 ]
 
 /** 任意输入 → 合法档位；非法 / 空一律回落默认（宁可回到原行为，也不静默改成别的口径） */
@@ -103,7 +113,10 @@ export function compareByBasis(a, b, value) {
   const cost = (row) => num(row.effectiveUsd ?? row.effective)
   const price = (row) => num(row.priceUsd ?? row.price)
 
-  if (mode === 'speed') {
+  if (mode === 'flow') {
+    const delta = flowScoreOf(a?.row || a) - flowScoreOf(b?.row || b)
+    if (Number.isFinite(delta) && delta !== 0) return delta
+  } else if (mode === 'speed') {
     const delta = num(a.ttftMs) - num(b.ttftMs)
     if (delta !== 0) return delta
   } else if (mode === 'price') {
@@ -150,6 +163,66 @@ export function speedOf(row, policy = 'prefer-real') {
   return real !== Number.POSITIVE_INFINITY ? real : probe
 }
 
+/**
+ * 流畅度：预测「这个站答完一屏字要多久」，单位毫秒，越小越流畅。
+ *
+ * ## 为什么需要它（用户 2026-11-02 的原话）
+ *
+ *   「这些都是指针速，指针速度不一定准，所以你在用的时候也不知道哪个好。
+ *     总得有个能先指示速度、能告诉你哪个最流畅的指标。」
+ *
+ * 首字（TTFT）只说明「第一个字多久出来」，不说明「后面吐得快不快」。
+ * 实测本机库就有一对反例：
+ *   o_524932ac  首字 15.5 秒，但吐字 227 tok/s
+ *   o_9f4bc096  首字 5.8 秒，但吐字 45 tok/s
+ * 只看首字会选后者，而实际读一整段回答时前者反而更快读完。
+ *
+ * 所以用「首字 + 参照输出量的吐字时间」合成一个数：
+ *
+ *     flowMs = ttft + refOutTokens × msPerToken
+ *
+ * refOutTokens 是参照输出量（默认 500 token，约一屏中文回答）。
+ * 这不是「总耗时预测」——真实输出多长取决于模型，没人能预先知道；
+ * 它的意义是**同一个参照工作量下谁更快**，用来横向比较，不是用来报 ETA。
+ *
+ * ## 口径优先级
+ *
+ *   1. 真实首字 + 真实吐字速度（最可信，来自真实流量的小时桶）
+ *   2. 真实首字 + 无吐字数据 → 用首字 × 2 粗估（保守：假设吐字占一半时间）
+ *   3. 无真实首字 → 用探针首字 × 标定比值（探针是小请求，比真实快）
+ *   4. 都没有 → Infinity（排最后，不让它冒充最快）
+ *
+ * @param {object} row 路由行（realTtftMs / realMsPerToken / ttftMs）
+ * @param {{refTokens?: number, calibRatio?: number}} options
+ * @returns {number} 毫秒，拿不到就是 Infinity
+ */
+export function flowScoreOf(row, { refTokens = 500, calibRatio = 1 } = {}) {
+  const real = num2(row?.realTtftMs)
+  const probe = num2(row?.ttftMs)
+  const msPerToken = num2(row?.realMsPerToken)
+  const ratio = Number(calibRatio) > 0 ? Number(calibRatio) : 1
+
+  // 首字从哪来
+  let ttft = Number.POSITIVE_INFINITY
+  let basis = 'none'
+  if (real !== Number.POSITIVE_INFINITY) {
+    ttft = real
+    basis = 'real'
+  } else if (probe !== Number.POSITIVE_INFINITY) {
+    // 探针是小请求口径，真实的会慢 ratio 倍（本机标定约 2.7×）
+    ttft = probe * ratio
+    basis = 'probe'
+  }
+  if (ttft === Number.POSITIVE_INFINITY) return Number.POSITIVE_INFINITY
+
+  // 吐字：有实测就用实测，没有就按「吐字耗时 ≈ 首字」粗估（一条保守假设，
+  // 比假装吐字很快诚实——那会让慢站冒充满分）
+  const genMs = msPerToken !== Number.POSITIVE_INFINITY
+    ? msPerToken * refTokens
+    : ttft
+  return Math.round(ttft + genMs)
+}
+
 /** 这一行的首字用的是哪个口径。决策日志用它解释「凭什么说它快」。 */
 export function speedBasisOf(row, policy = 'prefer-real') {
   const real = num2(row?.realTtftMs)
@@ -180,6 +253,12 @@ export function tierMetricOf(row, value) {
   //   speed / priceSpeed  真实优先，没有才退回探针
   // 其它档位与速度无关，行为不变。
   if (mode === 'realSpeed') return speedOf(row, 'real')
+  // 流畅度：首字 + 参照输出量的吐字时间，回答「哪个真的更顺」
+  // （用户 2026-11-02 提出：只看首字不知道谁流畅，探针首字本身也不一定准）
+  if (mode === 'flow') {
+    const r = num2(row?.calibRatio)
+    return flowScoreOf(row, { calibRatio: r === Number.POSITIVE_INFINITY ? 1 : r })
+  }
   if (mode === 'speed') return speedOf(row, 'prefer-real')
   if (mode === 'price') return num2(row?.priceUsd ?? row?.price)
   if (mode === 'priceSpeed') return paceOf(row ?? {}, 'prefer-real')

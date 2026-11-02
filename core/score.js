@@ -225,13 +225,37 @@ export function scoreOffers(probes, traffic = {}, options = {}) {
     const trPass = trChecks.filter((r) => r.truncated === false).length
     const blPass = blChecks.filter((r) => r.billingInflated === false).length
 
-    // 平滑通过率：等价于「先记一次通过」，样本越少越接近 1，样本多了才收敛到真实值。
-    // 这样一次探针异常只会让质量轻微下降（~5~15%），而不是把质量砸到 0.5 让成本翻倍——
-    // 惩罚力度必须和证据强度匹配。判定「是否掉包」另有更严的规则（见下）
-    const smooth = (pass, total) => (total === 0 ? null : (pass + 1) / (total + 1))
-    const fingerprintRate = smooth(fpPass, fpChecks.length)
-    const truncationRate = smooth(trPass, trChecks.length)
-    const billingRate = smooth(blPass, blChecks.length)
+    // ── 平滑通过率（2026-11-02 改：从「先验 1 次」改成「先验按权重给」）──────
+    //
+    // 老写法 `(pass + 1) / (total + 1)` 的问题是**分辨率只有 0/1 两极**：
+    //   0 次样本 → 1.000；1 次通过 → 1.000；1 次失败 → 0.500；2 次通过 → 1.000
+    // 实测本机库 12 个候选里质量分只出现 3 种取值（0 / 0.67 / 1），而且「除质量」
+    // 这一档（决策侧重 = 性价比）在质量全为 1 时和「价格」档**排序完全相同**——
+    // 用户 2026-11-02 的原话是「好多质量都一样，它就选得不那啥」。
+    //
+    // 问题不在「除以质量」这个设计，在**质量分没有分辨率**：二值探针（通过/失败）
+    // 喂进一个只会吐 0 或 1 的公式，中间那些「偶发一次异常」「大部分正常」的站
+    // 全被压成同一个数。
+    //
+    // 现在改成 Laplace 平滑但**先验按该项的可信度分配**，让结果连续：
+    //   k = 先验「假想通过次数」，样本越多越接近真实通过率，但不会一步跳到 0/1
+    //   指纹 k=0.5（单次不符即判，惩罚最重，所以先验最弱）
+    //   截断 k=1.5（要 2 个样本才下结论，先验中等）
+    //   计费 k=2  （最可能是噪声，先验最保守）
+    //
+    // 这样 1/3 通过 → 0.43、2/3 → 0.64、3/4 → 0.73、10/11 → 0.88，是一条连续曲线，
+    // 「除质量」才真的能分出高下。判定「是否掉包」仍然看下面的原始证据，不受影响。
+    const smooth = (pass, total, k = 1) => (total === 0 ? null : (pass + k) / (total + k))
+    const fingerprintRate = smooth(fpPass, fpChecks.length, 0.5)
+    const truncationRate = smooth(trPass, trChecks.length, 1.5)
+    const billingRate = smooth(blPass, blChecks.length, 2)
+
+    // 真实流量取窗口内的那一份。放在质量分之前算：质量分要用它的响应质量
+    // （逐单累计的空回答/虚报比率），这是「除质量」能有分辨率的关键输入。
+    const trafficRow = freshTraffic(traffic?.[offerId], now, trafficMaxAgeMs)
+    const realQuality = trafficRow?.quality || null
+    const realSamples = Number(realQuality?.samples) || 0
+    const realBad = Number(realQuality?.bad) || 0
 
     // 某一项还没测出来时不惩罚，用其余项归一，避免新站被误判
     const parts = [
@@ -239,8 +263,26 @@ export function scoreOffers(probes, traffic = {}, options = {}) {
       { value: truncationRate, weight: 0.3 },
       { value: billingRate, weight: 0.2 },
     ].filter((p) => p.value !== null)
-    const totalWeight = parts.reduce((sum, p) => sum + p.weight, 0)
-    const integrity = totalWeight === 0 ? null : parts.reduce((sum, p) => sum + p.value * p.weight, 0) / totalWeight
+    // ── 真实流量的响应质量：给 integrity 补上「只有探针时分子恒为 1」的盲区 ──
+    //
+    // 为什么必须补：探针三项全是「通过/失败」的二值判定，样本全通过时无论样本多少
+    // 都恰好算出 1.000——于是所有健康站的质量分**完全相同**，「除以质量」这一档
+    // 退化成「按价格排」。真实流量能提供连续信息：每一次真实请求的响应质量
+    // （空回答 / 计费虚报）都被记进 trafficRow.quality，那是逐单累计的比率。
+    //
+    // 口径：只在样本足够时启用（样本太少时比率噪声大，宁可不改）；
+    // 用「好样本占比」而不是原始 badRate，这样天然落在 (0,1] 开区间，
+    // 不会因为 0 条坏样本就锁死在 1——样本越多、越接近 1，但不会提前等于 1。
+    const realGoodRate = realSamples > 0
+      ? (realSamples - realBad + 1) / (realSamples + 2) // 同样 Laplace 平滑，先验 1 好 1 坏
+      : null
+    const partsAll = realGoodRate === null
+      ? parts
+      : [...parts, { value: realGoodRate, weight: 0.35 }]
+    const totalWeightAll = partsAll.reduce((sum, p) => sum + p.weight, 0)
+    const integrity = totalWeightAll === 0
+      ? null
+      : partsAll.reduce((sum, p) => sum + p.value * p.weight, 0) / totalWeightAll
 
     // 「结果可疑」的判定不看平滑值，看原始证据：
     //   指纹——单次不符即判（掉包是确定性的，网络抖动不会让答案变成别的数）
@@ -257,14 +299,7 @@ export function scoreOffers(probes, traffic = {}, options = {}) {
     // 额度不足 / 限流 / 模型不在分组不是「站点坏了」：它们不进分母，
     // 只让这条供给进入冷却，否则一堆只是没余额的站会长期挂红，
     // 真正的故障（502、卡死）反而被淹没
-    const trafficRow = freshTraffic(traffic?.[offerId], now, trafficMaxAgeMs)
-
-    // 真实响应的质量信号（空回答 / 计费虚报）：探针之外的第二类完整性证据。
-    // 网关能验的只有这两类客观异常（指纹和截断需要受控 prompt），
-    // 所以门槛放高：样本 ≥5 且异常率 >20% 才判
-    const realQuality = trafficRow?.quality || null
-    const realSamples = Number(realQuality?.samples) || 0
-    const realBad = Number(realQuality?.bad) || 0
+    // （trafficRow / realQuality / realSamples / realBad 已在质量分之前取好）
     const realBadRate = realSamples >= REAL_QUALITY_MIN_SAMPLES ? realBad / realSamples : null
     if (realBadRate !== null && realBadRate > REAL_QUALITY_BAD_RATE) integrityFaults.push('真实响应异常')
     const trafficOk = trafficRow?.ok || 0
