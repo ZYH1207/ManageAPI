@@ -4770,7 +4770,7 @@ function renderProbes() {
   const probeFiltered = probeFilters.providerId || probeFilters.group || probeFilters.model
   const probeBtn = probeFiltered ? t('探测所选（{n} 个）', { n: probeTargets.length }) : t('探测全部（{n} 个）', { n: probeTargets.length })
   const filterSelect = (field, allLabel, options, current) => `
-    <select data-probe-filter="${field}">
+    <select data-probe-filter="${field}" aria-label="${esc(t('探针筛选：{field}', { field }))}">
       <option value="">${esc(allLabel)}</option>
       ${options
         .map(
@@ -4821,8 +4821,9 @@ function renderProbes() {
           <div class="probe-settings">
             <label class="field-inline">自动探测
               ${autoRouteOn ? `<span class="badge" title="${esc(autoRouteProbeSchemeText())}">${t('已由自动路由接管')}</span>` : ''}
-              <input id="probe-interval-num" type="number" min="0" step="1" value="${intervalValue}" style="width:64px" ${intervalLock} />
-              <select id="probe-interval-unit" ${intervalLock}>
+              <input id="probe-interval-num" type="number" min="0" step="1" value="${intervalValue}" style="width:64px"
+                aria-label="${esc(t('自动探测间隔数值'))}" ${intervalLock} />
+              <select id="probe-interval-unit" aria-label="${esc(t('自动探测间隔单位'))}" ${intervalLock}>
                 <option value="1" ${intervalUnit === 1 ? 'selected' : ''}>${t('分钟')}</option>
                 <option value="60" ${intervalUnit === 60 ? 'selected' : ''}>${t('小时')}</option>
               </select>
