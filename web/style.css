@@ -3513,3 +3513,105 @@ body.prov-dragging .drop-zone { display: flex; }
   align-items: baseline;
 }
 .aff-actions { margin-top: 8px; }
+
+/* ═══════════ 排序算法：一行内联条（不再是主面板）═══════════
+ *
+ * 用户 2026-11-02：「排序算法它本身没有任何操作功能，只是一个提示，
+ * 告诉你是怎么算的。你放那么一个主面板是干什么呢？」
+ * 对——没有可操作控件就不该占一张卡。降到一行，详解放在 details 里。
+ */
+.algo-inline {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 7px 12px;
+  margin-bottom: 12px;
+  border-radius: 8px;
+  background: var(--chip, rgba(0, 0, 0, 0.04));
+  font-size: var(--fs-1);
+  color: var(--muted);
+}
+.algo-flow {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-wrap: wrap;
+}
+.algo-flow i {
+  font-style: normal;
+  color: var(--faint);
+  opacity: 0.7;
+}
+.algo-cal {
+  font-size: 10px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: var(--success-soft);
+  color: var(--success);
+  font-weight: 500;
+  white-space: nowrap;
+}
+.algo-cal.none {
+  background: var(--chip, rgba(0, 0, 0, 0.06));
+  color: var(--faint);
+  font-weight: 400;
+}
+.algo-inline-details {
+  margin-left: auto;
+}
+.algo-inline-details > summary {
+  cursor: pointer;
+  font-size: var(--fs-1);
+  color: var(--faint);
+  list-style: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  user-select: none;
+  white-space: nowrap;
+}
+.algo-inline-details > summary::-webkit-details-marker { display: none; }
+.algo-inline-details > summary::before {
+  content: '▸';
+  font-size: 9px;
+  transition: transform 0.15s ease;
+}
+.algo-inline-details[open] > summary::before { transform: rotate(90deg); }
+.algo-inline-details > summary:hover { color: var(--text); }
+/* 展开时脱离横条布局，占满整行 */
+.algo-inline-details[open] {
+  flex-basis: 100%;
+  margin-left: 0;
+}
+.algo-details-body {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--border, rgba(0, 0, 0, 0.1));
+}
+
+/* ═══════════ 左右两列等高 ═══════════
+ * 用户 2026-11-02：「一定要左右两边保持长度高度一致，它不一致就特别难看」
+ * grid 默认 stretch 就会等高，这里显式写出来并保证卡片填满列高。
+ */
+.decision-grid {
+  align-items: stretch;
+}
+.decision-col {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.decision-col > .card {
+  margin: 0;
+  flex: 1;              /* 撑满列高，与另一列对齐 */
+  display: flex;
+  flex-direction: column;
+}
+/* 卡内容区自己撑开，按钮组贴底 */
+.decision-col > .card > .aff-body,
+.decision-col > .card > .gate-body {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+}

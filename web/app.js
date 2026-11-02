@@ -118,7 +118,7 @@ function basisCell(candidate) {
     </div>`
 }
 
-function priceSpeedText(candidate) {
+function flowText(candidate) {
   if (candidate?.status === 'stale') return '—'
   const price = Number(candidate?.price)
   const ttft = Number(candidate?.ttftMs)
@@ -3997,7 +3997,7 @@ function renderDecision() {
               : `<div class="sub" title="${esc(t('本行综合成本为原厂有效成本的 {pct}（按波峰口径）', { pct: officialPctText }))}">${t('原厂')} ${officialPctText}</div>`
           }</td>
           <td class="num${sortMark('speed')}">${ttftCell(candidate, stale)}</td>
-          <td class="num">${priceSpeedText(candidate)}</td>
+          <td class="num">${flowText(candidate)}</td>
           <td class="num">${scoreCell(candidate)}</td>
           <td class="dec-basis">${basisCell(candidate)}</td>
           <td>${badges}${candidate.statusReason ? `<div class="sub">${esc(candidate.statusReason)}</div>` : ''}</td>
@@ -4045,9 +4045,9 @@ function renderDecision() {
 
   view.innerHTML = `
     ${modeCard(mode)}
+    ${algorithmCard()}
     <div class="decision-grid">
       <div class="decision-col">
-        ${algorithmCard()}
         ${affinityCard()}
       </div>
       <div class="decision-col">
@@ -4099,14 +4099,10 @@ function renderDecision() {
  * 「这个档位选出的全场最优」，不告诉用户是哪个，开关就和黑盒没两样。
  */
 function modeCard(mode) {
-  const modes = state.decisionModes?.length
-    ? state.decisionModes
-    : [
-        { key: 'value', label: '性价比', hint: '价格 ÷ 质量', desc: '' },
-        { key: 'price', label: '价格', hint: '名义单价', desc: '' },
-        { key: 'speed', label: '首字速度', hint: '首字延迟', desc: '' },
-        { key: 'priceSpeed', label: '价速比', hint: '价格 ÷ 首字延迟', desc: '' },
-      ]
+  // 档位表只从服务端取（core/decision-mode.js 是唯一实现）。这里**不再写一份
+  // 兜底副本**——2026-11-02 删掉价速比档时，那份副本还留着旧的四档，
+  // 结果首次渲染（state 还没到）会闪一下已经删掉的档位。空数组就什么都不画。
+  const modes = state.decisionModes || []
   return `
     <div class="card mode-card">
       <div class="mode-head">
@@ -4222,63 +4218,57 @@ function affinityCard() {
  * 会以为系统坏了；说了就能自己推算。
  */
 function algorithmCard() {
-  const collapsed = collapsedPanels.has('decision-algorithm')
   const health = state.routingHealth || {}
   const cal = health.calibration || {}
   const ratio = Number(cal.ratio)
   const calText = cal.available && Number.isFinite(ratio)
     ? t('本机实测：真实速度约为探针的 {r} 倍', { r: ratio.toFixed(1) })
     : t('本机还没有足够的配对样本（需要同一个站既有探针又有真实流量），暂时用裸探针值')
+  const calBadge = cal.available
+    ? `<span class="algo-cal" title="${esc(calText)}">${t('标定 {r}×', { r: ratio.toFixed(1) })}</span>`
+    : `<span class="algo-cal none" title="${esc(calText)}">${t('未标定')}</span>`
 
-  // 各站的余额状态，压缩成一句话
   const bal = healthyBalanceLine(health.balances)
 
+  // 2026-11-02 用户原话：「排序算法它本身没有任何操作功能，只是一个提示，
+  // 告诉你是怎么算的。你放那么一个主面板是干什么呢？」
+  //
+  // 对——它没有任何可操作控件，占一整张卡是浪费。改成**一行内联条**：
+  // 左边一句「怎么算的」+ 标定徽章，右边一个 ▸ 展开看详解。
+  // 高度从 155px 降到约 34px，且不再单独成卡。
   return `
-    <div class="card algo-card">
-      <div class="group-head">
-        <button class="ghost tiny" data-act="toggle-panel" data-panel="decision-algorithm">${collapsed ? '▸' : '▾'}</button>
-        <span class="mode-label">${t('排序算法')}</span>
-        <span class="mode-note">${t('为什么「首字快」不一定被选')}</span>
-        <span class="grow"></span>
-        ${cal.available ? `<span class="badge ok" title="${esc(calText)}">${t('标定 {r}×', { r: ratio.toFixed(1) })}</span>` : `<span class="badge" title="${esc(calText)}">${t('无标定')}</span>`}
-      </div>
-      ${collapsed ? '' : `
-      <div class="algo-body">
-        <div class="algo-compact">
-          <span class="algo-chip" title="${esc(t('缓存亲和——这段对话上次由谁服务，它还能用就直接用它'))}">${t('亲和优先')}</span>
-          <span class="algo-chip" title="${esc(t('余额为 0 直接排除；低于 3 天只降优先级；低于 1 天只作兜底'))}">${t('余额守卫')}</span>
-          <span class="algo-chip" title="${esc(t('真实首字优先，没有才用探针值 × 标定比值'))}">${t('真实优先')}</span>
-          <span class="algo-chip" title="${esc(t('准入 → 慢 → 无证据 → 降级 → 冷却已过 → 余额偏低，逐级往下试，保证不报错'))}">${t('兜底阶梯')}</span>
-          <span class="algo-chip" title="${esc(t('新的比现役好不到 15% 就不换，避免反复横跳把缓存打崩'))}">${t('迟滞 15%')}</span>
+    <div class="algo-inline">
+      <span class="algo-flow">
+        ${t('亲和优先')} <i>→</i> ${t('余额守卫')} <i>→</i> ${t('真实优先')} <i>→</i> ${t('兜底阶梯')} <i>→</i> ${t('迟滞 15%')}
+      </span>
+      ${calBadge}
+      <details class="algo-inline-details">
+        <summary>${t('怎么算的')}</summary>
+        <div class="algo-details-body">
+          <ol class="algo-steps">
+            <li><b>${t('缓存亲和')}</b> — ${t('这段对话上次由谁服务？它还能用就直接用它，<b>根本不重新选</b>。这是缓存能保住的原因。')}</li>
+            <li><b>${t('余额评估')}</b> — ${t('余额为 0 直接排除；低于「还能撑 3 天」只降优先级（仍可用），低于 1 天只作兜底。')}</li>
+            <li><b>${t('速度估计')}</b> — ${t('真实流量首字优先；没有就用探针值 × 标定比值；再没有就用「该站其它供给的中位速度」。')}</li>
+            <li><b>${t('综合评分')}</b> — ${t('(首字 + 预估输出 × 每 token 毫秒) × 余额惩罚 × 质量惩罚，越小越优。')}</li>
+            <li><b>${t('兜底阶梯')}</b> — ${t('准入 → 慢 → 无证据 → 降级 → 冷却已过 → 余额偏低，逐级往下试，<b>保证不报错</b>。')}</li>
+            <li><b>${t('迟滞')}</b> — ${t('新的比现役好不到 15% 就不换，避免反复横跳把缓存打崩。')}</li>
+          </ol>
+          <div class="algo-why">
+            <div class="algo-why-title">${t('所以「探针首字很快」却没被选，通常是这四个原因之一：')}</div>
+            <ul>
+              <li>${t('它的<b>真实首字</b>比探针慢很多（本机标定 {r}×）', { r: cal.available ? ratio.toFixed(1) : '2~10' })}</li>
+              <li>${t('它<b>吐字慢</b>：长回答时「首字快 + 吐字慢」会比「首字慢 + 吐字快」慢好几倍')}</li>
+              <li>${t('它<b>余额偏低</b>，被降了优先级（但没被排除）')}</li>
+              <li>${t('它<b>不是这段对话上次用的那个</b>，或比现役好不到 15%（迟滞）')}</li>
+            </ul>
+          </div>
+          <div class="algo-facts">
+            <div><span class="k">${t('探针 → 真实 标定')}</span><span class="v">${esc(calText)}</span></div>
+            ${bal ? `<div><span class="k">${t('余额状态')}</span><span class="v">${esc(bal)}</span></div>` : ''}
+            <div><span class="k">${t('排序分怎么读')}</span><span class="v">${t('表里「排序分」列越小越优先；「依据」列写明它是怎么算出来的')}</span></div>
+          </div>
         </div>
-        <details class="algo-details">
-          <summary>${t('六步怎么算的 · 为什么「首字快」没被选')}</summary>
-        <ol class="algo-steps">
-          <li><b>${t('缓存亲和')}</b> — ${t('这段对话上次由谁服务？它还能用就直接用它，<b>根本不重新选</b>。这是缓存能保住的原因。')}</li>
-          <li><b>${t('余额评估')}</b> — ${t('余额为 0 直接排除；低于「还能撑 3 天」只降优先级（仍可用），低于 1 天只作兜底。')}</li>
-          <li><b>${t('速度估计')}</b> — ${t('真实流量首字优先；没有就用探针值 × 标定比值；再没有就用「该站其它供给的中位速度」。')}</li>
-          <li><b>${t('综合评分')}</b> — ${t('(首字 + 预估输出 × 每 token 毫秒) × 余额惩罚 × 质量惩罚，越小越优。')}</li>
-          <li><b>${t('兜底阶梯')}</b> — ${t('准入 → 慢 → 无证据 → 降级 → 冷却已过 → 余额偏低，逐级往下试，<b>保证不报错</b>。')}</li>
-          <li><b>${t('迟滞')}</b> — ${t('新的比现役好不到 15% 就不换，避免反复横跳把缓存打崩。')}</li>
-        </ol>
-
-        <div class="algo-why">
-          <div class="algo-why-title">${t('所以「探针首字很快」却没被选，通常是这四个原因之一：')}</div>
-          <ul>
-            <li>${t('它的<b>真实首字</b>比探针慢很多（本机标定 {r}×）', { r: cal.available ? ratio.toFixed(1) : '2~10' })}</li>
-            <li>${t('它<b>吐字慢</b>：长回答时「首字快 + 吐字慢」会比「首字慢 + 吐字快」慢好几倍')}</li>
-            <li>${t('它<b>余额偏低</b>，被降了优先级（但没被排除）')}</li>
-            <li>${t('它<b>不是这段对话上次用的那个</b>，或比现役好不到 15%（迟滞）')}</li>
-          </ul>
-        </div>
-
-        <div class="algo-facts">
-          <div><span class="k">${t('探针 → 真实 标定')}</span><span class="v">${esc(calText)}</span></div>
-          ${bal ? `<div><span class="k">${t('余额状态')}</span><span class="v">${esc(bal)}</span></div>` : ''}
-          <div><span class="k">${t('排序分怎么读')}</span><span class="v">${t('表里「排序分」列越小越优先；「依据」列写明它是怎么算出来的')}</span></div>
-        </div>
-        </details>
-      </div>`}
+      </details>
     </div>`
 }
 
@@ -4527,6 +4517,7 @@ function gateCard() {
         <span class="mode-label">${t('准入与开关')}</span>
         <span class="mode-note">${t('谁能登场、自动路由、放行策略')}</span>
       </div>
+      <div class="gate-body">
       <div class="ttft-scale">
         <div class="ttft-scale-label">${t('慢速档位限制')}</div>
         <div class="ttft-scale-row">
@@ -4561,6 +4552,7 @@ function gateCard() {
             <span title="${esc(t('开启后，判定可疑（指纹不符 / 输出截断 / 用量虚报）的站，也可正常登场。若在意可信度，请关闭。'))}">${t('指纹不符/截断/虚报的站也允许登场')}</span>
           </span>
         </label>
+      </div>
       </div>
       </div>
     </div>`

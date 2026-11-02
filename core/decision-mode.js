@@ -5,17 +5,18 @@
  * 但便宜和好用不是一回事：一条比别人便宜一万倍、首字却要等十几秒的供给，
  * 按有效成本它永远排第一，用户却根本不想用。排序依据是用户的取舍，不是代码的取舍。
  *
- * 为什么要有第四档（价速比）：原有三档两头都太极端——价格档只看钱、速度档只看快，
- * 而性价比档除的是质量，可很多模型质量本来就在伯仲之间，除完之后拉开不开差距，
- * 等于少了一个参考维度。价速比把价格和首字延迟放进同一个数（每毫秒首字等待
- * 花多少钱），贵和慢会在同一个比值里现形，价格与速度综合最优的自然浮上来。
+ * 价速比档已在 2026-11-02 移除。原因：它算的是「价格 ÷ 真实首字」，而真实首字
+ * 样本在很多库里几乎为空（本机 12 个候选里大多数 realTtftMs 为 null），
+ * 这时它把候选算成 Infinity 一片并列，实际退化成「看谁有真实数据」；
+ * 有数据时又与价格档高度重合（本机实测 2 个候选下与 value 同序）。
+ * 「流畅度」档已经把价格与速度的关系表达得更准（用首字+吐字，不是一个比值）。
  *
  * 口径（**唯一实现**，排序在 core/router.js#selectCandidates 里读这一份，
  * 前端从 /api/state 的 decisionModes 取同一张表渲染，别在浏览器里另抄一份）：
  *   value —— 性价比：有效成本 = 价格 ÷ 质量（原来的默认行为）
  *   price —— 价格：名义单价最低者优先，质量只用来挡不合格的
  *   speed —— 首字速度：首字延迟最低者优先，网关也优先派给最快的站
- *   priceSpeed —— 价速比：价格 ÷ 首字延迟，越小越优先
+ *   flow —— 流畅度：首字 + 参照输出的吐字时间，越小越流畅（2026-11-02 新增）
  *
  * 四档只改「能登场的里面谁排前面」，不改准入：可疑 / 不稳定 / 慢速 / 没有可信样本
  * 在任何一档下都不登场。想放宽那是「放行可疑供给」和「慢速档位限制」两个开关的事，
@@ -43,12 +44,6 @@ export const DECISION_MODES = [
     hint: '真实首字（没有就退回探针）',
     desc: '按首字延迟排序。**优先用真实流量的首字**（db.offerStats 逐小时桶）；'
       + '这个站还没真实流量时退回探针首字，并在决策日志里标出口径。',
-  },
-  {
-    key: 'priceSpeed',
-    label: '价速比',
-    hint: '价格 ÷ 真实首字',
-    desc: '按「每毫秒首字等待花多少钱」排序。首字口径同「首字速度」：真实优先、探针兜底。',
   },
   {
     key: 'realSpeed',
@@ -121,9 +116,6 @@ export function compareByBasis(a, b, value) {
     if (delta !== 0) return delta
   } else if (mode === 'price') {
     const delta = price(a) - price(b)
-    if (delta !== 0) return delta
-  } else if (mode === 'priceSpeed') {
-    const delta = paceOf(a) - paceOf(b)
     if (delta !== 0) return delta
   }
   const delta = cost(a) - cost(b)
@@ -241,7 +233,7 @@ export function speedBasisOf(row, policy = 'prefer-real') {
  * compareByBasis 只能比「同一个模型的几条供给」；自动路由要在**所有模型之间**
  * 挑一个最优，得先给每个模型算出一个数。各档的标量与 compareByBasis 的主键
  * 一一对应：value → 有效成本、price → 名义单价、speed → 首字延迟、
- * priceSpeed → 价格 ÷ 首字延迟。缺数据一律 Infinity（排到最后），
+ * realSpeed → 真实首字、flow → 流畅度（首字+吐字）。缺数据一律 Infinity（排到最后），
  * 与 compareByBasis「不知道不能冒充最好」的口径一致。
  *
  * 入参形状同 compareByBasis：路由行（美元字段）和 explain 输出（人民币字段）都接。
@@ -250,7 +242,7 @@ export function tierMetricOf(row, value) {
   const mode = normalizeDecisionMode(value)
   // 速度类档位：口径改成「真实优先」
   //   realSpeed     只认真实，没真实样本 → Infinity（排最后，不给它靠探针冒充）
-  //   speed / priceSpeed  真实优先，没有才退回探针
+  //   speed  真实优先，没有才退回探针
   // 其它档位与速度无关，行为不变。
   if (mode === 'realSpeed') return speedOf(row, 'real')
   // 流畅度：首字 + 参照输出量的吐字时间，回答「哪个真的更顺」
@@ -261,6 +253,5 @@ export function tierMetricOf(row, value) {
   }
   if (mode === 'speed') return speedOf(row, 'prefer-real')
   if (mode === 'price') return num2(row?.priceUsd ?? row?.price)
-  if (mode === 'priceSpeed') return paceOf(row ?? {}, 'prefer-real')
   return num2(row?.effectiveUsd ?? row?.effective)
 }
