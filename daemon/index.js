@@ -139,18 +139,29 @@ function openBrowser(url) {
   }
 }
 
-async function listen(port, attemptsLeft = 10) {
+async function listen(port, attemptsLeft = 10, drifted = false) {
   const server = createAppServer()
   return new Promise((resolve, reject) => {
     server.once('error', (error) => {
       if (error.code === 'EADDRINUSE' && attemptsLeft > 0) {
         server.close()
-        listen(port + 1, attemptsLeft - 1).then(resolve, reject)
+        listen(port + 1, attemptsLeft - 1, true).then(resolve, reject)
         return
       }
       reject(error)
     })
-    server.listen(port, HOST, () => resolve({ server, port }))
+    server.listen(port, HOST, () => {
+      // 端口顺延不报错，但一定要说出来：客户端还在找旧端口时，
+      // 用户只会看到「连不上」，完全猜不到是端口漂了。
+      if (drifted) {
+        console.error('')
+        console.error(`  ⚠️  端口 ${preferredPort} 已被占用，已顺延到 ${port}。`)
+        console.error('     指向旧端口的客户端会连不上。查占用者：')
+        console.error(`       lsof -nP -iTCP:${preferredPort} -sTCP:LISTEN`)
+        console.error('')
+      }
+      resolve({ server, port })
+    })
   })
 }
 
