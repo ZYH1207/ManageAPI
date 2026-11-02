@@ -4045,11 +4045,15 @@ function renderDecision() {
 
   view.innerHTML = `
     ${modeCard(mode)}
-    <div class="decision-pair">
-      ${algorithmCard()}
-      ${affinityCard()}
+    <div class="decision-grid">
+      <div class="decision-col">
+        ${algorithmCard()}
+        ${affinityCard()}
+      </div>
+      <div class="decision-col">
+        ${gateCard()}
+      </div>
     </div>
-    ${gateCard()}
     <div class="toolbar">
       <input id="decision-search" class="search" type="search" placeholder="搜索模型名…" value="${esc(filters.decision)}" />
       <span class="hint" style="margin:0">${
@@ -4518,7 +4522,11 @@ function gateCard() {
   const tiers = state.ttftTiers || []
   const allowUntrusted = Boolean(state.settings.allowUntrusted)
   return `
-    <div class="card">
+    <div class="card gate-card">
+      <div class="group-head">
+        <span class="mode-label">${t('准入与开关')}</span>
+        <span class="mode-note">${t('谁能登场、自动路由、放行策略')}</span>
+      </div>
       <div class="ttft-scale">
         <div class="ttft-scale-label">${t('慢速档位限制')}</div>
         <div class="ttft-scale-row">
@@ -4550,7 +4558,7 @@ function gateCard() {
           <span class="switch-track"><span class="switch-knob"></span></span>
           <span class="switch-text">
             <b>${t('放行可疑供给')}</b>
-            <span>${t('开启后，判定可疑（指纹不符 / 输出截断 / 用量虚报）的站，也可正常登场。若在意可信度，请关闭。')}</span>
+            <span title="${esc(t('开启后，判定可疑（指纹不符 / 输出截断 / 用量虚报）的站，也可正常登场。若在意可信度，请关闭。'))}">${t('指纹不符/截断/虚报的站也允许登场')}</span>
           </span>
         </label>
       </div>

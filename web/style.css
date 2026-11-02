@@ -3354,25 +3354,39 @@ body.prov-dragging .drop-zone { display: flex; }
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
 }
 
-/* ═══════════ 智能决策页：算法 + 亲和 并排 ═══════════
+/* ═══════════ 智能决策页：左两卡 / 右一卡 ═══════════
  *
- * 2026-11-02 用户反馈：「算法、缓存亲和每一个都占这么一长趟，还占一半，太浪费了。
- * 搞两个按钮不行吗？或者做成并排的卡片。」
+ * 用户 2026-11-02 的布局要求（原话）：
+ *   「把缓存亲和和算法压缩一下，并排放在左边上下排着；下面那个自动路由加放行
+ *     那一整块，都并排放在左边，直接缩成一张卡压在右边。也就是左边两张卡、
+ *     右边一张卡，上下宽度并排，也不要太宽。」
  *
- * 所以：两块并排、各自内部只留一行结论 + 一行档位，详细文字收进 details。
- * 窄屏（<1100px）自动堆叠——并排时两列都挤不下表格那种宽度就没意义了。
+ * 所以：两列栅格。左列上下两张（算法 / 亲和），右列一张（准入与开关）。
+ * 左列 `align-self: start` 且卡片不拉伸，避免「算法卡内容少、下方空一大块」。
+ * 窄屏（<1180px）退化成单列，按 DOM 顺序堆叠。
  */
-.decision-pair {
+.decision-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1.15fr) minmax(0, 0.85fr);
   gap: 12px;
   align-items: start;
   margin-bottom: 12px;
 }
-@media (max-width: 1100px) {
-  .decision-pair { grid-template-columns: minmax(0, 1fr); }
+@media (max-width: 1180px) {
+  .decision-grid { grid-template-columns: minmax(0, 1fr); }
 }
-.decision-pair > .card { margin: 0; }
+.decision-col {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+/* 卡片在列里不参与拉伸：内容多高就多高，不留空白 */
+.decision-col > .card {
+  margin: 0;
+  align-self: start;
+  width: 100%;
+}
 
 /* 算法卡：一行胶囊概括六步，点开才看长文 */
 .algo-compact {
