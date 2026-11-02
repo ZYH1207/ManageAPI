@@ -781,29 +781,35 @@ docs/              README 用图 + 设计文档
 生产实例固定 4319。改完代码后，**4319 上跑的是旧进程**（后端要重启、
 前端要刷新），直接点它看到的不是「此刻这份代码」。
 
-验收另起一个实例：
+验收用预览工具，**一个任务名 = 一个端口 = 一份独立数据目录**：
 
 ```bash
-node scripts/demo.mjs            # 默认 4419 起找空位，打印出地址
-node scripts/demo.mjs --fresh    # 空数据实例（验证首次上手）
-node scripts/demo.mjs --port 4420
-node scripts/demo.mjs --status
-node scripts/demo.mjs --stop
+node ~/manage-api-previews/preview.mjs up --name 路由页
+#   -> http://127.0.0.1:4528/
+
+node ~/manage-api-previews/preview.mjs list          # 看有哪些在跑
+node ~/manage-api-previews/preview.mjs down --name 路由页
+node ~/manage-api-previews/preview.mjs down --all
 ```
 
-它会做三件事：
+要点：
 
-1. **复制一份生产数据**（`db.json` + `master.key` + `benchmark.json` +
-   `probe-spend.json` + `usage.json` + `usage-detail/`）到 `.test-data/demo/home`
-2. **另起端口**（默认 4419，被占自动往后找，不会撞上 4319）
-3. **退出即弃**：验收时随便点开关、切档、开自动路由，写的是副本，不污染真实数据
+1. **端口由任务名算出来**（4500–4699），同名永远同端口——重跑不用改地址、
+   不用重新点书签；不同任务名天然错开，可以并行开好几个。
+2. **数据按名字分目录**（`~/manage-api-previews/<名字>/data`），默认是**空库**——
+   验收看的是新功能，不需要真实数据，起来也快。
+3. **要真实数据**才加 `--data real`：那时会把 `db.json` 连同 `master.key`
+   一起复制过去。少了 `master.key`，所有上游 Key 都解不开，界面会满屏
+   「解密失败」——那是假故障，不是代码坏了。
+4. 已经在跑的同名实例会**直接复用**（打印地址、不重启），避免断掉你正在看的页面。
 
-为什么必须复制数据目录而不是只换端口：`daemon/instance-lock.js` 禁止同一个数据目录
-起两个 daemon——两个实例会各自跑定时采集与探针，都往同一个 `db.json` 写，
-后写的覆盖先写的。端口顺延挡不住这点。
+为什么必须独立数据目录而不是只换端口：`daemon/instance-lock.js` 禁止同一个
+数据目录起两个 daemon——两个实例会各自跑定时采集与探针，都往同一个 `db.json`
+写，后写的覆盖先写的。端口顺延挡不住这点。
 
-`master.key` 必须一起复制：少了它，`db.json` 里所有上游 Key 都解不开，
-验收会看到满屏「解密失败」——那是假故障，不是代码坏了。
+> 这个工具放在仓库外（`~/manage-api-previews/`），因为它是**本机开发设施**，
+> 不属于项目内容。换机器时要单独带过去，否则 `daemon/index.js` 在 git 工作树
+> 里会提示找不到它。
 
 ### 跑测试
 
