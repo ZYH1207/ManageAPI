@@ -188,6 +188,7 @@ export async function updateProvider(id, patch) {
     if (patch.quotaRemaining !== undefined) {
       provider.quotaRemaining = patch.quotaRemaining === null ? null : Number(patch.quotaRemaining)
       provider.quotaUpdatedAt = nowIso()
+      provider.balanceSyncError = null
     }
     if (patch.currency !== undefined) provider.currency = patch.currency
     if (patch.sortOrder !== undefined) {
@@ -208,9 +209,14 @@ export async function updateProvider(id, patch) {
  * remaining / giftBalance / giftExpiry 的口径只在这里定义一次。
  */
 export function applyBalanceResult(provider, result, at = nowIso()) {
-  if (!provider || !result?.ok) return false
+  if (!provider || !result) return false
+  provider.balanceCheckedAt = at
+  if (!result.ok || !Number.isFinite(Number(result.remaining))) {
+    provider.balanceSyncError = result.reason || '余额接口未返回有效数值'
+    return false
+  }
   const remaining = Number(result.remaining)
-  if (!Number.isFinite(remaining)) return false
+  provider.balanceSyncError = null
   provider.quotaRemaining = remaining
   if (result.currency) provider.currency = result.currency
   provider.quotaUpdatedAt = at

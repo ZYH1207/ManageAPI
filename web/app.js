@@ -2232,6 +2232,10 @@ function providersHtml({ withForm = true, panel = '', actions = '' } = {}) {
     const hasQuota = typeof p.quotaRemaining === 'number'
     // 余额是站点级「额度数值」，折真实人民币只乘站点单价（充值汇率），不乘市场汇率
     const quota = hasQuota ? p.quotaRemaining * siteUnitCny(p) : 0
+    const balanceError = p.balanceSyncError || (p.tokenStatus === 'invalid'
+      ? '后台令牌已失效，余额可能停留在上次记录；请重新登录或更换令牌后同步。' : '')
+    const balanceNotice = balanceError
+      ? `<p class="hint" data-balance-error style="color:var(--warn);margin:8px 0" role="status">${esc(hasQuota ? '余额未更新，当前显示上次记录。' : '余额未读取。')}${esc(balanceError)}${p.quotaUpdatedAt ? ` 上次成功：${esc(fmtDateTime(p.quotaUpdatedAt))}` : ''}</p>` : ''
 
     // 中转站的倍率按「分组」定，不是按模型——所以按分组给一个批量入口。
     // 倍率归并结果（统一/混合/站点值）算一次，分组胶囊与「分组倍率」弹窗共用，两边口径一致。
@@ -2389,10 +2393,11 @@ function providersHtml({ withForm = true, panel = '', actions = '' } = {}) {
           </div>
         </div>
 
+        ${balanceNotice}
         <div class="prov-tiles prov-tiles--duo">
           <div class="prov-tile-duo" data-provider="${esc(p.id)}">
             <div>
-              <span class="k">${t('余额')}</span>
+              <span class="k">${t('余额')}${balanceError ? ' <span class="badge warn">未更新</span>' : ''}</span>
               <b class="edit-warn" data-act="prov-read-balance" data-provider="${esc(p.id)}" title="${esc(t('点这里重新读一次余额（充值后读完，探底离场的站当场回场）'))}">${hasQuota ? `${priceSym()}${money(dispAmount(p.quotaRemaining, p))}` : '—'}</b>
               ${giftHint}
             </div>
@@ -8154,7 +8159,8 @@ document.addEventListener('click', async (event) => {
         failed.push(`同步：${error.message}`)
       }
       try {
-        await api('POST', `/api/providers/${providerId}/balance`, {})
+        const result = await api('POST', `/api/providers/${providerId}/balance`, {})
+        if (result.balance?.ok !== true) failed.push(`余额：${result.balance?.reason || '读取失败，保留上次余额'}`)
       } catch (error) {
         failed.push(`余额：${error.message}`)
       }
@@ -8186,13 +8192,17 @@ document.addEventListener('click', async (event) => {
     if (!providerId) return
     await withBusy(actionButton, async () => {
       try {
-        await api('POST', `/api/providers/${providerId}/balance`, {})
+        const result = await api('POST', `/api/providers/${providerId}/balance`, {})
+        state = result
+        render()
+        if (result.balance?.ok !== true) {
+          toast(t('读余额失败：{error}', { error: result.balance?.reason || '未更新，保留上次余额' }), true)
+          return
+        }
       } catch (error) {
         toast(t('读余额失败：{error}', { error: error.message }), true)
         return
       }
-      state = await api('GET', '/api/state')
-      render()
       toast(t('余额已更新'))
     })
     return

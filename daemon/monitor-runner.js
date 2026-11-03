@@ -162,7 +162,7 @@ export async function collectProviderSnapshots({ providerId = null, logger = con
     const applied = await store.mutate((current) => {
       const out = applySnapshot(current, snap)
       // 余额是账号级的，顺手写回站点——站点卡片上就能看到最新值（含赠金）
-      if (snap.balance?.ok) {
+      if (snap.balance) {
         const target = current.providers.find((p) => p.id === provider.id)
         inv.applyBalanceResult(target, snap.balance, at)
       }

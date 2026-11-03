@@ -2530,6 +2530,8 @@ route('POST', /^\/api\/providers\/([\w-]+)\/balance$/, async (ctx) => {
       )
       return applySnapshot(current, { providerId: provider.id, at, balance: result })
     })
+  } else {
+    await persistBalance(provider.id, result)
   }
   return { ...(await buildState()), balance: result }
 })
