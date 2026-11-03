@@ -42,7 +42,10 @@
     "test": "node .test/run-e2e.mjs",
     "seed:showcase": "node .test/seed-showcase.mjs",
     "shots": "node .test/capture-shots.mjs",
-    "start:lan": "node daemon/index.js --lan"
+    "start:lan": "node daemon/index.js --lan",
+    "domain:plan": "node daemon/install-local-domain.js --dry-run",
+    "domain:install": "node daemon/install-local-domain.js --install",
+    "test:domain": "node .test/check-instance-entry.mjs && node .test/check-local-domain-proxy.mjs"
   },
   "engines": {
     "node": ">=20"

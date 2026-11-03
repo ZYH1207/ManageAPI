@@ -4,6 +4,7 @@ import { renderFreeRelayPane, vendorChipClass, vendorOf, vendorLabel } from './f
 import { renderFreePlatformPane } from './free-platform.js'
 import { ensureProtocolView } from './protocol-view.js'
 import { ensureProtocolRecordsView } from './protocol-records-view.js'
+import { initInstanceEntry } from './instance-entry.js'
 // 路由页的渲染代码（31KB）改成**按需加载**：它只有进「路由」页才用得上，
 // 而首屏（概览/站点/决策）根本不需要它。
 //
@@ -10432,6 +10433,7 @@ try {
   scheduleRefresh()
   render()
   setTab(location.hash.replace('#', '') || 'monitor')
+  void initInstanceEntry().catch(() => {})
   // 告警图标状态靠 monitor 视图的数据；不在站点页也要后台拉一份
   if (!monitorData && !monitorLoading) void loadMonitor()
   // ?help=1 / ?contact=1 直接打开对应面板（方便分享链接）

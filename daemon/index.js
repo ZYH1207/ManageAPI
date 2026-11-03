@@ -19,6 +19,7 @@ import { collectProviderSnapshots } from './monitor-runner.js'
 import { runDetourRechecks } from './detour-runner.js'
 import { spawn } from 'node:child_process'
 import { setReportPort } from '../core/fault-reporter.js'
+import { FORMAL_ORIGIN, isFormalInstance } from './instance-info.js'
 import { mkdir } from 'node:fs/promises'
 import { existsSync, statSync } from 'node:fs'
 import { join } from 'node:path'
@@ -169,7 +170,17 @@ const { server, port } = await listen(preferredPort)
 // 故障上报默认打自己：端口可能因占用顺延，必须在 listen 之后注入实际值，
 // 不能写死 4319（否则预览实例的诊断会写进真实实例的库）
 setReportPort(port)
-const url = `http://${HOST}:${port}/`
+const endpointUrl = `http://${HOST}:${port}/`
+const formalInstance = isFormalInstance({ port, dataDir: dataDir() })
+let domainReady = false
+if (formalInstance) {
+  try {
+    const response = await fetch(`${FORMAL_ORIGIN}/api/instance`, { signal: AbortSignal.timeout(1500), cache: 'no-store' })
+    const identity = response.ok ? await response.json() : null
+    domainReady = identity?.mode === 'formal' && identity?.pid === process.pid && response.headers.get('x-manageapi-entry') === 'formal'
+  } catch { /* The one-time domain installer may not have run yet. */ }
+}
+const url = domainReady ? `${FORMAL_ORIGIN}/` : endpointUrl
 
 // 局域网入口：同一个端口号，绑在局域网那张网卡上。
 //   网关（/v1、/free）→ 只认网关 Key
@@ -265,6 +276,11 @@ console.log('')
 console.log('  ManageAPI  已启动')
 console.log(`  管理界面 ${url}`)
 console.log(`  网关地址 ${url}v1`)
+console.log(`  实例类型 ${formalInstance ? '正式实例' : '开发预览（独立数据）'}`)
+if (formalInstance && !domainReady) {
+  console.log(`  固定入口 ${FORMAL_ORIGIN}/ （尚未安装或未就绪）`)
+  console.log('  安装入口 node daemon/install-local-domain.js --install（首次需要系统权限）')
+}
 if (lanStart.open) {
   console.log(`  局域网入口 http://${lanStart.address}:${port}/ （网关；面板开关打开时面板也在这）`)
   console.log('           仅限局域网：面板在公网上暴露前请务必关闭局域网访问')

@@ -110,6 +110,7 @@ import { aggregateLongTerm } from '../core/offer-stats.js'
 import { readProbeSpend, clearProbeSpend, buildProbeSpendView } from '../core/probe-spend.js'
 import { collectProviderSnapshots } from './monitor-runner.js'
 import { buildStamp, injectBuildStamp } from './build-stamp.js'
+import { instanceInfo } from './instance-info.js'
 import { runProbes } from './probe-runner.js'
 import { probeProtocols } from '../core/protocol-probe.js'
 import {
@@ -921,6 +922,11 @@ function route(method, pattern, handler) {
 // ------------------------------------------------------------------ 基础
 
 route('GET', /^\/api\/health$/, async () => ({ ok: true, at: new Date().toISOString() }))
+route('GET', /^\/api\/instance$/, async (ctx) => instanceInfo({
+  port: ctx.req.socket.localPort,
+  dataDir: store.dataDir(),
+  build: buildStamp(WEB_DIR),
+}))
 route('GET', /^\/api\/state$/, async (ctx) => buildState({ light: ctx.query.get('light') === '1' }))
 
 // 最近的活动（首屏用）：不订阅，拿一次快照就够画「刚才发生了什么」
