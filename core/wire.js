@@ -521,3 +521,65 @@ export function rewriteAppendedChunk(protocol, raw, parsed) {
   )
   return `data: ${JSON.stringify({ ...parsed, choices })}\n\n`
 }
+
+/**
+ * 网关入口的请求形状校验：**结构性**错误在本地拒掉，一条上游都不试。
+ *
+ * 返回 null 表示放行；返回字符串表示要回给客户端的 400 文案。
+ *
+ * ## 为什么只查形状，不查语义
+ *
+ * 网关是「忠实转发 + 选路」的中间层，不是协议的执行者。上游能接受的请求我们
+ * 不该先拒——那会把上游支持的扩展字段、自定义参数、未来新增的形状一并挡掉。
+ * 所以这里只认「一段正常的 chat 请求不可能缺的东西」：
+ *
+ *   chat：      messages 必须是非空数组，每项要有 role
+ *   responses： input 必须是字符串或数组（可选，缺省合法）
+ *
+ * 反例（故意不查）：
+ *   · messages 里 content 的长度、是否为空 —— 上游自己会判，也允许空内容占位
+ *   · max_tokens / temperature 的取值 —— 各家支持范围不同，转发就完了
+ *   · tools / tool_choice 的配对 —— 上游的校验更准
+ *
+ * ## 为什么值得占这一层
+ *
+ * 2026-11-03 实测：缺 messages 的请求进了候选循环，每个候选都被上游 400 拒掉，
+ * 最后聚合成 502，而那些 400 还记进了供给的流量账。一次客户端笔误就能让若干条
+ * 正常供给的可用率下降，用户看到的是「站点变坏了」。请求写错的代价不该站点承担。
+ *
+ * @param {object} body 已解析的请求体
+ * @param {'chat'|'responses'} protocol
+ * @returns {string|null}
+ */
+export function validateGatewayRequest(body, protocol = 'chat') {
+  if (!body || typeof body !== 'object') return '请求体不是合法的 JSON 对象'
+
+  if (protocol === 'responses') {
+    const input = body.input
+    // input 可以缺省（有些客户端只传 instructions + 内置提示），
+    // 但给了就必须是字符串或数组——给个数字或对象一眼是客户端拼错了
+    if (input !== undefined && input !== null) {
+      if (typeof input !== 'string' && !Array.isArray(input)) {
+        return 'input 必须是字符串或数组'
+      }
+    }
+    return null
+  }
+
+  const messages = body.messages
+  if (messages === undefined || messages === null) {
+    return '请求体缺少 messages 字段（chat 协议必填）'
+  }
+  if (!Array.isArray(messages)) return 'messages 必须是数组'
+  if (messages.length === 0) return 'messages 不能为空数组'
+  for (let i = 0; i < messages.length; i += 1) {
+    const item = messages[i]
+    if (!item || typeof item !== 'object' || Array.isArray(item)) {
+      return `messages[${i}] 必须是对象`
+    }
+    if (typeof item.role !== 'string' || !item.role) {
+      return `messages[${i}] 缺少 role`
+    }
+  }
+  return null
+}

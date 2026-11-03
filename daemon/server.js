@@ -29,6 +29,7 @@ import {
   dataLineKind,
   malformedFrameError,
   truncatedFrameError,
+  validateGatewayRequest,
 } from '../core/wire.js'
 import { detailRows, detailRow, sumBuckets, facetOptions } from '../core/usage-detail.js'
 import {
@@ -5385,6 +5386,18 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
   })
   const rawModel = body?.model
   if (!rawModel) return openaiError(res, 400, '请求体缺少 model 字段')
+  // 协议级校验：形状不对的请求在**本地**就拒掉，一条上游都不试。
+  //
+  // 为什么必须在派活之前：网关的候选链是「挨个试，全灭才报错」。一个缺 messages
+  // 的请求发进来，每个候选都会因为上游回 400 而失败，最后聚合成一个 502；
+  // 更糟的是这些 400 会被记进供给的流量账（见 core/failure.js#trafficDelta 的
+  // countsAsOutage 兜底分支），一次客户端笔误就能把若干条正常供给的可用率拉低。
+  // 用户的请求写错了，代价不该由站点承担。
+  //
+  // 校验只认「结构性问题」——字段缺失、类型不对。不猜语义（消息内容长短、
+  // 参数取值范围），那些交给上游判断：这里多做一步就可能拒掉上游本来接受的请求。
+  const invalid = validateGatewayRequest(body, protocol)
+  if (invalid) return openaiError(res, 400, invalid, 'invalid_request_error')
   // 两条路都能进免费池：入口路径（/free/v1）或模型名带 free/ 前缀。
   // 前缀必须在这里判——body 是在这个函数里才读出来的，调用方看不到 model。
   const parsed = resolvePool({ pathname: '', model: rawModel })
