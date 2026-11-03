@@ -124,7 +124,12 @@ export function checkConcurrency({ offerStats = {} } = {}) {
   // 分母剔除客户端取消：那不是失败，会把这个比率抹平
   const served = (list) => list.reduce((a, b) => a + Math.max(0, (b.requests || 0) - (b.clientAborts || 0)), 0)
   const totalReq = served(recent)
-  const totalErr = recent.reduce((a, b) => a + (b.broken || 0) + (b.failed || 0), 0)
+  // 分子只算站方真的没服务好的：断流 + 失败。
+  // 前提是 core/offer-stats.js 已按责任层记账——我方缺陷进 localDefects，不落 failed。
+  // 若哪天有人把 local 又塞回 failed，这里会把我的 bug 说成「站方失败率上升」，
+  // 并把用户推去停用一家好站（2026-11-03 的 507 次 routeTarget 故障就是这么来的）。
+  const siteErr = (list) => list.reduce((a, b) => a + (b.broken || 0) + (b.failed || 0), 0)
+  const totalErr = siteErr(recent)
   if (totalReq < 10) return []
   const errRate = totalErr / totalReq
   if (errRate < 0.1) return []
@@ -134,7 +139,7 @@ export function checkConcurrency({ offerStats = {} } = {}) {
     return t <= Date.now() - 6 * 3600000 && t > Date.now() - 48 * 3600000
   })
   const oldReq = served(older)
-  const oldErr = older.reduce((a, b) => a + (b.broken || 0) + (b.failed || 0), 0)
+  const oldErr = siteErr(older)
   if (oldReq >= 10 && oldErr / oldReq >= errRate) return []
   return [
     {
@@ -251,6 +256,43 @@ export function checkClientAborts({ offerStats = {}, offerById = null } = {}) {
         n >= 10
           ? '不用处理，但数量不少：说明这些请求等得太久（首字慢或回答太长），值得看看是不是客户端超时设得太紧'
           : '不予处理',
+    })
+  }
+  return findings
+}
+
+/**
+ * 规则③c：我方缺陷——网关自己的 bug / 本机网络，被错记成了供给的毛病。
+ *
+ * 为什么必须单独一条：这类失败一个字节都没发到站点，但以前一律落进「失败」列，
+ * 诊断规则②会把它读成「站方失败率上升」，推着用户去停用一家健康站
+ * （2026-11-03 的 507 次 routeTarget 未定义就是现场）。
+ *
+ * 这条结论的 layer 是 gateway，**故意不并进任何站点根因**：它不是站的病，
+ * 站点的余额/限流结论解释不了它，并进去等于让用户以为修站就好。
+ */
+export function checkLocalDefects({ offerStats = {}, offerById = null } = {}) {
+  const byOffer = new Map()
+  for (const b of Object.values(offerStats)) {
+    const n = Number(b.localDefects) || 0
+    if (!n) continue
+    byOffer.set(b.offerId, (byOffer.get(b.offerId) || 0) + n)
+  }
+  const findings = []
+  for (const [offerId, n] of byOffer) {
+    if (n < 2) continue // 单次可能是偶发，攒够再说
+    const label = offerLabelOf(offerId, offerById) || offerId
+    findings.push({
+      id: `local-${offerId}`,
+      offerId,
+      layer: 'gateway',
+      severity: 'warn',
+      title: `${label} 有 ${n} 次失败是网关自己的问题`,
+      detail:
+        '这些请求在网关内部就失败了，根本没有发到站点——所以不算站点的失败，也不进可用率。' +
+        '真正要改的是网关代码或本机网络（代理/DNS/证书），充值、换站、降权都不会让它变好。',
+      evidence: { localDefects: n },
+      action: '看错误账本里「网关自身缺陷」那一条的原文与堆栈；这是要修代码的，不是站点的问题',
     })
   }
   return findings
@@ -383,6 +425,7 @@ export function diagnose({
     ...checkConcurrency({ offerStats }),
     ...checkStreamBreaks({ offerStats, offerById: labelSource }),
     ...checkClientAborts({ offerStats, offerById: labelSource }),
+    ...checkLocalDefects({ offerStats, offerById: labelSource }),
     ...checkUnknownErrors({ errorbook }),
   ].map((f) => ({ category: 'error', ...f }))
 

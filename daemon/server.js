@@ -168,6 +168,7 @@ import {
   OUTCOME,
   classifyOutcome,
   explainStreamError,
+  isLocalOnlyFailure,
 } from '../core/fault-triage.js'
 import * as faultReporter from '../core/fault-reporter.js'
 
@@ -4078,6 +4079,8 @@ route('GET', /^\/api\/faults$/, async (ctx) => {
       absorbed: events.filter((e) => e.status === 'absorbed').length,
       // 客户端自己断开的：单独一个计数，不计入「已截流」（那不是我们截的）
       ignored: events.filter((e) => e.status === 'ignored').length,
+      // 我方缺陷：也不是「已截流」——它是要修代码的，界面上必须自成一类
+      local: events.filter((e) => e.status === 'local').length,
       sent: events.filter((e) => e.status === 'sent').length,
       failed: events.filter((e) => e.status === 'failed').length,
       skipped: events.filter((e) => e.status === 'skipped').length,
@@ -5290,8 +5293,17 @@ async function handleFaultSignals({
   deliveredChars = 0,
   degradation = null,
   streamError = null,
+  failures = [],
+  localDefect = null,
 } = {}) {
-  const impact = assessRequestImpact({ outcome, attempts: attemptCount, deliveredChars, degradation })
+  const impact = assessRequestImpact({
+    outcome,
+    attempts: attemptCount,
+    deliveredChars,
+    degradation,
+    localDefect,
+    failures,
+  })
 
   // 客户端自己断开的：既不算故障，也不能当作「无感截流」白白吞掉——
   // 用户会看到「断流」字样却不知道是谁掐的。记一条 status='ignored' 的账，
@@ -5319,6 +5331,30 @@ async function handleFaultSignals({
         },
         { dedupeMs: CLIENT_ABORT_EVENT_DEDUPE_MS },
       )
+      .catch(() => {})
+    return
+  }
+
+  // 我方缺陷（网关自身 bug / 本机网络不通）：绝不能当作站点故障去剔除供给。
+  // 但也不能静默吞掉——用户看到 502 却查不到任何线索，只能反复试错。
+  // 记一笔 status='local' 的账（不是 'absorbed'：界面上「已截流」是善意的，
+  // 我方缺陷必须显眼），然后直接返回，不进 shouldEscalate。
+  if (impact.local) {
+    await faultReporter
+      .recordFaultEvent({
+        offerId,
+        modelKey,
+        kind: 'local-defect',
+        impact: IMPACT.NONE,
+        impactReason: impact.reason,
+        status: 'local',
+        message: impact.reason,
+        detail: impact.detail,
+        todo: impact.todo,
+        mixed: Boolean(impact.mixed),
+        attempts: attemptCount,
+        deliveredChars,
+      })
       .catch(() => {})
     return
   }
@@ -6233,12 +6269,26 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
   // 和空回合守卫的关系：能走到这里说明守卫也没救回来（它会把没提交的空回合
   // 交回上层换站，全部换完才落这里）。所以这里是「真的没拿到东西」，
   // 够得上上报自动路由的级别。
+  const localOnly = isLocalOnlyFailure(failures)
   void handleFaultSignals({
     offerId: failures[0]?.offerId || null,
     modelKey: candidates[0]?.offer?.modelKey || null,
     attemptCount: failures.length,
     outcome: 'failed',
+    failures,
+    localDefect: localOnly ? true : null,
   })
+  // 全是我方缺陷时不能再说「故障在中转站侧」——那是把用户往错误的方向推，
+  // 让他去充值/换站，而真正要修的是网关自己。
+  if (localOnly) {
+    return openaiError(
+      res,
+      502,
+      `[网关自身] 这一单在网关内部就失败了（试了 ${failures.length} 个供给，没有一条真的发到站点）。` +
+        '不是站点的问题，充值/换站都不会好；明细见 面板 → 智能决策 页与错误账本里「网关自身缺陷」的条目。',
+      'server_error',
+    )
+  }
   return openaiError(
     res,
     502,
@@ -6258,22 +6308,31 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
  *   - 网络不通（查代理/DNS）
  * 这四类处理方式完全不同，含糊话会把用户引到错误的方向。
  *
+ * 责任层优先：本地缺陷（连本机失败 / 网关自身报错）先在调用方被摘出去，
+ * 剩下的才按站点错误归类。这里再挡一道——万一混进了我方文本，也绝不
+ * 归到「网络不通：查代理、DNS」那种让人去动站点的建议里。
+ *
  * @param {{error?: string}[]} failures
  * @returns {string}
  */
 function classifyFailures(failures) {
   const textOf = (f) => String(f?.error || '')
+  const siteFailures = failures.filter((f) => !isLocalDefect(textOf(f)))
+  const localCount = failures.length - siteFailures.length
   const buckets = [
     { key: '限速', test: /429|rate.?limit|too many requests|throttl/i, advice: '被中转站限速，稍后重试或分流到别的站' },
     { key: '余额/quota', test: /402|insufficient|quota|balance|余额|额度|欠费/i, advice: '中转站余额或额度不足，去对应站点充值' },
     { key: '中转站鉴权', test: /401|403|unauthorized|invalid.?key|forbidden|invalid.?token/i, advice: '中转站的 Key 失效或无权限，去面板对应站点换 Key' },
-    { key: '超时/断流', test: /timeout|timed.?out|ECONNRESET|socket hang up|aborted|first token/i, advice: '中转站超时或断流，可能是网络或对方负载高' },
+    { key: '超时/断流', test: /timeout|timed? ?out|ECONNRESET|socket hang up|aborted|first token/i, advice: '中转站超时或断流，可能是网络或对方负载高' },
     { key: '网络不通', test: /ENOTFOUND|ECONNREFUSED|EAI_AGAIN|getaddrinfo|connect/i, advice: '连不上中转站：查代理、DNS 或站点地址是否写错' },
   ]
   const hits = []
   for (const b of buckets) {
-    const n = failures.filter((f) => b.test.test(textOf(f))).length
+    const n = siteFailures.filter((f) => b.test.test(textOf(f))).length
     if (n) hits.push(`${b.key} ${n} 个（${b.advice}）`)
+  }
+  if (localCount) {
+    hits.push(`网关自身 ${localCount} 个（这一单在网关内部就失败了，和站点无关——要修的是网关代码或本机网络）`)
   }
   if (!hits.length) return '未识别的上游错误，请查看错误账本明细。'
   return hits.join('；') + '。'

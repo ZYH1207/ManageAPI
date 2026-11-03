@@ -827,6 +827,9 @@ function faultHtml() {
     'thinking-stolen': '偷思考',
     slow: '变慢',
     degraded: '降质',
+    // 我方缺陷：这单在网关内部就失败了，一个字节都没发到站点。
+    // 单独一类，绝不能被显示成「全部失败」（那会把用户推去换站/充值）
+    'local-defect': '网关自身缺陷',
     'connectivity-test': '连通性测试',
   }
   const STATUS_LABEL = {
@@ -834,6 +837,8 @@ function faultHtml() {
     absorbed: ['已截流', 'ok'],
     // 「不予处理」= 系统看懂了，但这件事不该处理（典型：客户端自己断开的）
     ignored: ['不予处理', 'ok'],
+    // 我方缺陷：不是「已截流」——截流是善意的，这个是要修代码的，必须显眼
+    local: ['我方缺陷', 'danger'],
     skipped: ['未上报', 'ok'],
     failed: ['上报失败', 'danger'],
   }
@@ -870,6 +875,10 @@ function faultHtml() {
           <div class="stat-icon tint-muted">${icon('eye-off')}</div>
         </div>
         <div class="stat">
+          <div class="stat-main"><div class="k">我方缺陷</div><div class="v">${stats.local || 0}</div></div>
+          <div class="stat-icon ${stats.local ? 'tint-warn' : 'tint-muted'}">${icon('alert')}</div>
+        </div>
+        <div class="stat">
           <div class="stat-main"><div class="k">已上报</div><div class="v">${stats.sent || 0}</div></div>
           <div class="stat-icon ${stats.sent ? 'tint-warn' : 'tint-muted'}">${icon('alert')}</div>
         </div>
@@ -886,6 +895,8 @@ function faultHtml() {
         用户完全无感的失败（换站后成功）只记一笔、<b>不打扰自动路由</b>——否则它会为了无关痛痒的小问题在健康供给之间反复折腾。
         只有「真的没拿到东西」或「反复降质」才上报，让它做故障转移。
         <br /><b>「不予处理」</b>是客户端自己把连接关了（手动中断 / 客户端到点取消），不是站的错——不报故障，也不建议你去动站点。
+        <br /><b>「我方缺陷」</b>是请求在网关内部就失败了、一个字节都没发到站点（网关 bug / 本机网络不通）。它同样不报故障转移——
+        罚站解决不了代码问题，但也不许静默吞掉，否则你只能对着 502 反复试错。这类要修的是网关自己。
         ${!autoRouteTokenPresent ? '<br /><b>提示：</b>自动路由还没生成上报令牌，故障现在报不上去。' : ''}
       </p>
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
@@ -953,6 +964,8 @@ const DIAG_KIND_LABEL = {
   'protocol-unsupported': '不支持该协议',
   outage: '未归类故障',
   slow: '慢速/超时',
+  // 我方缺陷：和上面六类并列，但它不该被当成站点的病——徽章用 danger 标出来
+  local: '网关自身缺陷',
 }
 
 async function loadDiagnosis() {
@@ -980,7 +993,12 @@ async function loadDiagnosis() {
 
 function diagKindBadge(kind) {
   const label = DIAG_KIND_LABEL[kind] || kind || '未知'
-  const cls = kind === 'outage' ? 'danger' : kind === 'quota' || kind === 'rate-limit' ? 'warn' : 'info'
+  const cls =
+    kind === 'outage' || kind === 'local'
+      ? 'danger'
+      : kind === 'quota' || kind === 'rate-limit'
+        ? 'warn'
+        : 'info'
   return `<span class="badge ${cls}">${esc(label)}</span>`
 }
 
@@ -1326,6 +1344,7 @@ function renderDiagnosis() {
         <td class="mono">${b.broken || ''}</td>
         <td class="mono">${b.failed || ''}</td>
         <td class="mono" title="客户端自己关的连接（手动中断 / 客户端超时），不算站的断流">${b.clientAborts || ''}</td>
+        <td class="mono" title="网关自身缺陷/本机网络：一个字节都没发到站点，不进失败、不进可用率">${b.localDefects || ''}</td>
         <td class="mono">${fmtTtft(b)}</td>
         <td class="mono">${fmtTps(b)}</td>
         <td class="mono">${fmtCache(b)}</td>
@@ -1346,10 +1365,10 @@ function renderDiagnosis() {
 
   const statsPane = `
     <div class="card">
-      <div class="card-head"><h3>供给表现</h3><span class="meta">近 ${diagnosisHours} 小时 · 按小时聚合 · UTC · 「客户端断开」不计入断流/失败 · 估算费用为诊断级非对账口径</span></div>
+      <div class="card-head"><h3>供给表现</h3><span class="meta">近 ${diagnosisHours} 小时 · 按小时聚合 · UTC · 「客户端断开」「我方缺陷」都不计入断流/失败 · 估算费用为诊断级非对账口径</span></div>
       <table class="table">
-        <thead><tr><th>小时</th><th>供给</th><th>请求</th><th>成功</th><th>断流</th><th>失败</th><th>客户端断开</th><th>首字</th><th>吐字/s</th><th>缓存命中</th><th>估算费用</th><th>错误</th></tr></thead>
-        <tbody>${statRows || '<tr><td colspan="12" class="desc">暂无流量</td></tr>'}</tbody>
+        <thead><tr><th>小时</th><th>供给</th><th>请求</th><th>成功</th><th>断流</th><th>失败</th><th>客户端断开</th><th>我方缺陷</th><th>首字</th><th>吐字/s</th><th>缓存命中</th><th>估算费用</th><th>错误</th></tr></thead>
+        <tbody>${statRows || '<tr><td colspan="13" class="desc">暂无流量</td></tr>'}</tbody>
       </table>
     </div>`
 

@@ -1733,7 +1733,14 @@ export async function recordRoutingBatch(entries = []) {
     if (db.routing.length > 500) db.routing = db.routing.slice(-500)
 
     // ---- 诊断聚合：只在有供给的批次才去碰价格表（offerCost 不便宜）
-    const needStats = records.some((r) => r.chosenOfferId)
+    //
+    // 「有供给」不只是 chosenOfferId：整单失败时一个都没选中（chosenOfferId 为
+    // null），但 failures[] 里每一条都是某条供给真的被试过、真的失败了。
+    // 只按 chosenOfferId 判会把这批失败整批丢掉——供给表现里看不到，
+    // 诊断规则也就永远解释不了「这个站今天试了 20 次一次没成」。
+    const needStats = records.some(
+      (r) => r.chosenOfferId || (r.failures || []).some((f) => f && f.offerId),
+    )
     let offerById = null
     if (needStats) {
       offerById = new Map((db.offers || []).map((o) => [o.id, o]))

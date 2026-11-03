@@ -18,6 +18,8 @@
  * 剔出十分钟；而「多转一小会」的代价只是几百毫秒。用户体验的天平偏向前者。
  */
 
+import { classifyFailure } from './failure.js'
+
 /** 影响等级 */
 export const IMPACT = { NONE: 'none', DEGRADED: 'degraded', BLOCKED: 'blocked' }
 
@@ -110,6 +112,22 @@ export function explainStreamError(streamError, { clientAborted = false } = {}) 
 }
 
 /**
+ * 这些失败是不是**全部**由我方负责（网关自身缺陷 / 本机网络问题）。
+ *
+ * 取舍：只认「全部」才算我方。混着站点错误时仍按站点故障走——宁可冤枉一条
+ * 供给，也不要让真正的站点故障被我方 bug 掩盖。责任层唯一口径来自
+ * core/failure.js#classifyFailure，这里不再自己写正则。
+ *
+ * @param {{error?: string}[]} failures
+ * @returns {boolean}
+ */
+export function isLocalOnlyFailure(failures = []) {
+  const list = Array.isArray(failures) ? failures.filter(Boolean) : []
+  if (!list.length) return false
+  return list.every((f) => classifyFailure(f.error).localDefect)
+}
+
+/**
  * 判一次请求的影响等级。
  *
  * @param {object} p
@@ -122,6 +140,8 @@ export function explainStreamError(streamError, { clientAborted = false } = {}) 
  * @param {boolean} p.degradation.fingerprintBad  指纹不符
  * @param {boolean} p.degradation.truncated       输出被截断
  * @param {boolean} p.degradation.thinkStolen     思考被偷
+ * @param {boolean|null} p.localDefect   显式指定责任层（调用方已判定）
+ * @param {{error?: string}[]} p.failures 本次失败清单（未显式给 localDefect 时用来兜底）
  */
 export function assessRequestImpact({
   outcome,
@@ -129,6 +149,8 @@ export function assessRequestImpact({
   deliveredChars = 0,
   recovered = false,
   degradation = null,
+  localDefect = null,
+  failures = [],
 } = {}) {
   // ---- 拿到了完整结果
   if (outcome === 'ok' || recovered) {
@@ -189,6 +211,28 @@ export function assessRequestImpact({
     }
   }
 
+  // ---- 全部候选失败：先看这次失败该算谁的账
+  //
+  // 我方缺陷（网关自身 bug / 本机网络不通）绝不能报成站点故障：自动路由一收到
+  // 就会把一条可能健康的供给剔除十分钟，坏的是代码，挨罚的是站。这类只记一笔
+  // 给人看的账（status='local'），不进故障转移。
+  const local = localDefect === true || (localDefect !== false && isLocalOnlyFailure(failures))
+  if (local) {
+    const siteCount = (Array.isArray(failures) ? failures : []).filter(
+      (f) => f && !classifyFailure(f.error).localDefect,
+    ).length
+    return {
+      impact: IMPACT.NONE,
+      absorbed: true,
+      local: true,
+      // 混着站点错误时也标出来：界面要能说清「这次不算站的账，但另有 N 条是站点的问题」
+      mixed: siteCount > 0,
+      reason: '网关自身缺陷/本机网络',
+      detail: `请求在网关内部就失败了（试了 ${attempts} 条），没发出有效调用；站点不担责，也不需要换人`,
+      todo: '这是要修代码/查本机网络的，不是换站能解决的——看错误账本里的「网关自身缺陷」条目',
+    }
+  }
+
   // ---- 全部候选失败：用户什么也没拿到
   return {
     impact: IMPACT.BLOCKED,
@@ -242,6 +286,9 @@ export function shouldEscalate({
  */
 export function faultKindOf(impact, extra = '') {
   if (!impact) return 'runtime'
+  // 我方缺陷：既不能当 all-candidates-failed 去剔除站点，也不能当无关紧要的
+  // 「无感」吞掉——界面上它必须是能一眼认出的独立一类
+  if (impact.local === true) return 'local-defect'
   // 客户端自己断开的：单独一类，绝不能被当成 stream-broken 去触发故障转移
   if (/客户端/.test(impact.reason || '') && /断开|取消/.test(impact.reason || '')) return 'client-aborted'
   if (impact.impact === IMPACT.BLOCKED) {
