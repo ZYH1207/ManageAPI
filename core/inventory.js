@@ -154,9 +154,20 @@ export async function updateProvider(id, patch) {
       provider.adminTokenTail = encryptedAdmin ? String(patch.adminToken).trim().slice(-6) : null
       // 来源要记：手动填的令牌（'manual'）不被自动续期覆盖；清空时一并清掉
       provider.adminTokenSource = encryptedAdmin ? 'manual' : null
+      provider.adminTokenExpiresAt = null
+      provider.tokenRenewedAt = null
+      provider.tokenRenewMethod = null
+      provider.refreshTokenEnc = null
+      provider.loginCred = null
+      // 同账号换令牌时保留已知用户 ID；导入其他账号可显式传 adminUserId 覆盖。
       // 换令牌（包括清空）都把上一次的失效结论清掉，重新判
       provider.tokenStatus = null
       provider.tokenStatusAt = null
+    }
+    if (patch.adminUserId !== undefined) {
+      const uid = String(patch.adminUserId ?? '').trim()
+      if (uid && !/^\d+$/.test(uid)) throw new Error('后台账号 ID 必须是数字')
+      provider.adminUserId = uid || null
     }
     // 站点单价：1 个站点货币单位值多少人民币。只用于「实际消费」展示，
     // 不参与比价/路由/有效成本——内部金钱逻辑保持站点口径不动
@@ -1732,7 +1743,7 @@ export async function publicState() {
   const db = await readDb()
   return {
     settings: db.settings,
-    providers: db.providers,
+    providers: db.providers.map(publicProvider),
     credentials: db.credentials.map((c) => ({
       id: c.id,
       providerId: c.providerId,
@@ -1782,7 +1793,14 @@ export function clearReloginCooldown(providerId) {
  * 登录成功同时把 kind 修正为登录实际使用的系别（unknown 站的双端点
  * 试探结果是免费可靠的系别证据）。
  */
-export async function loginWithCredentials(providerId, { user, password, confirmUnknown = false }) {
+export function loginWithCredentials(providerId, options) {
+  if (renewals.has(providerId)) throw new Error('此站正在更新令牌，请稍后再试')
+  const pending = loginAndSave(providerId, options).finally(() => renewals.delete(providerId))
+  renewals.set(providerId, pending)
+  return pending
+}
+
+async function loginAndSave(providerId, { user, password, confirmUnknown = false }) {
   const db = await readDb()
   const provider = db.providers.find((p) => p.id === providerId)
   if (!provider) throw new Error(`站点不存在：${providerId}`)
@@ -1830,6 +1848,11 @@ export async function loginWithCredentials(providerId, { user, password, confirm
     p.adminTokenSource = 'login'
     p.loginCred = encrypted
     p.refreshTokenEnc = refreshEnc
+    p.adminTokenExpiresAt = result.expiresAt || null
+    p.tokenRenewedAt = nowIso()
+    p.tokenRenewMethod = 'login'
+    p.tokenRenewError = null
+    p.adminUserId = result.userId || null
     // 双端点试探的结果就是系别证据（unknown 站也能借此归位）
     if (result.kind) {
       p.kind = result.kind
@@ -1845,7 +1868,7 @@ export async function loginWithCredentials(providerId, { user, password, confirm
   // 充值汇率（站点单价）：登录成功后顺手读一次 /api/status
   await refreshSiteUnitPrice(providerId).catch(() => null)
 
-  return { kind: result.kind, via: result.refreshToken ? 'sub2api' : 'one-api' }
+  return { ok: true, token: result.token, kind: result.kind, via: result.refreshToken ? 'sub2api' : 'one-api' }
 }
 
 /**
@@ -1879,61 +1902,135 @@ export async function refreshSiteUnitPrice(providerId) {
   return unitPrice
 }
 
-/**
- * 401 时的自动续期：用已存的登录凭据重新登录、写回 adminToken。
- * 冷却内直接返回「不可用」（调用方按普通 401 处理，不硬刚站点风控）；
- * 手动令牌（adminTokenSource='manual'）不自动覆盖——用户手动填的
- * 说明他知道自己有什么，自动换掉反而丢信息。
- *
- * @returns {{ok:boolean, token?:string, reason?:string}}
- */
-export async function autoRelogin(providerId) {
+/** 旋转刷新令牌只能消费一次：同站所有调用共享同一个续期。 */
+const renewals = new Map()
+export function autoRelogin(providerId) {
+  if (renewals.has(providerId)) return renewals.get(providerId)
+  const pending = renewProviderSession(providerId).finally(() => renewals.delete(providerId))
+  renewals.set(providerId, pending)
+  return pending
+}
+
+async function renewProviderSession(providerId) {
   const db = await readDb()
   const provider = db.providers.find((p) => p.id === providerId)
-  if (!provider?.loginCred) return { ok: false, reason: '没有登录凭据' }
-  if (provider.adminTokenSource === 'manual') {
-    return { ok: false, reason: '手动令牌不做自动覆盖' }
-  }
-  if (!reloginAllowed(providerId)) {
-    return { ok: false, reason: '自动重登冷却中（10 分钟内已尝试过）' }
-  }
+  if (!provider) return { ok: false, reason: '站点不存在' }
+  if (provider.adminTokenSource !== 'login') return { ok: false, reason: '当前令牌不做自动覆盖，请账号登录启用续期' }
+  if (!provider.loginCred && !provider.refreshTokenEnc) return { ok: false, reason: '没有登录凭据，请重新登录' }
+  if (!reloginAllowed(providerId)) return { ok: false, reason: '自动续期冷却中（10 分钟内已尝试过）' }
   markRelogin(providerId)
   try {
-    const plain = JSON.parse(await decryptSecret(provider.loginCred))
-    const result = await providers.loginProvider({
-      baseUrl: provider.baseUrl,
-      kind: provider.kind === 'relay' ? undefined : provider.kind,
-      user: plain.user,
-      password: plain.password,
-    })
+    let result
+    let method = 'login'
+    if (provider.kind === 'sub2api' && provider.refreshTokenEnc) {
+      try {
+        result = await providers.refreshProviderToken({
+          baseUrl: provider.baseUrl, refreshToken: await decryptSecret(provider.refreshTokenEnc),
+        })
+        method = 'refresh'
+      } catch (error) {
+        // 仅在上游明确不支持或刷新凭据失效时重登；超时/限流/故障不追加登录请求。
+        if (![400, 401, 403, 404, 405].includes(error.status) || !provider.loginCred) throw error
+      }
+    }
+    if (!result) {
+      const plain = JSON.parse(await decryptSecret(provider.loginCred))
+      result = await providers.loginProvider({
+        baseUrl: provider.baseUrl, kind: provider.kind === 'relay' ? undefined : provider.kind,
+        user: plain.user, password: plain.password,
+      })
+    }
     const tokenEnc = await encryptSecret(result.token)
     const refreshEnc = result.refreshToken ? await encryptSecret(result.refreshToken) : null
-    await mutate((db) => {
+    const saved = await mutate((db) => {
       const p = db.providers.find((x) => x.id === providerId)
-      if (!p) return
+      // 网络请求期间用户换了令牌或账号，不覆盖他的新选择。
+      if (!p || JSON.stringify(p.adminToken) !== JSON.stringify(provider.adminToken) || JSON.stringify(p.loginCred) !== JSON.stringify(provider.loginCred)) return false
       p.adminToken = tokenEnc
       p.adminTokenTail = String(result.token).slice(-6)
-      p.adminTokenSource = 'login'
-      if (refreshEnc) p.refreshTokenEnc = refreshEnc
+      p.refreshTokenEnc = refreshEnc
+      p.adminTokenExpiresAt = result.expiresAt || null
+      p.tokenRenewedAt = nowIso()
+      p.tokenRenewMethod = method
+      if (method === 'login') p.adminUserId = result.userId || p.adminUserId || null
+      p.tokenRenewError = null
       p.tokenStatus = 'ok'
       p.tokenStatusAt = nowIso()
       p.tokenStatusMessage = null
       p.updatedAt = nowIso()
+      return true
     })
-    return { ok: true, token: result.token }
+    if (!saved) return { ok: false, reason: '令牌已被更换，本次续期未覆盖' }
+    // 短 TTL 不能被十分钟冷却锁死；成功后的保护窗口至多为新令牌剩余寿命的一半。
+    const remaining = Date.parse(result.expiresAt) - Date.now()
+    if (Number.isFinite(remaining) && remaining > 0) {
+      reloginAt.set(providerId, Date.now() - RELOGIN_COOLDOWN_MS + Math.min(RELOGIN_COOLDOWN_MS, remaining / 2))
+    }
+    return { ok: true, token: result.token, method }
   } catch (error) {
     const message = error.message || String(error)
+    // 网络故障/限流只记原因，不给仍在有效期内的访问令牌判失效。
     await mutate((db) => {
       const p = db.providers.find((x) => x.id === providerId)
-      if (p) {
-        p.tokenStatus = 'invalid'
-        p.tokenStatusAt = nowIso()
-        p.tokenStatusMessage = message
-        p.updatedAt = nowIso()
-      }
+      if (!p || JSON.stringify(p.adminToken) !== JSON.stringify(provider.adminToken)) return
+      p.tokenRenewError = message
+      p.updatedAt = nowIso()
     })
     return { ok: false, reason: message }
   }
+}
+
+/** 已知有效期在五分钟内到期时预刷新；未知有效期继续走鉴权失败后续期。 */
+export async function ensureAdminToken(providerId) {
+  const db = await readDb()
+  const p = db.providers.find((x) => x.id === providerId)
+  const expires = Date.parse(p?.adminTokenExpiresAt)
+  if (p?.adminTokenSource === 'login' && Number.isFinite(expires) && expires <= Date.now() + 5 * 60 * 1000) {
+    const result = await autoRelogin(providerId)
+    if (result.ok) return result.token
+  }
+  return revealAdminToken(providerId)
+}
+
+/** 显式获取旧版官方长期管理令牌；不自动调用会撤销旧令牌的接口。 */
+export async function obtainLongLivedToken(providerId) {
+  const db = await readDb()
+  const p = db.providers.find((x) => x.id === providerId)
+  if (!p) throw new Error('站点不存在')
+  if (!['one-api', 'new-api'].includes(p.kind)) throw new Error('此站请使用账号登录自动续期，或导入站点后台生成的长期令牌')
+  if (renewals.has(providerId)) throw new Error('此站正在续期，请稍后再试')
+  const pending = (async () => {
+    const result = await providers.generateLongLivedToken({ baseUrl: p.baseUrl,
+      adminToken: await revealAdminToken(providerId), userId: p.adminUserId })
+    const encrypted = await encryptSecret(result.token)
+    await mutate((db) => {
+      const target = db.providers.find((x) => x.id === providerId)
+      if (!target || JSON.stringify(target.adminToken) !== JSON.stringify(p.adminToken)) throw new Error('站点凭据已改变，请重新导入长期令牌')
+      target.adminToken = encrypted
+      target.adminTokenTail = result.token.slice(-6)
+      target.adminTokenSource = 'long-lived'
+      target.adminTokenExpiresAt = null
+      target.refreshTokenEnc = null
+      target.loginCred = null
+      target.tokenRenewedAt = nowIso()
+      target.tokenRenewMethod = 'official'
+      target.tokenStatus = 'ok'
+      target.tokenStatusMessage = null
+      target.tokenRenewError = null
+      target.updatedAt = nowIso()
+    })
+    return { ok: true, token: result.token }
+  })().finally(() => renewals.delete(providerId))
+  renewals.set(providerId, pending)
+  return pending
+}
+
+/** 前端只拿状态，不拿令牌、刷新凭据或账号密码密文。 */
+export function publicProvider(p) {
+  const { adminToken, loginCred, refreshTokenEnc, ...view } = p
+  return { ...view, hasAdminToken: Boolean(adminToken),
+    tokenRenewal: p.adminTokenSource === 'login'
+      ? (p.kind === 'sub2api' && refreshTokenEnc ? 'refresh' : loginCred ? 'login' : null) : null }
 }
 
 /**

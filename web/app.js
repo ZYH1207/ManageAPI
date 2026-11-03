@@ -2400,7 +2400,7 @@ function providersHtml({ withForm = true, panel = '', actions = '' } = {}) {
               ? (p.tokenStatus === 'invalid'
                 ? '<span class="badge danger">已失效</span>'
                 : '<span class="badge ok">已填</span>')
-              : '<span class="badge">未填</span>'}<button class="ghost tiny" data-act="set-admin-token" data-provider="${esc(p.id)}" title="${esc(p.adminTokenTail ? `${t('令牌尾号')} …${p.adminTokenTail}` : t('未填站点令牌'))}">${p.hasAdminToken ? '更换' : '填写'}</button></b>
+              : '<span class="badge">未填</span>'}${p.adminTokenSource === 'long-lived' ? '<span class="badge ok">官方长期</span>' : p.tokenRenewal ? `<span class="badge">${p.tokenRenewal === 'refresh' ? '自动刷新' : '自动重登'}</span>` : ''}<button class="ghost tiny" data-act="set-admin-token" data-provider="${esc(p.id)}" title="${esc(p.adminTokenTail ? `${t('令牌尾号')} …${p.adminTokenTail}` : t('未填站点令牌'))}">${p.hasAdminToken ? '更换' : '填写'}</button></b>
           </div>
         </div>
 
@@ -2413,7 +2413,7 @@ function providersHtml({ withForm = true, panel = '', actions = '' } = {}) {
         </div>
 
         <div class="prov-actions">
-          <button data-act="open-login" title="用站点后台的账号密码登录，自动获取并续期令牌——令牌过期不再需要手动换">${icon('key')}账号登录</button>
+          <button data-act="open-login" title="获取官方长期管理令牌、导入后台令牌，或用账号登录启用自动续期">${icon('key')}长期令牌 / 续期</button>
           <button data-act="prov-sync-all" title="模型、分组、价格、密钥，一键同步">${icon('refresh')}一键同步</button>
           <button data-act="prov-panel" data-panel="keys">${icon('key')}密钥</button>
           <button data-act="prov-panel" data-panel="rates">${icon('columns')}分组倍率</button>
@@ -2606,7 +2606,15 @@ function openLoginModal(providerId) {
   const modal = $('#login-modal')
   if (!modal) return
   const provider = (state.providers || []).find((p) => p.id === providerId)
-  $('#login-modal-title').textContent = `${provider?.name || '站点'} · 账号登录`
+  $('#login-modal-title').textContent = `${provider?.name || '站点'} · 网站令牌`
+  modal.dataset.provider = providerId
+  const mode = provider?.adminTokenSource === 'long-lived' ? '官方长期令牌（可由站点撤销）'
+    : provider?.tokenRenewal === 'refresh' ? '官方刷新令牌自动续期'
+    : provider?.tokenRenewal === 'login' ? '账号自动重登续期' : provider?.hasAdminToken ? '手动令牌' : '尚未配置'
+  $('#token-session-summary').textContent = `当前：${mode}。${provider?.adminTokenExpiresAt ? `访问令牌到期：${fmtDateTime(provider.adminTokenExpiresAt)}` : '站点未提供到期时间。'}${provider?.tokenRenewedAt ? ` 最近更新：${fmtDateTime(provider.tokenRenewedAt)}` : ''}${provider?.tokenRenewError ? ` 续期提示：${provider.tokenRenewError}` : ''}`
+  $('#token-site-link').href = provider?.baseUrl ? new URL(provider.baseUrl).origin : '#'
+  modal.querySelector('[data-act="get-long-token"]').disabled = !provider?.hasAdminToken || !['one-api', 'new-api'].includes(provider?.kind)
+  modal.querySelector('[data-act="renew-site-token"]').disabled = !provider?.tokenRenewal
   const form = $('#form-login')
   form.dataset.provider = providerId
   form.elements.user.value = ''
@@ -8660,6 +8668,35 @@ document.addEventListener('click', async (event) => {
   if (action === 'open-login') {
     const providerId = actionButton.closest('[data-provider]')?.dataset.provider
     if (providerId) openLoginModal(providerId)
+    return
+  }
+
+  if (['get-long-token', 'renew-site-token', 'import-long-token'].includes(action)) {
+    const providerId = $('#login-modal').dataset.provider
+    if (action === 'import-long-token') {
+      const value = prompt('粘贴站点后台生成的个人访问令牌（不是模型 API Key）。NewAPI 请同时在下一个输入框填写后台账号 ID。', '')
+      if (!value?.trim()) return
+      const provider = state.providers.find((p) => p.id === providerId)
+      const userId = ['new-api', 'one-api'].includes(provider?.kind)
+        ? prompt('后台账号 ID（站点个人资料里的数字 ID，不确定可留空）', provider?.adminUserId || '') : ''
+      if (userId === null) return
+      try {
+        state = await api('PATCH', `/api/providers/${providerId}`, { adminToken: value.trim().replace(/^Bearer\s+/i, ''), adminUserId: userId || null })
+        render()
+        openLoginModal(providerId)
+        toast('网站令牌已保存；有效期以站点后台设置为准')
+      } catch (error) { toast(error.message, true) }
+      return
+    }
+    if (action === 'get-long-token' && !confirm('这将调用站点官方旧版接口，生成新的长期管理令牌，并使该账号的旧管理令牌失效。其他使用旧管理令牌的工具需要更新。模型 API Key 不受影响。继续？')) return
+    await withBusy(actionButton, async () => {
+      try {
+        state = await api('POST', `/api/providers/${providerId}/${action === 'get-long-token' ? 'long-lived-token' : 'renew-token'}`, action === 'get-long-token' ? { confirmReplace: true } : {})
+        render()
+        openLoginModal(providerId)
+        toast(action === 'get-long-token' ? '官方长期令牌已生成并加密保存' : '网站令牌续期成功')
+      } catch (error) { toast(error.message, true) }
+    })
     return
   }
 

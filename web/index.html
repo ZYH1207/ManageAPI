@@ -1048,14 +1048,25 @@
 
   <div id="login-modal" class="modal" hidden>
     <div class="modal-backdrop" data-act="close-login"></div>
-    <div class="modal-panel" style="width:min(420px,calc(100vw - 40px))">
+    <div class="modal-panel" style="width:min(560px,calc(100vw - 40px))">
       <div class="modal-head">
         <h3 id="login-modal-title">账号登录</h3>
         <button class="ghost" data-act="close-login">关闭</button>
       </div>
       <div class="modal-body">
-        <form id="form-login" class="grid">
-          <p class="hint" style="margin:0 0 8px">用站点后台的账号密码登录，工具会自动获取并续期令牌（Sub2API / OneAPI / NewAPI 自动识别）。凭据加密存在本机，不上传。</p>
+        <div id="token-session-summary" class="hint" style="margin-bottom:16px"></div>
+        <div class="grid" style="grid-template-columns:1fr;margin-bottom:20px;padding-bottom:16px;border-bottom:1px solid var(--border)">
+          <b>获取长期网站令牌</b>
+          <p class="hint" style="margin:0">旧版 OneAPI / NewAPI 可通过官方接口生成无固定到期日的管理令牌。生成会使这个账号的旧管理令牌失效。新版 NewAPI 请到后台「个人访问令牌」完成安全验证，选择不过期后导入；站点未提供该选项时，以站点规则为准。</p>
+          <div style="display:flex;flex-wrap:wrap;gap:8px">
+            <button type="button" data-act="get-long-token">生成长期令牌（旧版）</button>
+            <button type="button" class="ghost" data-act="import-long-token">导入后台令牌</button>
+            <a id="token-site-link" class="ghost-btn" target="_blank" rel="noreferrer">打开站点后台 ↗</a>
+          </div>
+        </div>
+        <form id="form-login" class="grid" style="grid-template-columns:1fr">
+          <b>账号登录 · 自动续期</b>
+          <p class="hint" style="margin:0 0 8px">Sub2API 优先用官方刷新令牌续期，刷新失效后再重新登录；其他站点在过期后自动重登。有效期由站点决定。凭据加密保存在本机，仅发送到该站点完成登录。</p>
           <label>账号（邮箱或用户名）
             <input name="user" required autocomplete="off" />
           </label>
@@ -1064,7 +1075,8 @@
           </label>
           <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:4px">
             <button type="button" class="ghost" data-act="close-login">取消</button>
-            <button type="submit" class="primary">登录</button>
+            <button type="button" class="ghost" data-act="renew-site-token">立即续期</button>
+            <button type="submit" class="primary">登录并启用续期</button>
           </div>
         </form>
       </div>

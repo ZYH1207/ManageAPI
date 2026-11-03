@@ -759,7 +759,7 @@ async function buildState({ light = false } = {}) {
           String(a.createdAt || '').localeCompare(String(b.createdAt || '')),
       )
       .map((p) => ({
-        ...p,
+        ...inv.publicProvider(p),
         hasAdminToken: Boolean(p.adminToken),
         adminTokenTail: p.adminTokenTail ?? null,
         paused: Boolean(p.paused),
@@ -1549,6 +1549,21 @@ route('POST', /^\/api\/providers\/([\w-]+)\/login$/, async (ctx) => {
   }
 })
 
+/** 显式生成旧版长期令牌，调用者必须确认它会替换旧管理令牌。 */
+route('POST', /^\/api\/providers\/([\w-]+)\/long-lived-token$/, async (ctx) => {
+  if (ctx.body?.confirmReplace !== true) throw new HttpError(400, '请先确认生成会使该账号旧管理令牌失效')
+  await inv.obtainLongLivedToken(ctx.params[0])
+  invalidatePricing(ctx.params[0])
+  return buildState()
+})
+
+route('POST', /^\/api\/providers\/([\w-]+)\/renew-token$/, async (ctx) => {
+  const result = await inv.autoRelogin(ctx.params[0])
+  if (!result.ok) throw new HttpError(400, result.reason)
+  invalidatePricing(ctx.params[0])
+  return buildState()
+})
+
 /** 新增站点：建库后自动探测一次系别（失败不阻断保存）。 */
 route('POST', /^\/api\/providers$/, async (ctx) => {
   const created = await inv.createProvider(ctx.body)
@@ -1576,7 +1591,7 @@ route('POST', /^\/api\/providers\/([\w-]+)\/detect-kind$/, async (ctx) => {
   if (!provider) throw new HttpError(404, '站点不存在')
   // 带令牌识别：部分站的系别特征接口要求登录（匿名 401/403），
   // 优先 adminToken，其次第一把可用的 API Key
-  const adminToken = await inv.revealAdminToken(provider.id)
+  const adminToken = await inv.ensureAdminToken(provider.id)
   const apiKeys = (
     await Promise.all(
       db.credentials
@@ -1643,10 +1658,10 @@ route('POST', /^\/api\/providers\/([\w-]+)\/sync$/, async (ctx) => {
   const syncTimeoutMs = Math.min(Number(db.settings.probeTimeoutMs) || 15000, 20000)
   let keyImport = { attempted: false, imported: 0, skipped: 0, total: 0, labels: [] }
   try {
-    const adminToken = await inv.revealAdminToken(provider.id)
+    const adminToken = await inv.ensureAdminToken(provider.id)
     if (adminToken) {
-      const fetched = await withAdminToken(provider.id, (token) =>
-        providers.fetchTokenList({ baseUrl: provider.baseUrl, adminToken: token, timeoutMs: syncTimeoutMs }),
+      const fetched = await withAdminToken(provider.id, (token, userId) =>
+        providers.fetchTokenList({ baseUrl: provider.baseUrl, adminToken: token, userId, timeoutMs: syncTimeoutMs }),
       )
       const result = await inv.importProviderKeys(provider.id, fetched.items)
       keyImport = { attempted: true, ...result, source: fetched.source }
@@ -1824,17 +1839,18 @@ function invalidatePricing(providerId) {
  * 「令牌已失效」，用户却明明刚登录过。
  */
 async function withAdminToken(providerId, fn) {
-  const token = await inv.revealAdminToken(providerId)
-  if (!token) return fn('')
+  const token = await inv.ensureAdminToken(providerId)
+  const getUserId = async () => (await store.readDb()).providers.find(p => p.id === providerId)?.adminUserId
+  if (!token) return fn('', await getUserId())
   try {
-    return await fn(token)
+    return await fn(token, await getUserId())
   } catch (error) {
     // 注意别只认「HTTP 401」：fetchTokenList 会把鉴权失败包成
     // 「站点令牌已失效或无权限（401/403）…」，那串里没有「HTTP 」
     if (!/40[13]/.test(String(error?.message || ''))) throw error
     const relogin = await inv.autoRelogin(providerId)
     if (!relogin.ok) throw error
-    return await fn(relogin.token)
+    return await fn(relogin.token, await getUserId())
   }
 }
 
@@ -1859,7 +1875,7 @@ async function loadProviderPricing(providerId, { fresh = false } = {}) {
     pricing = cached.data
   } else {
     try {
-      const adminToken = await inv.revealAdminToken(provider.id)
+      const adminToken = await inv.ensureAdminToken(provider.id)
       pricing = await providers.fetchProviderPricing({
         baseUrl: provider.baseUrl,
         adminToken,
@@ -2140,7 +2156,7 @@ route('POST', /^\/api\/providers\/([\w-]+)\/detect-groups$/, async (ctx) => {
   const provider = db.providers.find((p) => p.id === providerId)
   if (!provider) throw new HttpError(404, '站点不存在')
 
-  const adminToken = await inv.revealAdminToken(provider.id)
+  const adminToken = await inv.ensureAdminToken(provider.id)
   if (!adminToken) {
     throw new HttpError(400, '需要先在站点卡片上填「令牌」，才能读后台的令牌列表')
   }
@@ -2151,8 +2167,8 @@ route('POST', /^\/api\/providers\/([\w-]+)\/detect-groups$/, async (ctx) => {
   let items = []
   let source = null
   try {
-    const fetched = await withAdminToken(provider.id, (token) =>
-      providers.fetchTokenList({ baseUrl: provider.baseUrl, adminToken: token, timeoutMs: 20000 }),
+    const fetched = await withAdminToken(provider.id, (token, userId) =>
+      providers.fetchTokenList({ baseUrl: provider.baseUrl, adminToken: token, userId, timeoutMs: 20000 }),
     )
     items = fetched.items
     source = fetched.source
@@ -2305,7 +2321,7 @@ route('POST', /^\/api\/providers\/([\w-]+)\/usage-check$/, async (ctx) => {
   if (!provider) throw new HttpError(404, '站点不存在')
   const credential = db.credentials.find((c) => c.providerId === provider.id)
   if (!credential) throw new HttpError(400, '该站还没有 Key')
-  const adminToken = await inv.revealAdminToken(provider.id)
+  const adminToken = await inv.ensureAdminToken(provider.id)
   if (!adminToken) {
     throw new HttpError(400, '需要先在站点卡片上点「令牌」，填一个站点后台的登录令牌')
   }
@@ -2418,7 +2434,7 @@ route('POST', /^\/api\/providers\/([\w-]+)\/balance$/, async (ctx) => {
   // 余额是「账号级」的：有管理令牌就够了，不需要任何 sk- Key。
   // 以前这里先要求至少一把 Key，导致令牌已填、Key 还没导的站（new-api 把令牌列表
   // 做了掩码，导不进来）连余额都读不到，一键同步三项全报「该站点还没有 Key」。
-  const adminToken = await inv.revealAdminToken(provider.id)
+  const adminToken = await inv.ensureAdminToken(provider.id)
   if (credentials.length === 0 && !adminToken) throw new HttpError(400, '该站点还没有 Key')
 
   // 校准充值汇率：读余额正是最需要它的时刻（¥7=1 单位的站，余额不折就是错的）
@@ -2431,16 +2447,18 @@ route('POST', /^\/api\/providers\/([\w-]+)\/balance$/, async (ctx) => {
     apiKeys,
     adminToken,
     kind: provider.kind,
+    userId: provider.adminUserId,
   })
   // 令牌失效会挂在 reason 里（HTTP 401/403）——登录过的站先自动重登一次
   // 再试；手动令牌/重登失败才标红到卡片
-  if (adminToken && !result.ok && /HTTP (401|403)/.test(String(result.reason || ''))) {
+  if (adminToken && !result.ok && /(?:HTTP )?40[13]/.test(String(result.reason || ''))) {
     const relogin = await inv.autoRelogin(provider.id)
     if (relogin.ok) {
       const retried = await providers.tryBalanceWithKeys({
         baseUrl: provider.baseUrl,
         apiKeys,
         adminToken: relogin.token,
+        userId: (await store.readDb()).providers.find(p => p.id === provider.id)?.adminUserId,
         kind: provider.kind,
       })
       if (retried.ok) {
@@ -2451,7 +2469,7 @@ route('POST', /^\/api\/providers\/([\w-]+)\/balance$/, async (ctx) => {
     }
   }
   if (adminToken) {
-    const bad = /HTTP (401|403)/.test(String(result.reason || ''))
+    const bad = /(?:HTTP )?40[13]/.test(String(result.reason || ''))
     if (bad) await inv.setTokenStatus(provider.id, { ok: false, message: result.reason, status: 401 })
     else if (result.ok) await inv.setTokenStatus(provider.id, { ok: true })
   }
@@ -3510,7 +3528,7 @@ route('POST', /^\/api\/benchmarks\/import-plaza$/, async (ctx) => {
   const provider = db.providers.find((p) => p.id === providerId)
   if (!provider) throw new HttpError(404, '站点不存在')
 
-  const adminToken = await inv.revealAdminToken(provider.id)
+  const adminToken = await inv.ensureAdminToken(provider.id)
   const pricing = await providers.fetchProviderPricing({ baseUrl: provider.baseUrl, adminToken })
 
   // 读-改-写走 benchmark.js 的串行队列，与手动改价 / 载入参考价 / 从站导入互斥，

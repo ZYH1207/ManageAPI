@@ -25,7 +25,7 @@ import { identityKey } from './model-name.js'
 // v5 = 协议探查记录 / 空回合记录 / 故障信号
 // v6 = 模型名身份归一（别名表）
 // v7 = 诊断地基（错误指纹账本 / 供给表现时序 / 故障上报配置）
-export const DB_VERSION = 7
+export const DB_VERSION = 8
 
 /**
  * 归一化分组名。定义在存储层（零依赖），台账层再导出——两边共用同一份，
@@ -478,6 +478,14 @@ function migrate(db) {
   ensureDiagnosisKeys(db)
   ensureFaultKeys(db)
   ensureLanPanel(db)
+  // v8：网站令牌生命周期；旧库未声明有效期，不能迁移成「永久」。
+  for (const p of db.providers || []) {
+    p.adminTokenExpiresAt ??= null
+    p.tokenRenewedAt ??= null
+    p.tokenRenewMethod ??= null
+    p.tokenRenewError ??= null
+    p.adminUserId ??= null
+  }
   db.version = DB_VERSION
   ensureMonitor(db)
   return db

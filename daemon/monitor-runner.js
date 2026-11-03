@@ -38,7 +38,7 @@ export async function collectProviderSnapshots({ providerId = null, logger = con
       if (secret) apiKeys.push(secret)
     }
     const apiKey = apiKeys[0] || ''
-    const adminToken = await inv.revealAdminToken(provider.id)
+    let adminToken = await inv.ensureAdminToken(provider.id)
 
     // ---------------------------------------------------------------- 余额
     if (apiKey || adminToken) {
@@ -48,8 +48,18 @@ export async function collectProviderSnapshots({ providerId = null, logger = con
           apiKeys,
           adminToken,
           kind: provider.kind,
+          userId: provider.adminUserId,
           timeoutMs: 10000,
         })
+        if (adminToken && !snap.balance?.ok && /(?:HTTP )?40[13]/.test(snap.balance?.reason || '')) {
+          const renewed = await inv.autoRelogin(provider.id)
+          if (renewed.ok) {
+            adminToken = renewed.token
+            snap.balance = await providers.tryBalanceWithKeys({ baseUrl: provider.baseUrl, apiKeys,
+              adminToken, userId: (await store.readDb()).providers.find(p => p.id === provider.id)?.adminUserId,
+              kind: provider.kind, timeoutMs: 10000 })
+          }
+        }
         // ok:false 的 reason 由 applySnapshot 记成 info 级告警，不算采集失败
       } catch (error) {
         errors.push(`余额：${error.message}`)
@@ -117,10 +127,16 @@ export async function collectProviderSnapshots({ providerId = null, logger = con
     // 硬排除会误伤——系别分支保留在收益明确的 tryBalance/公告上
     if (adminToken) {
       try {
-        const pricing = await providers.fetchAvailableChannels({
-          baseUrl: provider.baseUrl,
-          adminToken,
-        })
+        let pricing
+        try {
+          pricing = await providers.fetchAvailableChannels({ baseUrl: provider.baseUrl, adminToken })
+        } catch (error) {
+          if (!/HTTP 40[13]/.test(String(error?.message || ''))) throw error
+          const renewed = await inv.autoRelogin(provider.id)
+          if (!renewed.ok) throw error
+          adminToken = renewed.token
+          pricing = await providers.fetchAvailableChannels({ baseUrl: provider.baseUrl, adminToken })
+        }
         snap.groups = pricing.groups
         snap.models = pricing.models
         await inv.setTokenStatus(provider.id, { ok: true })

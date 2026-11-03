@@ -204,7 +204,7 @@ export async function fetchSiteUnitPrice({ baseUrl, adminToken = '', timeoutMs =
  *
  * @returns {{ok:boolean, remaining?:number, currency?:string, reason?:string}}
  */
-export async function tryBalance({ baseUrl, apiKey, adminToken, kind, timeoutMs = 10000 }) {
+export async function tryBalance({ baseUrl, apiKey, adminToken, userId, kind, timeoutMs = 10000 }) {
   // 模型厂商有专用余额接口，先试它——这类接口不认 one-api 的 /api/user/self
   const vendor = await readVendorBalance({ baseUrl, apiKey, timeoutMs, requestJson })
   if (vendor) return vendor
@@ -228,7 +228,8 @@ export async function tryBalance({ baseUrl, apiKey, adminToken, kind, timeoutMs 
     for (const origin of origins) {
       for (const path of adminPaths) {
         try {
-          const payload = await requestJson(`${origin}${path}`, { apiKey: adminToken, timeoutMs })
+          const payload = await requestJson(`${origin}${path}`, { apiKey: adminToken, timeoutMs,
+            headers: userId && path === '/api/user/self' ? { 'New-Api-User': String(userId) } : {} })
           const data = payload?.data ?? payload
           // Sub2API 这类直接给货币值；这类中转站几乎都按美元计价，
           // 只有明确写了 currency 才当人民币
@@ -366,12 +367,12 @@ export async function fetchGiftBalance({ baseUrl, adminToken, timeoutMs = 5000 }
  * 而模型同步（sync 路由）早就改成所有 Key 都试了，两边口径应当一致。
  * 管理令牌失效时换 Key 也救不了，直接短路返回。
  */
-export async function tryBalanceWithKeys({ baseUrl, apiKeys = [], adminToken, timeoutMs = 10000 }) {
+export async function tryBalanceWithKeys({ baseUrl, apiKeys = [], adminToken, userId, kind, timeoutMs = 10000 }) {
   const keys = apiKeys.filter(Boolean)
-  if (keys.length === 0) return tryBalance({ baseUrl, apiKey: '', adminToken, timeoutMs })
+  if (keys.length === 0) return tryBalance({ baseUrl, apiKey: '', adminToken, userId, kind, timeoutMs })
   let last = null
   for (const apiKey of keys) {
-    const result = await tryBalance({ baseUrl, apiKey, adminToken, timeoutMs })
+    const result = await tryBalance({ baseUrl, apiKey, adminToken, userId, kind, timeoutMs })
     if (result.ok) return result
     last = result
     if (adminToken && String(result.reason || '').includes('管理令牌已失效')) return result
@@ -638,7 +639,7 @@ export async function fetchSiteUsage({ baseUrl, adminToken, timeoutMs = 15000 })
  *
  * @returns {Promise<{items:Array<{name,key,group,rate}>, raw:any, source:string}>}
  */
-export async function fetchTokenList({ baseUrl, adminToken, timeoutMs = 15000 }) {
+export async function fetchTokenList({ baseUrl, adminToken, userId, timeoutMs = 15000 }) {
   const origins = originCandidates(baseUrl)
 
   const attempts = [
@@ -659,7 +660,8 @@ export async function fetchTokenList({ baseUrl, adminToken, timeoutMs = 15000 })
     for (const origin of origins) {
       const where = `${origin}${attempt.path}`
       try {
-        const payload = await requestJson(where, { apiKey: adminToken, timeoutMs })
+        const payload = await requestJson(where, { apiKey: adminToken, timeoutMs,
+          headers: userId && attempt.source === 'one-api' ? { 'New-Api-User': String(userId) } : {} })
         const raw = pickTokenArray(payload)
         if (raw.length === 0) {
           shapeError = `接口有响应但没认出列表结构：${JSON.stringify(payload).slice(0, 120)}`
@@ -872,6 +874,53 @@ export async function fetchProviderPricing({ baseUrl, adminToken, kind, timeoutM
 
 const LOGIN_HINTS = /captcha|turnstile|验证码|2fa|totp/i
 
+/** 有效期只展示站方声明，不把未声明当成永久有效。 */
+export function tokenExpiresAt(data, now = Date.now()) {
+  const absolute = data?.access_expires_at ?? data?.expires_at
+  if (absolute != null && absolute !== '') {
+    const n = Number(absolute)
+    const ms = Number.isFinite(n) ? (n < 1e12 ? n * 1000 : n) : Date.parse(absolute)
+    if (Number.isFinite(ms) && ms > 0 && ms <= 8.64e15) return new Date(ms).toISOString()
+  }
+  const seconds = Number(data?.expires_in)
+  if (Number.isFinite(seconds) && seconds > 0 && now + seconds * 1000 <= 8.64e15) {
+    return new Date(now + seconds * 1000).toISOString()
+  }
+  return null
+}
+
+/** Sub2API 官方旋转式刷新；失败保留 HTTP 状态供编排层决定是否允许重登。 */
+export async function refreshProviderToken({ baseUrl, refreshToken, timeoutMs = 12000 }) {
+  if (!refreshToken) throw new Error('没有可用的刷新令牌')
+  const origin = originOf(baseUrl, { stripApiPrefix: true }) || originOf(baseUrl)
+  const payload = await requestJson(`${origin}/api/v1/auth/refresh`, {
+    method: 'POST', timeoutMs,
+    body: JSON.stringify({ refresh_token: refreshToken }),
+  })
+  const d = payload?.data ?? payload
+  if (payload?.success === false || (payload?.code != null && payload.code !== 0) || !d?.access_token || !d?.refresh_token) throw new Error('站点刷新响应未返回完整令牌对，请重新登录')
+  return { token: d.access_token, refreshToken: d.refresh_token || null, expiresAt: tokenExpiresAt(d), kind: 'sub2api' }
+}
+
+/** 旧版 OneAPI/NewAPI 官方接口：显式生成会替换旧管理令牌，不能用于探测。 */
+export async function generateLongLivedToken({ baseUrl, adminToken, userId, timeoutMs = 12000 }) {
+  if (!adminToken) throw new Error('请先账号登录或填写有效的网站令牌')
+  let payload
+  try {
+    payload = await requestJson(`${originOf(baseUrl)}/api/user/token`, {
+      apiKey: adminToken, timeoutMs,
+      headers: userId ? { 'New-Api-User': String(userId) } : {},
+    })
+  } catch (error) {
+    if ([404, 405].includes(error.status)) throw new Error('此站不支持旧版生成接口。请到站点后台的个人访问令牌页面完成安全验证，生成后导入。')
+    throw error
+  }
+  if (payload?.success !== true || typeof payload.data !== 'string' || !payload.data.trim()) {
+    throw new Error('站点未返回长期管理令牌，请到站点后台生成后导入')
+  }
+  return { token: payload.data.trim() }
+}
+
 /**
  * 账号密码登录。kind 已知走对应端点，unknown 按 sub2api → one-api 顺序都试。
  * @returns {Promise<{token:string, userId:string|null, refreshToken:string|null, kind:string}>}
@@ -905,6 +954,7 @@ export async function loginProvider({ baseUrl, kind, user, password, timeoutMs =
           token,
           userId: String(d?.user?.id ?? '') || null,
           refreshToken: d?.refresh_token || null,
+          expiresAt: tokenExpiresAt(d),
           kind: 'sub2api',
         }
       }
@@ -933,7 +983,8 @@ export async function loginProvider({ baseUrl, kind, user, password, timeoutMs =
         token,
         userId: uid !== undefined && uid !== null ? String(uid) : null,
         refreshToken: null,
-        kind: 'new-api',
+        expiresAt: tokenExpiresAt(d),
+        kind: kind === 'one-api' ? 'one-api' : 'new-api',
       }
     } catch (error) {
       const msg = String(error?.message || error)
