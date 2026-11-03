@@ -125,10 +125,16 @@ for (let i = 0; i < 40; i++) {
 }
 
 // ---- 起 CDP Chrome
+// 之前只认 Windows 两条路径，于是在 macOS 上必红（wsPort=null，报
+// ERR_INVALID_URL .../json/list）——被误当成产品缺陷记进了既有失败表。
+// 补上 macOS 的 Chrome / Chromium / Edge 常见位置。
 const CHROME_CANDIDATES = [
   process.env.CHROME,
   'C:/Program Files/Google/Chrome/Application/chrome.exe',
   'C:/Program Files (x86)/Google/Chrome/Application/chrome.exe',
+  '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+  '/Applications/Chromium.app/Contents/MacOS/Chromium',
+  '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge',
 ].filter(Boolean)
 const chromePath = CHROME_CANDIDATES.find((p) => existsSync(p))
 let chrome = null

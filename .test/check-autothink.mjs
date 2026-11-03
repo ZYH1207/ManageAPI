@@ -122,7 +122,19 @@ function freePort() {
 
 function killTree(pid) {
   if (!pid) return
-  spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore' })
+  // Windows 用 taskkill 递归杀；macOS/Linux 用进程号直接杀。
+  // 只写 taskkill 会让 POSIX 上静默不杀 → 子进程带着 stdout 管道活着 →
+  // 父进程事件循环永远不空 → 测试「全通过」之后挂到超时才算失败。
+  if (process.platform === 'win32') {
+    spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore' })
+    return
+  }
+  try {
+    process.kill(pid, 'SIGTERM')
+  } catch {
+    /* 已经退出 */
+  }
+  spawnSync('kill', ['-KILL', String(pid)], { stdio: 'ignore' })
 }
 
 async function waitFor(fn, { timeoutMs = 15000, stepMs = 150 } = {}) {

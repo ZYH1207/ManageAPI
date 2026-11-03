@@ -67,6 +67,12 @@ function findChrome() {
     'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe',
     '/usr/bin/google-chrome',
     '/usr/bin/chromium',
+    // macOS 上 Chrome 装在 .app 里，PATH 上没有它。只写 /usr/bin/*
+    // 会让本机永远「找不到 Chrome」而静默跳过全部浏览器断言——
+    // 那些断言一条都没跑，测试却报「通过」，是最坏的一种绿。
+    '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+    '/Applications/Chromium.app/Contents/MacOS/Chromium',
+    '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge',
   ].filter(Boolean)
   return candidates.find((p) => existsSync(p)) || null
 }
