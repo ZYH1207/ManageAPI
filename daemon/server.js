@@ -187,8 +187,13 @@ const MAX_BODY = 1024 * 1024
 // 管理接口的 1MB 上限不该拦住正常的对话请求
 const MAX_GATEWAY_BODY = 64 * 1024 * 1024
 
-/** 流式转发的空闲超时：连续这么久没收到上游任何字节，才判定卡死 */
-const STREAM_IDLE_MS = 120000
+/**
+ * 转发（流式与非流式）的空闲超时：连续这么久没收到上游任何字节，才判定卡死。
+ *
+ * 语义是**空闲**而不是**总时长**：只要字节持续到达，长回答就不该被杀。
+ * 环境变量覆盖只给自测用——端到端测试不可能真等 120 秒来证明「有字节就不杀」。
+ */
+const STREAM_IDLE_MS = Number(process.env.MANAGE_API_STREAM_IDLE_MS) || 120000
 /** 客户端断开事件的聚合窗口：同一供给 10 分钟内只留一条，后面的只加 hits */
 const CLIENT_ABORT_EVENT_DEDUPE_MS = 10 * 60_000
 
@@ -225,6 +230,37 @@ function json(res, status, payload) {
     'Content-Length': Buffer.byteLength(body),
   })
   res.end(body)
+}
+
+/**
+ * 按数据块读取上游响应体，并在每块到达时调用 `touch()` 重置空闲计时。
+ *
+ * 返回值是整段文本；解析 JSON 交给调用方（解析失败要报「不是 JSON」，
+ * 而不是混进读体超时的错误里——两者的处置完全不同）。
+ *
+ * @param {Response} upstreamRes
+ * @param {{touch?: () => void}} [opts]
+ * @returns {Promise<string>}
+ */
+async function readUpstreamText(upstreamRes, { touch = null } = {}) {
+  // 没有 body（204 / HEAD）时直接当空体，不要对 null 调 getReader()
+  if (!upstreamRes.body) return ''
+  const reader = upstreamRes.body.getReader()
+  const decoder = new TextDecoder()
+  let text = ''
+  try {
+    while (true) {
+      const { value, done } = await reader.read()
+      if (done) break
+      // 有字节流动就续命：长回答不该被「总时长」杀掉，只有真空闲才算卡死
+      touch?.()
+      text += decoder.decode(value, { stream: true })
+    }
+    text += decoder.decode()
+    return text
+  } finally {
+    await reader.cancel().catch(() => {})
+  }
 }
 
 async function readBody(req, { maxBytes = MAX_BODY } = {}) {
@@ -4447,6 +4483,17 @@ export async function flushGatewayBuffers() {
 
 function openaiError(res, status, message, type = 'invalid_request_error') {
   if (res.writableEnded) return
+  // 头已经发出去了（流式已提交、吐过字节）就不能再改状态码：writeHead 会抛
+  // ERR_HTTP_HEADERS_SENT。以前只判 writableEnded，靠「上游路径恰好都 res.end() 了」
+  // 兜住，不是真守住。此时唯一正确的收尾是把连接掐断，让客户端看到中断而不是挂住。
+  if (res.headersSent) {
+    try {
+      res.destroy()
+    } catch {
+      /* 连接可能已经没了 */
+    }
+    return
+  }
   const body = JSON.stringify({ error: { message, type, code: status } })
   res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' })
   res.end(body)
@@ -4537,8 +4584,10 @@ async function streamAttempt({
   // 只有连续 STREAM_IDLE_MS 没收到任何东西才当上游卡死。
   let timer = null
   let idleTimedOut = false
+  let timerWindowMs = 0
   const armTimer = (ms) => {
     if (timer) clearTimeout(timer)
+    timerWindowMs = ms
     timer = setTimeout(() => {
       idleTimedOut = true
       controller.abort()
@@ -4549,7 +4598,12 @@ async function streamAttempt({
   let sawFirstContent = false
   const firstTokenWait = Number(firstTokenMs) > 0 ? Number(firstTokenMs) : STREAM_IDLE_MS
   const touch = (ms = STREAM_IDLE_MS) => armTimer(sawFirstContent ? ms : firstTokenWait)
-  armTimer(firstTokenWait)
+  // 非流式请求从「发出请求」到「拿到完整 JSON」之间**没有任何字节可 touch**：
+  // 上游在 resp.json() 里慢慢生成时，计时器一直停在首个窗口上。于是长回答、
+  // 大 max_tokens、带 reasoning 的模型只要超过首个窗口（组级默认 60s），
+  // 就会在读体阶段被 abort，报成「首字超时」并计入站点失败。
+  // 非流式本来就应该按「总时长」判，而不是按首字——首字对它没有意义。
+  armTimer(isStream ? firstTokenWait : STREAM_IDLE_MS)
 
   // 客户端先走了就别再喂上游：否则对面继续生成，白烧额度还占着连接
   const onClientGone = () => {
@@ -4587,9 +4641,17 @@ async function streamAttempt({
     // 后者不是站的错（上层按 clientSignal 排除）。错误文本必须能区分，否则
     // 路由日志里只剩一句 This operation was aborted，排查时看不出所以然
     if (idleTimedOut) {
-      return { committed: resume, error: `上游 ${STREAM_IDLE_MS / 1000} 秒无响应（首字超时）` }
+      // 说真话：文案里的秒数必须和实际用的窗口一致。以前硬写 STREAM_IDLE_MS/1000
+      // （120 秒），而实际触发的是 firstTokenWait（组级 60 秒），排查时对不上号。
+      return { committed: resume, error: `上游 ${Math.round(timerWindowMs / 1000)} 秒无响应（超时）` }
     }
-    return { committed: resume, error: `连接失败：${error.message}` }
+    // 错误文本里必须带**目标地址**：core/failure.js#isLocalDefect 靠
+// 「连接错误码 + 是否连本机(loopback)」判责任层，原来这里只有一句
+// 「连接失败：fetch failed」，既没有错误码也没有主机名——连本机中转站失败
+// 也就判不出来，会被当成站点故障记进可用率。fetch 的失败原因通常在 error.cause 里。
+    const cause = error?.cause?.code || error?.code || error?.message || 'unknown'
+    const target = `${candidate.provider.baseUrl.replace(/\/+$/, '')}${upstreamPath(protocol)}`
+    return { committed: resume, error: `连接失败（${cause}）：${target}` }
   }
 
   // 收到响应头了：wait 段到此结束
@@ -4602,14 +4664,46 @@ async function streamAttempt({
   }
 
   if (!isStream) {
+    // 非流式读体：按「每一块数据重置空闲计时」来读，而不是交给 `res.json()`
+    // 一次性等到底。
+    //
+    // 为什么不能直接用 `.json()`：它内部把整个响应体读完才返回，期间我们的计时器
+    // 没有任何 touch 点，只能靠初始的那个窗口当**总时长硬限**。于是
+    //   · 上游边生成边下发（很多中转站会先发 chunked 的 JSON 前缀），明明有字节在流动，
+    //     超过 120 秒仍然被 abort，还报成「首字超时」
+    //   · 长推理 / 大 max_tokens 的正常请求被当成站点故障记分
+    // 现在是「读完每一块就 touch 一次」：只要有字节持续到达就不杀，真卡死
+    // （连续空闲超窗口）才 abort——与流式同一套语义。
     let payload
     try {
-      payload = await upstreamRes.json()
-    } catch {
+      // 非流式的续命点必须把窗口切到 STREAM_IDLE_MS（120s），而不是沿用
+      // `touch()` 的首字窗口（组级默认 60s）。差别是实质的：
+      // 非流式中转站常常「一字不发地先攒完整回答」，此时首个 120s 是等它开口；
+      // 一旦开始下发字节，就不该再用首字门槛卡它——那是「迟迟不出字」的线，
+      // 不是「出字出到一半太慢」的线。以前这里传的是通用 touch，第一个 chunk
+      // 到达后窗口反而从 120s 缩回 60s，长回答被半途杀掉。
+      const text = await readUpstreamText(upstreamRes, {
+        touch: () => {
+          sawFirstContent = true
+          armTimer(STREAM_IDLE_MS)
+        },
+      })
       cleanup()
-      return { committed: resume, error: '上游返回的不是 JSON' }
+      try {
+        payload = text.trim() ? JSON.parse(text) : {}
+      } catch {
+        return { committed: resume, error: '上游返回的不是 JSON' }
+      }
+    } catch (error) {
+      cleanup()
+      if (idleTimedOut) {
+        return { committed: resume, error: `上游 ${Math.round(timerWindowMs / 1000)} 秒无响应（超时）` }
+      }
+      // 读体阶段被客户端取消，或连接半途断掉——两种成因分开写，否则日志里
+      // 只剩一句 This operation was aborted 看不出所以然
+      if (clientSignal?.aborted) return { committed: resume, error: '客户端已断开' }
+      return { committed: resume, error: `上游读体中断：${error.message}` }
     }
-    cleanup()
     // 协议差异收在 wire.js 里：Responses 的 error / status:"failed" /
     // usage 字段改名都在那边处理，这里只消费归一化结果
     const extracted = extractNonStream(protocol, payload)
