@@ -2638,6 +2638,16 @@ function openLoginModal(providerId) {
     : provider?.tokenRenewal === 'login' ? '账号自动重登续期' : provider?.hasAdminToken ? '手动令牌' : '尚未配置'
   $('#token-session-summary').textContent = `当前：${mode}。${provider?.adminTokenExpiresAt ? `访问令牌到期：${fmtDateTime(provider.adminTokenExpiresAt)}` : '站点未提供到期时间。'}${provider?.tokenRenewedAt ? ` 最近更新：${fmtDateTime(provider.tokenRenewedAt)}` : ''}${provider?.tokenRenewError ? ` 续期提示：${provider.tokenRenewError}` : ''}`
   $('#token-site-link').href = provider?.baseUrl ? new URL(provider.baseUrl).origin : '#'
+  $('#browser-login-site-link').href = $('#token-site-link').href
+  $('#token-login-error').hidden = true
+  $('#token-login-error').textContent = ''
+  const sessionForm = $('#form-import-session')
+  sessionForm.hidden = !['sub2api', 'unknown'].includes(provider?.kind)
+  sessionForm.style.display = sessionForm.hidden ? 'none' : 'grid'
+  $('#legacy-token-options').hidden = provider?.kind === 'sub2api'
+  $('#legacy-token-options').style.display = provider?.kind === 'sub2api' ? 'none' : 'grid'
+  sessionForm.dataset.provider = providerId
+  sessionForm.reset()
   modal.querySelector('[data-act="get-long-token"]').disabled = !provider?.hasAdminToken || !['one-api', 'new-api'].includes(provider?.kind)
   modal.querySelector('[data-act="renew-site-token"]').disabled = !provider?.tokenRenewal
   const form = $('#form-login')
@@ -2651,7 +2661,11 @@ function openLoginModal(providerId) {
 
 function closeLoginModal() {
   const modal = $('#login-modal')
-  if (modal) modal.hidden = true
+  if (modal) {
+    modal.hidden = true
+    $('#form-import-session')?.reset()
+    $('#form-login')?.reset()
+  }
 }
 
 /** 新增站点：把模板塞进弹窗，弹窗关掉再清空（避免旧输入残留） */
@@ -9306,6 +9320,24 @@ document.addEventListener('click', async (event) => {
 })
 
 document.addEventListener('submit', async (event) => {
+  const importForm = event.target.closest('#form-import-session')
+  if (importForm) {
+    event.preventDefault()
+    const btn = importForm.querySelector('button[type="submit"]')
+    await withBusy(btn, async () => {
+      try {
+        state = await api('POST', `/api/providers/${importForm.dataset.provider}/import-session`, { session: importForm.elements.session.value })
+        closeLoginModal()
+        render()
+        toast('登录凭据验证成功，正在重新读取余额')
+      } catch (error) {
+        const box = $('#token-login-error')
+        box.hidden = false
+        box.textContent = error.message
+      }
+    })
+    return
+  }
   const loginForm = event.target.closest('#form-login')
   if (loginForm) {
     event.preventDefault()
@@ -9342,7 +9374,15 @@ document.addEventListener('submit', async (event) => {
       const via = state.loginResult?.via === 'sub2api' ? 'Sub2API' : 'OneAPI/NewAPI'
       toast(`登录成功 · 识别为 ${kindLabel}（${via} 协议），令牌已自动获取并开始续期`)
     } catch (error) {
-      toast(error.message, true)
+      const box = $('#token-login-error')
+      box.hidden = false
+      box.textContent = error.data?.browserLoginRequired
+        ? '此站要求官网人机验证，账号密码直连无法完成。请打开站点后台正常登录，然后使用上方「官网验证后导入」。'
+        : error.message
+      if (error.data?.browserLoginRequired) {
+        loginForm.elements.password.value = ''
+        box.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+      }
       if (submitBtn) submitBtn.disabled = false
     }
     return

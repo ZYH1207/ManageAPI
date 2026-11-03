@@ -1055,7 +1055,15 @@
       </div>
       <div class="modal-body">
         <div id="token-session-summary" class="hint" style="margin-bottom:16px"></div>
-        <div class="grid" style="grid-template-columns:1fr;margin-bottom:20px;padding-bottom:16px;border-bottom:1px solid var(--border)">
+        <div id="token-login-error" role="alert" hidden style="padding:12px;border:1px solid var(--warn);border-radius:8px;margin-bottom:16px;line-height:1.7"></div>
+        <form id="form-import-session" class="grid" style="grid-template-columns:1fr;margin-bottom:20px;padding-bottom:16px;border-bottom:1px solid var(--border)">
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:12px"><b>官网验证后导入 · Sub2API</b><a id="browser-login-site-link" class="ghost-btn" target="_blank" rel="noreferrer">打开站点后台 ↗</a></div>
+          <p class="hint" style="margin:0">站点要求人机验证时，先在官网正常登录，再粘贴访问令牌或登录响应 JSON。含刷新令牌时可启用官方续期；只有访问令牌时，到期后需要重新导入。</p>
+          <details class="hint"><summary>如何取得登录响应</summary><ol><li>点击下方「打开站点后台」，在官网打开开发者工具 → 网络（Network）。</li><li>正常登录并完成人机验证，选中 auth/login 请求。</li><li>在响应（Response）中复制包含 access_token 的 JSON，粘贴到下方。也可只粘贴访问令牌。</li></ol><p>凭据等同账号访问权限，只粘贴到本机表单，不要发到聊天或公开分享。</p></details>
+          <label>访问令牌或登录响应 JSON<textarea name="session" rows="3" maxlength="65536" required autocomplete="off" spellcheck="false" placeholder="粘贴 access_token，或包含 access_token / refresh_token 的 JSON"></textarea></label>
+          <button type="submit">验证并导入登录凭据</button>
+        </form>
+        <div id="legacy-token-options" class="grid" style="grid-template-columns:1fr;margin-bottom:20px;padding-bottom:16px;border-bottom:1px solid var(--border)">
           <b>获取长期网站令牌</b>
           <p class="hint" style="margin:0">旧版 OneAPI / NewAPI 可通过官方接口生成无固定到期日的管理令牌。生成会使这个账号的旧管理令牌失效。新版 NewAPI 请到后台「个人访问令牌」完成安全验证，选择不过期后导入；站点未提供该选项时，以站点规则为准。</p>
           <div style="display:flex;flex-wrap:wrap;gap:8px">

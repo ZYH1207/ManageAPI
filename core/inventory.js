@@ -15,6 +15,7 @@ import {
 import { normalizeQuota, resetIfDue, consumeQuota } from './quota.js'
 // 登录态编排：凭据解密后调 providers 的登录协议（providers 不回头 import 本文件，无循环）
 import * as providers from './providers.js'
+import { parseProviderSession, validateProviderSession } from './provider-session.js'
 import {
   ensureEmptyEvents,
   recordEmptyEvent,
@@ -1921,6 +1922,47 @@ async function loginAndSave(providerId, { user, password, confirmUnknown = false
   return { ok: true, token: result.token, kind: result.kind, via: result.refreshToken ? 'sub2api' : 'one-api' }
 }
 
+/** User explicitly imports a website login response after completing its human check. */
+export function importProviderSession(providerId, input) {
+  if (renewals.has(providerId)) throw new Error('此站正在更新令牌，请稍后再试')
+  const pending = importAndSaveSession(providerId, input).finally(() => renewals.delete(providerId))
+  renewals.set(providerId, pending)
+  return pending
+}
+
+async function importAndSaveSession(providerId, input) {
+  const provider = (await readDb()).providers.find((p) => p.id === providerId)
+  if (!provider) throw new Error('站点不存在')
+  const session = parseProviderSession(input)
+  const verified = await validateProviderSession({ baseUrl: provider.baseUrl, kind: provider.kind, session })
+  const tokenEnc = await encryptSecret(session.token)
+  const refreshEnc = session.refreshToken ? await encryptSecret(session.refreshToken) : null
+  await mutate((db) => {
+    const p = db.providers.find((item) => item.id === providerId)
+    const same = p && ['baseUrl', 'kind', 'adminToken', 'adminTokenSource', 'refreshTokenEnc', 'loginCred', 'adminUserId']
+      .every((key) => JSON.stringify(p[key]) === JSON.stringify(provider[key]))
+    if (!same) throw new Error('校验期间站点地址或凭据已改变，本次导入未覆盖，请重新导入')
+    p.adminToken = tokenEnc
+    p.adminTokenTail = session.token.slice(-6)
+    p.adminTokenSource = 'session'
+    p.refreshTokenEnc = refreshEnc
+    p.loginCred = null
+    p.adminTokenExpiresAt = session.expiresAt
+    p.adminUserId = verified.userId
+    p.kind = verified.kind
+    p.kindSource = 'auto'
+    p.tokenRenewedAt = nowIso()
+    p.tokenRenewMethod = 'session-import'
+    p.tokenRenewError = null
+    p.tokenStatus = 'ok'
+    p.tokenStatusAt = nowIso()
+    p.tokenStatusMessage = null
+    p.updatedAt = nowIso()
+  })
+  clearReloginCooldown(providerId)
+  return { ok: true, kind: verified.kind, renewable: Boolean(refreshEnc), expiresAt: session.expiresAt, userId: verified.userId }
+}
+
 /**
  * 校准站点充值汇率（1 个站内额度单位 = 多少人民币）。
  *
@@ -1965,7 +2007,9 @@ async function renewProviderSession(providerId) {
   const db = await readDb()
   const provider = db.providers.find((p) => p.id === providerId)
   if (!provider) return { ok: false, reason: '站点不存在' }
-  if (provider.adminTokenSource !== 'login') return { ok: false, reason: '当前令牌不做自动覆盖，请账号登录启用续期' }
+  const imported = provider.adminTokenSource === 'session'
+  if (!['login', 'session'].includes(provider.adminTokenSource)) return { ok: false, reason: '当前令牌不做自动覆盖，请账号登录启用续期' }
+  if (imported && (!provider.refreshTokenEnc || provider.kind !== 'sub2api')) return { ok: false, reason: '此网站会话没有可用的刷新令牌，请在站点重新登录并导入登录响应' }
   if (!provider.loginCred && !provider.refreshTokenEnc) return { ok: false, reason: '没有登录凭据，请重新登录' }
   if (!reloginAllowed(providerId)) return { ok: false, reason: '自动续期冷却中（10 分钟内已尝试过）' }
   markRelogin(providerId)
@@ -1980,10 +2024,17 @@ async function renewProviderSession(providerId) {
         method = 'refresh'
       } catch (error) {
         // 仅在上游明确不支持或刷新凭据失效时重登；超时/限流/故障不追加登录请求。
+        if (imported) {
+          const denied = [400, 401, 403, 404, 405].includes(error.status)
+          throw new Error(denied
+            ? '网站刷新会话已失效或被拒绝，请在站点重新登录、完成人机验证后导入新的登录响应'
+            : '网站会话暂时无法刷新，请稍后重试；持续失败时请在站点重新登录并导入登录响应')
+        }
         if (![400, 401, 403, 404, 405].includes(error.status) || !provider.loginCred) throw error
       }
     }
     if (!result) {
+      if (imported) throw new Error('网站会话无法刷新，请在站点重新登录并导入登录响应')
       const plain = JSON.parse(await decryptSecret(provider.loginCred))
       result = await providers.loginProvider({
         baseUrl: provider.baseUrl, kind: provider.kind === 'relay' ? undefined : provider.kind,
@@ -1995,7 +2046,8 @@ async function renewProviderSession(providerId) {
     const saved = await mutate((db) => {
       const p = db.providers.find((x) => x.id === providerId)
       // 网络请求期间用户换了令牌或账号，不覆盖他的新选择。
-      if (!p || JSON.stringify(p.adminToken) !== JSON.stringify(provider.adminToken) || JSON.stringify(p.loginCred) !== JSON.stringify(provider.loginCred)) return false
+      if (!p || ['baseUrl', 'kind', 'adminToken', 'adminTokenSource', 'refreshTokenEnc', 'loginCred']
+        .some((key) => JSON.stringify(p[key]) !== JSON.stringify(provider[key]))) return false
       p.adminToken = tokenEnc
       p.adminTokenTail = String(result.token).slice(-6)
       p.refreshTokenEnc = refreshEnc
@@ -2035,7 +2087,7 @@ export async function ensureAdminToken(providerId) {
   const db = await readDb()
   const p = db.providers.find((x) => x.id === providerId)
   const expires = Date.parse(p?.adminTokenExpiresAt)
-  if (p?.adminTokenSource === 'login' && Number.isFinite(expires) && expires <= Date.now() + 5 * 60 * 1000) {
+  if (['login', 'session'].includes(p?.adminTokenSource) && Number.isFinite(expires) && expires <= Date.now() + 5 * 60 * 1000) {
     const result = await autoRelogin(providerId)
     if (result.ok) return result.token
   }
@@ -2079,8 +2131,8 @@ export async function obtainLongLivedToken(providerId) {
 export function publicProvider(p) {
   const { adminToken, loginCred, refreshTokenEnc, ...view } = p
   return { ...view, hasAdminToken: Boolean(adminToken),
-    tokenRenewal: p.adminTokenSource === 'login'
-      ? (p.kind === 'sub2api' && refreshTokenEnc ? 'refresh' : loginCred ? 'login' : null) : null }
+    tokenRenewal: ['login', 'session'].includes(p.adminTokenSource)
+      ? (p.kind === 'sub2api' && refreshTokenEnc ? 'refresh' : p.adminTokenSource === 'login' && loginCred ? 'login' : null) : null }
 }
 
 /**

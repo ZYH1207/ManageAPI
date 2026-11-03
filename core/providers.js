@@ -990,9 +990,9 @@ export async function loginProvider({ baseUrl, kind, user, password, timeoutMs =
       const msg = String(error?.message || error)
       // 验证码/2FA 是硬边界：站点要求人机验证时立即明确报错，不换端点重试
       if (LOGIN_HINTS.test(msg)) {
-        throw new Error(
-          `该站登录需要人机验证（${msg.slice(0, 120)}）。请手动在站点后台生成「令牌」填入，本工具不做验证码绕过。`,
-        )
+        const challenge = new Error('此站需要在官网完成人机验证。请打开站点后台正常登录，再导入登录令牌；账号密码直连暂不可用。')
+        challenge.code = 'BROWSER_LOGIN_REQUIRED'
+        throw challenge
       }
       errors.push(`${flavor}: ${msg.slice(0, 120)}`)
     }

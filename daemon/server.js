@@ -1589,8 +1589,23 @@ route('POST', /^\/api\/providers\/([\w-]+)\/login$/, async (ctx) => {
     if (error?.needConfirm) {
       throw new HttpError(409, error.message, { needConfirm: true, evidence: error.evidence || null })
     }
+    if (error?.code === 'BROWSER_LOGIN_REQUIRED') {
+      throw new HttpError(400, error.message, { browserLoginRequired: true })
+    }
     throw error
   }
+})
+
+/** User completes the site's browser login, then explicitly imports its session. */
+route('POST', /^\/api\/providers\/([\w-]+)\/import-session$/, async (ctx) => {
+  try {
+    await inv.importProviderSession(ctx.params[0], ctx.body?.session)
+  } catch (error) {
+    throw new HttpError(400, error.message)
+  }
+  invalidatePricing(ctx.params[0])
+  collectProviderSnapshots({ providerId: ctx.params[0] }).catch(() => {})
+  return buildState()
 })
 
 /** 显式生成旧版长期令牌，调用者必须确认它会替换旧管理令牌。 */
