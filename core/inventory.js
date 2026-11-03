@@ -1684,6 +1684,54 @@ export async function clearEmptyEventsLog() {
   return mutate((db) => clearEmptyEvents(db))
 }
 
+/**
+ * 手动解除某条供给的「失败率过高」封禁。
+ *
+ * 为什么必须有这条路：失败率是**统计量**，而统计量会冤枉人。真实踩过的两次——
+ * 一是网关自己的 bug 制造了 507 次假失败；二是低频使用（个人站一小时的订单
+ * 只有几十个）时 5 次失败就够触发阈值。此时唯一的恢复手段是「等」，而界面
+ * 说的「10 分钟」因为取 lastFailAt 作起点，实测可能要等更久；「放行可疑供给」
+ * 开关又明确不影响这一类。等于用户被判了刑却没有申诉入口。
+ *
+ * 只清「真实流量计数」，不动探针证据：探针是可复现的独立证据，
+ * 用户点一下按钮不该把站点真实的掉包/截断记录也一并洗掉。
+ *
+ * @param {string} offerId
+ * @returns {Promise<{ok:boolean, before?:object|null}>}
+ */
+export async function clearTrafficBlock(offerId) {
+  return mutate((db) => {
+    if (!db.traffic || typeof db.traffic !== 'object') return { ok: false, before: null }
+    const row = db.traffic[offerId]
+    if (!row) return { ok: false, before: null }
+    const before = {
+      ok: row.ok || 0,
+      fail: row.fail || 0,
+      since: row.since || null,
+      kinds: Object.keys(row.kinds || {}),
+    }
+    // 只清「失败率」这一笔，不删整行。
+    //
+    // 以前的实现是 delete db.traffic[offerId]，把整条统计一起丢掉——成功次数、
+    // 响应质量样本（quality）、各类不可用的时间全部归零。那是「重新开一个干净
+    // 统计窗口」的语义，比用户按下这个按钮时想表达的「别再按失败率封它了」多得多：
+    //   · 成功次数清零会让可用率失去分母，供给退回「没有可信样本」边缘
+    //   · quality 清零等于把站点真实的空回答/虚报证据一并洗掉（那是探针之外
+    //     唯一还能抓到这类问题的来源）
+    // 用户点的是「解除封禁」，不是「证明这个站从来没出过错」。
+    //
+    // 现在：只把失败计数与最后一笔失败时间归零，成功计数与质量证据原样保留。
+    // 窗口起点（since）也不动——它决定「这一小时的统计」怎么算，与封禁无关。
+    row.fail = 0
+    row.lastFailAt = null
+    // 失败率封禁只由 ok/fail 决定，kinds 里的是额度/限流类，本来就不参与这个
+    // 判定（它们进冷却走时间窗口，不是比率）。所以 kinds 不动——那是「站点
+    // 上游现在在排队」的真实记录，清掉会让用户误以为限流也一并解决了。
+    db.traffic[offerId] = row
+    return { ok: true, before }
+  })
+}
+
 /** 建一条临时改道账：原站出问题，流量先走别家，20 分钟后复检 */
 export async function recordEmptyDetour(entry) {
   return mutate((db) => recordDetour(db, entry))

@@ -8201,6 +8201,24 @@ document.addEventListener('click', async (event) => {
   }
 
   // 读余额：只刷新这一项，不给整站跑一遍同步。探底离场的站，充值后靠它当场回场
+  // 解除「失败率过高」封禁：失败率是统计量，用户必须有申诉入口。
+  // 必须二次确认——它会丢掉这一小时的成败计数，之后要靠新的真实流量重新建立判断。
+  if (action === 'clear-block') {
+    const offerId = actionButton.dataset.offer
+    if (!offerId) return
+    if (!confirm(t('清除这条供给的失败计数？它会立刻重新参与路由。只清真实流量计数，探针证据保留。'))) return
+    await withBusy(actionButton, async () => {
+      try {
+        state = await api('POST', `/api/offers/${offerId}/clear-block`, {})
+        render()
+        toast(t('已解除封禁，这条供给重新参与路由'))
+      } catch (error) {
+        toast(error.message, true)
+      }
+    })
+    return
+  }
+
   if (action === 'prov-read-balance') {
     const providerId = actionButton.dataset.provider
     if (!providerId) return

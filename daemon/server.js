@@ -1623,6 +1623,13 @@ route('POST', /^\/api\/providers\/([\w-]+)\/renew-token$/, async (ctx) => {
   return buildState()
 })
 
+/** 手动解除「失败率过高」封禁：失败率是统计量，必须留一条申诉通道。 */
+route('POST', /^\/api\/offers\/([\w-]+)\/clear-block$/, async (ctx) => {
+  const result = await inv.clearTrafficBlock(ctx.params[0])
+  if (!result.ok) throw new HttpError(404, '这条供给没有可清除的失败计数')
+  return { ...(await buildState()), cleared: result.before }
+})
+
 /** 新增站点：建库后自动探测一次系别（失败不阻断保存）。 */
 route('POST', /^\/api\/providers$/, async (ctx) => {
   const created = await inv.createProvider(ctx.body)
