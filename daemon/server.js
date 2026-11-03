@@ -4914,6 +4914,11 @@ async function forwardToUpstream({
   clientSignal = null,
   protocol = 'chat',
   hooks = null,
+  // 本单生效的路由目标（组级首字超时等）。它由 handleChatCompletions 算出来，
+  // 必须显式传进来：这个函数是模块级的，拿不到那里的局部变量——2026-11-03 线上
+  // 就是漏传导致每次转发都抛 ReferenceError（routeTarget is not defined），
+  // 表现为「全部供给 1ms 内失败、502」，而站点后台一切正常。
+  routeTarget = null,
 }) {
   const requestHasTools = Array.isArray(body?.tools) && body.tools.length > 0
   let current = candidate
@@ -5623,6 +5628,7 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
         pool,
         clientSignal: clientAbort.signal,
         protocol,
+        routeTarget,
         hooks: {
           // 估算这次补问要多久 → 查档位 → 越贵补得越少（RETRY_TIERS）
           plan: async ({ facts, candidate: current }) => {
@@ -6064,6 +6070,7 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
           pool,
           clientSignal: clientAbort.signal,
           protocol,
+          routeTarget,
           hooks: {},
         })
         if (result.ok) {
