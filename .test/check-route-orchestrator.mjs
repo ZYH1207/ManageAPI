@@ -174,9 +174,14 @@ check('相对判定优先于绝对阈值（能撑很久就不算低）', () => {
 })
 
 check('日均消耗按站点聚合', () => {
+  // 桶的 key 是「UTC 小时」，而 dailySpendByProvider 会按 now - days 算 cutoff。
+  // 原来这里钉了 '2026-10-31T00'，日子一过 cutoff 就把它整片滤掉，
+  // map 变成空、断言拿 undefined——不是产品坏了，是 fixture 会自己过期。
+  // 改成相对现在算，跑多久都对。
+  const hour = new Date(Date.now() - 3600_000).toISOString().slice(0, 13)
   const stats = {
-    'o1|2026-10-31T00': { requests: 10, estCostSum: 5 },
-    'o2|2026-10-31T00': { requests: 10, estCostSum: 5 },
+    [`o1|${hour}`]: { requests: 10, estCostSum: 5 },
+    [`o2|${hour}`]: { requests: 10, estCostSum: 5 },
   }
   const offers = [{ id: 'o1', providerId: 'p1' }, { id: 'o2', providerId: 'p1' }]
   const map = dailySpendByProvider(stats, offers, { days: 1 })

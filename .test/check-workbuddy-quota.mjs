@@ -27,6 +27,21 @@ const reply = (body, status = 200) => ({
   json: async () => body,
 })
 
+/** 未来某个时刻的 CycleEndTime（格式：'YYYY-MM-DD HH:mm:ss'，无时区 → 本地 TIME_ZONE 解析）。
+ *
+ * 原来这里钉死 '2026-10-31 23:59:59'，而 core/platforms/workbuddy.js#pickRefreshAt
+ * 会跳过「已经过去」的时间点（那是正确行为：过期的套餐不会刷新）。于是日子一过，
+ * 这份 fixture 就变成「全部过期」，refreshAt 返回 null，测试永远红在真逻辑上。
+ * 改成相对现在算：+10 天，且把期望值也一起算出来，两边同源。
+ */
+const futureCycleEnd = () => {
+  const d = new Date(Date.now() + 10 * 86400_000)
+  const p = (n) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
+}
+const CYCLE_END = futureCycleEnd()
+const CYCLE_END_ISO = new Date(CYCLE_END.replace(' ', 'T')).toISOString()
+
 /** 真实结构：一个还在生效的免费订阅 + 一堆已过期的礼包 */
 const billingBody = {
   Response: {
@@ -43,8 +58,8 @@ const billingBody = {
           CycleCapacitySize: 100,
           CycleCapacityRemain: 0,
           CycleCapacityUsed: 100,
-          CycleEndTime: '2026-10-31 23:59:59',
-          ExpiredTime: '2027-10-31 23:59:59',
+          CycleEndTime: CYCLE_END,
+          ExpiredTime: `${Number(CYCLE_END.slice(0, 4)) + 1}${CYCLE_END.slice(4)}`,
         },
         { Name: 'Bonus Pack', Status: 3, CapacityRemain: 0, ExpiredTime: '2026-10-22 23:59:59' },
         { Name: 'Bonus Pack', Status: 3, CapacityRemain: 0, ExpiredTime: '2026-10-23 23:59:59' },
@@ -83,7 +98,7 @@ try {
   assert.equal(quota.cycleRemaining, 0, '本周期剩余应来自 CycleCapacityRemain（已用满）')
   assert.equal(quota.cycleSize, 100, '本周期总量应来自 CycleCapacitySize')
   assert.equal(quota.tenantKey, '1511803817', '租户 id 用来识别同一账号的两张卡')
-  assert.equal(quota.refreshAt, '2026-10-31T15:59:59.000Z', '刷新时间取 CycleEndTime')
+  assert.equal(quota.refreshAt, CYCLE_END_ISO, '刷新时间取 CycleEndTime')
   assert.equal(quota.unit, 'credit')
 
   step(2, '已过期的包不参与求和')
@@ -94,7 +109,7 @@ try {
         TotalDosage: 0,
         Accounts: [
           { Status: 3, CapacityRemain: 500, CycleCapacityRemain: 500 },
-          { Status: 0, CapacityRemain: 20, CycleCapacityRemain: 20, CycleEndTime: '2026-11-30 23:59:59' },
+          { Status: 0, CapacityRemain: 20, CycleCapacityRemain: 20, CycleEndTime: CYCLE_END },
         ],
       },
     },
@@ -114,7 +129,7 @@ try {
     product: 'workbuddy',
     fetch: async (url) =>
       String(url).includes('get-user-resource')
-        ? reply({ data: { remaining: 42, refreshAt: '2026-11-01 00:00:00' } })
+        ? reply({ data: { remaining: 42, refreshAt: CYCLE_END } })
         : reply({ code: 0, data: {} }),
     store,
   })

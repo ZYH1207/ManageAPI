@@ -274,7 +274,12 @@ try {
   const plain = await chat({ model: 'detail-model', messages: [{ role: 'user', content: 'hi' }] })
   ok(plain.status === 200, `非流式请求成功（状态 ${plain.status}）`)
 
-  const missing = await chat({ model: 'fail-model', messages: [] })
+  // 这条要验的是「上游挂了 → 客户端拿到 502，且这次失败只贡献请求数、不贡献 token」。
+  // 请求体必须是**合法**的：以前这里借 `messages: []` 当占位，而空 messages 现在
+  // 会在网关本地被 400 拒掉（core/wire.js#validateGatewayRequest）——那正是要的
+  // 效果：客户端写错请求不该去撞上游、更不该给站点记失败。所以发一条形状正常的
+  // 请求，让 503 真的来自上游。
+  const missing = await chat({ model: 'fail-model', messages: [{ role: 'user', content: 'hi' }] })
   ok(missing.status === 502, `上游挂了返回 502（实际 ${missing.status}）`)
 
   // 决策日志是 2 秒攒批落盘的（AGENTS.md 里写的坑）

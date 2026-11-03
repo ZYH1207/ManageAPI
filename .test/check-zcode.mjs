@@ -41,14 +41,19 @@ check('换一个 secret 解不开（返回空串）', decryptCredentialValue(blo
 check('明文原样返回', decryptCredentialValue('sk-plain', secret) === 'sk-plain')
 
 // ---------------------------------------------------------------- 2. 额度汇总
-const now = new Date('2026-10-23T14:30:00+08:00').getTime()
+// 用「相对现在」的时钟：connector.quota() 内部调 summarizeQuota 时不传 now，
+// 走的是 Date.now()，而 summarizeQuota 会跳过 ends_at 已过去的套餐。
+// 原来这里钉死 2026-10-23，日子一过，所有套餐都被判过期 → remaining=null →
+// 连接器按设计抛「还没读到用量」。测试红在真逻辑上，只是 fixture 会自己烂掉。
+const now = Date.now()
+const daysFromNow = (d) => Math.floor((now + d * 86400_000) / 1000)
 const plans = [
   {
     user_plan_id: 'upl_bonus',
     plan_id: 'zcode-v3-start-plan-1024',
     name: 'ZCode 1024 Dev Day',
     status: 'active',
-    ends_at: Math.floor(new Date('2026-10-26T01:00:00Z').getTime() / 1000),
+    ends_at: daysFromNow(3),
     entitlements: [
       { entitlement_id: 'ent_bonus_flash', show_name: 'GLM-5.3-Flash', period: 'one_time', grant_units: 300000000 },
       { entitlement_id: 'ent_bonus_53', show_name: 'GLM-5.3', period: 'one_time', grant_units: 200000000 },
@@ -59,7 +64,7 @@ const plans = [
     plan_id: 'zcode-v3-start-plan-0817',
     name: 'ZCode Start Plan',
     status: 'active',
-    ends_at: Math.floor(new Date('2026-10-27T15:59:59Z').getTime() / 1000),
+    ends_at: daysFromNow(4),
     entitlements: [
       { entitlement_id: 'ent_daily_53', show_name: 'GLM-5.3', period: 'daily', grant_units: 3000000 },
       { entitlement_id: 'ent_daily_flash', show_name: 'GLM-5.3-Flash', period: 'daily', grant_units: 5000000 },
@@ -70,7 +75,7 @@ const plans = [
     plan_id: 'zcode-v3-start-plan-0801',
     name: '已过期套餐',
     status: 'expired',
-    ends_at: Math.floor(new Date('2026-10-01T00:00:00Z').getTime() / 1000),
+    ends_at: daysFromNow(-20),
     entitlements: [{ entitlement_id: 'ent_old', show_name: 'GLM-5.3', period: 'daily', grant_units: 999 }],
   },
 ]
