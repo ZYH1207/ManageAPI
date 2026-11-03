@@ -108,16 +108,24 @@ export function compareByBasis(a, b, value) {
   const cost = (row) => num(row.effectiveUsd ?? row.effective)
   const price = (row) => num(row.priceUsd ?? row.price)
 
-  if (mode === 'flow') {
-    const delta = flowScoreOf(a?.row || a) - flowScoreOf(b?.row || b)
-    if (Number.isFinite(delta) && delta !== 0) return delta
-  } else if (mode === 'speed') {
-    const delta = num(a.ttftMs) - num(b.ttftMs)
-    if (delta !== 0) return delta
-  } else if (mode === 'price') {
-    const delta = price(a) - price(b)
-    if (delta !== 0) return delta
+  // 主键统一走 tierMetricOf：它和决策页「档位标量」、路由拖拽排序同源。
+  // 以前这里手抄了一份分支，结果 realSpeed 档只加在 tierMetricOf 里，
+  // 路由这边没跟上——切到实速档，排序其实还在按有效成本走，界面显示却在说
+  // 「按真实首字排」。这类「显示一套、执行另一套」比算错更难发现，所以
+  // 从今往后只留一份实现，别在这里另写 if。
+  // 两个标量先各自算出来再比，**不要写成差**：`12000 - Infinity = -Infinity`，
+  // 不是有限数，一旦用 Number.isFinite 守门就会把「一个有数据、一个没数据」
+  // 判成「无从比较」而滑到次级口径——那正是「缺数据冒充最优」的老毛病。
+  const ka = tierMetricOf(a?.row || a, mode)
+  const kb = tierMetricOf(b?.row || b, mode)
+  if (ka !== kb) {
+    if (ka === Number.POSITIVE_INFINITY) return 1
+    if (kb === Number.POSITIVE_INFINITY) return -1
+    if (ka !== ka) return 1 // NaN：也算「不知道」，沉底
+    if (kb !== kb) return -1
+    return ka - kb
   }
+
   const delta = cost(a) - cost(b)
   if (delta !== 0) return delta
   return price(a) - price(b)

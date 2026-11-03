@@ -118,12 +118,19 @@ console.log('[2] 挑选：跨模型按档位标量取最优，可疑的模型再
   ok(bySpeed.modelKey === 'm-b', `speed 档：m-b（1000ms 快于 3000ms）：${bySpeed.modelKey}`)
   ok(bySpeed.reason === 'initial', `无记录时 force 也是 initial：${bySpeed.reason}`)
 
-  // 价速比：m-a 2/3000=0.67，m-b 6/1000=6 → m-a 胜
-  const byPace = pickAutoRoute(
-    db({ settings: { decisionMode: 'priceSpeed' } }),
+  // 实速档：两模型都没有真实首字样本 → 都是 Infinity 并列，靠次级「有效成本」定序 → m-a
+  const byReal = pickAutoRoute(
+    db({ settings: { decisionMode: 'realSpeed' } }),
     { scores, benchmarks, force: true },
   )
-  ok(byPace.modelKey === 'm-a', `priceSpeed 档：m-a（每 ms 更便宜）：${byPace.modelKey}`)
+  ok(byReal.modelKey === 'm-a', `realSpeed 档（无真实样本 → 并列 → 有效成本）：${byReal.modelKey}`)
+
+  // 流畅度档：无吐字实测时按「吐字耗时 ≈ 首字」估，m-a 3000+3000=6000，m-b 1000+1000=2000 → m-b 更顺
+  const byFlow = pickAutoRoute(
+    db({ settings: { decisionMode: 'flow' } }),
+    { scores, benchmarks, force: true },
+  )
+  ok(byFlow.modelKey === 'm-b', `flow 档：m-b（一屏 2000ms 快于 6000ms）：${byFlow.modelKey}`)
 }
 
 console.log('[3] 迟滞：新冠军好得不多不换，防反复横跳')

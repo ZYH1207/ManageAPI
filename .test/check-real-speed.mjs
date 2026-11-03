@@ -140,10 +140,14 @@ check('speedOf 在 real 策略下只认真实', () => {
   assert.equal(speedOf({ ttftMs: 500, realTtftMs: 3000 }, 'real'), 3000)
 })
 
-check('priceSpeed 用真实首字算比值', () => {
-  // 探针 1s、真实 10s，价格 1 → pace = 1/10000 而不是 1/1000
+check('价速比档已移除（d176f30）→ 非法值回落默认档，不再算比值', () => {
+  // 该档 2026-11-02 移除：真实首字样本大多为空，它退化成「看谁有数据」，
+  // 有数据时又与价格档同序。留着这条断言，是为了防止有人把档位再加回来
+  // 却忘了同步 decision-mode.js 的注释与前端渲染。
+  assert.equal(normalizeDecisionMode('priceSpeed'), 'value', '已移除的档位不能静默生效')
   const row = { ttftMs: 1000, realTtftMs: 10000, priceUsd: 1 }
-  assert.ok(Math.abs(tierMetricOf(row, 'priceSpeed') - 1 / 10000) < 1e-9)
+  // 回落默认（value = 有效成本），不是价格 ÷ 首字
+  assert.equal(tierMetricOf(row, 'priceSpeed'), Infinity, '缺 effectiveUsd → Infinity，而不是 0.0001')
 })
 
 check('非速度档位不受影响（回归）', () => {

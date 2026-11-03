@@ -1,13 +1,17 @@
 /**
- * 决策侧重（性价比 / 价格 / 首字速度 / 价速比）自检（纯函数，不联网）：
+ * 决策侧重（性价比 / 价格 / 首字速度 / 实速 / 流畅度）自检（纯函数，不联网）：
  *   1. 档位归一化：合法值原样返回，非法/空回落默认（性价比）
- *   2. 四档各自按什么排序：有效成本 / 名义单价 / 首字延迟 / 价速比
- *   3. 四档都只改排序，不改准入：不可登场的永远排在后面，哪怕它最快/最便宜
+ *   2. 五档各自按什么排序：有效成本 / 名义单价 / 首字延迟 / 真实首字 / 流畅度
+ *   3. 五档都只改排序，不改准入：不可登场的永远排在后面，哪怕它最快/最便宜
  *   4. 缺数据（没探过 = 首字 null）不冒充「最快」，排到最后
  *   5. 手动顺序仍然优先（用户显式指定优先于任何自动口径）
  *   6. 看板顶部那句有**自己的档位**（headlineMode），与路由档位互不干扰
  *   7. 人工勾选（决策页点选）：勾了哪条哪条就是当前选；顺序不动、准入拦不住；
  *      网关尝试链里勾选的顶到最前，真失败照样往后故障转移
+ *
+ * 注：「价速比」（priceSpeed）档已在 2026-11-02 由 d176f30 移除——真实首字样本
+ * 大多为空，它退化成「看谁有数据」，有数据时又与价格档同序。现档位为
+ * value / price / speed / realSpeed / flow，本测试跟着代码走。
  *
  * 背景：原来的「智能」只有一种价值观——有效成本最低。但便宜和好用不是一回事：
  * 一条便宜一万倍、首字却要等十几秒的供给，按有效成本永远排第一，用户根本不想用。
@@ -38,15 +42,15 @@ const ok = (cond, msg) => {
 console.log('[1] 档位归一化：非法值不静默变成别的口径')
 {
   ok(DEFAULT_DECISION_MODE === 'value', `默认档 ${DEFAULT_DECISION_MODE}`)
-  ok(DECISION_MODES.length === 4, `四档：${DECISION_MODES.map((m) => m.key).join(' / ')}`)
-  for (const key of ['value', 'price', 'speed', 'priceSpeed']) {
+  ok(DECISION_MODES.length === 5, `五档：${DECISION_MODES.map((m) => m.key).join(' / ')}`)
+  for (const key of ['value', 'price', 'speed', 'realSpeed', 'flow']) {
     ok(normalizeDecisionMode(key) === key, `合法值 ${key} 原样返回`)
   }
   for (const bad of ['', null, undefined, 'cheap', 'SPEED', 42, {}]) {
     ok(normalizeDecisionMode(bad) === 'value', `非法值 ${JSON.stringify(bad)} → 默认`)
   }
   ok(decisionModeOf('speed').label === '首字速度', `档位定义带标签：${decisionModeOf('speed').label}`)
-  ok(decisionModeTable().length === 4, '给前端的四档表')
+  ok(decisionModeTable().length === 5, '给前端的五档表')
   ok(describeDecisionMode('price').includes('价格'), `一句话描述：${describeDecisionMode('price')}`)
 }
 
@@ -141,35 +145,54 @@ console.log('[4] 首字速度档：完全按首字延迟')
   ok(rows.at(-1).offer.id === 'd', 'd 首字最快（100ms）但不可用，仍然排最后')
 }
 
-console.log('[4b] 价速比档：价格 ÷ 首字延迟，贵的慢的一起现形')
+console.log('[4b] 实速档：只信真实首字，没有真实样本的直接沉底')
 {
-  // a：1 元 / 3000ms → 0.333；b：1.1 元 / 3000ms → 0.367；c：9 元 / 700ms → 12.9
-  // c 虽然最快，但每毫秒等待贵得多 → 价速比档下退居末位
-  const rows = run(spec, { decisionMode: 'priceSpeed' })
-  ok(ids(rows) === 'a > b > c > d', `顺序 ${ids(rows)}`)
-  ok(rows[0].offer.id === 'a', '综合最优的 a 排第一：又便宜、首字也不慢')
-  ok(rows.at(-1).offer.id === 'd', 'd 仍不登场：价速比档也不放开准入')
-
-  // 缺首字数据不冒充综合最优：Infinity 沉底，与 speed 档同一口径
-  const missing = run(
+  // 两条供给都有探针首字，但只有 known 有真实首字样本。
+  // realSpeed 档不给另外那条「靠探针冒充最快」的机会。
+  const rows = run(
     [
-      { id: 'known', cny: 5, score: { ttftMs: 4200 } },
-      { id: 'unknown', cny: 1, score: { ttftMs: null, samples: 0, status: 'unknown' } },
+      { id: 'known', cny: 5, score: { ttftMs: 4000, realTtftMs: 12000, realTtftSamples: 6 } },
+      { id: 'probeOnly', cny: 1, score: { ttftMs: 900, realTtftMs: null } },
     ],
-    { decisionMode: 'priceSpeed' },
+    { decisionMode: 'realSpeed' },
   )
-  ok(missing[0].offer.id === 'known', `没探过首字的沉底：${ids(missing)}`)
+  ok(rows[0].offer.id === 'known', `只有真实样本的排前：${ids(rows)}`)
+  ok(rows.at(-1).offer.id === 'probeOnly', '探针再快也不冒充（没真实样本 → 沉底）')
 
-  // tierMetricOf 与 compareByBasis 主键同源：同一个数，别两处各算一份
   ok(
-    tierMetricOf({ priceUsd: 2, ttftMs: 1000 }, 'priceSpeed') === 0.002,
-    `价速比标量 = 价格/首字：${tierMetricOf({ priceUsd: 2, ttftMs: 1000 }, 'priceSpeed')}`,
+    tierMetricOf({ realTtftMs: 12000, ttftMs: 1000 }, 'realSpeed') === 12000,
+    'realSpeed 标量取真实首字，不用探针的 1000',
   )
-  ok(tierMetricOf({ priceUsd: 2, ttftMs: null }, 'priceSpeed') === Number.POSITIVE_INFINITY, '缺首字 → Infinity')
-  ok(tierMetricOf({ priceUsd: 2, ttftMs: 0 }, 'priceSpeed') === Number.POSITIVE_INFINITY, '首字 0 → Infinity（不除零）')
-  ok(tierMetricOf({ effectiveUsd: 3 }, 'value') === 3, 'value 档标量 = 有效成本')
-  ok(tierMetricOf({ priceUsd: 4 }, 'price') === 4, 'price 档标量 = 名义单价')
-  ok(tierMetricOf({ ttftMs: 900 }, 'speed') === 900, 'speed 档标量 = 首字延迟')
+  ok(
+    tierMetricOf({ realTtftMs: null, ttftMs: 1000 }, 'realSpeed') === Number.POSITIVE_INFINITY,
+    'realSpeed 缺真实样本 → Infinity（不除零、不冒充）',
+  )
+}
+
+console.log('[4c] 流畅度档：首字 + 一屏吐字时间，慢但吐字快的站能反超')
+{
+  // 实测反例（决策页描述里那对）：首字 15.5s / 227 tok/s  vs  首字 5.8s / 45 tok/s
+  // 前者一屏（500 token）约 15.5s + 2.2s = 17.7s，后者 5.8s + 11.1s = 16.9s。
+  // 这里用更极端的对比让方向明确，避免断言贴着边界。
+  const rows = run(
+    [
+      { id: 'fastStart', cny: 1, score: { ttftMs: 2000, realMsPerToken: 40 } }, // 2000 + 20s
+      { id: 'steadyFlow', cny: 1, score: { ttftMs: 6000, realMsPerToken: 2 } }, // 6000 + 1s
+    ],
+    { decisionMode: 'flow' },
+  )
+  ok(rows[0].offer.id === 'steadyFlow', `读完一屏更快的排前：${ids(rows)}`)
+  ok(rows[1].offer.id === 'fastStart', '首字快的反而落后（它吐字慢）')
+
+  // 没有吐字实测时按「吐字耗时 ≈ 首字」粗估，不能让缺数据冒充最流畅
+  ok(
+    tierMetricOf({ ttftMs: 2000 }, 'flow') === 4000,
+    `无吐字实测 → 首字×2 粗估：${tierMetricOf({ ttftMs: 2000 }, 'flow')}`,
+  )
+  ok(
+    tierMetricOf({ ttftMs: null }, 'flow') === Number.POSITIVE_INFINITY,
+    '什么数据都没有 → Infinity',
+  )
 }
 
 console.log('[5] 缺数据不冒充「最快」')
@@ -264,7 +287,7 @@ console.log('[8] 看板顶部结论句：自己的档位，只在这批「能登
   const stale = decisionHeadline({ decisions: [d1, d2], settings: { focusModel: 'm-gone' } })
   ok(stale.modelKey === 'm-a', '点过的模型没价/消失了 → 回落自动，不报错')
 
-  for (const mode of ['value', 'price', 'speed', 'priceSpeed']) {
+  for (const mode of ['value', 'price', 'speed', 'realSpeed', 'flow']) {
     const line = decisionHeadline({ decisions: [d1], settings: { headlineMode: mode } })
     ok(line.mode === mode, `档位透传：${mode}`)
   }
