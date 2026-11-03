@@ -16,7 +16,7 @@ import * as pricing from '../core/pricing.js'
 import * as bench from '../core/benchmark.js'
 import * as providers from '../core/providers.js'
 import { scoreOffers, isRoutable, longTermScores } from '../core/score.js'
-import { classifyFailure } from '../core/failure.js'
+import { classifyFailure, trafficDelta, isLocalDefect } from '../core/failure.js'
 import { checkRealResponse, estimateRequestTokens } from '../core/quality-signals.js'
 import {
   protocolForPath,
@@ -4356,12 +4356,14 @@ function recentActivity(limit = 60) {
 function bufferTraffic(offerId, ok, error, quality) {
   if (!offerId) return
   const entry = trafficBuffer.get(offerId) || { ok: 0, fail: 0, kinds: {}, quality: { samples: 0, bad: 0 } }
-  if (ok) entry.ok += 1
-  else {
-    // 只有站点故障算 fail；额度/限流/模型不在分组单独计数，不拉低可用率
-    const { kind, countsAsOutage } = classifyFailure(error)
-    if (countsAsOutage) entry.fail += 1
-    else entry.kinds[kind] = (entry.kinds[kind] || 0) + 1
+  // 「哪类失败算站点的账」只有一份口径：core/failure.js#trafficDelta。
+  // 网关自己的 bug / 本机网络既不计 fail 也不给冷却（见该函数注释与事故记录）。
+  const delta = trafficDelta(ok, error)
+  entry.ok += delta.ok
+  entry.fail += delta.fail
+  if (delta.localDefects) entry.localDefects = (entry.localDefects || 0) + delta.localDefects
+  for (const [kind, count] of Object.entries(delta.kinds)) {
+    entry.kinds[kind] = (entry.kinds[kind] || 0) + count
   }
   // 真实响应的质量信号（空回答/计费虚报）：探针之外的第二类完整性证据
   if (quality) {
@@ -4392,6 +4394,9 @@ async function flushTraffic() {
       const current = trafficBuffer.get(offerId) || { ok: 0, fail: 0, kinds: {}, quality: { samples: 0, bad: 0 } }
       current.ok += entry.ok
       current.fail += entry.fail
+      // 我方缺陷计数也要跟着回队，否则一次写盘失败就把它吃掉，
+      // 诊断页上的「这单怪网关自己」凭空少一截
+      if (entry.localDefects) current.localDefects = (current.localDefects || 0) + entry.localDefects
       for (const [kind, count] of Object.entries(entry.kinds || {})) {
         current.kinds[kind] = (current.kinds[kind] || 0) + count
       }

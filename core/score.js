@@ -324,7 +324,10 @@ export function scoreOffers(probes, traffic = {}, options = {}) {
         if (tsMs > successAt) successAt = tsMs
         continue
       }
-      const { kind, countsAsOutage, retryAfterMs } = classifyFailure(record.error)
+      const { kind, countsAsOutage, retryAfterMs, localDefect } = classifyFailure(record.error)
+      // 网关自己的 bug / 本机网络：既不是站点故障，也不该给它冷却窗口。
+      // 它连「这条供给此刻拿不到」都算不上，纯粹是我方问题——直接跳过。
+      if (localDefect) continue
       if (countsAsOutage) {
         probeOutage += 1
         continue
@@ -496,6 +499,9 @@ export function scoreOffers(probes, traffic = {}, options = {}) {
       // 「为什么它突然被冷却了」，不再只能看到一个 error-rate 标签
       failRate,
       failRateSamples: rateSamples,
+      // 我方缺陷计数（网关自己的 bug / 本机网络）：不进可用率，只给诊断页解释用。
+      // 放在评分里下发，界面才能回答「这条供给今天失败的 53 次里有多少次其实怪我们」。
+      localDefects: Number(trafficRow?.localDefects) || 0,
       availability,
       fingerprintRate,
       truncationRate,

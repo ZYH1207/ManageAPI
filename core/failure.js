@@ -96,7 +96,7 @@ export const UNAVAILABLE_HINT = {
   'rate-limit': '站点账号池被限流，等它到点自己恢复；急用就换一条供给',
   'model-missing': '这个分组里没有该模型：换分组或换站才治本',
   'protocol-unsupported': '这条供给不提供该接口：换 chat 走，或换一条供给',
-  'error-rate': '近期真实请求成片失败，网关先避开它，10 分钟后自动重试',
+  'error-rate': '近期真实请求成片失败，网关先避开它，过一会儿自动重试',
 }
 
 /** 某一类的「原因 + 怎么办」；未知类型给一句兜底而不是空白 */
@@ -156,19 +156,175 @@ export function retryAfterFromText(message) {
 }
 
 /**
+ * 网关自己出的错（代码缺陷 / 本机网络）。这类失败**不能算站点的账**。
+ *
+ * 为什么单列一层而不是塞进 RULES：RULES 里的每一类都是「上游明确拒绝了什么」，
+ * 处置方式是给这条供给一个等待窗口。本地缺陷正好相反——等多久都不会好，
+ * 需要的是修代码。把它记成 quota/rate-limit 反而会让供给莫名其妙地消失一段时间。
+ *
+ * 2026-11-03 现场：forwardToUpstream 引用未定义的 routeTarget，507 次抛错，
+ * 每次都在 1ms 内失败、请求根本没发到上游；这些假失败按「站点故障」记账，
+ * 把 4 条供给的可用率打到 0 并封禁 10 分钟，用户看到的是「全部供给失败 502」，
+ * 而站点后台一切正常。兜底分支 `countsAsOutage: true` 就是那个放大器。
+ *
+ * ## 判定必须结构化，不能拿正则去猜整段文本
+ *
+ * 第一版是个大正则，把所有含 `of undefined` / `ECONNREFUSED` 的文本都当成我方
+ * 缺陷。那是错的，而且是**危险方向的错**：网关把上游的错误正文原封不动拼进
+ * 失败原因——`daemon/server.js` 写的是 `HTTP ${status} ${text.slice(0,160)}`。
+ * 于是上游自己的 500 只要正文里带一句
+ *
+ *     HTTP 500 {"error":{"message":"Cannot read properties of undefined"}}
+ *     HTTP 502 connect ECONNREFUSED 100.64.1.9:443
+ *
+ * 就会被判成「我方缺陷」→ 不计 fail → **真实故障被洗白，供给一直派活**。
+ * 这正是交接报告 N01 警告的「用放宽闸门掩盖代码缺陷」，只是方向反过来：
+ * 为了不冤枉站点，把站点真坏也一起救了。
+ *
+ * 现在的判据只有两条，都看**结构**而不是看词：
+ *
+ *   1. 文本以 `HTTP <3位状态码>` 开头 —— 这是上游真的回了响应。不管正文里写了
+ *      什么（哪怕是一段 JS 报错原文），都算这条供给的事。我方缺陷根本走不到
+ *      「收到响应头」这一步：它在发请求之前或收头之前就抛了，错误文本里不带
+ *      上游状态码。
+ *   2. 连接层错误（ECONNREFUSED / ENOTFOUND…）看**目标主机是不是本机**：
+ *      连 127.0.0.1 / localhost 失败是我方实例或域名入口的问题；连远端站点失败
+ *      是那条供给不可达，算它的账。
+ *
+ * 宁窄勿宽：漏判只是少省一次记分，误判会把真实故障洗白——后者更贵。
+ */
+
+/** 上游真的回了响应：`HTTP 500 ...` 这种形状。这些一律算供给的账。 */
+const UPSTREAM_RESPONSE = /^\s*HTTP\s+\d{3}\b/i
+
+/** 连接层错误（本机网络） */
+const CONNECTION_ERROR = /\b(ECONNREFUSED|ENOTFOUND|EAI_AGAIN|EHOSTUNREACH|ENETUNREACH|ECONNABORTED|ECONNRESET)\b/i
+
+/** 本机地址：只有连本机失败才算我方问题 */
+const LOOPBACK = /(?:127\.0\.0\.1|localhost|\[::1\]|::1|0\.0\.0\.0)/i
+
+/** 我方代码的运行时缺陷（只在**没有**上游状态码时才成立） */
+const RUNTIME_DEFECT = new RegExp(
+  [
+    '\\bis not defined\\b',
+    '\\bis not a function\\b',
+    '\\bCannot read propert(?:y|ies)\\b',
+    '\\bCannot destructure\\b',
+    '^\\s*(?:ReferenceError|TypeError|SyntaxError|RangeError)\\b',
+    // 固定域名入口自己返回的错误（不是上游说的）
+    'Formal ManageAPI unavailable',
+    'previews are not used',
+    // 网关内部结构错误
+    '\\bERR_HTTP_HEADERS_SENT\\b',
+    '\\bERR_STREAM_WRITE_AFTER_END\\b',
+  ].join('|'),
+  'i',
+)
+
+/** 这条失败是不是「网关/本机自己的问题」——用于把站点从责任里摘出去。 */
+export function isLocalDefect(message) {
+  const text = String(message || '')
+  // 上游回了响应：正文无论写什么都不归我方
+  if (UPSTREAM_RESPONSE.test(text)) return false
+  // 连接层：连本机才算我方
+  if (CONNECTION_ERROR.test(text)) return LOOPBACK.test(text)
+  return RUNTIME_DEFECT.test(text)
+}
+
+/**
  * @param {string} message 上游错误文本（探针的 error 字段或网关的失败原因）
- * @returns {{kind: 'quota'|'budget'|'model-missing'|'rate-limit'|null,
- *            countsAsOutage: boolean, retryAfterMs: number}}
+ * @returns {{kind: 'quota'|'budget'|'model-missing'|'rate-limit'|'protocol-unsupported'|'local'|null,
+ *            countsAsOutage: boolean, retryAfterMs: number, localDefect: boolean}}
  *          retryAfterMs 是上游自己说的等待时长（认不出来为 0，调用方按类型兜底）
+ *          localDefect=true 表示这是网关自己的 bug/本机网络，调用方应完全不入站点账
  */
 export function classifyFailure(message) {
   const text = String(message || '')
+  // 必须排在最前：本地缺陷的文案里可能同时出现「连接」「超时」这类上游词，
+  // 先让 RULES 命中就会被记成限流/余额，供给白白消失一个窗口。
+  if (isLocalDefect(text)) {
+    return { kind: 'local', countsAsOutage: false, retryAfterMs: 0, localDefect: true }
+  }
   for (const rule of RULES) {
     if (rule.test.test(text)) {
-      return { kind: rule.kind, countsAsOutage: false, retryAfterMs: retryAfterFromText(text) }
+      return {
+        kind: rule.kind,
+        countsAsOutage: false,
+        retryAfterMs: retryAfterFromText(text),
+        localDefect: false,
+      }
     }
   }
-  return { kind: null, countsAsOutage: true, retryAfterMs: 0 }
+  return { kind: null, countsAsOutage: true, retryAfterMs: 0, localDefect: false }
+}
+
+/**
+ * 一次真实调用结束后，该往这条供给的流量账里记什么。
+ *
+ * 为什么抽成纯函数：这是「哪类失败算站点的账」的**唯一口径**。写在
+ * daemon/server.js 的 bufferTraffic 里时，只有端到端测试才碰得到，而它恰恰是
+ * 事故的放大器；抽出来就能拿纯函数直接钉死（见 .test/check-supply-scoring.mjs）。
+ *
+ * 三种归宿，互斥：
+ *   ok                —— 成功，记 ok
+ *   localDefect       —— 网关自己的 bug / 本机网络。**连失败都不记**，
+ *                        只留一个计数给诊断页，否则供给会被冤枉（2026-11-03 事故）
+ *   countsAsOutage    —— 站点真的没服务好，记 fail（进可用率分母）
+ *   其余              —— 余额/限流/模型缺失之类，记 kinds（不进分母，只给冷却窗口）
+ *
+ * @param {boolean} ok
+ * @param {string} error 失败原因原文（只有失败时才有意义）
+ * @returns {{ok:number, fail:number, kinds:Record<string,number>, localDefects:number}}
+ */
+export function trafficDelta(ok, error) {
+  const delta = { ok: 0, fail: 0, kinds: {}, localDefects: 0 }
+  if (ok) {
+    delta.ok = 1
+    return delta
+  }
+  const { kind, countsAsOutage, localDefect } = classifyFailure(error)
+  if (localDefect) {
+    // 不留 error 原文进流量账：db.traffic 是逐供给的计数，长期保存错误文本会撑大
+    // 主文件，而且它本来就不是站点证据。诊断靠错误账本（另有一套）。
+    delta.localDefects = 1
+    return delta
+  }
+  if (countsAsOutage) delta.fail = 1
+  else if (kind) delta.kinds[kind] = 1
+  return delta
+}
+
+/**
+ * 把 `db.traffic[id].kinds[kind]` 的两种历史形状统一成 `{n, lastAt}`。
+ *
+ * 老库（以及 core/store.js 早期合并逻辑写出来的）是裸数字 `{quota: 3}`，
+ * 新格式是 `{quota: {n: 3, lastAt: '...'}}`。两种都必须在读的地方兼容，
+ * 否则 `current.n += count` 会在老数据上抛
+ *
+ *     TypeError: Cannot create property 'n' on number '3'
+ *
+ * 那个异常不是只毁这一条供给——addTraffic 是整个 mutate 一次提交，抛出去
+ * 这一批所有供给的流量都不落盘。2026-11-03 用真实老数据形状复现过。
+ *
+ * 老数字升成对象时把原来的值当次数保留：那是真的发生过 n 次（只是不知道
+ * 最后一次是什么时候），不是脏数据，不能清零。lastAt 给 null 表示「时间未知」，
+ * 调用方（score.js）本来就把 null 当「不是新鲜证据」处理。
+ *
+ * 同一份语义在两个地方用到（core/inventory.js 的累加、core/store.js 的去重合并），
+ * 所以放在这里当唯一口径——两处各写一遍就会再次漂移。
+ *
+ * @param {number|{n?:number,lastAt?:string|null}|null|undefined} entry
+ * @returns {{n:number, lastAt:string|null}}
+ */
+export function kindEntryOf(entry) {
+  if (typeof entry === 'number') {
+    return { n: Number.isFinite(entry) ? entry : 0, lastAt: null }
+  }
+  if (entry && typeof entry === 'object') {
+    const n = Number(entry.n)
+    return { n: Number.isFinite(n) ? n : 0, lastAt: entry.lastAt ?? null }
+  }
+  return { n: 0, lastAt: null }
 }
 
 /**

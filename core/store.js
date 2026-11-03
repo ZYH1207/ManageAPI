@@ -21,6 +21,9 @@ import { ensureFaultKeys } from './fault-reporter.js'
 import { writeJsonAtomic } from './fsx.js'
 // 模型身份键（零依赖文件，不会与 store 成环）
 import { identityKey } from './model-name.js'
+// traffic.kinds 的两种历史形状（老库裸数字 / 新格式对象）统一在这里，
+// 去重合并与 addTraffic 累加必须用同一份口径，否则两处各写一遍就会漂移
+import { kindEntryOf } from './failure.js'
 
 // v5 = 协议探查记录 / 空回合记录 / 故障信号
 // v6 = 模型名身份归一（别名表）
@@ -323,9 +326,20 @@ function collapseDuplicateOffers(db) {
           samples: (into.quality?.samples || 0) + (row.quality?.samples || 0),
           bad: (into.quality?.bad || 0) + (row.quality?.bad || 0),
         }
-        for (const [kind, count] of Object.entries(row.kinds || {})) {
+        // kinds 是 {n,lastAt} 对象（不是裸数字）。这里原来写的是
+        // `(into.kinds[kind] || 0) + count`，那是按老格式（数字）加的：
+        // 两条供给都是新格式时会把对象相加得到 "[object Object]…"，
+        // 一老一新时得 "0[object Object]"。两种都把这一条供给的失败账彻底写坏，
+        // 而且写坏之后 score.js 读到的 trafficUnavailable 变成 NaN，
+        // 冷却判定连带失效。用唯一口径 kindEntryOf 归一（见 core/failure.js）。
+        for (const [kind, entry] of Object.entries(row.kinds || {})) {
           into.kinds = into.kinds || {}
-          into.kinds[kind] = (into.kinds[kind] || 0) + count
+          const sum = kindEntryOf(into.kinds[kind]).n + kindEntryOf(entry).n
+          // lastAt 取两者中较新的一个：合并后「最后一次这类失败」应该是最近那次
+          const a = kindEntryOf(into.kinds[kind]).lastAt
+          const b = kindEntryOf(entry).lastAt
+          const lastAt = !a ? b : !b ? a : (a > b ? a : b)
+          into.kinds[kind] = { n: sum, lastAt: lastAt ?? null }
         }
       }
       delete db.traffic[deadId]

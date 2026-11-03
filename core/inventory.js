@@ -42,6 +42,8 @@ import {
 // 诊断地基：决策日志顺路更新的两份聚合（错误账本 + 供给表现时序）
 import { fingerprintError, applyErrorToBook, pruneErrorbook } from './error-fingerprint.js'
 import { applyRoutingToStats, pruneOfferStats } from './offer-stats.js'
+// kinds 的两种历史形状（老库裸数字 / 新格式对象）在这里统一，见该函数注释
+import { kindEntryOf } from './failure.js'
 
 export function newId(prefix) {
   return `${prefix}_${randomUUID().slice(0, 8)}`
@@ -1616,6 +1618,13 @@ export async function addTraffic(entries, windowMs = TRAFFIC_WINDOW_MS) {
       row.fail += delta.fail || 0
       if (delta.ok) row.lastOkAt = nowIso
       if (delta.fail) row.lastFailAt = nowIso
+      // 我方缺陷（网关自己的 bug / 本机网络不可达）持久化一笔计数。
+      //
+      // 为什么必须落盘而不是只留在 buffer 里：buffer 5 秒一清，清完就没了，
+      // 诊断页因此永远看不到「今天有多少失败其实怪我们自己」。这个数字不参与
+      // 可用率（fail 已经把它们排除在外），纯粹是排查用的账：一次假失败风暴
+      // 之后，靠它能一眼认出「站点没坏，是我这边 507 次 ReferenceError」。
+      if (delta.localDefects) row.localDefects = (row.localDefects || 0) + delta.localDefects
       // 真实响应的质量信号（空回答 / 计费虚报）：探针之外的第二类完整性证据
       if (delta.quality) {
         if (!row.quality || typeof row.quality !== 'object') row.quality = { samples: 0, bad: 0 }
@@ -1626,7 +1635,15 @@ export async function addTraffic(entries, windowMs = TRAFFIC_WINDOW_MS) {
         if (!row.kinds || typeof row.kinds !== 'object') row.kinds = {}
         for (const [kind, count] of Object.entries(delta.kinds)) {
           if (!count) continue
-          const current = row.kinds[kind] || { n: 0, lastAt: null }
+          // 老库里的 kinds 是裸数字（{quota: 3}），新格式是 {n, lastAt}。
+          // 必须原地兼容：直接写 current.n += count 会在老数据上抛
+          // 「Cannot create property 'n' on number 3」，整次 addTraffic 失败，
+          // 连带这一批所有供给的流量都不落盘（不只是这一条）。真实踩到过。
+          // 升成对象时把原来的数字当次数保留——那是真的发生过 n 次，不是脏数据。
+          //
+          // 同口径也出现在 core/store.js 的合并逻辑里（去重时把两条供给的计数
+          // 相加），那边用同一份 normalize 思路，改一处必须改两处。
+          const current = kindEntryOf(row.kinds[kind])
           current.n += count
           current.lastAt = nowIso
           row.kinds[kind] = current

@@ -28,6 +28,7 @@
 
 import { offerCost } from './pricing.js'
 import { fingerprintError } from './error-fingerprint.js'
+import { classifyFailure } from './failure.js'
 import { OUTCOME } from './fault-triage.js'
 
 export const OFFER_STATS_MAX_AGE_DAYS = 30
@@ -56,6 +57,10 @@ function bucket(stats, offerId, hour) {
       // 客户端自己关连接（用户中断 / 客户端到点取消）：既不算成功也不算站方断流，
       // 单开一栏只用于「解释你看到的那些断流」，绝不进请求数与分母
       clientAborts: 0,
+      // 我方缺陷（网关自身 bug / 本机网络不通）：**不进 failed、不进分母**。
+      // 归错责任层会把一条健康的站算成坏站，让用户去停用它——2026-11-03 的 507 次
+      // routeTarget 故障就是这么把好站烤红的。单开一栏只给诊断页解释用。
+      localDefects: 0,
       ttftSum: 0,
       ttftCount: 0,
       latencySum: 0,
@@ -185,6 +190,16 @@ export function applyRoutingToStats(stats, record, { offerById = null, settings 
   for (const f of record.failures || []) {
     if (!f.offerId) continue
     const b = bucket(stats, f.offerId, hour)
+    // 责任层判定必须和 core/failure.js 用同一份口径：我方缺陷计入 localDefects，
+    // 不记 failed。否则供给表现里这条站会凭空多出一次失败，诊断规则②会把它
+    // 读成「站方失败率上升」，推着用户去停用一家好站。
+    const cls = classifyFailure(f.error)
+    if (cls.localDefect) {
+      b.localDefects = (b.localDefects || 0) + 1
+      const k = errKey('local', null)
+      b.errors[k] = (b.errors[k] || 0) + 1
+      continue
+    }
     b.failed += 1
     // kind/code 与错误账本同一来源（fingerprintError），两边口径必须一致
     const fp = fingerprintError(f.error)
