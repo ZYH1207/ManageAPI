@@ -71,6 +71,8 @@ export function emptyDb() {
       displayCurrency: 'USD',
     // 全局忽略的模型（归一化后的 key）：不参与比价、决策、探针、网关
     ignoredModels: [],
+    // DSH 插件面板自己的忽略名单：只影响插件面板怎么显示，不参与路由（见 daemon/server.js）
+    panelIgnoredModels: [],
     },
     providers: [],
     credentials: [],

@@ -303,8 +303,16 @@ function buildDecisions(rankedWithCache, { paidOffers, providers, credentials, s
   })
 }
 
-/** 组装前端需要的全量视图。 */
-async function buildState({ light = false } = {}) {
+/**
+ * 组装前端需要的全量视图。
+ *
+ * `panel: true` 是给 DSH 插件面板用的：那份面板有自己的「忽略模型」名单
+ * （`settings.panelIgnoredModels`，只管面板里怎么显示），所以它要看到**全量**在役供给，
+ * 由面板自己过滤。路由端名单（`settings.ignoredModels`）在 panel 视图里不参与展示过滤，
+ * 否则在网页面板上忽略一个模型就会连带把插件面板的比价/决策也改掉——两份名单必须各走各的。
+ * 注意这只影响展示口径；网关路由永远只认 `ignoredModels`（routeableOffers 默认值）。
+ */
+async function buildState({ light = false, panel = false } = {}) {
   // 只读视图走 mtime 缓存（网关热路径同一份）：buildState 被 40 个写接口和
   // 15 秒轮询调用，此前每次全量 JSON.parse（db.json 已到 MB 级，约 15ms/次）。
   // 本函数及它调用的评分/比价/决策全部是纯读——约定见 readDbCached 的注释。
@@ -332,7 +340,15 @@ async function buildState({ light = false } = {}) {
   // 不靠渲染层过滤——漏一个分支就会污染「最便宜」的结论。
   // 已下线（delistedAt 有值）的供给保留在库里，但不参与任何展示与路由
   // 已下线 / 被暂停 / 被忽略的过滤收口在 inv.routeableOffers，探针目标也用同一份
-  const liveOffers = inv.routeableOffers(db)
+  // panel 视图（DSH 插件面板）不看路由端的忽略名单：面板有自己的 settings.panelIgnoredModels，
+  // 先把路由端名单放开拿到全量，再按面板名单自己裁一次——两份名单因此完全互不影响。
+  const panelIgnored = panel
+    ? new Set((Array.isArray(db.settings.panelIgnoredModels) ? db.settings.panelIgnoredModels : []).map(String))
+    : null
+  const routeable = inv.routeableOffers(db, { ignoreModels: !panel })
+  const liveOffers = panelIgnored && panelIgnored.size
+    ? routeable.filter((offer) => !panelIgnored.has(inv.normalizeModelKey(offer.modelKey || offer.upstreamName || '')))
+    : routeable
   // 免费池不过滤「忽略模型」：忽略通常是为了在付费比价里藏掉碍事的模型，
   // 而免费额度是另一回事，一起藏会让免费池少掉本来能用的供给。
   // 暂停站点/下线模型仍照滤（见 routeableOffers 的注释）
@@ -450,7 +466,9 @@ function route(method, pattern, handler) {
 // ------------------------------------------------------------------ 基础
 
 route('GET', /^\/api\/health$/, async () => ({ ok: true, at: new Date().toISOString() }))
-route('GET', /^\/api\/state$/, async (ctx) => buildState({ light: ctx.query.get('light') === '1' }))
+route('GET', /^\/api\/state$/, async (ctx) =>
+  buildState({ light: ctx.query.get('light') === '1', panel: ctx.query.get('panel') === '1' }),
+)
 
 /**
  * 宿主插件（DSH 那一侧）推送它自己观测到的真实用量。
@@ -620,12 +638,33 @@ function applyDshSettings(db, body) {
   db.settings.dshFreeModels = body.dshFreeModels
 }
 
+/**
+ * DSH 插件面板自己的「忽略模型」名单。
+ *
+ * 和 `ignoredModels` 同名不同范围：这份只决定**插件面板里怎么显示**（比价行、决策候选、
+ * 「自动 DSH」模型列表），**不参与路由**——网关、探针、网页版都不看它。
+ * 搞成两份是为了让「网页端（路由端）」和「DSH 插件面板」各走各的：
+ * 插件里不想看的模型，不该顺带把别的平台接进来的网关模型清单也裁掉。
+ */
+function applyPanelIgnoredModels(db, body) {
+  if (body.panelIgnoredModels === undefined) return
+  if (!Array.isArray(body.panelIgnoredModels)) {
+    throw new HttpError(400, '面板忽略的模型必须是数组')
+  }
+  const list = body.panelIgnoredModels
+    .map((name) => (typeof name === 'string' ? inv.normalizeModelKey(name) : ''))
+    .filter(Boolean)
+  if (list.length > 500) throw new HttpError(400, '最多忽略 500 个模型')
+  db.settings.panelIgnoredModels = [...new Set(list)]
+}
+
 /** 应用设置补丁：分组顺序与原实现一致，逐字段校验与报错文案保持不变。 */
 function applySettingsPatch(db, body) {
   applyFxSettings(db, body)
   applyProbeSettings(db, body)
   applyDisplaySettings(db, body)
   applyIgnoredModels(db, body)
+  applyPanelIgnoredModels(db, body)
   applyDshSettings(db, body)
 }
 
