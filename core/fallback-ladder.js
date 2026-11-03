@@ -115,9 +115,24 @@ export function tierOf(row, { triedAlready = false } = {}) {
     case 'unstable':
       return { tier: TIER.DEGRADED, reason: admission.text || '有过负面信号', hard: false }
 
-    // 冷却：如果已经过了冷却期，当作可重试
+    // 冷却：**还在窗口内**的不进阶梯，硬失败。
+    //
+    // 这里以前一律归到 RECOVERING（「如果已经过了冷却期，当作可重试」），但
+    // admission.kind 是 'blocked' 时不区分「窗口内」和「窗口已过」——于是刚被
+    // 限流 2 分钟的供给也会进链，网关挨个试过去，每条都必然白等一个来回。
+    // 真实现场（.test/check-rate-limit-recovery.mjs 第 4 节）：两条供给都限流中，
+    // 期望 400 且上游零请求，实际 200——网关拿冷却中的供给试了个遍。
+    //
+    // 判据用「窗口是否还在」这一件事，它已经在行上（blocked.until / 已过期则
+    // score.js 把它落进 pendingRecovery 或 halfOpen），所以这里只读不猜：
+    //   row.blocked          → 窗口还没到，试了必失败 → hard
+    //   row.pendingRecovery  → 窗口已过但等一次成功确认 → 可重试（一次往返换恢复）
+    //   row.halfOpen         → 比率型半开，明确允许试探一条 → 可重试
     case 'blocked':
-      return { tier: TIER.RECOVERING, reason: admission.text || '冷却中', hard: false }
+      if (row.blocked) {
+        return { tier: TIER.HARD_FAIL, reason: admission.text || '冷却中，窗口还没到', hard: true }
+      }
+      return { tier: TIER.RECOVERING, reason: admission.text || '冷却期已过', hard: false }
 
     // 待恢复：同理
     case 'pendingRecovery':
@@ -201,9 +216,17 @@ export function rescueFromEmpty(rows = [], { tried = new Set() } = {}) {
     if (!id || tried.has(id)) return false
     // 唯一真正不能救的：余额确认为 0
     if (row.balanceDepleted) return false
+    // 冷却窗口**还没到**的也不能救：这是「刚刚上游明确拒绝过」，放回去必有
+    // 一次白等。安全阀的本意是「宁可试一个余额告警的站，也别报错」，而不是
+    // 「宁可拿必然失败的站去撞墙」——真实现场（check-rate-limit-recovery 第 4 节）
+    // 两条供给都在限流冷却里，期望 400 且上游零请求，而这支安全阀把它们全捞回来了。
+    //
+    // 注意只排除 row.blocked（窗口内），不排除 pendingRecovery / halfOpen——
+    // 那两种的窗口已经过去，试一条本来就能换来结论，属于该救的。
+    if (row.blocked) return false
     return true
   })
-  if (!usable.length) return { rescued: [], why: '所有供给都已试过或余额为 0' }
+  if (!usable.length) return { rescued: [], why: '所有供给都已试过、余额为 0 或仍在冷却窗口内' }
   return {
     rescued: usable.map((row) => ({
       ...row,

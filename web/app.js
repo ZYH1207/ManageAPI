@@ -3855,6 +3855,9 @@ const STATUS_TAG = {
   detoured: { label: '临时改道', cls: 'warn' },
   billing: { label: '余额不足 · 请充值', cls: 'danger' },
   'awaiting-recovery': { label: '等确认恢复', cls: 'warn' },
+  // 半开：冷却时间已过、失败率仍偏高。只在没有更好候选时试一条，
+  // 所以既不是「可用」也不是「冷却中」——它是一条待验证的路
+  'half-open': { label: '半开试运行', cls: 'warn' },
   fallback: { label: '兜底', cls: '' },
   // 余额：来自站点余额读数（持久化数据），欠费红、预警黄；欠费已挡准入
   'balance-empty': { label: '余额不足', cls: 'danger' },
@@ -4051,7 +4054,15 @@ function renderDecision() {
           }</td>
           <td class="num${sortMark('speed')}">${ttftCell(candidate, stale)}</td>
           <td class="num">${tpsCell(candidate)}</td>
-          <td>${badges}${candidate.statusReason ? `<div class="sub">${esc(candidate.statusReason)}</div>` : ''}</td>
+          <td>${badges}${candidate.statusReason ? `<div class="sub">${esc(candidate.statusReason)}</div>` : ''}${
+            // 失败率是统计量，统计量会冤枉人（网关自己的 bug 制造过 507 次假失败）。
+            // 被判「失败率过高」的行必须有一条申诉通道，否则用户只能等——而旧代码
+            // 的「等」实际可能比承诺久得多。只对 error-rate 给这个入口：余额不足、
+            // 限流这类有明确外部原因，清计数没意义。
+            (candidate.blocked?.kind === 'error-rate' || candidate.pendingRecovery?.kind === 'error-rate')
+              ? `<div><button class="ghost tiny" data-act="clear-block" data-offer="${esc(candidate.offerId)}" title="${esc(t('清除这条供给的失败计数，让它立刻重新参与路由'))}">${t('解除封禁')}</button></div>`
+              : ''
+          }</td>
         </tr>`
     }).join('')
 

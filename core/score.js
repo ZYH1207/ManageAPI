@@ -45,8 +45,19 @@ export const MIN_SAMPLES_FOR_VERDICT = 3
  * 夹在几百次成功中间，全程都没进冷却。
  *
  * 所以补一条「比率」判定：窗口内失败占比超过阀值就强制进冷却。
+ *
  * 门槛刻意不低（15% 且至少 5 次失败）——正常站也有偶发的 5xx，
  * 不能用一两次失败就把好站拉黑。
+ *
+ * 2026-11-03 曾把这套门槛放宽成「20 样本 30%，满 100 样本再换 20% + 10 次」，
+ * 理由是「一个人一小时只有几十单，5 次失败很容易攒到」。那个现象是真的，
+ * 但成因是**假失败**：网关自己的 ReferenceError 被当成站点故障记进 fail
+ * （见 core/failure.js#trafficDelta），一小时当然能「攒到」几十次根本不存在的失败。
+ * 假失败在写入口被拦掉之后，fail 只剩真正的站点故障，5 次真故障/20 单本来就该避开。
+ *
+ * 所以阈值回到 15%：用宽阈值去兜记账缺陷，等缺陷修好后就只剩「真坏了也不躲」。
+ * 同时去掉「99 样本放行、100 样本封禁」那个不连续边界——同一条供给在两次相邻
+ * 请求里得到相反的判定，没人能解释得清。
  */
 export const FAIL_RATE_MIN_SAMPLES = 20
 export const FAIL_RATE_MIN_FAILS = 5
@@ -273,16 +284,36 @@ export function scoreOffers(probes, traffic = {}, options = {}) {
     // 口径：只在样本足够时启用（样本太少时比率噪声大，宁可不改）；
     // 用「好样本占比」而不是原始 badRate，这样天然落在 (0,1] 开区间，
     // 不会因为 0 条坏样本就锁死在 1——样本越多、越接近 1，但不会提前等于 1。
+    //
+    // 但平滑必须**对称**：以前分母恒为 (n+2)、分子恒加 1，等于先验「1 好 1 坏」。
+    // 结果是**证据越多质量越低**：0 样本时这一项不参与、integrity 正好 1.000，
+    // 20 次全成功只有 0.988——有证据的站反而排在没证据的前面，激励完全反向。
+    // 现在只在真正出现过坏样本时才启用平滑：全好就是 1.000，与样本多少无关；
+    // 一旦出现坏样本，坏的那部分立刻体现在比率上（比先验惩罚更接近事实）。
+    // ★ 但加权平均本身会把「出现坏样本」变成加分项（2026-11-04 实测抓到）：
+    //
+    //   探针质量 0.6687（指纹 5 次只对 3 次），真实 20 单全成功 →
+    //     realGoodRate=null，integrity = 0.6687
+    //   一旦出现 1 个坏样本 → realGoodRate = 19/20 = 0.95 参与加权：
+    //     (0.6687*1.0 + 0.95*0.35) / 1.35 = 0.7417  ← 比全成功还高
+    //
+    // 也就是说：这条供给本来是「探针已经证实它掉包」，加了**一条坏证据**
+    // 之后反而在排序里升了 11%。根因是把两类证据混在一个加权平均里——
+    // 质量是「最差那块板」的度量，不是各项的平均值。
+    //
+    // 改成乘法（互不掩盖，且严格单调）：
+    //   任一类证据变差，integrity 一定变小；全成功时 realGoodRate 取 1，
+    //   这一项不影响结果，与「证据越多不该越吃亏」一致。
     const realGoodRate = realSamples > 0
-      ? (realSamples - realBad + 1) / (realSamples + 2) // 同样 Laplace 平滑，先验 1 好 1 坏
-      : null
-    const partsAll = realGoodRate === null
-      ? parts
-      : [...parts, { value: realGoodRate, weight: 0.35 }]
-    const totalWeightAll = partsAll.reduce((sum, p) => sum + p.weight, 0)
-    const integrity = totalWeightAll === 0
-      ? null
-      : partsAll.reduce((sum, p) => sum + p.value * p.weight, 0) / totalWeightAll
+      ? (realSamples - realBad) / realSamples
+      : 1 // 没有真实样本 = 这一类不发言，不惩罚
+    const probeQuality = parts.reduce((sum, p) => sum + p.value * p.weight, 0)
+    const probeWeight = parts.reduce((sum, p) => sum + p.weight, 0)
+    const probeParts = probeWeight === 0 ? null : probeQuality / probeWeight
+    const integrity =
+      probeParts === null
+        ? (realSamples > 0 ? realGoodRate : null)
+        : (realSamples > 0 ? probeParts * realGoodRate : probeParts)
 
     // 「结果可疑」的判定不看平滑值，看原始证据：
     //   指纹——单次不符即判（掉包是确定性的，网络抖动不会让答案变成别的数）
@@ -381,12 +412,21 @@ export function scoreOffers(probes, traffic = {}, options = {}) {
       unavailableKind && unavailableAt > successAt
         ? cooldownUntil(unavailableKind, unavailableAt, unavailableRetryMs)
         : 0
+    // 比率型冷却的起点该是「最后一次失败」，但**封禁最多只能持续一个冷却时长**。
+    //
+    // 以前直接写 until = lastFailAt + 10min，而 lastFailAt 只有失败才更新、
+    // 成功不推进它，于是：失败发生在 50 分钟前、之后一直成功，until 仍是
+    // 「50 分钟前 + 10 分钟」——早就过去了却仍按 blocked 处理，界面还显示
+    // 「1 分钟后自动重试」。用户看到的是「它明明在成功，却告诉我还要等」。
+    const lastFailAt = tsOf(trafficRow?.lastFailAt)
+    const errorRateUntil = lastFailAt > 0 ? lastFailAt + FAIL_RATE_COOLDOWN_MS : 0
+
     // 两条路取先到的那一条：时间型冷却优先，其次是比率型
     const blocked =
       blockedUntil > now
         ? { kind: unavailableKind, until: blockedUntil }
-        : failRateBlocked
-          ? { kind: 'error-rate', until: (tsOf(trafficRow?.lastFailAt) || now) + FAIL_RATE_COOLDOWN_MS }
+        : failRateBlocked && errorRateUntil > now
+          ? { kind: 'error-rate', until: errorRateUntil }
           : null
 
     // 冷却到期不等于恢复——但只对「等它自己到点」的那几类成立：
@@ -397,15 +437,39 @@ export function scoreOffers(probes, traffic = {}, options = {}) {
     //
     // 余额不足 / 单次请求超限不在这里面：充值、缩小请求之后本来就该立刻能试，
     // 再来一次 403 的代价只有一次往返，不构成「白等一个来回」。
-    //
-    // 比率型同理：失败率没跌下来之前不能因为「冷却到期了」就放行，
-    // 否则刚好在时间边界上又撞一次（真实流量还是那批失败样本）。
     const pendingRecovery =
       unavailableKind && unavailableAt > successAt && EVIDENCE_RECOVERY_KINDS.has(unavailableKind)
         ? { kind: unavailableKind, since: unavailableAt }
-        : failRateBlocked
-          ? { kind: 'error-rate', since: tsOf(trafficRow?.lastFailAt) || now }
+        : failRateBlocked && errorRateUntil > now
+          ? { kind: 'error-rate', since: lastFailAt || now }
           : null
+
+    // ---- 比率型：open → cooldown → half-open → recovered
+    //
+    // 这里原来只有「开 / 关」两个状态，于是要么死锁、要么洗白，两边都试过：
+    //
+    //   死锁：解除条件挂在「最近一次成功晚于最后一次失败」上，可失败率是由
+    //     整个 1 小时窗口算的。窗口里 53 次失败 + 之后 300 次成功，比率仍然
+    //     超标 → 一直 pendingRecovery；要解封得再攒几百次成功，而每一条都被
+    //     挡住不让发，等于永久拉黑，跟文案里的「10 分钟后自动重试」完全不符。
+    //
+    //   洗白：于是改成「只要之后有过一次成功就解封」——又变成一次运气推翻整段
+    //     高失败率，正是这条比率 guard 当初要挡的「高失败率夹杂少量成功还继续派活」。
+    //
+    // 四态才是这两者都成立的写法（与熔断器语义一致）：
+    //
+    //   recovered  窗口内不算高失败率 → 正常派活（下面兜底兜住）
+    //   open       比率超标且还没到冷却点 → blocked，一条都不派
+    //   half-open  比率超标但冷却时间已过 → 放行**试探**：派一条真实请求去证明，
+    //              成功就刷新 lastOkAt 让比率自然回落；失败则 lastFailAt 前移，
+    //              重新封一个冷却窗口。所以恢复可达（不用攒成功），又不会被一次
+    //              成功洗白（成功只买来「下一轮继续观察」，不清账）。
+    //
+    // half-open 的「有限」由 tierOf 保证：它落在 RECOVERING 级，排在准入通过、
+    // 无证据、降级之后——只有当更好的候选都不行时才会被试到，不会跟正常供给抢流量。
+    const halfOpen = failRateBlocked && errorRateUntil <= now
+      ? { kind: 'error-rate', since: lastFailAt || now }
+      : null
 
     const quality =
       availability === null || integrity === null ? availability ?? integrity : availability * integrity
@@ -465,7 +529,11 @@ export function scoreOffers(probes, traffic = {}, options = {}) {
       totalSamples >= MIN_SAMPLES_FOR_VERDICT
 
     let status = 'unknown'
-    if (probeSamples === 0) status = 'unknown'
+    // 一次证据都没有才是 unknown。**只看探针是错的**：只走真实流量、从没探过针的
+    // 供给会永远停在 unknown，而准入那边 samples 是「探针 + 流量」，非 0 就放行
+    // ——于是出现「可用率 0% 却被派活、界面同时标 unstable」的自相矛盾。
+    // 2026-11-03 实测：traffic ok=0/fail=3 → admissionOf.ok=true，admissionTags=['unstable']。
+    if (probeSamples === 0 && trafficOk + trafficFail === 0) status = 'unknown'
     else if (stale) status = 'stale'
     else if (integrityFaults.length > 0) status = 'degraded'
     else if (availabilityVerdict) status = 'unstable'
@@ -491,8 +559,13 @@ export function scoreOffers(probes, traffic = {}, options = {}) {
       unavailableSamples: probeUnavailable + trafficUnavailable,
       // 冷却中的供给：不参与路由，但不是「坏」，额度/限流恢复后自动回来
       blocked,
-      // 冷却已到、但还没被证明恢复（最近一次证据是限流/模型缺失/失败率过高）
+      // 冷却已到、但还没被证明恢复（最近一次证据是限流/模型缺失）
       pendingRecovery,
+      // 比率型冷却的「半开」状态：冷却时间已过、但窗口内失败率仍然超标。
+      // 不是坏站，也不是正常——只在没有更好候选时放一条真实请求去试探
+      // （见 tierOf 的 RECOVERING 级）。落在 pendingRecovery 之外单独一个字段，
+      // 因为「等它自己到点」和「已经放你试了」对用户是完全不同的两句话。
+      halfOpen,
       // 只有额度/预算类失败、没有任何真故障：不是「没证据」，是账单问题
       billingOnly,
       // 真实流量的失败率（窗口内 fail/(ok+fail)）：界面与诊断要能解释

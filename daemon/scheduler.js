@@ -199,6 +199,14 @@ export function startProbeScheduler({
         if (score.pendingRecovery) {
           return now - new Date(score.lastProbeAt).getTime() >= RECOVERY_INTERVAL_MIN * 60000
         }
+        // 半开（比率型冷却已过、失败率仍偏高）同样按复测节奏去探：
+        // 它的 status 是 healthy（可用率可能已过 80%），会掉进下面的基础间隔，
+        // 也就是一小时才补一针。而它恰恰是「刚被证明不稳、正等一条新证据」的状态，
+        // 隔一小时才验一次等于把一条可能已经恢复的供给闲置一小时。
+        // 与 pendingRecovery 同一档节奏，理由也相同：恢复看证据，证据得有人去取。
+        if (score.halfOpen) {
+          return now - new Date(score.lastProbeAt).getTime() >= RECOVERY_INTERVAL_MIN * 60000
+        }
         if (selfHealOnly) return false
         // 「健康但有完整性疑点」也要加密探测：截断/虚报要 2 个样本才定性，
         // 只测到 1 次异常时状态还是 healthy，若按基础间隔等一小时才补第二针，

@@ -42,13 +42,22 @@ function getScore(scores, offerId) {
  * 「冷却」只用在真正的账号冷却（限流）上：余额不足写成「冷却 30 分钟」会把
  * 账单问题伪装成上游在排队，用户不知道该去充值。
  */
-function blockedText(reason, { pending = false } = {}) {
+export function blockedTextOf(reason, { pending = false } = {}) {
   const { label, hint } = describeUnavailable(reason?.kind)
   const kind = reason?.kind
-  if (pending) return `${label}：已到点，等一次成功调用确认恢复（${hint}）`
-  const minutes = Math.max(1, Math.ceil((Number(reason?.until) - Date.now()) / 60000))
+  if (pending) {
+    // 待复测没有「还剩多久」可言：它在等一个成功样本，而样本什么时候来不确定。
+    // 以前这里会算 (until-now) 得负数，再被 Math.max(1,…) 兜成「1 分钟」，
+    // 和提示里的「10 分钟」互相打架，用户永远猜不到还要等多久。
+    return `${label}：已到点，等一次成功调用确认恢复（${hint}）`
+  }
+  const left = Number(reason?.until) - Date.now()
+  // 真话优先：剩余已经为负（时间到了但还没确认恢复）就直说，不要编一个「1 分钟」。
+  // 剩余按秒向上取整到分钟，避免「还剩 0 分钟」这种看不懂的说法。
+  const minutes = left <= 0 ? 0 : Math.ceil(left / 60000)
+  if (minutes === 0) return `${label}：等待窗口已到，正在等一次成功调用确认恢复（${hint}）`
   if (isRealCooldown(kind)) return `${label}：还剩 ${minutes} 分钟（${hint}）`
-  return `${label}：${minutes} 分钟后自动重试（${hint}）`
+  return `${label}：约 ${minutes} 分钟后自动重试（${hint}）`
 }
 
 /**
@@ -108,10 +117,29 @@ export function admissionOf(row) {
   // 冷却中 / 待复测：同样不受「放行可疑供给」影响。那个开关是「我认了结果可疑
   // 也愿意试」，而这里是「刚被上游明确拒过」，试了只会白等一个来回。
   if (row.blocked) {
-    return { ok: false, kind: 'blocked', text: blockedText(row.blocked) }
+    return { ok: false, kind: 'blocked', text: blockedTextOf(row.blocked) }
   }
   if (row.pendingRecovery) {
-    return { ok: false, kind: 'blocked', text: blockedText(row.pendingRecovery, { pending: true }) }
+    return { ok: false, kind: 'blocked', text: blockedTextOf(row.pendingRecovery, { pending: true }) }
+  }
+  // 半开：比率型冷却的时间到了，但窗口内失败率仍然超标。
+  //
+  // 它**必须**给一条路出去，否则「冷却 10 分钟后重试」是句空话——实测过
+  // 53 次失败 + 之后 300 次成功仍然永久拉黑，因为解除条件要攒够成功才成立，
+  // 而每一条都被挡住不让发，成功永远攒不够。
+  //
+  // 所以这里让它 ok:false（不进 ADMITTED，不跟健康供给抢流量），但 kind 用
+  // 'blocked' → core/fallback-ladder.js#tierOf 会把它归到 RECOVERING 级：
+  // 排在准入通过、无证据、降级之后，只有更好的候选都不行时才真被派一条。
+  // 那一条成功就刷新 lastOkAt 让比率自然回落；失败则 lastFailAt 前移重新封窗口。
+  // 「有限」就是这么来的：不会一次成功就洗白，也不会永远试不到。
+  if (row.halfOpen) {
+    const pct = typeof row.failRate === 'number' ? Math.round(row.failRate * 100) : null
+    return {
+      ok: false,
+      kind: 'blocked',
+      text: `失败率仍偏高${pct === null ? '' : `（${pct}%）`}：已过冷却，只在没有更好候选时试一条`,
+    }
   }
   // 「放行可疑供给」是用户的显式覆盖：打开后可疑/不稳定的重新获得准入
   if (!row.allowUntrusted) {
@@ -123,6 +151,19 @@ export function admissionOf(row) {
         text: `可疑：${faults.length > 0 ? faults.join(' · ') : '结果不可信'}`,
       }
     }
+    // 可用率不达标 → 不登场，但**合格线只认 score.js 的结论**，不在这里另算一遍。
+    //
+    // 为什么不能自己重算：score.js 已经把「可用率低」拆成两个状态——
+    //   样本够了 → unstable（真结论，该硬拦）
+    //   样本不够 → inconclusive（还没测出来，兜底登场补证据）
+    // 这层如果又拿 availability + samples 重算一次，就是第二份口径，两处迟早
+    // 漂移。2026-11-03 实测过漂移的样子：同一份「可用率 50%」的输入，status 说
+    // 不稳定，准入却按自己算出的 samples=0 放行——比价页照 status 隐藏、
+    // 网关照 admission 派活，两边说的是两件事。
+    //
+    // 「0 成 3 败却放行」那个旧漏洞不是靠准入再算一遍堵的，而是靠 score.js
+    // 不再只看探针样本（status 现在也看真实流量）：那次修的是**证据来源**，
+    // 不是**判定门槛**。所以这里只需要读 status。
     if (row.status === 'unstable') {
       // 带上实际数值：只说「低于 80%」用户没法判断是 79% 还是 20%，
       // 前者等一轮探针就可能恢复，后者是这家真的坏了——处置完全不同。
@@ -201,6 +242,13 @@ export function admissionTags(row) {
   if (row.blocked) tags.push(row.blocked.kind === 'quota' ? 'billing' : 'blocked')
   else if (row.pendingRecovery) {
     tags.push(row.pendingRecovery.kind === 'quota' ? 'billing' : 'awaiting-recovery')
+  } else if (row.halfOpen) {
+    // 半开：冷却时间已过、失败率仍偏高，只在没有更好候选时试一条。
+    //
+    // 必须有独立标签，不能落进下面的 `ok`：admissionOf 对它是 ok:false，
+    // 决策页却画着「可用」——用户看到一条标绿的供给却从没被派过流量，
+    // 只会以为路由坏了（这正是 S01 说的「准入与界面两套口径」）。
+    tags.push('half-open')
   }
   // 余额（持久化读数）：欠费挡准入，预警只提醒。两条互斥，欠费优先
   if (row.balanceDepleted) tags.push('balance-empty')
@@ -234,10 +282,40 @@ export function admissionTags(row) {
  * 所以分工是：**准入看探针（站健康），排序看真实（用户体验）**。
  * 排序侧的口径见 core/decision-mode.js#speedOf。
  */
+/**
+ * 真实首字要多少次样本才够推翻探针结论。
+ *
+ * 为什么需要推翻：探针是 45 token 的受控请求，本该代表「这个站本身多快」，
+ * 但它同样会受**探测那一刻**的站点负载、代理链路、模型排队影响。实测遇到过
+ * 一条供给探针记到 22365ms（连 20 秒档位都超了）、被判「慢速」直接出局，
+ * 而同期真实调用 5+ 次首字只有 4.2 秒——用户感受和准入结论完全相反。
+ *
+ * 慢速是**关于站点的断言**。当有足够多次真实调用都很快时，这个断言已经被
+ * 证伪了，继续拿一条可能偶然变慢的探针样本把它拉黑，就是把可用供给白扔掉。
+ * 样本不足时不推翻——宁可保守，也不要拿一两单的运气冒充结论。
+ */
+export const REAL_TTFT_OVERRIDE_SAMPLES = 5
+
 export function isTooSlow(score, maxTtftMs) {
   if (!(Number(maxTtftMs) > 0)) return false
   if (!score || score.stale) return false
-  return typeof score.ttftMs === 'number' && score.ttftMs > maxTtftMs
+  const probeSlow = typeof score.ttftMs === 'number' && score.ttftMs > maxTtftMs
+  if (!probeSlow) return false
+  // 探针说慢，但真实流量有足够样本、且首字在门槛内 → 以真实为准，不判慢速。
+  //
+  // ⚠ 必须先判「有没有这个值」再转数字：`Number(null) === 0`，而 0 永远
+  // ≤ 任何门槛。真实首字缺失（null）但样本计数残留时，这一行会把**未知**
+  // 当成「0ms、快得离谱」，直接把探针的「慢速」结论推翻掉。2026-11-04 实测：
+  // `{ttftMs:22365, realTtftMs:null, realTtftSamples:6}` 原本判 false（放行），
+  // 而这正是该拦的那条。
+  const realSamples = Number(score.realTtftSamples) || 0
+  const rawTtft = score.realTtftMs
+  const hasRealTtft = rawTtft !== null && rawTtft !== undefined && rawTtft !== ''
+  const realTtft = hasRealTtft ? Number(rawTtft) : NaN
+  if (realSamples >= REAL_TTFT_OVERRIDE_SAMPLES && Number.isFinite(realTtft) && realTtft <= maxTtftMs) {
+    return false
+  }
+  return true
 }
 
 /**
@@ -456,8 +534,14 @@ export function selectCandidates({
     // 余额探底：不是 403 冷却（那要等上游拒），是站点卡读出来的，提前离场
     if (depleted) reasons.push(`余额不足：只剩 ${provider.quotaRemaining}，整站离场`)
     // 冷却中 / 待复测：这是「刚才上游明确说不行」，必须让人看得出为什么没派它
-    if (score?.blocked) reasons.push(blockedText(score.blocked))
-    else if (score?.pendingRecovery) reasons.push(blockedText(score.pendingRecovery, { pending: true }))
+    if (score?.blocked) reasons.push(blockedTextOf(score.blocked))
+    else if (score?.pendingRecovery) reasons.push(blockedTextOf(score.pendingRecovery, { pending: true }))
+    else if (score?.halfOpen) {
+      // 半开也要说清「为什么它没被优先派」：不写这一句，用户看到的只是一条
+      // 质量 0.82 的正常供给排在 0.98 后面，会以为排序出错了
+      const pct = typeof score.failRate === 'number' ? Math.round(score.failRate * 100) : null
+      reasons.push(`失败率仍偏高${pct === null ? '' : `（${pct}%）`}：已过冷却，只在没有更好候选时试一条`)
+    }
     // 余额（持久化读数）：欠费挡准入，预警只提醒
     if (balanceDepletedFlag) reasons.push(`余额不足：剩 ${quotaRemaining}`)
     else if (balanceWarn) reasons.push(`余额告警：剩 ${quotaRemaining}，低于预警阈值 ${warnThreshold}`)
@@ -508,6 +592,15 @@ export function selectCandidates({
       blocked: score?.blocked || null,
       // 冷却已到、但还没被证明恢复：同样不派，等下一次探测成功
       pendingRecovery: score?.pendingRecovery || null,
+      // 比率型冷却的半开状态：冷却时间到了、失败率仍超标。**放行但排到最后**——
+      // 它落在兜底阶梯的 RECOVERING 级（见 core/fallback-ladder.js#tierOf），
+      // 只有更好的候选都不行时才会被试一条，用真实流量决定要不要继续封。
+      // 没有这个字段，半开的供给会被 admission 当成正常候选，跟健康站抢流量。
+      halfOpen: score?.halfOpen || null,
+      // 窗口内失败率：准入门禁的文案要用它点名「失败率仍偏高（17%）」。
+      // 不带上这个字段，文案就只能写成「失败率仍偏高」——同一个页面里
+      // statusReason 有数字、徽章没有，用户会怀疑两处算的不是一回事。
+      failRate: typeof score?.failRate === 'number' ? score.failRate : null,
       // 只有额度/预算类失败、没有任何真故障：不是「没证据」，是账单问题
       billingOnly: Boolean(score?.billingOnly),
       availability: score?.availability ?? null,
