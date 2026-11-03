@@ -237,7 +237,8 @@ try {
     })()`)
   // 诊断结论卡在最顶上，没有 section-title，它直接就是第一个 .stats
   ok((await evaluate(`document.querySelector('#view-diagnosis .stats').querySelectorAll('.stat').length`)) === 4, '诊断结论卡 4 块瓷砖')
-  ok((await statCount('故障处理')) === 5, `故障处理卡 5 块瓷砖（实际 ${await statCount('故障处理')}）`)
+  // 5 → 6：2026-11-03 新增「我方缺陷」瓷砖（网关自身 bug 不许混进「已截流」）
+  ok((await statCount('故障处理')) === 6, `故障处理卡 6 块瓷砖（实际 ${await statCount('故障处理')}）`)
   ok((await evaluate(`document.querySelector('#view-diagnosis').innerHTML`)).includes('故障处理'), '故障处理卡渲染')
   ok((await evaluate(`document.querySelector('#view-diagnosis').innerHTML`)).includes('已截流'), '故障处理卡有「已截流」计数')
   // 客户端自己断开的：状态写「不予处理」、类型写「客户端断开」，
@@ -247,6 +248,8 @@ try {
   ok(faultCard.includes('客户端断开'), '事件账类型写「客户端断开」')
   ok(faultCard.includes('客户端主动断开请求'), '事件说明是人话')
   ok(faultCard.includes('×3'), '同一条记录聚合显示次数')
+  // 我方缺陷自成一类：既不叫「已截流」（不是我们截的），也不静默吞掉
+  ok(faultCard.includes('我方缺陷'), '故障处理卡有「我方缺陷」瓷砖')
   ok(!!(await evaluate(`document.querySelector('[data-act="fault-test"]')`)), '有「测试上报通道」按钮')
   const body0 = await evaluate(`document.querySelector('#view-diagnosis').innerHTML`)
   ok(body0.includes('报错诊断'), '第一段=报错诊断')
@@ -283,7 +286,15 @@ try {
   const body2 = await evaluate(`document.querySelector('#view-diagnosis').innerHTML`)
   ok(body2.includes('按小时聚合 · UTC'), '供给表现表展开')
   ok(body2.includes('<th>客户端断开</th>'), '供给表现表有「客户端断开」列（与断流分列）')
-  ok(body2.includes('2026-10-28T08'.slice(5, 10).replace('-', '/')), '小时桶显示')
+  // 责任层分列：我方缺陷单列一栏，不进失败/断流，也不进可用率分母
+  ok(body2.includes('<th>我方缺陷</th>'), '供给表现表有「我方缺陷」列')
+  // 以前这里钉死 '2026-10-28T08'，日子一过就必红（和 check-route-orchestrator
+  // 同类的过期 fixture）。桶是按「8 小时前」生成的，期望值也必须现算。
+  const expectHour = (() => {
+    const d = new Date(Date.now() - 8 * 3600000)
+    return `${String(d.getUTCMonth() + 1).padStart(2, '0')}/${String(d.getUTCDate()).padStart(2, '0')} ${String(d.getUTCHours()).padStart(2, '0')}`
+  })()
+  ok(body2.includes(expectHour), `小时桶显示（期望含 ${expectHour}）`)
   ok(!body2.includes('错误模板（悬停看原文）'), '切换后账本收起')
 
   // 5.5 归因收敛：同一站的多项症状收在根因下，可展开

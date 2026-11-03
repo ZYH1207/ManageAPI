@@ -134,7 +134,10 @@ console.log('[2] 前端源码守卫：入口是网关卡上的按钮，视图仍
   const html = await readFile(new URL('../web/index.html', import.meta.url), 'utf8')
   const app = await readFile(new URL('../web/app.js', import.meta.url), 'utf8')
 
-  ok(!html.includes('data-tab="usage"'), '侧边栏没有「用量」导航项了')
+  // 侧边栏导航项 2026-11-02 由 8962e16 加回来了（当时「三档语义 + 前端契约」那次），
+  // 与网关卡上的按钮**并存**：一个是常驻入口，一个是「网关 → 用量统计」的上下文入口。
+  // 本条断言原来钉的是「没有导航项」，早已过期——断言反了，测试就一直红在真事上。
+  ok(html.includes('data-tab="usage"'), '侧边栏有「用量」导航项')
   ok(html.includes('view-usage'), 'index.html 保留独立用量视图（面板没被拆掉）')
   ok(/'gateway', 'usage', 'benchmark'/.test(app), 'TABS 里有 usage（能被 setTab 切换）')
   ok(/usage: \{ title: '用量'/.test(app), 'TAB_META 里有用量页标题副标题')

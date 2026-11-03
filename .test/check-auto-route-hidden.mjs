@@ -1,5 +1,13 @@
 /**
- * 自动路由入口暂时收起（2026-10-30）自检。
+ * 自动路由入口收起状态自检。
+ *
+ * ── 当前状态（2026-11-02 之后）是「两半」，别把它当成坏了 ──────────────
+ *   · 界面入口（AUTO_ROUTE_UI_HIDDEN）已由 67bc3ae **放出来** = false：
+ *     当初藏它的理由是「换模型打崩 KV 缓存」，而 01619c0 的缓存亲和
+ *     （core/affinity.js 把换人代价算进决策 + 15% 迟滞）已经解决了那个理由。
+ *   · 客户端点名开关（AUTO_ROUTE_CLIENT_SWITCH）**仍是关的**：
+ *     /v1/models 里不出 AutoThink，手写 model:AutoThink 也不接管。
+ *   所以「看得见面板开关、但客户端没法靠点名虚拟模型来开」是对的。
  *
  * 背景：自动路由接管后网关会在模型之间来回切，而模型的 KV 缓存绑在
  * 「模型 + 上游分组」上——每切一次，客户端几十万 token 的上下文都要在上游
@@ -84,14 +92,21 @@ console.log('[2] /v1/models 不再出 AutoThink，手写点名也不接管')
 
 console.log('[3] 面板：没接管时不渲染开关，接管中必须还渲染')
 {
-  ok(/const AUTO_ROUTE_UI_HIDDEN = true/.test(app), '前端常量为 true')
+  ok(/const AUTO_ROUTE_UI_HIDDEN = false/.test(app), '前端常量已放开（67bc3ae：false）')
+  // 守卫本身必须留着：再想藏回去时改常量即可，不必重新写一遍条件
   ok(
     /if \(AUTO_ROUTE_UI_HIDDEN && !enabled\) return ''/.test(app),
     'autoRouteSwitch：只在未接管时藏（接管中要留一个能关的把手）',
   )
+  // 接管范围那排加号 2026-11-02 起**常驻**：用户反馈「找不到编制路由组的功能」，
+  // 而加号正是编制入口。藏起来等于功能不存在——所以它不再受 AUTO_ROUTE_UI_HIDDEN 管。
   ok(
-    /if \(AUTO_ROUTE_UI_HIDDEN && !state\.autoRoute\?\.enabled\) return ''/.test(app),
-    'autorouteScopeButton：同样只在未接管时藏',
+    !/autorouteScopeButton[\s\S]{0,400}AUTO_ROUTE_UI_HIDDEN/.test(app),
+    'autorouteScopeButton 不受隐藏常量影响（编制入口常驻）',
+  )
+  ok(
+    /function autorouteScopeButton\(decision\)/.test(app),
+    'autorouteScopeButton 还在（范围勾选的唯一入口）',
   )
   // 隐藏开关不能把「事实」一起藏掉：正在使用 / 轮巡徽标是接管生效的现场
   ok(/\$\{routeNowPill\(\)\}/.test(app), '「正在使用」胶囊仍在 gateCard 里渲染')
