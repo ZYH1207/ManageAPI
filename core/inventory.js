@@ -1136,6 +1136,10 @@ export function applySitePricing(offer, { exact, rate, sitePrice, hasBench, grou
   // 倍率已知 → 倍率模式。原价写进输入框（只补空，不覆盖手输），倍率另存，
   // 算钱时由 resolveOfferPrice 统一乘——这里不要预先乘好，否则改倍率得重算\n  // 每一行，而且会和「基准价 × 倍率」两套口径打架。
   if (siteRatio !== null) {
+    // 价格模式存的是最终价：在旧倍率尚未被新值覆盖前还原，不能拿折后价再乘新倍率。
+    if (offer.pricingMode !== 'ratio' && !wasPerCall) {
+      priceToRatioMode(offer, siteRatio, sitePrice)
+    }
     offer.ratio = siteRatio
     offer.siteRatio = siteRatio
     offer.ratioSource = 'site'
@@ -1187,19 +1191,32 @@ export function applySitePricing(offer, { exact, rate, sitePrice, hasBench, grou
  * 两个口径：价格模式的输入框是**最终价**，倍率模式的输入框是**原价**。
  * 直接切模式会把最终价当成原价再乘一遍，价格静默缩水一个倍率——必须换算。
  *
- * 还原优先用站点公布倍率（siteRatio）：历史落价写成手填价时，就是
- * 「原价 × siteRatio」得到的。站点倍率未知（老数据 / 站点没公布）时，
- * 只能把现有数字当原价（用户本来就是按原价填的）。
+ * 先用价格模式保留的旧 ratio，再回落到旧 siteRatio；不能用本次新倍率当除数。
+ * 旧倍率未知或为零时，若站点本次明确提供了原价，就直接采用，避免折后价再打折。
+ * 没有可还原的倍率、也没有站点原价时保留现值，不凭空猜折扣。
  */
-export function priceToRatioMode(offer, nextRatio) {
-  if (!(Number.isFinite(nextRatio) && nextRatio > 0)) return false
-  const siteRatio = Number(offer.siteRatio)
-  const divisor = Number.isFinite(siteRatio) && siteRatio > 0 ? siteRatio : 1
-  if (divisor === 1) return false
-  const round3 = (v) => (v === null || v === undefined ? null : Math.round(v * 1000) / 1000)
-  if (offer.inPrice != null) offer.inPrice = round3(Number(offer.inPrice) / divisor)
-  if (offer.outPrice != null) offer.outPrice = round3(Number(offer.outPrice) / divisor)
-  return true
+export function priceToRatioMode(offer, nextRatio, sitePrice = null) {
+  if (!(Number.isFinite(nextRatio) && nextRatio >= 0)) return false
+  const number = (v) => v === null || v === undefined || v === '' ? null : Number(v)
+  // 显式切到价格模式时保留的 ratio 是这份最终价真正使用的倍率；优先于站点默认值。
+  const previousRatio = number(offer.ratio)
+  const previousSiteRatio = number(offer.siteRatio)
+  const divisor = Number.isFinite(previousRatio) && previousRatio > 0 ? previousRatio
+    : Number.isFinite(previousSiteRatio) && previousSiteRatio > 0 ? previousSiteRatio : null
+  let converted = false
+  for (const field of ['inPrice', 'outPrice']) {
+    const value = number(offer[field])
+    const published = number(sitePrice?.[field])
+    if (divisor !== null && Number.isFinite(value)) {
+      offer[field] = Math.round(value / divisor * 1e9) / 1e9
+      converted = true
+    } else if (Number.isFinite(published)) {
+      // 旧折扣缺失或为零，无法从最终价反推，使用站点明确给出的未折扣原价。
+      offer[field] = published
+      converted = true
+    }
+  }
+  return converted
 }
 
 /**
@@ -1295,6 +1312,9 @@ export async function restoreSiteRatio(providerId, group) {
       if (offer.siteRatio === null || offer.siteRatio === undefined) {
         noSiteValue.push(offer.upstreamName)
         continue
+      }
+      if (offer.pricingMode !== 'ratio' && offer.priceUnit !== 'per_call') {
+        priceToRatioMode(offer, offer.siteRatio)
       }
       offer.ratio = offer.siteRatio
       offer.ratioSource = 'site'

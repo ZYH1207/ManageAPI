@@ -12,7 +12,12 @@
  * 用法：node .test/check-ratio-price.mjs
  */
 import { resolveOfferPrice, offerCost } from '../core/pricing.js'
-import { applySitePricing } from '../core/inventory.js'
+import { applySitePricing, priceToRatioMode, setGroupRatio, restoreSiteRatio } from '../core/inventory.js'
+import { mkdtemp, realpath, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { spawn } from 'node:child_process'
+import { createServer } from 'node:net'
 
 let failed = 0
 const ok = (cond, msg) => {
@@ -139,6 +144,127 @@ console.log('[7] 切模式价格守恒（原价 ⇄ 最终价互转）')
   ok(mid === before, `倍率 → 价格，实际价不变（${mid}）`)
   ok(after === before, `再切回倍率，实际价不变（${after}）`)
   ok(o.inPrice === 2, `原价还原（${o.inPrice}）`)
+}
+
+console.log('[8] 北辰 G三组临时调价：最终价切倍率时不能重复打折')
+{
+  const offer = base({ pricingMode: 'manual', ratio: 0.28, siteRatio: 0.28, inPrice: 0.56, outPrice: 2.8 })
+  const price = { billingMode: 'token', inPrice: 2, outPrice: 10 }
+  applySitePricing(offer, { exact: price, sitePrice: price, rate: 0.2 })
+  ok(offer.inPrice === 2 && offer.outPrice === 10, `最终价还原成原价（${offer.inPrice}/${offer.outPrice}）`)
+  const resolved = resolveOfferPrice(offer)
+  ok(resolved.inPrice === 0.4 && resolved.outPrice === 2, `新倍率只乘一次：2/10 × 0.2 = ${resolved.inPrice}/${resolved.outPrice}`)
+  const once = JSON.stringify(offer)
+  applySitePricing(offer, { exact: price, sitePrice: price, rate: 0.2 })
+  ok(JSON.stringify(offer) === once, '重复同步不改变原价、不叠加折扣')
+  applySitePricing(offer, { exact: price, sitePrice: price, rate: 0.28 })
+  ok(resolveOfferPrice(offer).inPrice === 0.56 && resolveOfferPrice(offer).outPrice === 2.8, '临时调价结束恢复 0.28，原价保持 2/10')
+}
+
+console.log('[9] 旧倍率未知时用站点原价，已在倍率模式的手输原价保持不变')
+{
+  const price = { billingMode: 'token', inPrice: 2, outPrice: 10 }
+  const legacy = base({ pricingMode: 'manual', ratio: null, siteRatio: null, inPrice: 0.56, outPrice: 2.8 })
+  applySitePricing(legacy, { exact: price, sitePrice: price, rate: 0.2 })
+  ok(legacy.inPrice === 2 && legacy.outPrice === 10, '未知旧折扣不猜除数，采用站点明确返回的原价')
+  const custom = base({ inPrice: 3, outPrice: 12, ratio: 0.28, siteRatio: 0.28 })
+  applySitePricing(custom, { exact: price, sitePrice: price, rate: 0.2 })
+  ok(custom.inPrice === 3 && custom.outPrice === 12, '倍率模式中手填原价不被覆盖')
+  ok(resolveOfferPrice(custom).inPrice === 0.6 && resolveOfferPrice(custom).outPrice === 2.4, '手填原价只应用新倍率一次')
+}
+
+console.log('[10] 还原使用旧自定义倍率，零倍率通过站点原价恢复')
+{
+  const offer = base({ pricingMode: 'manual', ratio: 0.28, siteRatio: 0.5, inPrice: 0.56, outPrice: 2.8 })
+  priceToRatioMode(offer, 0.2)
+  ok(offer.inPrice === 2 && offer.outPrice === 10, '旧 ratio 优先于旧 siteRatio，不能用新 0.2 当除数')
+  const zero = base({ pricingMode: 'manual', ratio: 0, siteRatio: 0, inPrice: 0, outPrice: 0 })
+  const price = { billingMode: 'token', inPrice: 2, outPrice: 10 }
+  applySitePricing(zero, { exact: price, sitePrice: price, rate: 0.2 })
+  ok(resolveOfferPrice(zero).inPrice === 0.4 && resolveOfferPrice(zero).outPrice === 2, '旧零倍率无法反除时使用站点原价')
+}
+
+console.log('[11] 分组改倍率和恢复站点倍率都走原价还原')
+{
+  const home = await mkdtemp(join(tmpdir(), 'mapi-ratio-price-'))
+  const previousHome = process.env.MANAGE_API_HOME
+  process.env.MANAGE_API_HOME = home
+  const store = await import('../core/store.js')
+  try {
+    await store.mutate(db => {
+      db.providers.push({ id: 'p_ratio', name: '北辰调价回归' })
+      db.offers.push({ ...base({ pricingMode: 'manual', ratio: 0.28, siteRatio: 0.28, inPrice: 0.56, outPrice: 2.8 }), id: 'o_ratio', providerId: 'p_ratio', group: 'G三组' })
+    })
+    await setGroupRatio('p_ratio', 'G三组', 0.2)
+    let offer = (await store.readDb()).offers[0]
+    ok(offer.inPrice === 2 && offer.outPrice === 10 && resolveOfferPrice(offer).inPrice === 0.4, '分组改倍率：旧最终价还原后应用新倍率')
+    // 模拟用户在自定义倍率下切成最终价模式，再点「恢复站点倍率」。
+    await store.mutate(db => Object.assign(db.offers[0], { pricingMode: 'manual', ratio: 0.2, siteRatio: 0.28, ratioSource: 'custom', inPrice: 0.4, outPrice: 2 }))
+    await restoreSiteRatio('p_ratio', 'G三组')
+    offer = (await store.readDb()).offers[0]
+    ok(offer.inPrice === 2 && offer.outPrice === 10, '恢复站点倍率之前还原原价 2/10')
+    ok(resolveOfferPrice(offer).inPrice === 0.56 && resolveOfferPrice(offer).outPrice === 2.8, '恢复站点倍率后只乘一次 0.28')
+  } finally {
+    if (previousHome === undefined) delete process.env.MANAGE_API_HOME
+    else process.env.MANAGE_API_HOME = previousHome
+    const target = await realpath(home)
+    const tempRoot = await realpath(tmpdir())
+    if (!target.startsWith(tempRoot + '/mapi-ratio-price-')) throw new Error('Unexpected cleanup path')
+    await rm(target, { recursive: true, force: true })
+  }
+}
+
+console.log('[12] 单模型 HTTP 编辑：隐含/显式切倍率、显式价格与重复编辑')
+{
+  const home = await mkdtemp(join(tmpdir(), 'mapi-ratio-http-'))
+  const probe = createServer()
+  await new Promise(resolve => probe.listen(0, '127.0.0.1', resolve))
+  const port = probe.address().port
+  await new Promise(resolve => probe.close(resolve))
+  const previousHome = process.env.MANAGE_API_HOME
+  process.env.MANAGE_API_HOME = home
+  const store = await import('../core/store.js')
+  let app
+  try {
+    await store.mutate(db => {
+      db.settings.probeIntervalMinutes = 0
+      db.settings.monitorIntervalMinutes = 0
+      db.providers.push({ id: 'p_http', name: 'HTTP 调价验证', baseUrl: 'https://example.invalid/v1' })
+      for (const id of ['implicit', 'explicit', 'prices', 'mode']) {
+        db.offers.push({ ...base({ pricingMode: 'manual', ratio: 0.28, siteRatio: 0.28, inPrice: 0.56, outPrice: 2.8 }), id, providerId: 'p_http', group: id })
+      }
+    })
+    app = spawn(process.execPath, ['daemon/index.js', '--port', String(port)], { cwd: new URL('../', import.meta.url), env: { ...process.env, MANAGE_API_HOME: home }, stdio: 'ignore' })
+    const url = `http://127.0.0.1:${port}`
+    let ready = false
+    for (let i = 0; i < 60; i++) {
+      try { if ((await fetch(url + '/api/health')).ok) { ready = true; break } } catch {}
+      await new Promise(resolve => setTimeout(resolve, 100))
+    }
+    if (!ready) throw new Error('Temporary daemon did not start')
+    const patch = async (id, body) => {
+      const res = await fetch(`${url}/api/offers/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+      if (!res.ok) throw new Error(`PATCH failed: ${res.status}`)
+      return (await res.json()).offers.find(o => o.id === id)
+    }
+    for (const [id, body] of [['implicit', { ratio: 0.2 }], ['explicit', { pricingMode: 'ratio', ratio: 0.2 }]]) {
+      const offer = await patch(id, body)
+      ok(offer.inPrice === 2 && offer.outPrice === 10 && resolveOfferPrice(offer).inPrice === 0.4, `${id} 切换用旧倍率还原，再应用新倍率`)
+      const repeated = await patch(id, body)
+      ok(repeated.inPrice === 2 && resolveOfferPrice(repeated).outPrice === 2, `${id} 重复编辑不再反除`)
+    }
+    const mode = await patch('mode', { pricingMode: 'ratio' })
+    ok(mode.inPrice === 2 && resolveOfferPrice(mode).inPrice === 0.56, '仅切模式保持实际价不变')
+    const prices = await patch('prices', { pricingMode: 'ratio', ratio: 0.2, inPrice: 3, outPrice: 12 })
+    ok(prices.inPrice === 3 && resolveOfferPrice(prices).inPrice === 0.6, '同次显式提交新原价时不再反除')
+  } finally {
+    if (app && app.exitCode === null) { app.kill(); await new Promise(resolve => app.once('exit', resolve)) }
+    if (previousHome === undefined) delete process.env.MANAGE_API_HOME
+    else process.env.MANAGE_API_HOME = previousHome
+    const target = await realpath(home)
+    if (!target.startsWith(await realpath(tmpdir()) + '/mapi-ratio-http-')) throw new Error('Unexpected cleanup path')
+    await rm(target, { recursive: true, force: true })
+  }
 }
 
 console.log('')

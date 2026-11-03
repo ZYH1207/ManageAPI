@@ -3147,9 +3147,13 @@ route('PATCH', /^\/api\/offers\/([\w-]+)$/, async (ctx) => {
     if (b.pricingMode !== undefined || impliesRatio) {
       offer.pricingMode = nextMode
     }
-    // 换算只在「用户点了模式切换按钮」时做：那一下的意思是「价格不变，换个表示法」。
-    // 改倍率不换算——输入框存的就是原价，倍率一动价格就该跟着动，这才是用户要的
-    const explicitModeSwitch = b.pricingMode !== undefined && switchingToRatio && !impliesRatio
+    // 价格模式中的数字是最终价，任何进入倍率模式的入口都必须先用旧倍率还原。
+    // 必须在写新 ratio 之前执行；显式传入的新价格已经属于新口径，不再换算。
+    const touchedPrices = b.inPrice !== undefined || b.outPrice !== undefined
+    if (switchingToRatio && offer.priceUnit !== 'per_call' && !touchedPrices) {
+      const nextRatio = b.ratio === undefined ? offer.ratio : nonNegative(b.ratio, '分组倍率')
+      inv.priceToRatioMode(offer, nextRatio)
+    }
     if (b.ratio !== undefined) {
       offer.ratio = nonNegative(b.ratio, '分组倍率')
     }
@@ -3200,7 +3204,6 @@ route('PATCH', /^\/api\/offers\/([\w-]+)$/, async (ctx) => {
     const hasRatio = Number.isFinite(ratioOf) && ratioOf > 0
     const round3 = (v) => (v === null || v === undefined ? null : Math.round(v * 1000) / 1000)
     // 用户在同一次请求里显式传了价：那就是新口径下的价，别再换算（否则会被多除一次）
-    const touchedPrices = b.inPrice !== undefined || b.outPrice !== undefined
     if (switchingToManual && offer.priceUnit !== 'per_call' && hasRatio && !touchedPrices) {
       if (offer.inPrice != null || offer.outPrice != null) {
         offer.inPrice = round3(offer.inPrice == null ? null : Number(offer.inPrice) * ratioOf)
@@ -3217,13 +3220,6 @@ route('PATCH', /^\/api\/offers\/([\w-]+)$/, async (ctx) => {
       }
       // 倍率保留：价格模式下 resolveOfferPrice 不看它（pricingMode 是权威），
       // 但切回倍率模式时靠它换算，丢了就得让用户重填
-    }
-    if (explicitModeSwitch && offer.priceUnit !== 'per_call' && hasRatio && !touchedPrices) {
-      // 价格 → 倍率：把最终价还原成原价，实际价保持不变
-      if (offer.inPrice != null || offer.outPrice != null) {
-        offer.inPrice = round3(offer.inPrice == null ? null : Number(offer.inPrice) / ratioOf)
-        offer.outPrice = round3(offer.outPrice == null ? null : Number(offer.outPrice) / ratioOf)
-      }
     }
     offer.updatedAt = new Date().toISOString()
   })
