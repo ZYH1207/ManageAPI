@@ -209,6 +209,12 @@ export async function tryBalance({ baseUrl, apiKey, adminToken, kind, timeoutMs 
 
   const origins = originCandidates(baseUrl)
 
+  // 统一错误变量：admin 分支与 sk- 分支共用。
+  // 必须声明在 admin 分支**之前**——此前它声明在下面的 sk- 分支，而 admin 分支的 catch
+  // 先给它赋值，命中 TDZ 抛出 `Cannot access 'lastError' before initialization`：
+  // 于是「管理令牌失效」被降级成一句 JS 报错，带令牌但失效的站点余额永远刷不出来。
+  let lastError = null
+
   // 有管理令牌时优先走账户接口：Sub2API 用 /api/v1/user/profile，one-api 系用 /api/user/self
   if (adminToken) {
     // 单独记鉴权失败：多 origin 轮询时「A 域名 401 + B 域名 404」的最后错误是 404，
@@ -268,7 +274,7 @@ export async function tryBalance({ baseUrl, apiKey, adminToken, kind, timeoutMs 
   // 挂在反代子路径下的站要带上那段路径才能命中接口）
   const origin = String(baseUrl).replace(/\/v\d+\/?$/i, '').replace(/\/+$/, '')
   const candidates = [`${origin}/api/user/self`, `${origin}/api/user/dashboard`]
-  let lastError = null
+  // lastError 已在函数开头（admin 分支之前）声明，这里复用同一个变量
 
   for (const url of candidates) {
     try {
