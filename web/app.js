@@ -8157,12 +8157,14 @@ document.addEventListener('click', async (event) => {
     return
   }
 
-  // 一键同步：拉取密钥（有令牌时）→ 同步模型 → 读余额 → 识别分组，串着跑完再刷新
+  // 一键同步：模型 + 余额 + 分组 + 价格一次做完。
+  // 以前这里是前端串三个接口凑出来的（sync → balance → detect-groups），
+  // 结果「同步」这个动作本身只拉模型，别的入口再点一次同步就得不到余额和分组。
+  // 现在三件事都在 POST /sync 里，前端只打一次，返回体自带 balance / groups。
   if (event.target.closest('[data-act="prov-sync-all"]')) {
     const btn = event.target.closest('[data-act="prov-sync-all"]')
     const card = btn.closest('.prov-card')
     const providerId = card?.dataset.provider
-    const hasToken = card?.dataset.hasToken === '1'
     if (!providerId) return
     const failed = []
     let syncResult = null
@@ -8172,30 +8174,30 @@ document.addEventListener('click', async (event) => {
       } catch (error) {
         failed.push(`同步：${error.message}`)
       }
-      try {
-        const result = await api('POST', `/api/providers/${providerId}/balance`, {})
-        if (result.balance?.ok !== true) failed.push(`余额：${result.balance?.reason || '读取失败，保留上次余额'}`)
-      } catch (error) {
-        failed.push(`余额：${error.message}`)
-      }
-      if (hasToken) {
-        try {
-          await api('POST', `/api/providers/${providerId}/detect-groups`, {})
-        } catch (error) {
-          failed.push(`分组：${error.message}`)
-        }
-      }
-      state = await api('GET', '/api/state')
+      state = syncResult && syncResult.providers ? syncResult : await api('GET', '/api/state')
       render()
     })
+    // 余额与分组都在同一份返回里：读不到只提示，不影响已经同步进来的模型
+    const bal = syncResult?.sync?.balance
+    if (bal && bal.ok !== true) {
+      failed.push(`余额：${bal.reason || '读取失败，保留上次余额'}`)
+    }
+    const grp = syncResult?.sync?.groups
+    if (grp && grp.ok === true && grp.matched === 0 && grp.keyCount > 0) {
+      failed.push('分组：后台令牌列表里没认出这些 Key')
+    } else if (grp && grp.ok === false && !grp.skipped) {
+      failed.push(`分组：${grp.error || '识别失败'}`)
+    }
     // 一键导入的结果：新收了站上几把密钥要说清，一把没收（没令牌/读不到）不打扰
     const keyImport = syncResult?.sync?.keyImport
-    let doneMsg = failed.length ? `部分完成：${failed.join('；')}` : '已同步'
-    if (keyImport?.imported > 0) {
-      doneMsg = failed.length
-        ? doneMsg
-        : t('已同步，新导入 {count} 把密钥', { count: keyImport.imported })
-    }
+    const parts = []
+    if (syncResult?.sync?.fetched) parts.push(`${syncResult.sync.fetched} 个模型`)
+    if (bal?.ok === true) parts.push(`余额 ${bal.remaining ?? '已更新'}`)
+    if (grp?.ok === true && grp.matched > 0) parts.push(`${grp.matched} 个分组`)
+    if (keyImport?.imported > 0) parts.push(t('新导入 {count} 把密钥', { count: keyImport.imported }))
+    const doneMsg = failed.length
+      ? `部分完成：${failed.join('；')}`
+      : (parts.length ? `已同步：${parts.join(' · ')}` : '已同步')
     toast(doneMsg, failed.length > 0)
     return
   }

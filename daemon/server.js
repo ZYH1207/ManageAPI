@@ -1837,6 +1837,26 @@ route('POST', /^\/api\/providers\/([\w-]+)\/sync$/, async (ctx) => {
   const elapsedMs = Date.now() - startedAt
   const list = [...allModels]
 
+  // ------------------------------------------------ 余额与分组：同步的组成部分
+  //
+  // 「一键同步」按钮以前是前端串三个接口凑出来的（sync → balance → detect-groups），
+  // 于是「同步」这个动作本身只有模型，别处再点一次同步就得不到余额和分组。
+  // 现在收进同一个接口：单站同步 = 完整同步，前端只打一次。
+  // 两者都不算整轮失败——余额读不到、分组读不到都只报告，不把已经拉到的模型丢掉。
+  const balance = await readBalanceFor(provider.id).catch((error) => ({
+    ok: false,
+    reason: error.message || String(error),
+  }))
+  let groups = { ok: false, skipped: true }
+  const hasAdminToken = Boolean(await inv.ensureAdminToken(provider.id).catch(() => null))
+  if (hasAdminToken) {
+    groups = await detectGroupsFor(provider.id)
+      .then((r) => ({ ok: true, ...r.detectResult }))
+      .catch((error) => ({ ok: false, error: error.message || String(error) }))
+  } else {
+    groups = { ok: false, skipped: true, error: '没有站点令牌，跳过分组识别（不影响模型同步）' }
+  }
+
   const current = new Set(list)
   const state = await buildState()
   return {
@@ -1854,6 +1874,9 @@ route('POST', /^\/api\/providers\/([\w-]+)\/sync$/, async (ctx) => {
       perKey,
       failures,
       keyImport,
+      // 余额与分组随同步一起做，前端据此给出一句完整反馈
+      balance,
+      groups,
     },
   }
 })
@@ -2216,8 +2239,14 @@ route('POST', /^\/api\/providers\/([\w-]+)\/apply-group$/, async (ctx) => {
  * 这一步比「让用户从十几个分组里猜」可靠得多：分组是你买套餐时的商务事实，
  * 站点后台存着，我们只需要读出来。
  */
-route('POST', /^\/api\/providers\/([\w-]+)\/detect-groups$/, async (ctx) => {
-  const providerId = ctx.params[0]
+/**
+ * 识别分组并把倍率落到供给行上（detect-groups 的主体）。
+ *
+ * 抽成函数是为了让 POST /sync 也能调用：单站「同步」必须是完整同步
+ * （模型 + 余额 + 分组 + 价格），不能只有全站的「立即同步」才做全套。
+ * 抛错语义保持不变，调用方自己决定要不要把它当成整轮失败。
+ */
+async function detectGroupsFor(providerId) {
   const db = await store.readDb()
   const provider = db.providers.find((p) => p.id === providerId)
   if (!provider) throw new HttpError(404, '站点不存在')
@@ -2358,7 +2387,6 @@ route('POST', /^\/api\/providers\/([\w-]+)\/detect-groups$/, async (ctx) => {
   })
 
   return {
-    ...(await buildState()),
     detectResult: {
       tokenCount: items.length,
       source,
@@ -2368,6 +2396,10 @@ route('POST', /^\/api\/providers\/([\w-]+)\/detect-groups$/, async (ctx) => {
       results,
     },
   }
+}
+
+route('POST', /^\/api\/providers\/([\w-]+)\/detect-groups$/, async (ctx) => {
+  return { ...(await buildState()), ...(await detectGroupsFor(ctx.params[0])) }
 })
 
 /** 把自定义倍率恢复成站点公布的值。 */
@@ -2491,9 +2523,17 @@ async function persistBalance(providerId, result, at) {
   })
 }
 
-route('POST', /^\/api\/providers\/([\w-]+)\/balance$/, async (ctx) => {
+/**
+ * 读一次余额并写回站点（balance 路由的主体）。
+ *
+ * 抽成函数是为了让 POST /sync 复用：单站「同步」应当是完整同步
+ * （模型 + 余额 + 分组 + 价格），而不是只有全站的「立即同步」才做全套。
+ * 返回 { ok, ... } 形状与 providers.tryBalanceWithKeys 一致，失败不抛错
+ * ——余额读不到不该让整轮同步失败，卡片上会显示原因并保留上次值。
+ */
+async function readBalanceFor(providerId) {
   const db = await store.readDb()
-  const provider = db.providers.find((p) => p.id === ctx.params[0])
+  const provider = db.providers.find((p) => p.id === providerId)
   if (!provider) throw new HttpError(404, '站点不存在')
   const credentials = db.credentials.filter((c) => c.providerId === provider.id)
 
@@ -2529,7 +2569,7 @@ route('POST', /^\/api\/providers\/([\w-]+)\/balance$/, async (ctx) => {
       })
       if (retried.ok) {
         await persistBalance(provider.id, retried)
-        return { ...(await buildState()), balance: retried }
+        return retried
       }
       result.reason = retried.reason || result.reason
     }
@@ -2555,6 +2595,11 @@ route('POST', /^\/api\/providers\/([\w-]+)\/balance$/, async (ctx) => {
   } else {
     await persistBalance(provider.id, result)
   }
+  return result
+}
+
+route('POST', /^\/api\/providers\/([\w-]+)\/balance$/, async (ctx) => {
+  const result = await readBalanceFor(ctx.params[0])
   return { ...(await buildState()), balance: result }
 })
 
