@@ -7,6 +7,7 @@
 import { fetchModelPlaza, flattenPlaza } from './model-plaza.js'
 import { readVendorBalance } from './balance.js'
 import { fetchNewApiPricing } from './newapi-pricing.js'
+import { normalizeGroup } from './store.js'
 
 function describeHttpError(status, bodyText) {
   const snippet = String(bodyText || '').slice(0, 180).replace(/\s+/g, ' ').trim()
@@ -762,6 +763,106 @@ export function matchTokenBySecret(items, secret) {
 }
 
 /**
+ * 把 channels 的价格并进广场结果：广场优先，channels 只补广场没有的 (分组, 模型)。
+ *
+ * 为什么不是反过来：channels 的单价口径不统一——实测同一站点里，大部分模型给的是
+ * 原价，一部分给的是「原价 × 分组倍率」的折后价，还有一部分读的是 official_pricing。
+ * 下游 applySitePricing 会统一再乘一次倍率，所以折后价那批会被乘两次（二次打折）。
+ * 广场把 pricing 与 rate_multiplier 分开返回，口径唯一，才适合当基准。
+ *
+ * 只补缺、不覆盖：广场已经给出的价格一定是原价口径，channels 的同名条目即使有值
+ * 也一律让位。补位时把 channels 的价按「它自己声明的倍率」还原成原价——channels
+ * 的 rate 与广场 rate 若一致，就能把折后价反推回原价，避免把折后价当原价塞进去。
+ */
+function mergeChannelIntoPlaza(plaza, channel) {
+  const groupRate = new Map()
+  for (const g of channel.groups || []) {
+    if (g?.name) groupRate.set(normalizeGroup(g.name), typeof g.rate === 'number' ? g.rate : null)
+  }
+  const plazaRate = new Map()
+  for (const g of plaza.groups || []) {
+    if (g?.name) plazaRate.set(normalizeGroup(g.name), typeof g.rate === 'number' ? g.rate : null)
+  }
+  const seen = new Map(plaza.byGroup.map((m) => [`${normalizeGroup(m.group)}::${m.name}`, m]))
+  const seenModel = new Map(plaza.models.map((m) => [m.name, m]))
+  const added = []
+  // 广场有行但没价、被 channels 补上的条数：用于决定 source 标记与可观测性
+  let filled = 0
+
+  // 广场有这一条、但单价是空的（站点没给 token 价，或只有按次价）时，
+  // 用 channels 的价补进去——「缺价」正是最需要补位的场景，
+  // 不能因为「条目已存在」就跳过。倍率仍用广场的（口径唯一）。
+  const fillMissing = (target, src) => {
+    const hasPrice = (v) => v !== null && v !== undefined && Number.isFinite(Number(v))
+    if (target.billingMode === 'token' && !hasPrice(target.inPrice) && !hasPrice(target.outPrice)) {
+      if (hasPrice(src.inPrice) || hasPrice(src.outPrice)) {
+        target.inPrice = src.inPrice ?? null
+        target.outPrice = src.outPrice ?? null
+        target.cacheReadPrice = src.cacheReadPrice ?? target.cacheReadPrice ?? null
+        target.cacheWritePrice = src.cacheWritePrice ?? target.cacheWritePrice ?? null
+        return true
+      }
+    }
+    return false
+  }
+
+  for (const m of channel.byGroup || []) {
+    const group = normalizeGroup(m.group)
+    const key = `${group}::${m.name}`
+    const existing = seen.get(key)
+    if (existing) {
+      if (fillMissing(existing, m)) filled += 1
+      continue
+    }
+    const chRate = groupRate.get(group)
+    const plRate = plazaRate.get(group)
+    const rate = typeof plRate === 'number' ? plRate : (typeof chRate === 'number' ? chRate : null)
+    const entry = {
+      name: m.name,
+      group: m.group || '',
+      inPrice: m.inPrice ?? null,
+      outPrice: m.outPrice ?? null,
+      cacheReadPrice: m.cacheReadPrice ?? null,
+      cacheWritePrice: m.cacheWritePrice ?? null,
+      billingMode: m.billingMode || 'token',
+      callPrice: m.callPrice ?? null,
+      rate,
+    }
+    if (entry.inPrice === null && entry.outPrice === null && entry.callPrice === null) continue
+    seen.set(key, entry)
+    added.push(entry)
+  }
+
+  // 全站维度（models）也补一遍：分组页的「全站数」和没分组信息的行靠它
+  for (const m of channel.models || []) {
+    const existing = seenModel.get(m.name)
+    if (existing) {
+      if (fillMissing(existing, m)) filled += 1
+      continue
+    }
+    if (m.inPrice === null && m.outPrice === null && m.callPrice === null) continue
+    const entry = {
+      name: m.name,
+      inPrice: m.inPrice ?? null,
+      outPrice: m.outPrice ?? null,
+      cacheReadPrice: m.cacheReadPrice ?? null,
+      cacheWritePrice: m.cacheWritePrice ?? null,
+      billingMode: m.billingMode || 'token',
+      callPrice: m.callPrice ?? null,
+      group: null,
+    }
+    seenModel.set(m.name, entry)
+    plaza.models.push(entry)
+  }
+
+  if (added.length > 0) plaza.byGroup.push(...added)
+  // 只要 channels 真的贡献了东西（补了缺价或补了广场没有的行），就如实标出来，
+  // 否则用户看到「广场」会以为价格全来自广场，排查口径问题时对不上账
+  if (added.length > 0 || filled > 0) plaza.source = 'plaza+channels'
+  return plaza
+}
+
+/**
  * 统一的价格来源：优先「可用渠道」，回落「模型广场」。
  *
  * 两条路的差异：
@@ -774,6 +875,7 @@ export function matchTokenBySecret(items, secret) {
  */
 export async function fetchProviderPricing({ baseUrl, adminToken, kind, timeoutMs = 15000 }) {
   let channelError = null
+  let channelResult = null
 
   // channels 对所有系别都试（混合站可能同时有 status 公告与 channels 倍率）；
   // 系别分支只保留在 tryBalance / 公告上——那里省的是 10 秒级的超时等待
@@ -781,7 +883,13 @@ export async function fetchProviderPricing({ baseUrl, adminToken, kind, timeoutM
     try {
       const result = await fetchAvailableChannels({ baseUrl, adminToken, timeoutMs })
       if (result.groups.length > 0 || result.models.length > 0) {
-        return {
+        // 注意：**不能在这里直接 return**。channels 的单价口径并不统一——
+        // 实测绿萝 268 条里 231 条给原价、30 条给的是「原价 × 分组倍率」的
+        // 折后价、7 条两者都不是（站点对部分模型读的是 official_pricing）。
+        // 直接返回会让下游 applySitePricing 再乘一次倍率，折后价那批就变成
+        // 「二次打折」（实测 kimi-k3 被算成 0.0295，真实价 2，差 68 倍）。
+        // 所以先留作候选，交给下面的广场数据做交叉校验再决定用谁的价。
+        channelResult = {
           groups: result.groups,
           models: result.models,
           // 渠道结构里其实带着「分组 → 模型」，以前在这里被丢掉，导致分组页
@@ -823,7 +931,7 @@ export async function fetchProviderPricing({ baseUrl, adminToken, kind, timeoutM
       callPrice: m.callPrice ?? null,
       group: m.groupName || null,
     })
-    return {
+    const plazaPricing = {
       groups: groupList.map((g) => ({ name: g.name, rate: g.rateMultiplier })),
       // models：每个模型一条（同模型跨分组时取「最多分组采用」的那个价）
       models: [...byModel.values()].map(toModel),
@@ -831,7 +939,14 @@ export async function fetchProviderPricing({ baseUrl, adminToken, kind, timeoutM
       byGroup: allEntries.map(toModel),
       source: 'plaza',
     }
+    // 广场是「原价 + 倍率」分开给的口径，比 channels 干净，优先用它。
+    // channels 只在广场没覆盖到的地方补位（广场要求站点开启，channels 不用）。
+    if (channelResult) return mergeChannelIntoPlaza(plazaPricing, channelResult)
+    return plazaPricing
   } catch (error) {
+    // 广场读不到时，channels 的结果仍然是可用的：它的单价口径虽然不统一，
+    // 但总比「什么都读不到」强。宁可带着瑕疵给出去，也不要整站没价。
+    if (channelResult) return channelResult
     if (channelError) {
       // 令牌失效（401/403，Sub2API 的 TOKEN_EXPIRED 属于这类）是最常见的失败原因，
       // 给出可执行的指引而不是把两个技术错误串在一起——用户该知道下一步去哪
