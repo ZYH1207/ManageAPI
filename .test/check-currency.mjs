@@ -163,7 +163,10 @@ try {
   }
   try {
     const viaChannels = await providers.fetchProviderPricing({ baseUrl: 'https://cur.test/v1', adminToken: 'admin' })
-    ok(viaChannels.source === 'channels', `走渠道价格来源（${viaChannels.source}）`)
+    // 带令牌时现在是「广场优先 + channels 补位」。这个 mock 里两路都只给 m1，
+    // channels 没有任何广场没覆盖的条目，所以合并后 source 仍是 plaza
+    // ——补位没发生就不该谎报来源。本测试真正要守的是「价格源不声明币种」。
+    ok(viaChannels.source === 'plaza', `带令牌时广场优先（${viaChannels.source}）`)
     ok(viaChannels.models.every((m) => m.currency === undefined), '渠道 models 不声明币种')
     ok(viaChannels.byGroup.every((m) => m.currency === undefined), '渠道 byGroup 不声明币种')
 
