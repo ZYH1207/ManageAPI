@@ -767,6 +767,10 @@ export async function updateOfferPrice(
     const offer = db.offers.find((o) => o.id === id)
     if (!offer) throw new Error(`模型记录不存在：${id}`)
     const num = (v) => (v === null || v === undefined || v === '' ? null : Number(v))
+    // 单价手改要留标记：同步时「站点给了原价」就覆盖，会把这笔手输抹掉。
+    // 只有真的改了值才算表态（点一下输入框又填回原值不该把行冻住）。
+    if (inPrice !== undefined && num(inPrice) !== offer.inPrice) offer.priceSource = 'custom'
+    if (outPrice !== undefined && num(outPrice) !== offer.outPrice) offer.priceSource = 'custom'
     if (inPrice !== undefined) offer.inPrice = num(inPrice)
     if (outPrice !== undefined) offer.outPrice = num(outPrice)
     if (ratio !== undefined) offer.ratio = num(ratio)
@@ -1165,6 +1169,43 @@ export function applySitePricing(offer, { exact, rate, sitePrice, hasBench, grou
       }
       if (wasPerCall || offer.outPrice === null || offer.outPrice === undefined) {
         offer.outPrice = fill(sitePrice.outPrice)
+      }
+      // 自愈：倍率模式下输入框存的必须是「原价」。
+      //
+      // 历史上有两条路把折后价写进了这里：channels 接口对部分模型直接返回
+      // 「原价 × 分组倍率」，以及更早的版本在落价时预先把倍率乘进去。
+      // 结果算钱时又乘一次倍率——实测 kimi-k3 真实价 2，被算成 0.0295。
+      //
+      // 判定只看两件事：
+      //   A. priceSource === 'custom' → 用户手改过，一个字都不动（商务事实）。
+      //   B. 没手改标记，且现值**严格小于**站点原价 → 判为折后价残留，纠正回原价。
+      //
+      // 为什么不用「原价 × 倍率ⁿ」去精确匹配：折后价是用**当时的倍率**算出来的，
+      // 而倍率会变（实测秋的「华强北专线」分组从 0.09 调成了 0.07，库里还留着
+      // 按 0.09 折的 0.45）。拿今天的倍率去套昨天的折后价，永远对不上。
+      // 而「小于原价」这个特征不依赖倍率：原价是站点公布值，比它小就一定是折过。
+      //
+      // 方向性安全：B 档只会把价格**抬高**到站点原价，绝不会调低。最坏情况是
+      // 「少算一次折扣」，不会低估成本、不会让比价偏向该站。反过来漏改的代价
+      // 是价格被静默低估几十倍，那才是真正危险的。
+      const userPriced = offer.priceSource === 'custom'
+      const healTo = (current, published) => {
+        if (userPriced) return null
+        const cur = Number(current)
+        const pub = Number(published)
+        if (!Number.isFinite(cur) || !Number.isFinite(pub) || pub <= 0) return null
+        // 已经是原价、或比原价还大（用户自己抬过价）：不动
+        if (cur >= pub - 1e-9) return null
+        // 严格小于原价 → 折后价残留
+        return pub
+      }
+      if (sitePrice.inPrice !== null && sitePrice.inPrice !== undefined) {
+        const healed = healTo(offer.inPrice, sitePrice.inPrice)
+        if (healed !== null) offer.inPrice = fill(healed)
+      }
+      if (sitePrice.outPrice !== null && sitePrice.outPrice !== undefined) {
+        const healed = healTo(offer.outPrice, sitePrice.outPrice)
+        if (healed !== null) offer.outPrice = fill(healed)
       }
       // 站点价格单位是元（渠道/广场都是），原价跟着标 CNY
       // 站点价格单位实测是美元（广场报价就是官方美元价），币种按行上的选择落
