@@ -183,13 +183,73 @@ export function admissionOf(row) {
   const samples = Number(row.samples) || 0
   const availability = row.availability
   if (availability === null || availability === undefined) {
-    if (samples === 0 || row.status === 'stale' || row.billingOnly) {
+    // 只有预检层失败（连不上 / Key 无效 / 入口坏）：生成层一次都没跑过，
+    // 既不能证明它坏、也没证明它好。**不在这里拒**——拒了它永远拿不到证据，
+    // 而真正该拒的「Key 无效」已经在 blocked（kind='credential'）那一层拦住了。
+    // 这里只是让它继续走后面的判定，标签由 admissionTags 标成「没打到生成层」。
+    if (row.preflightOnly) {
+      // 落到下面继续判（availability 为 null 时不满足任何拒的条件）
+    } else if (samples === 0 || row.status === 'stale' || row.billingOnly) {
       // 放行：没探过 / 证据过期 / 纯账单问题（充值后重试本身就是证据）
     } else {
       return { ok: false, kind: 'no-evidence', text: '没有可信样本：探针被额度/限流挡住' }
     }
   }
   return { ok: true, kind: null, text: null }
+}
+
+/**
+ * 只用一份 score（+ 少数已知开关）回答「这条供给过不过得了准入」。
+ *
+ * 给调度器用：它手里只有 scoreOffers 的产物，没有完整的候选行。以前调度器
+ * 只能靠枚举 blocked/pendingRecovery/halfOpen 去猜「要不要复测」，漏掉了
+ * 那些**没有名字**的拒绝态（unstable / degraded / no-evidence / inconclusive），
+ * 于是关掉定时探针之后它们永远拿不到新证据，永久卡死。
+ *
+ * 判据刻意复用 admissionOf 本身，而不是在这里重写一遍规则——准入只有一份口径，
+ * 两处各写一套必然漂移（这个项目已经踩过：比价页按 status 隐藏、网关按 admission
+ * 派活，两边说的不是一件事）。
+ *
+ * 缺省值都取「不拦」：调度器的用途是「该不该去验」，宁可多验一次，
+ * 也不要因为少给一个字段就把一条本来能用的供给判成永不复测。
+ *
+ * @param {object} score scoreOffers 的单条产物
+ * @param {{maxTtftMs?:number, allowUntrusted?:boolean, detour?:object|null,
+ *          balanceDepleted?:boolean, emptyRecent?:number}} [opts]
+ * @returns {{ok:boolean, kind:string|null, text:string|null}}
+ */
+export function admissionOfScore(score, opts = {}) {
+  if (!score) return { ok: false, kind: 'none', text: '没有候选' }
+  const maxTtftMs = Number(opts.maxTtftMs) || 0
+  const tooSlow =
+    maxTtftMs > 0 &&
+    !score.stale &&
+    typeof score.ttftMs === 'number' &&
+    score.ttftMs > maxTtftMs
+  return admissionOf({
+    // admissionOf 读的字段全部显式列出，别用展开省事——
+    // 展开会把 score 里的同名对象带进去，曾经有过把 balanceDepleted
+    // 简写成函数本身的坑（见 selectCandidates 里那段注释）
+    status: score.status,
+    availability: score.availability ?? null,
+    samples: (Number(score.samples) || 0) + (Number(score.trafficSamples) || 0),
+    blocked: score.blocked || null,
+    pendingRecovery: score.pendingRecovery || null,
+    halfOpen: score.halfOpen || null,
+    billingOnly: Boolean(score.billingOnly),
+    preflightOnly: Boolean(score.preflightOnly),
+    integrityFaults: score.integrityFaults || [],
+    failRate: typeof score.failRate === 'number' ? score.failRate : null,
+    ttftMs: score.ttftMs ?? null,
+    tooSlow,
+    balanceDepleted: Boolean(opts.balanceDepleted),
+    detour: opts.detour || null,
+    allowUntrusted: Boolean(opts.allowUntrusted),
+    emptyRecent: Number(opts.emptyRecent) || 0,
+    // faulted 不在 score 里（那是外部监控的账），调度器只关心「要不要复测」，
+    // 外部故障有它自己的保持期，不该驱动探针节奏
+    faulted: false,
+  })
 }
 
 /**
@@ -235,7 +295,10 @@ export function admissionTags(row) {
   ) {
     // 有样本、可用率却没有分母：探针全被限流/模型缺失挡住（真没证据）。
     // 纯账单问题不算「没证据」——那是钱包问题，准入会放行，标「待验证」就好
-    tags.push(row.billingOnly ? 'unverified' : 'no-evidence')
+    // 预检层失败更要单独说：那不是「站点没证据」，是「我方压根没连上/没打通」。
+    // 以前它被算成可用率 0% → 标成「不稳定」，用户看到的是「站点完全不可用」，
+    // 而直连各家全部正常（2026-11-07 现场）。
+    tags.push(row.preflightOnly ? 'preflight-only' : row.billingOnly ? 'unverified' : 'no-evidence')
   }
   // 冷却中 / 待复测：不是「坏」，但此刻派过去只会失败。
   // 余额不足单独给一个标签：那是账单问题，要人去充值，跟「上游在排队」不是一回事
@@ -603,6 +666,10 @@ export function selectCandidates({
       failRate: typeof score?.failRate === 'number' ? score.failRate : null,
       // 只有额度/预算类失败、没有任何真故障：不是「没证据」，是账单问题
       billingOnly: Boolean(score?.billingOnly),
+      // 只有预检层失败、一次都没打到生成层：多半是我方链路或 Key 的问题。
+      // 这不是「站点不可用」的证据，界面必须能分开说（见 core/score.js）。
+      preflightOnly: Boolean(score?.preflightOnly),
+      preflightSamples: Number(score?.preflightSamples) || 0,
       availability: score?.availability ?? null,
       integrityFaults: score?.integrityFaults || [],
       allowUntrusted,

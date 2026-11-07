@@ -64,6 +64,9 @@ export const UNAVAILABLE_COOLDOWN_MS = {
   // 真正的冷却：站点账号池被限流。上游没给时长时先 5 分钟探一次
   'rate-limit': 5 * 60 * 1000,
   'model-missing': 60 * 60 * 1000,
+  // 凭据无效（预检 auth 层：401/403）：要人去换 Key 或补权限，等多久都不会自己好。
+  // 给 10 分钟只为「别在同一个失效 Key 上反复撞」，不是真冷却。
+  credential: 10 * 60 * 1000,
   // 协议不支持刻意不给等待窗口：同一条供给换一条路（chat / responses）可能完全正常，
   // 整体冷却会让另一个协议的请求也失去这家站
 }
@@ -87,6 +90,8 @@ export const UNAVAILABLE_LABEL = {
   // 不是「暂时不可用」而是「目前不稳」：真实流量失败率过高，短时间避一避。
   // 单独一类是因为它不来自上游报错文案，而是网关自己算出来的比率（core/score.js）
   'error-rate': '失败率过高',
+  // 预检 auth 层：Key 无效/无权限。站点是通的，问题在凭据——别让人去充钱或换站
+  credential: 'Key 无效或没权限',
 }
 
 /** 每一类「暂时不可用」该让人做什么。必须能直接照做，不能只说「不可用」 */
@@ -97,6 +102,7 @@ export const UNAVAILABLE_HINT = {
   'model-missing': '这个分组里没有该模型：换分组或换站才治本',
   'protocol-unsupported': '这条供给不提供该接口：换 chat 走，或换一条供给',
   'error-rate': '近期真实请求成片失败，网关先避开它，过一会儿自动重试',
+  credential: '换一把有效的 Key（或给这把 Key 补权限）；站点本身是通的',
 }
 
 /** 某一类的「原因 + 怎么办」；未知类型给一句兜底而不是空白 */
@@ -200,6 +206,18 @@ const UPSTREAM_RESPONSE = /^\s*HTTP\s+\d{3}\b/i
 /** 连接层错误（本机网络） */
 const CONNECTION_ERROR = /\b(ECONNREFUSED|ENOTFOUND|EAI_AGAIN|EHOSTUNREACH|ENETUNREACH|ECONNABORTED|ECONNRESET)\b/i
 
+/**
+ * 网络类失败的判据（探针侧与真实流量侧共用同一份）。
+ *
+ * **必须认中文「超时」**。预检和网关自己的连接失败文案都是中文拼的：
+ *   `预检未过（tls）：TLS 握手失败：TLS 握手 超时（4000ms）`
+ *   `连接失败（ECONNRESET）：https://...`
+ * 旧正则只列了英文 `timeout`，中文那批一条都认不出来。实测本机 54 条失败：
+ * 旧正则命中 24 条（44%），加上「超时」后 47 条（87%）。
+ */
+export const NETWORK_FAILURE =
+  /timeout|超时|aborted|fetch failed|ECONN|ENOTFOUND|EAI_AGAIN|EPIPE|socket|网络/i
+
 /** 本机地址：只有连本机失败才算我方问题 */
 const LOOPBACK = /(?:127\.0\.0\.1|localhost|\[::1\]|::1|0\.0\.0\.0)/i
 
@@ -220,6 +238,60 @@ const RUNTIME_DEFECT = new RegExp(
   ].join('|'),
   'i',
 )
+
+/**
+ * 连接层预检失败（L1/L2）的形状：`预检未过（auth）：HTTP 403（Key 无效或无权限）`。
+ *
+ * 为什么必须单独认：预检的文案是网关自己拼的，**不以 `HTTP xxx` 开头**，
+ * 于是 UPSTREAM_RESPONSE 那条结构判据完全失效，一律落到兜底的
+ * `countsAsOutage: true`。实测代价（2026-11-07）：
+ *
+ *   预检未过（auth）：HTTP 403（Key 无效或无权限）      → 算成站点故障 ❌
+ *   预检未过（tls）：TLS 握手失败：TLS 握手 超时（4000ms）→ 算成站点故障 ❌
+ *
+ * 前者是**凭据问题**——同一个站的另一把 Key 同时预检通过，站点本身好好的；
+ * 后者多半是我方链路抖动（同一秒内跨 3 个毫无关联的站一起 TLS 超时）。
+ * 两者都被写进可用率分母后，53 条供给的评分由预检失败决定、33 条挂 unstable、
+ * 28 条可用率归零，界面显示「站点完全不可用」——而直连各家全都正常。
+ */
+const PREFLIGHT_FAILED = /预检未过[（(]\s*(auth|entry|dns|tcp|tls)\s*[）)]/i
+
+/**
+ * 预检失败的层 → 责任归属。
+ *
+ *   auth  —— Key 无效/无权限。是**凭据**的事，不是站点不可用：换一把 Key 就好，
+ *            站点自己没坏。走 unavailable（凭据类），不进可用率分母。
+ *   entry —— 对端真的回了 5xx/HTML，入口坏了。这一层才可能是站点故障。
+ *   dns/tcp/tls —— 连接层没打通。既可能是本站不可达，也可能是我方链路抖动，
+ *            单条证据分不清，交给探针执行器的跨站批量判断（见 probe-runner.js）；
+ *            落到这里说明批量判断已认定「不是普遍性断网」，按站点账处理。
+ */
+export const PREFLIGHT_LAYERS = {
+  auth: { kind: 'credential', countsAsOutage: false, localDefect: false },
+  entry: { kind: 'entry', countsAsOutage: true, localDefect: false },
+  dns: { kind: null, countsAsOutage: true, localDefect: false },
+  tcp: { kind: null, countsAsOutage: true, localDefect: false },
+  tls: { kind: null, countsAsOutage: true, localDefect: false },
+}
+
+/**
+ * 从错误原文里认预检停在哪个层；不是预检失败就返回 null。
+ *
+ * 单独导出是因为有两个调用方要用同一份口径：
+ *   classifyFailure —— 判「这次失败算谁的账」
+ *   score.js        —— 判「这条记录有没有可用性证据」
+ * 两处各写一遍正则会漂移（这类漂移在本项目已经发生过多次）。
+ *
+ * 顺带解决历史脏数据：修复前落盘的 53 条记录没有 preflightLayer 字段，
+ * 只有错误原文里的 `预检未过（tls）：…` 前缀，靠这个函数照样能认出来。
+ *
+ * @param {string} message 错误原文
+ * @returns {'auth'|'entry'|'dns'|'tcp'|'tls'|null}
+ */
+export function preflightLayerOf(message) {
+  const m = PREFLIGHT_FAILED.exec(String(message || ''))
+  return m ? String(m[1] || '').toLowerCase() : null
+}
 
 /** 这条失败是不是「网关/本机自己的问题」——用于把站点从责任里摘出去。 */
 export function isLocalDefect(message) {
@@ -244,6 +316,21 @@ export function classifyFailure(message) {
   // 先让 RULES 命中就会被记成限流/余额，供给白白消失一个窗口。
   if (isLocalDefect(text)) {
     return { kind: 'local', countsAsOutage: false, retryAfterMs: 0, localDefect: true }
+  }
+  // 预检的判决必须排在 RULES **之前**：它的文案里带着 `HTTP 403`，
+  // 先走 RULES 会被 quota / rate-limit 抢走（「Key 无效」里没有这些词时
+  // 又会落到兜底的 countsAsOutage）。层是网关自己判出来的结构化事实，
+  // 比从文案里猜关键词可靠得多。
+  const pre = PREFLIGHT_FAILED.exec(text)
+  if (pre) {
+    const layer = String(pre[1] || '').toLowerCase()
+    const rule = PREFLIGHT_LAYERS[layer] || { kind: null, countsAsOutage: true, localDefect: false }
+    return {
+      kind: rule.kind,
+      countsAsOutage: rule.countsAsOutage,
+      retryAfterMs: 0,
+      localDefect: rule.localDefect,
+    }
   }
   for (const rule of RULES) {
     if (rule.test.test(text)) {
@@ -325,6 +412,57 @@ export function kindEntryOf(entry) {
     return { n: Number.isFinite(n) ? n : 0, lastAt: entry.lastAt ?? null }
   }
   return { n: 0, lastAt: null }
+}
+
+/**
+ * 这一批失败是不是「我方链路断了」而不是「这些站都坏了」。
+ *
+ * 探针侧（daemon/probe-runner.js）和真实流量侧（daemon/server.js#bufferTraffic）
+ * 共用同一份判据——两边各写一套的话，修好一处另一处照样污染评分
+ * （2026-11-07 现场：探针侧修完后，真实流量侧仍把秋 145 次 ECONNRESET、
+ *  北辰 48 次、绿萝 42 次全记成站点故障，可用率照样被写到 0）。
+ *
+ * 两条并联的判据，任一成立即认定是我方问题：
+ *
+ *   A. 跨站同簇：网络类失败 ≥3 条、占比 ≥60%、且跨 ≥2 个站。
+ *   B. 时间簇：网络类失败 ≥3 条、占比 ≥60%，且**最近窗口内**别的站也网络失败过。
+ *      抓的是「抖动被拆成几个只覆盖单站的小批次」——A 不成立，但拼起来看
+ *      跨站聚集非常明显。
+ *
+ * 单站、孤立的纯连接层失败既不满足 A 也不满足 B，照常记账：那可能真是这个站
+ * 挂了，冤枉一个真坏掉的站比放过它更贵。
+ *
+ * @param {{
+ *   failures?: Array<{providerId?:string, error?:string}>,
+ *   peers?: Array<{providerId?:string, error?:string, ts?:string|number}>,
+ *   now?: number, clusterWindowMs?: number,
+ * }} args
+ * @returns {boolean}
+ */
+export function looksLikeLocalNetworkOutage({
+  failures = [],
+  peers = [],
+  now = Date.now(),
+  clusterWindowMs = 10 * 60 * 1000,
+} = {}) {
+  const netFailed = failures.filter((r) => NETWORK_FAILURE.test(String(r?.error || '')))
+  if (netFailed.length < 3) return false
+  if (netFailed.length / failures.length < 0.6) return false
+
+  const inThisBatch = new Set(netFailed.map((r) => r?.providerId).filter(Boolean))
+  // A：这一批自己就跨了多个站
+  if (inThisBatch.size >= 2) return true
+
+  // B：这一批只覆盖一个站，但窗口内别的站也网络失败过
+  const others = new Set()
+  for (const record of peers) {
+    if (!NETWORK_FAILURE.test(String(record?.error || ''))) continue
+    const ts = typeof record.ts === 'number' ? record.ts : new Date(record.ts).getTime()
+    if (!Number.isFinite(ts) || now - ts > clusterWindowMs) continue
+    if (record.providerId) others.add(record.providerId)
+  }
+  for (const pid of inThisBatch) others.delete(pid)
+  return others.size > 0
 }
 
 /**

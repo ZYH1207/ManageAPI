@@ -15,7 +15,7 @@
  * 如果评分还停在昨天，路由会继续用它——所以过期的评分一律不放行。
  */
 
-import { classifyFailure, cooldownUntil } from './failure.js'
+import { classifyFailure, cooldownUntil, preflightLayerOf } from './failure.js'
 import { REAL_QUALITY_MIN_SAMPLES, REAL_QUALITY_BAD_RATE } from './quality-signals.js'
 
 const DEFAULT_WINDOW = 20
@@ -74,8 +74,19 @@ export const FAIL_RATE_COOLDOWN_MS = 10 * 60_000
  * **余额不足和单次请求超限不在其中**：它们是账单/参数问题，充值、缩小请求之后
  * 立刻就该能用，而「再试一次」本身就是最好的证据。以前这两类也要等成功证据，
  * 定时探测一关就永远等不到——供给被永久锁死（真实踩过，见 core/failure.js）。
+ *
+ * **credential（预检 auth 层：Key 无效/无权限）必须在这里**。它 10 分钟的冷却
+ * 一过期就三者皆无（blocked=null、pendingRecovery=null、halfOpen=null），而准入
+ * 又按「样本 > 0 但没分母」判 no-evidence 硬拒——于是自愈探测不选它、真实流量
+ * 也到不了它，**永久死锁**。2026-11-07 实测复现：
+ *
+ *     auth 失败  5min 前 → blocked=credential → 自愈会复测 ✓
+ *     auth 失败 15min 前 → 三者皆 null      → 自愈复测 false，准入判 no-evidence ✗
+ *
+ * 换好 Key 的用户会发现供给怎么都不回来，因为没有任何路径再去验证它。
+ * 加进来之后它走「按复测节奏探，探到成功才算恢复」，与限流同一档。
  */
-const EVIDENCE_RECOVERY_KINDS = new Set(['rate-limit', 'model-missing', 'error-rate'])
+const EVIDENCE_RECOVERY_KINDS = new Set(['rate-limit', 'model-missing', 'error-rate', 'credential'])
 
 /**
  * 证据量分级：多少个样本才算「结论站得住」。
@@ -342,6 +353,12 @@ export function scoreOffers(probes, traffic = {}, options = {}) {
     let probeOk = 0
     let probeOutage = 0
     let probeUnavailable = 0
+    // 打在预检层（连不上 / Key 无效 / 入口坏）的记录：**没测到可用性**，
+    // 因为生成层根本没跑。它们不能进可用率分母——否则「网关这侧连不上」
+    // 会被写成「站点可用率 0%」。2026-11-07 实测：53 条供给的评分由预检失败
+    // 决定，33 条挂 unstable、28 条可用率归零，界面显示「站点完全不可用」，
+    // 而直连各家全部正常。
+    let probePreflight = 0
     let unavailableAt = 0
     let unavailableKind = null
     let unavailableRetryMs = 0
@@ -359,6 +376,21 @@ export function scoreOffers(probes, traffic = {}, options = {}) {
       // 网关自己的 bug / 本机网络：既不是站点故障，也不该给它冷却窗口。
       // 它连「这条供给此刻拿不到」都算不上，纯粹是我方问题——直接跳过。
       if (localDefect) continue
+      // 停在预检层的记录：生成层没跑，**没有可用性证据**。
+      // 单独计数（界面要能说「这 20 条失败里有 20 条根本没打到生成层」），
+      // 但不进 ok/outage 分母。
+      //
+      // 层从两个地方取：新记录带 preflightLayer 字段；历史记录只有错误原文里的
+      // `预检未过（tls）：…` 前缀。修完代码前的脏数据必须照样认，否则那 53 条
+      // 被写坏的评分要等 6 小时证据过期才自己好。
+      //
+      // 例外：auth 层仍要给它一个冷却窗口——Key 无效时反复去撞只会白等一个来回，
+      // 那条路径走下面的 probeUnavailable（kind='credential'）。
+      const preflightLayer = record.preflightLayer || preflightLayerOf(record.error)
+      if (preflightLayer && preflightLayer !== 'auth') {
+        probePreflight += 1
+        continue
+      }
       if (countsAsOutage) {
         probeOutage += 1
         continue
@@ -483,6 +515,11 @@ export function scoreOffers(probes, traffic = {}, options = {}) {
       probeUnavailable + trafficUnavailable > 0 &&
       [...unavailableKindsSeen].every((kind) => kind === 'quota' || kind === 'budget')
 
+    // 只有「停在预检层」的失败，一次都没打到生成层：这不是「站点不可用」的证据，
+    // 而是「网关这一侧没连上」。界面必须能分清这两种，否则用户看到的是
+    // 「站点完全不可用」，实际是网络抖动或 Key 失效。
+    const preflightOnly = probePreflight > 0 && probeOutage + trafficFail === 0
+
     const cacheRates = recent
       .filter((r) => typeof r.cacheHitRate === 'number')
       .map((r) => r.cacheHitRate)
@@ -557,6 +594,10 @@ export function scoreOffers(probes, traffic = {}, options = {}) {
       // 样本拆分：参与可用率的是 ok + outage；unavailable 不进分母
       outageSamples: probeOutage + trafficFail,
       unavailableSamples: probeUnavailable + trafficUnavailable,
+      // 停在预检层的样本（连不上 / Key 无效 / 入口坏）：生成层根本没跑，
+      // 因此**既没有可用性证据，也不是站点故障的证据**。界面要能回答
+      // 「这条供给挂了 20 次，其中 20 次压根没打到生成层」。
+      preflightSamples: probePreflight,
       // 冷却中的供给：不参与路由，但不是「坏」，额度/限流恢复后自动回来
       blocked,
       // 冷却已到、但还没被证明恢复（最近一次证据是限流/模型缺失）
@@ -568,6 +609,9 @@ export function scoreOffers(probes, traffic = {}, options = {}) {
       halfOpen,
       // 只有额度/预算类失败、没有任何真故障：不是「没证据」，是账单问题
       billingOnly,
+      // 只有预检层失败、一次都没打到生成层：多半是我方链路或 Key 的问题，
+      // 不是站点不可用的证据（见 probePreflight 的注释）
+      preflightOnly,
       // 真实流量的失败率（窗口内 fail/(ok+fail)）：界面与诊断要能解释
       // 「为什么它突然被冷却了」，不再只能看到一个 error-rate 标签
       failRate,
