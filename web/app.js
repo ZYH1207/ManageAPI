@@ -167,6 +167,38 @@ function esc(value) {
   }[ch]))
 }
 
+/**
+ * 从 baseUrl 取「协议 + 主机」，用于「打开站点后台」这类外链。
+ *
+ * 为什么必须有：`baseUrl` 存的是**API 地址**（本机实测每一条都带 `/v1`），
+ * 直接把它当外链点开，落的是 `/v1` 端点——浏览器里看到的是一坨 JSON 错误
+ * （或 404/405），而不是站点后台。
+ *
+ * 这类「同一个值两种用途」的坑在别处已经踩过一次：令牌面板
+ * （`token-site-link`）用的是 `new URL(baseUrl).origin`，是对的；
+ * 站点卡这一处忘了包，于是同一个站从两个入口点开是两个结果。
+ *
+ * 非法/缺失地址返回 ''，调用方据此不渲染按钮——不要抛异常，一块卡的 URL
+ * 坏掉不该让整页渲染失败。
+ *
+ * @param {string} baseUrl 例：https://relay.example.com/v1
+ * @returns {string} 例：https://relay.example.com（取不出时为空串）
+ */
+function siteOrigin(baseUrl) {
+  const raw = String(baseUrl ?? '').trim()
+  if (!raw) return ''
+  try {
+    return new URL(raw).origin
+  } catch {
+    // 用户可能填了不带协议的 `relay.example.com/v1`：补一个协议再试，仍然失败就放弃
+    try {
+      return new URL(`https://${raw.replace(/^\/+/, '')}`).origin
+    } catch {
+      return ''
+    }
+  }
+}
+
 function money(value) {
   if (value === null || value === undefined || !Number.isFinite(value)) return '—'
   if (value >= 100) return value.toFixed(0)
@@ -2372,7 +2404,7 @@ function providersHtml({ withForm = true, panel = '', actions = '' } = {}) {
           <div class="prov-id">
             ${loginLightDot(p)}
             <b>${esc(p.name)}</b>
-            ${p.baseUrl ? `<a class="icon-btn prov-open" href="${esc(p.baseUrl)}" target="_blank" rel="noreferrer" title="${t('打开站点后台')}">${icon('external')}</a>` : ''}
+            ${siteOrigin(p.baseUrl) ? `<a class="icon-btn prov-open" href="${esc(siteOrigin(p.baseUrl))}" target="_blank" rel="noreferrer" title="${t('打开站点后台')}">${icon('external')}</a>` : ''}
             ${kindText ? `<span class="badge ${kindMeta.cls}" title="${esc(p.kindSource === 'manual' ? t('系别由用户手动设置') : t('系别由添加站点/登录时自动探测得出'))}">${esc(kindText)}</span>` : ''}
             <button class="ghost tiny" data-act="detect-kind" data-provider="${esc(p.id)}" title="${t('识别系别：用站点令牌探测这个站是哪一系（one-api / new-api / Sub2API）。匿名探测不出的站，带令牌再试一次往往就能识别')}" aria-label="${t('识别系别')}" style="padding:4px 6px">${icon('search')}</button>
             ${
@@ -2637,7 +2669,7 @@ function openLoginModal(providerId) {
     : provider?.tokenRenewal === 'refresh' ? '官方刷新令牌自动续期'
     : provider?.tokenRenewal === 'login' ? '账号自动重登续期' : provider?.hasAdminToken ? '手动令牌' : '尚未配置'
   $('#token-session-summary').textContent = `当前：${mode}。${provider?.adminTokenExpiresAt ? `访问令牌到期：${fmtDateTime(provider.adminTokenExpiresAt)}` : '站点未提供到期时间。'}${provider?.tokenRenewedAt ? ` 最近更新：${fmtDateTime(provider.tokenRenewedAt)}` : ''}${provider?.tokenRenewError ? ` 续期提示：${provider.tokenRenewError}` : ''}`
-  $('#token-site-link').href = provider?.baseUrl ? new URL(provider.baseUrl).origin : '#'
+  $('#token-site-link').href = siteOrigin(provider?.baseUrl) || '#'
   $('#browser-login-site-link').href = $('#token-site-link').href
   $('#token-login-error').hidden = true
   $('#token-login-error').textContent = ''
@@ -3863,6 +3895,8 @@ const BLOCKED_LABEL = {
   'model-missing': '该分组没有这个模型',
   'protocol-unsupported': '不支持该协议',
   'error-rate': '失败率过高',
+  // 预检 auth 层：Key 无效/无权限。站点是通的，问题在凭据——别让人去充值或换站
+  credential: 'Key 无效或没权限',
 }
 /**
  * 不可用状态的徽章文案：原因 + 该做什么。
@@ -3886,6 +3920,10 @@ const STATUS_TAG = {
   degraded: { label: '结果可疑', cls: 'warn' },
   unstable: { label: '不稳定', cls: 'danger' },
   'no-evidence': { label: '没有可信样本', cls: 'warn' },
+  // 预检层失败（连不上 / Key 无效 / 入口坏）：生成层一次都没跑，所以这既不是
+  // 「站点不可用」也不是「没有可信样本」——是我方这一侧没打通。用 warn 而非
+  // danger：它要人去看链路或 Key，不该和「站点坏了」共用同一个红标。
+  'preflight-only': { label: '没打到生成层', cls: 'warn' },
   unverified: { label: '待验证（曾余额不足）', cls: '' },
   inconclusive: { label: '证据不足', cls: '' },
   blocked: { label: '冷却中', cls: 'warn' },

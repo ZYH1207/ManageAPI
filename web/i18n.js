@@ -1942,6 +1942,8 @@ Object.assign(EN, {
   '结果可疑': 'Suspicious',
   '不稳定': 'Unstable',
   '没有可信样本': 'No trusted samples',
+  '没打到生成层': 'Never reached generation',
+  'Key 无效或没权限': 'Key invalid or unauthorised',
   '待验证（曾余额不足）': 'Unverified (was out of balance)',
   '证据不足': 'Inconclusive',
   '冷却中': 'Cooling down',
