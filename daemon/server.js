@@ -16,7 +16,12 @@ import * as pricing from '../core/pricing.js'
 import * as bench from '../core/benchmark.js'
 import * as providers from '../core/providers.js'
 import { scoreOffers, isRoutable, longTermScores } from '../core/score.js'
-import { classifyFailure, trafficDelta, isLocalDefect } from '../core/failure.js'
+import {
+  classifyFailure,
+  trafficDelta,
+  isLocalDefect,
+  looksLikeLocalNetworkOutage,
+} from '../core/failure.js'
 import { checkRealResponse, estimateRequestTokens } from '../core/quality-signals.js'
 import {
   protocolForPath,
@@ -149,6 +154,7 @@ import { repairToolCalls, buildRepairChunks } from '../core/tool-repair.js'
 import {
   buildFaultSignal,
   judgeEmptyFault,
+  dampenFaultByCluster,
   publishFault,
   faultSubscriberCount,
   activeFaultSignals,
@@ -4356,7 +4362,24 @@ function reportEmptyFault({ candidate, model, recovered, hadFallback = true, det
     providerId: candidate.provider.id,
     modelKey: inv.normalizeModelKey(model),
   })
-  const verdict = judgeEmptyFault({ hits, recovered, hadFallback })
+  let verdict = judgeEmptyFault({ hits, recovered, hadFallback })
+
+  // ---- 跨站同簇防护：升级成 faulty（avoid 30 分钟）之前先看是不是大家一起空的
+  //
+  // 空回合按 providerId + modelKey 聚合，3 次就升级。但本机各站规模极不均衡
+  // （秋 160 条供给、绿萝 159 条），抖动期间热门模型连续空 3 次太容易，一升级
+  // 就 avoid 半小时，还会经 modelKey 影响别站。判定逻辑在
+  // core/fault-signal.js#dampenFaultByCluster（纯函数，可单测）。
+  let clusterNote = null
+  if (verdict.level === 'faulty') {
+    const dampened = dampenFaultByCluster(
+      verdict,
+      countOtherProviderEmptyHits({ providerId: candidate.provider.id }),
+    )
+    verdict = dampened.verdict
+    clusterNote = dampened.clusterNote
+  }
+
   const scope = {
     providerId: candidate.provider.id,
     providerName: candidate.provider.name,
@@ -4373,7 +4396,7 @@ function reportEmptyFault({ candidate, model, recovered, hadFallback = true, det
     hits,
     // notice 也建信号：诊断页要看得见「发生过但没影响你」。
     // 它不会广播（publishFault 里按 level 拦），只是落库留痕
-    detail: { ...detail, windowMs: FAULT_WINDOW_MS, recovered },
+    detail: { ...detail, windowMs: FAULT_WINDOW_MS, recovered, ...(clusterNote ? { clusterNote } : {}) },
   })
   queueFaultSignal(signal)
   return verdict.broadcast ? signal : null
@@ -4399,6 +4422,30 @@ function countEmptyHits({ providerId = null, modelKey = null, now = Date.now() }
     hits += 1
   }
   return hits + 1 // 含本次
+}
+
+/**
+ * 窗口内「别的站」也空了几次。
+ *
+ * 用途：空回合升级成 faulty（avoid，30 分钟）之前先问一句——是不是大家一起空的？
+ * 如果是，那是本机链路/上游网络的问题，不是这一家的病。
+ *
+ * 为什么需要：空回合守卫按 providerId + modelKey 聚合，`FAULT_HITS_FOR_FAULTY = 3`
+ * 就升级。而本机各站规模极不均衡（秋 160 条供给、绿萝 159 条），一个站上的热门
+ * 模型在抖动期间连续空 3 次非常容易，一升级就 avoid 30 分钟，还会经 modelKey
+ * 影响别的站。实测本机 deepseek-v4.1-flash 一次命中跨 5 个站。
+ *
+ * @returns {number} 窗口内其它站（providerId 不同）的命中次数
+ */
+function countOtherProviderEmptyHits({ providerId = null, now = Date.now() } = {}) {
+  const since = now - FAULT_WINDOW_MS
+  const others = new Set()
+  for (const hit of emptyHitWindow) {
+    if (hit.at < since) continue
+    if (!hit.providerId || hit.providerId === providerId) continue
+    others.add(hit.providerId)
+  }
+  return others.size
 }
 
 /** 记一次空回合命中（补问成功、本地重建都算——它确实是空回合） */
@@ -4462,12 +4509,58 @@ function recentActivity(limit = 60) {
   return activityLog.slice(-limit)
 }
 
-function bufferTraffic(offerId, ok, error, quality) {
+/**
+ * 最近窗口内的真实流量失败（含 providerId），给跨站同簇判定用。
+ * 只保留 10 分钟、最多 50 条：判定只需要「别的站最近也网络失败过吗」这一个信号，
+ * 没必要留全量。放内存，进程重启就清空——正是想要的语义。
+ */
+const recentTrafficFailures = []
+const RECENT_TRAFFIC_FAILURE_MAX = 50
+const RECENT_TRAFFIC_FAILURE_WINDOW_MS = 10 * 60 * 1000
+/**
+ * 「这一批」的时间宽度。真实流量不像探针那样有明确的轮次，请求是连续到达的，
+ * 所以批次只能按时间切：最近 15 秒内的失败算同一批。抖动通常持续几秒到几十秒，
+ * 这个窗口足够把「同一时刻跨站一起挂」收进同一批，又不会把半小时前的孤立故障
+ * 硬凑成一簇。
+ */
+const TRAFFIC_BATCH_WINDOW_MS = 15 * 1000
+
+function bufferTraffic(offerId, ok, error, quality, providerId = null) {
   if (!offerId) return
   const entry = trafficBuffer.get(offerId) || { ok: 0, fail: 0, kinds: {}, quality: { samples: 0, bad: 0 } }
   // 「哪类失败算站点的账」只有一份口径：core/failure.js#trafficDelta。
   // 网关自己的 bug / 本机网络既不计 fail 也不给冷却（见该函数注释与事故记录）。
   const delta = trafficDelta(ok, error)
+
+  // ---- 跨站同簇防护（与探针侧共用 core/failure.js#looksLikeLocalNetworkOutage）
+  //
+  // 为什么真实流量也需要这一层：2026-11-07 现场，本机链路抖动时秋 145 次
+  // ECONNRESET、北辰 48 次、绿萝 42 次在同一分钟内涌进流量账，每条都被记成
+  // 「站点故障」。探针侧修好之后，只要真实流量继续这么记，可用率照样被写到 0，
+  // 界面照样显示「站点完全不可用」——用户的观感一点没变。
+  //
+  // 单条请求没法自己判断责任，所以这里的做法是：先把它记进「最近失败」窗口，
+  // 再看这一小批（本次刷盘周期内的失败）是不是和别的站同时网络失败。
+  // 判成抖动时**不计 fail**（记 localDefects），跟本地缺陷同等待遇。
+  if (!ok && delta.fail > 0) {
+    const nowMs = Date.now()
+    recentTrafficFailures.push({ providerId, error: String(error || ''), ts: nowMs })
+    while (
+      recentTrafficFailures.length > RECENT_TRAFFIC_FAILURE_MAX ||
+      (recentTrafficFailures.length > 0 &&
+        nowMs - recentTrafficFailures[0].ts > RECENT_TRAFFIC_FAILURE_WINDOW_MS)
+    ) {
+      recentTrafficFailures.shift()
+    }
+    // 这一批 = 最近 15 秒内的失败（含本次）。真实流量是连续到达的，
+    // 只能按时间切批次；同簇判定看的是「这一批里跨了几个站」。
+    const batch = recentTrafficFailures.filter((r) => nowMs - r.ts <= TRAFFIC_BATCH_WINDOW_MS)
+    if (looksLikeLocalNetworkOutage({ failures: batch, peers: recentTrafficFailures, now: nowMs })) {
+      delta.fail -= 1
+      delta.localDefects += 1
+    }
+  }
+
   entry.ok += delta.ok
   entry.fail += delta.fail
   if (delta.localDefects) entry.localDefects = (entry.localDefects || 0) + delta.localDefects
@@ -6180,6 +6273,8 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
             result.streamError || !result.realCheck
               ? null
               : checkRealResponse({ ...result.realCheck, requestTokens }),
+            // providerId：跨站同簇判定要知道这条失败属于哪个站
+            candidate.provider.id,
           )
         }
         // 计费核对样本：本地估算的请求 token vs 上游上报的 prompt_tokens。
@@ -6227,7 +6322,7 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
         error: result.error,
         ms: Date.now() - attemptStarted,
       })
-      bufferTraffic(candidate.offer.id, false, result.error)
+      bufferTraffic(candidate.offer.id, false, result.error, null, candidate.provider.id)
     } catch (error) {
       if (clientAbort.signal.aborted) return
       failures.push({
@@ -6236,7 +6331,7 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
         error: error.message || String(error),
         ms: Date.now() - attemptStarted,
       })
-      bufferTraffic(candidate.offer.id, false, error.message || String(error))
+      bufferTraffic(candidate.offer.id, false, error.message || String(error), null, candidate.provider.id)
     }
     // 游标手动推进：补问可能已经把 cursor 推到后面那家（pickFallback），
     // 再 ++ 一次就自然跳过已经用过的候选
@@ -6296,7 +6391,7 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
           })
           return
         }
-        bufferTraffic(candidate.offer.id, false, result.error)
+        bufferTraffic(candidate.offer.id, false, result.error, null, candidate.provider.id)
       } catch {
         /* 第二轮失败不再扩写失败名单：诊断页已经有第一轮的完整原因 */
       }

@@ -215,6 +215,41 @@ export function judgeEmptyFault({ hits = 1, recovered = true, hadFallback = true
   }
 }
 
+/**
+ * 升级成 faulty（avoid 30 分钟）之前先问一句：是不是好几个站一起空的？
+ *
+ * 如果是，那是本机链路或上游网络的问题，不该让这一家背锅、更不该 avoid 半小时。
+ * 降级成 degraded（15 分钟、只降优先级不剔除）：既不必冤枉它，也不至于完全无视。
+ *
+ * 为什么这是个真问题：空回合按 providerId + modelKey 聚合，`FAULT_HITS_FOR_FAULTY = 3`
+ * 就升级。本机各站规模差得很远（最大的站有 160 条供给），
+ * 抖动期间一个热门模型连续空 3 次太容易；一升级就 avoid 半小时，还会经 modelKey
+ * 影响到别的站——实测 deepseek-v4.1-flash 一次命中跨 5 个站 11 条供给。
+ *
+ * 抽成纯函数是为了能单测：这段判定在 server.js 的请求热路径上，
+ * 留在那里就只能靠端到端才碰得到，而它恰恰是「全站一起崩」的放大器。
+ *
+ * @param {{level:string, suggested:string, reason:string, broadcast:boolean}} verdict
+ *        judgeEmptyFault 的结论
+ * @param {number} otherProviders 窗口内其它站的空回合命中站数（0 = 只有本站）
+ * @returns {{verdict:object, clusterNote:string|null}}
+ */
+export function dampenFaultByCluster(verdict, otherProviders = 0) {
+  if (!verdict || verdict.level !== 'faulty') return { verdict, clusterNote: null }
+  const n = Number(otherProviders) || 0
+  if (n <= 0) return { verdict, clusterNote: null }
+  const clusterNote = `同时另有 ${n} 个站也在空回合，疑似本机链路/上游抖动，降级处理`
+  return {
+    verdict: {
+      ...verdict,
+      level: 'degraded',
+      suggested: 'deprioritize',
+      reason: `${verdict.reason}（${clusterNote}）`,
+    },
+    clusterNote,
+  }
+}
+
 // ------------------------------------------------------------------ 落库
 
 /** 幂等：db 里没有这个键就补上 */
@@ -395,8 +430,12 @@ export function applyFaultToFailover(db, signal, now = Date.now()) {
   if (!db.failover) db.failover = normalizeFailover(null)
   return addFaultReport(db.failover, {
     offerId: signal.scope?.offerId || null,
-    // 没有 offerId 时（只知道站坏了）用 modelKey 兜底，命中该模型全部供给
+    // 没有 offerId 时（只知道站坏了）用 modelKey 兜底。
+    // **必须同时带上 providerId**：否则这一条会命中所有站的同款模型
+    // （实测 deepseek-v4.1-flash 打穿 5 个站 11 条供给），一个站的病变成
+    // 全平台的病。带上 providerId 后 faultMatcher 只在该站内匹配。
     modelKey: signal.scope?.offerId ? null : signal.scope?.modelKey || null,
+    providerId: signal.scope?.providerId || null,
     kind: signal.kind || 'empty-turn',
     message: signal.reason || '',
     holdMs,

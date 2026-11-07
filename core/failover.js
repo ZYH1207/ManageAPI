@@ -64,15 +64,20 @@ export function ensureFailoverToken() {
  *
  * @returns {object} 落盘后的记录（含 id / until），调用方据此触发重选
  */
-export function addFaultReport(failover, { offerId, modelKey, kind = 'runtime', message = '', holdMs = FAULT_HOLD_MS } = {}) {
+export function addFaultReport(failover, { offerId, modelKey, providerId = null, kind = 'runtime', message = '', holdMs = FAULT_HOLD_MS } = {}) {
   const raw = normalizeFailover(failover)
   const hold = Number.isFinite(Number(holdMs)) ? Math.min(Math.max(Number(holdMs), 60_000), 24 * 60 * 60_000) : FAULT_HOLD_MS
   const offer = typeof offerId === 'string' && offerId ? offerId : null
+  const model = offer ? null : (typeof modelKey === 'string' && modelKey ? modelKey : null)
   const record = {
     id: `f_${randomUUID().replace(/-/g, '').slice(0, 16)}`,
     // 供给级 / 模型级二选一：定位越精确越优先，宁可少拉黑不可多拉黑
     offerId: offer,
-    modelKey: offer ? null : typeof modelKey === 'string' && modelKey ? modelKey : null,
+    modelKey: model,
+    // 模型级上报带上报时的站，faultMatcher 就只在该站内匹配——
+    // 知道是哪家的病，不该株连 4~5 个健康站（见 faultMatcher 的注释）。
+    // 只有在「明确说这是型号本身的问题」时才传 null，那才允许跨站。
+    providerId: model ? (typeof providerId === 'string' && providerId ? providerId : null) : null,
     kind: String(kind || 'runtime'),
     message: String(message || ''),
     source: 'external-monitor',
@@ -95,16 +100,38 @@ export function activeReports(failover, now = Date.now()) {
 
 /**
  * 供给是否被故障上报命中（唯一判定，路由 / 自动路由 / 决策快照共用）。
- * offerId 精确匹配；modelKey 匹配同款模型的任何供给（模型级故障）。
+ *
+ * 两级定位：
+ *   offerId  —— 供给级，精确命中一条。
+ *   modelKey —— 模型级。**但必须带上报时的 providerId 才能跨站**，见下。
+ *
+ * ## 为什么 modelKey 不能无条件通配
+ *
+ * 旧实现是 `r.modelKey && r.modelKey === offer.modelKey`——一条只带 modelKey 的
+ * 上报会命中**所有站**的同款模型。本机实测影响面：
+ *
+ *     deepseek-v4.1-flash  → 5 个站 / 11 条供给
+ *     gpt-6-astra          → 4 个站
+ *     gpt-6.1-sol / terra  → 各 4 个站
+ *     claude-* 系列        → 各 4 个站
+ *
+ * 于是一个站的模型问题会被放大成全平台问题（用户的原话是「全站都崩溃了」），
+ * 而别的站明明健康——同级换站能力白丢。
+ *
+ * 现在的口径：带了 providerId 就只在该站内匹配；没带才按真·模型级通配
+ * （外部监控明确说「这个型号本身坏了，哪家接都一样」时才这么报）。
  */
 export function faultMatcher(failover, now = Date.now()) {
   const active = activeReports(failover, now)
   return (offer) =>
-    active.some(
-      (r) =>
-        (r.offerId && r.offerId === offer.id) ||
-        (r.modelKey && r.modelKey === (offer.modelKey || offer.upstreamName)),
-    )
+    active.some((r) => {
+      if (r.offerId) return r.offerId === offer.id
+      if (!r.modelKey) return false
+      if (r.modelKey !== (offer.modelKey || offer.upstreamName)) return false
+      // 有 providerId 就锁在站内：知道是哪家的病，就别株连别家
+      if (r.providerId) return r.providerId === offer.providerId
+      return true
+    })
 }
 
 /**
