@@ -9,6 +9,7 @@ import { preflight } from '../core/probe-preflight.js'
 import { offerCost } from '../core/pricing.js'
 import { usageRowCost } from '../core/monitor.js'
 import { recordProbeSpend } from '../core/probe-spend.js'
+import { looksLikeLocalNetworkOutage, NETWORK_FAILURE } from '../core/failure.js'
 
 /**
  * 缓存数字的保质期（固定 2 小时，不随定时间隔变）：距上次真测过缓存超过这么久，
@@ -41,6 +42,49 @@ export function autoProbeShape(due, lite = false) {
 }
 
 /**
+ * 这个模型名是不是「生成类媒体模型」（生图 / 视频 / 音乐）——例行探针应当跳过。
+ *
+ * 为什么单独判而不是靠价格或分组：模型名是唯一稳定且不需要额外元数据的信号。
+ * 各家命名不一致（gpt-image-*、dall-e-*、flux、sd、midjourney、mj_*、
+ * sora、veo、kling、runway、suno、udio…），所以按关键词匹配。
+ *
+ * 判定**只用于探针目标筛选**，不影响路由、比价、准入——用户仍然可以正常
+ * 调用这些模型，只是不再被例行探测反复「真生成」。
+ *
+ * @param {string} modelKey 模型名（modelKey 或 upstreamName）
+ * @returns {boolean}
+ */
+export function isGenerativeMediaModel(modelKey) {
+  const name = String(modelKey || '').toLowerCase()
+  if (!name) return false
+  return /(^|[-_/.])(image|img|dall-?e|flux|stable-?diffusion|sdxl|midjourney|mj)([-_/.]|$)/.test(name)
+    || /(^|[-_/.])(sora|veo|kling|runway|pika|luma|hailuo)([-_/.]|$)/.test(name)
+    || /(^|[-_/.])(suno|udio|musicgen|ace-?step)([-_/.]|$)/.test(name)
+    || /(image|视频生成|生图|文生图|绘图)/.test(name)
+}
+
+/**
+ * 网络类失败判据 + 跨站同簇识别：口径唯一实现放在 core/failure.js。
+ *
+ * 为什么不再各写一份：真实流量侧（bufferTraffic）和探针侧是两条独立的记账路径，
+ * 2026-11-07 实测过两边不同步的后果——探针侧认不出中文「超时」（44% 命中），
+ * 真实流量侧把秋 145 次 ECONNRESET、北辰 48 次、绿萝 42 次全记成站点故障。
+ * 只修一处，另一处照样把可用率写到 0。
+ *
+ * 这里只做一层薄包装，保留探针侧原有的参数名（failed/recent）。
+ * @returns {boolean}
+ */
+export function localNetworkOutageOf({ failed = [], recent = [], now = Date.now(), clusterWindowMs = 10 * 60 * 1000 } = {}) {
+  return looksLikeLocalNetworkOutage({
+    failures: failed,
+    // 探针记录用 ok:false 表示失败；统一换成 failure 形状
+    peers: recent.filter((r) => r?.ok === false),
+    now,
+    clusterWindowMs,
+  })
+}
+
+/**
  * @param {{providerId?:string, offerId?:string, offerIds?:string[], limit?:number, lite?:boolean, cache?:'always'|'auto'}} options
  *   lite —— 调用方期望的轻量形态（自动路由轮巡用）；cache:'auto' 时若赶上
  *          缓存补测会被升级成完整形态（4 发），见 autoProbeShape
@@ -55,6 +99,29 @@ export async function runProbes({ providerId, offerId, offerIds, limit = 5, lite
   // 探针目标与路由/比价同口径：下线、暂停、忽略的都不探（手动指定 offerId 时也拦，避免定时任务漏网）。
   // 过滤规则唯一实现见 inv.routeableOffers——此前这里漏了 delistedAt，下线模型仍被定时探测白烧额度。
   let targets = inv.routeableOffers(db)
+  // 生图/多模态生成模型不进例行探针：它们「测一次」就是真生成一张图，
+  // 成本比对话模型高三个数量级，而且探针那套指纹/截断判定对图片没有意义。
+  //
+  // 实测（本机 db，2026-11-07）：生图探针 1488 条里成功仅 67 条（4.5%），
+  // 却烧掉 32,995,096 output token —— 单条最高 1,203,821（图片以 base64 塞在
+  // output 里返回）。用户看到账单时以为是自己用掉的，其实主要是例行探测。
+  //
+  // 手动点名（offerId / offerIds）仍然放行：那是用户明确要这一条的证据。
+  const routineProbe = !offerId && !(Array.isArray(offerIds) && offerIds.length > 0)
+  if (routineProbe) {
+    const skippedImage = []
+    targets = targets.filter((o) => {
+      if (!isGenerativeMediaModel(o.modelKey || o.upstreamName)) return true
+      skippedImage.push(o.modelKey || o.upstreamName)
+      return false
+    })
+    if (skippedImage.length > 0) {
+      // 只报一次数量，不逐条刷屏：一轮可能几十条
+      console.log(
+        `[探测] 跳过 ${skippedImage.length} 条生图/生成类供给（例行探针会真出图，成本极高）`,
+      )
+    }
+  }
   // 余额探底的站不撞墙：例行/自愈探测整站跳过（探了也是 403 白撞一个来回）。
   // 点名 offerId / providerId 是用户显式要证据，仍放行
   if (!offerId && !providerId && !offerIds) {
@@ -153,6 +220,9 @@ export async function runProbes({ providerId, offerId, offerIds, limit = 5, lite
           ok: false,
           error: `预检未过（${pre.layer}）：${pre.error}`,
           preflight: { layer: pre.layer, ms: pre.ms, modelCount: pre.modelCount },
+          // 被打断在预检层 = 这次**没测到可用性**（生成层根本没跑）。
+          // 记下来，score.js 才不会把「连不上」当成「站点不可用」算进分母。
+          preflightLayer: pre.layer || 'unknown',
           spend: null,
         }
         continue
@@ -176,16 +246,14 @@ export async function runProbes({ providerId, offerId, offerIds, limit = 5, lite
 
   // ---- 批量网络异常防护：本机断网/代理挂了时，一轮探测会「所有站一起失败」。
   // 那不是站点的问题，写进评分会让几十条供给同时变红（真实踩过：代理断线
-  // 造成 9 条 fetch failed）。判据：失败样本 ≥3、网络类错误占比 ≥60%，
-  // 且这些网络失败跨了 ≥2 个站——只挂一个站（哪怕它下面 10 个模型全挂）
-  // 是那个站的问题，必须照常记账，否则真故障永远测不出来。
+  // 造成 9 条 fetch failed；2026-11-07 又踩了一次：同一秒内秋/绿萝/北辰
+  // 三家毫无关联的站一起 TLS 超时，53 条供给的评分被这些记录接管）。
   const failed = results.filter((r) => r && r.ok === false)
-  const netFailed = failed.filter((r) =>
-    /timeout|aborted|fetch failed|ECONN|ENOTFOUND|EAI_AGAIN|socket|网络/i.test(String(r.error || '')),
-  )
-  const netProviders = new Set(netFailed.map((r) => r.providerId))
-  const localNetworkOutage =
-    failed.length >= 3 && netFailed.length / failed.length >= 0.6 && netProviders.size >= 2
+  const localNetworkOutage = localNetworkOutageOf({
+    failed,
+    recent: db.probes || [],
+    now: Date.now(),
+  })
   if (localNetworkOutage) {
     return results.filter(Boolean).map((r) => ({ ...r, skipped: 'local-network-outage' }))
   }

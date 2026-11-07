@@ -27,6 +27,7 @@ import * as fxLib from '../core/fx.js'
 import { pauseStatus } from '../core/schedule.js'
 import { scoreOffers } from '../core/score.js'
 import { normalizeAutoRoute } from '../core/auto-route.js'
+import { admissionOfScore } from '../core/router.js'
 
 const MAX_PER_TICK = 10
 const CHECK_INTERVAL_MS = 60000
@@ -205,6 +206,29 @@ export function startProbeScheduler({
         // 隔一小时才验一次等于把一条可能已经恢复的供给闲置一小时。
         // 与 pendingRecovery 同一档节奏，理由也相同：恢复看证据，证据得有人去取。
         if (score.halfOpen) {
+          return now - new Date(score.lastProbeAt).getTime() >= RECOVERY_INTERVAL_MIN * 60000
+        }
+        // ---- 兜底：只要「准入会拒它」，就必须继续有人去验
+        //
+        // 上面三条（blocked / pendingRecovery / halfOpen）是「有名有姓」的自愈状态，
+        // 但**不是所有拒绝态都有名字**。最典型的是 unstable（可用率 < 80%）：
+        // 它是一个统计结论，blocked / pendingRecovery / halfOpen 三个字段全是 null。
+        // 于是关掉定时探针之后：
+        //
+        //   准入拒绝它  → 永远拿不到真实流量（真实流量是唯一的另一个证据来源）
+        //   自愈不认它  → 永远不会被复测
+        //   => 它再也拿不到任何新证据，永久卡死在黑名单里
+        //
+        // 2026-11-07 穷举 1092 种「失败类型 × 证据年龄 × 样本数」组合实测，
+        // 关闭定时探针后能踩出这些死锁路径：
+        //   unstable（502/503、超时、失败率过高 ×3 条以上）
+        //   degraded（指纹不符，单条即可定性）
+        //   no-evidence（protocol-unsupported、我方缺陷被跳过但 samples 仍占位）
+        //
+        // 判据刻意用「准入是否放行」而不是枚举 kind：准入是唯一门禁，
+        // 凡是过不去的都得有人去取新证据，这样以后新增任何拒绝原因都不会再漏。
+        // 节奏与 pendingRecovery 同档（RECOVERY_INTERVAL_MIN），避免白烧额度。
+        if (!admissionOfScore(score).ok) {
           return now - new Date(score.lastProbeAt).getTime() >= RECOVERY_INTERVAL_MIN * 60000
         }
         if (selfHealOnly) return false
