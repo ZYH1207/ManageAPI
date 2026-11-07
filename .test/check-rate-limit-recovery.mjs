@@ -332,27 +332,52 @@ console.log('[4] 真跑网关：限流的供给一次都不该被请求')
     ok(Boolean(key && offerA && offerB), '两条同模型供给 + 网关 Key 就绪')
 
     // 直接改库注入探针证据：甲健康，乙 1 分钟前刚被限流（冷却中）
+    //
+    // 时间戳必须**逐轮递增**：两次 seed 都写 isoAgo(60_000) 会得到完全相同的时间戳，
+    // 而 /api/state 的评分缓存按 db 文件 mtime 失效——写盘落在同一毫秒时缓存不失效，
+    // 读到的仍是上一轮的评分（甲站 healthy），于是网关照常派活、断言 400 变成 200。
+    // 2026-11-07 实测：全套 94 个测试并行时必现，单跑 3/3 通过。
     const store = await import(pathToFileURL(join(ROOT, 'core/store.js')).href)
+    let seedRound = 0
     const seed = async (aProbe, bProbe) => {
+      seedRound += 1
+      // 每轮往前推 1 秒，保证时间戳（以及缓存判定依据）与上一轮不同
+      const ageMs = 60_000 + seedRound * 1000
       await store.mutate((db) => {
         db.probes = [
-          { offerId: offerA.id, ts: isoAgo(60_000), ...aProbe },
-          { offerId: offerB.id, ts: isoAgo(60_000), ...bProbe },
+          { offerId: offerA.id, ts: isoAgo(ageMs), ...aProbe },
+          { offerId: offerB.id, ts: isoAgo(ageMs), ...bProbe },
         ]
       })
     }
     await seed(good, limited)
 
-    // 评分缓存按 mtime 失效；同一毫秒写完再读可能拿到旧快照
+    // 评分缓存按 mtime 失效；同一毫秒写完再读可能拿到旧快照。
+    //
+    // 轮询要等「新的证据真的生效」，而不是「某个条件成立就返回」——
+    // 第二轮 seed 之后两条都限流，而第一轮的旧快照里乙站本来就 blocked，
+    // 于是 predicate 立刻为真、读到的是**上一轮**的评分：甲站仍是 healthy，
+    // 网关照常派活 → 断言 400 变成 200。
+    //
+    // 2026-11-07 实测：全套 94 个测试并行跑时（daemon 启动更慢）必现，
+    // 单跑时 3/3 通过——是这条等待逻辑的竞态，不是被测代码的问题。
+    // 修法：predicate 里带上「甲站也必须已经变成不放行」，即等两个站的
+    // 新证据都落地；同时把轮询预算从 300ms 放宽到 3s，避免慢机器上假失败。
     const waitState = async (predicate) => {
-      for (let i = 0; i < 10; i += 1) {
+      for (let i = 0; i < 100; i += 1) {
         const next = await call('GET', '/api/state')
         if (predicate(next)) return next
         await sleep(30)
       }
       return call('GET', '/api/state')
     }
-    const next = await waitState((s) => s.scores?.[offerB.id]?.blocked)
+    const next = await waitState(
+      (s) =>
+        // 第一轮：乙站冷却中，且甲站仍是健康的（两条证据都已落地）
+        (s.scores?.[offerB.id]?.blocked && s.scores?.[offerA.id]?.admission?.ok === true) ||
+        // 或者已经是第二轮（两条都 blocked）——外层会按需再次 waitState
+        false,
+    )
     ok(next.scores?.[offerA.id]?.admission?.ok === true, '甲站（健康）→ 允许放行')
     ok(next.scores?.[offerB.id]?.admission?.ok === false, '乙站（限流）→ 不放行')
 

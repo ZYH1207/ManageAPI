@@ -205,6 +205,82 @@ console.log('[6] 没有可靠性样本的供给不能路由（「没测过」不
   ok(onlyLimited.quality === null, '质量为空，不会被当成合格质量参与比价')
 }
 
+console.log('[7] 预检失败按层归因（2026-11-07 事故）')
+{
+  // 预检的文案是网关自己拼的，不以 `HTTP xxx` 开头——旧代码一律落到兜底的
+  // countsAsOutage:true，把「我方没连上 / Key 失效」写成「站点不可用」。
+  const cases = [
+    // auth：Key 无效是凭据问题，站点本身是通的
+    ['预检未过（auth）：HTTP 403（Key 无效或无权限）', 'credential', false],
+    // entry：对端真的回了 5xx/HTML，这一层才可能是站点故障
+    ['预检未过（entry）：HTTP 502', 'entry', true],
+    // 连接层：单条分不清是我方抖动还是站点不可达，按站点账处理（由批量防护兜）
+    ['预检未过（tls）：TLS 握手失败：TLS 握手 超时（4000ms）', null, true],
+    ['预检未过（tcp）：socket hang up', null, true],
+    ['预检未过（dns）：DNS 解析失败：ENOTFOUND', null, true],
+  ]
+  for (const [text, kind, counts] of cases) {
+    const r = classifyFailure(text)
+    ok(r.kind === kind && r.countsAsOutage === counts, `${text.slice(0, 40)} → ${r.kind ?? '故障'}`)
+  }
+  ok(UNAVAILABLE_COOLDOWN_MS.credential > 0, '凭据类有冷却窗口（反复撞失效 Key 只是白等）')
+}
+
+console.log('[8] 预检层失败不进可用率分母')
+{
+  const rows = Array.from({ length: 5 }, (_, i) => ({
+    offerId: 'pf',
+    ok: false,
+    ts: ago(i * 0.2),
+    error: '预检未过（tls）：TLS 握手失败：TLS 握手 超时（4000ms）',
+    preflightLayer: 'tls',
+  }))
+  const r = score(rows).get('pf')
+  // 旧行为：可用率 0%、status=unstable、界面「站点完全不可用」
+  ok(r.availability === null, '可用率为空（生成层一次都没跑，没有可用性证据）')
+  ok(r.status !== 'unstable', `不再判 unstable（实际 ${r.status}）`)
+  ok(r.preflightSamples === 5, '预检样本单独计数，界面能说清「5 次都没打到生成层」')
+  ok(r.preflightOnly === true, '标记为「只有预检层失败」')
+  ok(r.outageSamples === 0, '没有把它算成站点故障')
+}
+
+console.log('[9] 预检 auth 失败走凭据冷却，不进分母')
+{
+  const rows = Array.from({ length: 3 }, (_, i) => ({
+    offerId: 'ck',
+    ok: false,
+    ts: ago(i * 0.1),
+    error: '预检未过（auth）：HTTP 403（Key 无效或无权限）',
+    preflightLayer: 'auth',
+  }))
+  const r = score(rows).get('ck')
+  ok(r.availability === null, '可用率为空（凭据问题不是站点不可用）')
+  ok(r.blocked?.kind === 'credential' || r.pendingRecovery?.kind === 'credential', '进入凭据冷却/待复测')
+  ok(r.outageSamples === 0, '没有算成站点故障')
+  ok(isRoutable(r) === false, '仍然不派活（Key 无效派过去只会再撞一次 403）')
+}
+
+console.log('[10] credential 冷却过期后必须仍能被自愈探测（否则永久死锁）')
+{
+  // 现场（2026-11-07）：credential 的冷却只有 10 分钟，一过就三者皆无
+  // （blocked=null、pendingRecovery=null、halfOpen=null），而准入又按
+  // 「样本 > 0 但没分母」判 no-evidence 硬拒 → 自愈探测不选它、真实流量
+  // 也到不了它，供给永久消失，换好 Key 也不回来。
+  for (const hoursAgo of [0.2, 0.5, 2, 6]) {
+    const r = score([
+      {
+        offerId: 'cred',
+        ok: false,
+        ts: ago(hoursAgo),
+        error: '预检未过（auth）：HTTP 403（Key 无效或无权限）',
+        preflightLayer: 'auth',
+      },
+    ]).get('cred')
+    const selfHeal = Boolean(r.blocked || r.pendingRecovery || r.halfOpen)
+    ok(selfHeal, `${hoursAgo}h 前失败 → 仍满足自愈复测条件（${r.pendingRecovery?.kind ?? r.blocked?.kind ?? '-'}）`)
+  }
+}
+
 console.log('')
 if (failed === 0) console.log('全部通过 ✓')
 else {

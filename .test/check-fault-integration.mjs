@@ -180,7 +180,7 @@ console.log('\n[5] 恢复信号 → 故障账清除 → A 重新参选')
   ok(pickAutoRoute(db, { scores: new Map(), benchmarks: {}, force: true })?.offerId === 'oA', '自动路由也选回 A')
 }
 
-console.log('\n[6] 没有 offerId 时按模型级上报（整款模型都被避开）')
+console.log('\n[6] 没有 offerId 时按模型级上报：只株连同一站，不打穿别站')
 {
   const db = makeDb()
   applyFaultToFailover(
@@ -188,12 +188,36 @@ console.log('\n[6] 没有 offerId 时按模型级上报（整款模型都被避�
     buildFaultSignal({
       kind: 'empty-turn',
       level: 'degraded',
+      // scope 里带 providerId：信号明确知道是「便宜站A 的这个模型」坏了。
+      // 2026-11-07 之前这里会株连同款模型的所有站（实测 deepseek-v4.1-flash
+      // 打穿 5 个站 11 条供给），用户看到的是「全平台都崩了」。
       scope: { providerId: 'pA', providerName: '便宜站A', offerId: null, modelKey: 'test-model' },
       reason: '模型级故障',
     }),
   )
   const rows = rank(db)
-  ok(rows.every((row) => row.faulted === true), '同款模型的所有供给都被标故障')
+  const a = rows.find((r) => r.offer.id === 'oA')
+  const b = rows.find((r) => r.offer.id === 'oB')
+  ok(a?.faulted === true, '出问题的那个站（pA）同款模型被标故障')
+  ok(b?.faulted === false, '别站（pB）同款模型不被株连——同级换站能力保住了')
+  ok(rows.every((row) => row.admission?.ok), '准入都没被拉黑（故障只降级不拉黑）')
+}
+
+console.log('\n[6b] 真·模型级上报（不带 providerId）才整款避开')
+{
+  const db = makeDb()
+  applyFaultToFailover(
+    db,
+    buildFaultSignal({
+      kind: 'empty-turn',
+      level: 'degraded',
+      // 不带 providerId = 「这个型号本身坏了，哪家接都一样」
+      scope: { providerId: null, providerName: '', offerId: null, modelKey: 'test-model' },
+      reason: '型号本身不可用',
+    }),
+  )
+  const rows = rank(db)
+  ok(rows.every((row) => row.faulted === true), '不带 providerId → 整款模型的所有供给都被标故障')
   ok(rows.every((row) => row.admission?.ok), '但准入都没被拉黑')
 }
 

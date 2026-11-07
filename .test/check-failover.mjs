@@ -92,6 +92,32 @@ console.log('[3b] 同时给 offerId + modelKey：供给级优先，不连坐同�
   ok(faultMatcher(modelLevel)({ id: 'o-healthy', modelKey: 'm-shared' }) === true, '只给 modelKey 时仍是模型级')
 }
 
+console.log('[3c] 模型级上报带 providerId：只株连本站，不打穿别站（2026-11-07）')
+{
+  // 现场：一条 modelKey 级上报把 deepseek-v4.1-flash 打穿 5 个站 11 条供给，
+  // 用户看到的是「全平台都崩了」，而别的站明明健康。
+  const entry = { reports: [] }
+  addFaultReport(entry, { modelKey: 'ds-flash', providerId: 'p-qiu', kind: 'empty-turn' })
+  ok(entry.reports[0].providerId === 'p-qiu', 'providerId 落盘')
+  const match = faultMatcher(entry)
+  ok(match({ id: 'a', modelKey: 'ds-flash', providerId: 'p-qiu' }) === true, '本站同模型命中')
+  ok(match({ id: 'b', modelKey: 'ds-flash', providerId: 'p-lvluo' }) === false, '别站同模型不被株连')
+  ok(match({ id: 'c', modelKey: 'other', providerId: 'p-qiu' }) === false, '本站别的模型不被误伤')
+
+  // 明确的「型号本身坏了，哪家接都一样」：不带 providerId 才允许跨站
+  const globalModel = { reports: [] }
+  addFaultReport(globalModel, { modelKey: 'ds-flash', kind: 'model-broken' })
+  ok(
+    faultMatcher(globalModel)({ id: 'b', modelKey: 'ds-flash', providerId: 'p-lvluo' }) === true,
+    '不带 providerId（真模型级）才跨站命中',
+  )
+
+  // 供给级上报不记录 providerId（它不是靠这个定位的）
+  const supplyLevel = { reports: [] }
+  addFaultReport(supplyLevel, { offerId: 'o-1', providerId: 'p-qiu' })
+  ok(supplyLevel.reports[0].providerId === null, '供给级上报不存 providerId（offerId 已足够精确）')
+}
+
 // ------------------------------------------------------------ 路由与自动路由
 const provider = (id, name) => ({ id, name })
 const credential = (id, providerId) => ({ id, providerId, group: '', tail: '0000' })
