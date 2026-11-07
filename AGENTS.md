@@ -3,6 +3,9 @@
 本地 AI 中转站管理网关：跨站比价、降智探针、一个 Key 走所有站点。
 零依赖 Node.js（>=20），无构建步骤，改完刷新浏览器即可；改后端要重启进程。
 
+新接手的人按这个顺序读：`README.md`（怎么跑）→ `CHANGELOG.md`（最近改了什么）→
+`docs/ARCHITECTURE.md`（为什么这样设计）。改任何判定逻辑之前，先跑对应的 `.test/check-*.mjs`。
+
 ## 「提交」和「push」是两件事（先看这条）
 
 用户说「提交」= **只在你自己所在的那个目录和分支上 `git commit`**。到此为止。
@@ -28,14 +31,18 @@
 2. **建测试基线**：`git stash && 跑测试 && git stash pop`。
    记下哪些本来就红（见下），否则改完跑失败会误判成自己弄坏的。
 3. **可能动数据时先备份**：
-   `cp ~/.manage-api/db.json ~/manage-api-backups/db.before-<改动名>.json`
+   `cp ~/.manage-api/db.json "/Users/sakura/个人收藏/Agent Storage/ManageAPI/manage-api-backups/db.before-<改动名>.json"`
 
-## 数据与危险区
+## 数据与本机运行实例
 
 - 真实数据在 `~/.manage-api/`（`db.json` / `master.key` / `usage.json`），
   **不在仓库里，永远不要提交**。`.gitignore` 已排除。
 - `master.key` 和 `db.json` 必须配对；只恢复 db 会让所有 Key 解不开。
-- 备份在 `~/manage-api-backups/`（数据目录同级），默认保留 30 份。
+- 生产实例由 launchd 托管（`com.sakura.manage-api`），端口 4319，开机自启，
+  数据即 `~/.manage-api`；每日备份到
+  `/Users/sakura/个人收藏/Agent Storage/ManageAPI/manage-api-backups/`（由 launchd 的
+  `MANAGE_API_BACKUP_DIR` 指定），默认保留 30 份。**4319 留给日常真实实例，不要拿它做验收。**
+- 验收预览用仓库外的 `preview.mjs`（见「交付流程」），每个任务独立端口和独立数据副本。
 - 单实例锁 `~/.manage-api/daemon.lock`：同一数据目录只允许一个 daemon，
   进程崩了下次启动会自动清理。跑测试一律用 `mktemp -d` 另开数据目录。
 - 默认端口 4319，被占用会自动往后找。
@@ -51,7 +58,7 @@
 | `check-lang.mjs` | 需要 Chrome 远程调试端口 9222，没开就 ECONNREFUSED |
 | `check-zcode.mjs` | `bonusTokens` 汇总断言依赖当前日期 |
 
-其余 22 个 `check-*.mjs` 应全部通过。
+其余 `check-*.mjs` 应全部通过。
 
 ## 跑测试
 
@@ -87,13 +94,13 @@ node .test/run-groups.mjs
 2. **起一个自己的验收实例，别抢 4319**（改动仍未提交）：
 
    ```bash
-   node ~/manage-api-previews/preview.mjs up --name <任务名> --dir <工作树> --marker <本次新增标识>
+   node "/Users/sakura/个人收藏/Agent Storage/ManageAPI/manage-api-previews/preview.mjs" \
+     up --name <任务名> --dir <工作树> --marker <本次新增标识>
    ```
 
    它给这个任务分配独立端口（4500–4599）、复制一份真实数据（`db.json` + `master.key`
    成对复制，真实库不动）、默认关掉定时采集和探针，并登记到看板。
    同名重跑 = 重启（改了 `core/*` / `daemon/*` 必须重跑）。
-   **4319 留给日常真实实例，任何人不要拿它做验收。**
 3. **一次把验收信息写全**：看板 `http://127.0.0.1:4300/`（点任务名直接开）、
    该任务的端口网址、点哪里、应该看到什么、什么样算不对；并明确要求 **Ctrl+F5 强刷**
    （旧 `app.js` 会被缓存）。发链接前自检：`/api/health` 通，且 `--marker` 那行没有红字
@@ -138,8 +145,5 @@ node .test/run-groups.mjs
 - **落价三分支**收敛在 `core/inventory.js` 的 `applySitePricing`，别在调用方复制逻辑。
 - **在役供给过滤**收敛在 `routeableOffers`（暂停站 / 忽略模型 / 已下线），
   比价、决策、网关、探针、免费池都从它取，别各自再写一遍。
-
-## 本机专属约定
-
-端口分配、`start-hidden.vbs`、`npm run dev:iso` 这类只在本机成立的约定，
-写在 `.orbit/local.md`（本机文件，已 ignore，不进仓库）。开工前若涉及起服务，先读它。
+- **shallow clone 打 `git bundle` 时 `verify` 通过不代表能恢复**：缺失的父对象
+  要等真实 clone 才报错。先 `git fetch --unshallow`，打完 bundle 真实 clone 一次验证。
