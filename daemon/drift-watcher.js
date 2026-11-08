@@ -68,6 +68,7 @@ export function createDriftWatcher({ runProbes, onProbesRan = null, logger = con
   let cooldownUntil = 0
   let exhausted = 0
   let probing = false
+  let ticking = false
   // 试跑窗：刚转移过去的新现役，攒样本期不判它
   let trial = null // { offerId, startedAt, samples }
   // 最近一次判定（UI 读这份缓存，不必每 15 秒重算一遍）
@@ -187,6 +188,20 @@ export function createDriftWatcher({ runProbes, onProbesRan = null, logger = con
    * 不代表算不了「这条线现在比平时慢多少」——所以这里先算，再决定动不动手。
    */
   async function tick() {
+    // 顶层重入守卫：调度器的 running 标志只包住定时探针那段，本 tick 里
+    // readDb / 基线计算 / 转移判定都是裸奔的。一次 tick 卡住（比如转移触发的
+    // 探针在等 45s 超时），下一个 tick 又进来算一遍并可能再次改派——
+    // 同一分钟内两次转移会让试跑样本互相污染（级联修复 2026-11-08）。
+    if (ticking) return
+    ticking = true
+    try {
+      return await tickBody()
+    } finally {
+      ticking = false
+    }
+  }
+
+  async function tickBody() {
     const db = await store.readDb()
     const settings = db.settings || {}
     const record = normalizeAutoRoute(settings.autoRoute)

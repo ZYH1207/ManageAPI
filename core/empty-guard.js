@@ -304,8 +304,16 @@ export function recordDetour(db, entry) {
     ...entry,
   }
   db.emptyDetour.push(row)
-  // 只留最近 50 条历史：这是排查线索，不是账本
-  if (db.emptyDetour.length > 50) db.emptyDetour = db.emptyDetour.slice(-50)
+  // 只留最近 50 条历史：这是排查线索，不是账本。
+  // 但裁剪只能裁「已解除」的——一条还在生效中的改道被历史挤出去，
+  // 路由就当它不存在了，流量会静默切回那个还在犯病的站
+  // （反复抖动的站点一天就能滚出 25+ 条历史，级联修复 2026-11-08）
+  if (db.emptyDetour.length > 50) {
+    const active = db.emptyDetour.filter((item) => !item.resolvedAt)
+    const settled = db.emptyDetour.filter((item) => item.resolvedAt)
+    const keepSettled = Math.max(10, 50 - active.length)
+    db.emptyDetour = [...settled.slice(-keepSettled), ...active]
+  }
   return row
 }
 

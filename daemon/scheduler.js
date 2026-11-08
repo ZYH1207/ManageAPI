@@ -244,6 +244,11 @@ export function startProbeScheduler({
 
     if (due.length === 0) return
 
+    // 二次检查再开跑：上面那排 await（汇率/采集/复检/漂移/轮巡）任何一个慢，
+    // 本 tick 就会停在那里；期间新 tick 进来把 running 置 true 开始探测，
+    // 本 tick 恢复后若不重新检查，就会与它并发再跑一轮 runProbes——
+    // 重复烧钱 + 双份写盘（级联修复 2026-11-08）
+    if (running) return
     running = true
     try {
       logger.info?.(`[定时探测] ${due.length} 个目标到期，开始探测`)
