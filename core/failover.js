@@ -62,13 +62,36 @@ export function ensureFailoverToken() {
  * 为什么要强制：以前两个都存，于是一条供给的故障会命中同型号所有供给，
  * 别家明明健康也被一起拉黑——同级换站能力白丢，自动路由被迫跳去另一个模型。
  *
- * @returns {object} 落盘后的记录（含 id / until），调用方据此触发重选
+ * ## 同作用域去重（2026-11-08 级联修复）
+ *
+ * 监控上报和网关自身的空回合上报都会**重复报同一件事**：一家站宕机时，每个
+ * 失败请求都产生一条广播，而 /api/failover/report 每收一条就做一次全场重选
+ * （readDb + pickAutoRoute + 整库重写）。不去重的话，单站故障会放大成
+ * 「每秒 N 次全量重选 + 每秒 N MB 写盘」的自激振荡，把还健康的部分一起拖死。
+ * 现在生效中的同作用域上报只续期（延长 until + 计数），不再新增记录；
+ * 返回值带 deduped 标记，调用方据此决定要不要真的重选。
+ *
+ * @returns {object} 落盘后的记录（含 id / until / deduped），调用方据此触发重选
  */
 export function addFaultReport(failover, { offerId, modelKey, providerId = null, kind = 'runtime', message = '', holdMs = FAULT_HOLD_MS } = {}) {
   const raw = normalizeFailover(failover)
   const hold = Number.isFinite(Number(holdMs)) ? Math.min(Math.max(Number(holdMs), 60_000), 24 * 60 * 60_000) : FAULT_HOLD_MS
   const offer = typeof offerId === 'string' && offerId ? offerId : null
   const model = offer ? null : (typeof modelKey === 'string' && modelKey ? modelKey : null)
+  const now = Date.now()
+  const scopeKey = (r) => (r.offerId ? `o:${r.offerId}` : `m:${r.modelKey || ''}@${r.providerId || ''}`)
+  const incomingKey = offer ? `o:${offer}` : `m:${model || ''}@${model ? (typeof providerId === 'string' && providerId ? providerId : '') : ''}`
+  // 同作用域 + 同 kind + 还在生效中的旧记录：续期而不是再记一条
+  const existing = raw.reports.find(
+    (r) => r.status === 'active' && Number(r.until) > now && scopeKey(r) === incomingKey && (r.kind || 'runtime') === (kind || 'runtime'),
+  )
+  if (existing) {
+    existing.until = Math.max(Number(existing.until) || 0, now + hold)
+    existing.lastReportedAt = new Date().toISOString()
+    existing.count = (Number(existing.count) || 0) + 1
+    failover.reports = raw.reports
+    return { ...existing, deduped: true }
+  }
   const record = {
     id: `f_${randomUUID().replace(/-/g, '').slice(0, 16)}`,
     // 供给级 / 模型级二选一：定位越精确越优先，宁可少拉黑不可多拉黑
@@ -83,12 +106,23 @@ export function addFaultReport(failover, { offerId, modelKey, providerId = null,
     source: 'external-monitor',
     reportedAt: new Date().toISOString(),
     // 保持期到点自动失效——「过了一段时间判断故障可能解除」就是这一个时间戳
-    until: Date.now() + hold,
+    until: now + hold,
     status: 'active',
+    count: 1,
   }
   raw.reports.push(record)
-  // 只留最近的历史：故障转移看的是「现在有没有活跃上报」，陈年旧账没有读者
-  if (raw.reports.length > MAX_FAULT_REPORTS) raw.reports.splice(0, raw.reports.length - MAX_FAULT_REPORTS)
+  // 只留最近的历史：故障转移看的是「现在有没有活跃上报」，陈年旧账没有读者。
+  // 切的时候避开生效中的行——历史再长也不能把还在剔除名单里的记录切没；
+  // 万一 active 自己就超了上限（真实世界里 active 数 ≤ 供给数，到不了），
+  // 丢最旧的 active 保住硬上限，不让 db.json 无界膨胀
+  if (raw.reports.length > MAX_FAULT_REPORTS) {
+    const active = raw.reports.filter((r) => r.status === 'active')
+    const settled = raw.reports.filter((r) => r.status !== 'active')
+    raw.reports =
+      active.length >= MAX_FAULT_REPORTS
+        ? active.slice(-MAX_FAULT_REPORTS)
+        : [...settled.slice(-(MAX_FAULT_REPORTS - active.length)), ...active]
+  }
   failover.reports = raw.reports
   return record
 }

@@ -161,6 +161,7 @@ import {
   combineWithDetours,
   summarizeFaultSignals,
   applyFaultToFailover,
+  recordFaultSignal,
   FAULT_WINDOW_MS,
 } from '../core/fault-signal.js'
 import * as diag from '../core/diagnosis.js'
@@ -630,19 +631,19 @@ async function buildState({ light = false } = {}) {
     })
     // 按自动路由真正的排序分重排 —— 让页面的行号和「排序分」列一致。
     //
-    // 为什么必须重排：网关派活走的是 decideRoute，它按 routeScore 排
-    // （真实首字 × 余额 × 质量 × 生成耗时）。如果页面仍按旧的 decision-mode
-    // 顺序显示，就会出现「第 1 行的排序分比第 2 行还高」——用户看到只会更困惑，
-    // 那正是他反馈的问题。页面必须如实反映网关会怎么派。
-    //
+    // 手动顺序存在时**跳过重排**：拖过的顺序必须原样显示（网关侧同一契约，
+    // decideRoute 以 orderRank 为第一排序键）。页面按分重排会把拖好的顺序
+    // 打乱，用户只会以为拖拽坏了（2026-11-08 修复，run-empty-guard 的根因）。
     // 一个已知的细微差别：页面算 routeScore 时没有请求上下文，用历史平均输出长度
     // 估算生成耗时；网关那边用当次请求的 max_tokens。所以长/短回答的排序可能
     // 略有不同——这是必然的（页面无法预知未来的请求）。
-    rankedCandidates.sort((a, b) => {
-      const sa = Number.isFinite(a.routeScore) ? a.routeScore : Number.MAX_SAFE_INTEGER
-      const sb = Number.isFinite(b.routeScore) ? b.routeScore : Number.MAX_SAFE_INTEGER
-      return sa - sb
-    })
+    if (!order) {
+      rankedCandidates.sort((a, b) => {
+        const sa = Number.isFinite(a.routeScore) ? a.routeScore : Number.MAX_SAFE_INTEGER
+        const sb = Number.isFinite(b.routeScore) ? b.routeScore : Number.MAX_SAFE_INTEGER
+        return sa - sb
+      })
+    }
 
     // 勾选 > 排序：决策页点选的那条就是「当前选」，与顺序无关（顺序不动）。
     // 勾选的不在候选里（被暂停/删了）才回落到「第一条能登场的」。
@@ -3765,8 +3766,10 @@ route('POST', /^\/api\/failover\/report$/, async (ctx) => {
     db.failover = entry
     return saved
   })
-  // 上报即重选：不用等下一个请求才发现现役病了（重选含落盘）
-  const pick = await repickAfterFailoverChange()
+  // 上报即重选：不用等下一个请求才发现现役病了（重选含落盘）。
+  // 去重续期的重复上报不重选：故障还挂在同一作用域上，重选一万次结论都一样，
+  // 每次却要整库重写一遍——单站宕机会被放大成全机写盘风暴（级联修复 2026-11-08）
+  const pick = record.deduped ? null : await repickAfterFailoverChange()
   return { ok: true, report: record, repick: pick }
 })
 
@@ -4281,9 +4284,12 @@ function flushRouting() {
   void appendDetail(batch)
   return inv.recordRoutingBatch(batch).catch((error) => {
     // 写失败把本批塞回队头，下个 2 秒周期重试——决策日志是排查依据，
-    // 静默丢弃等于让「为什么选了它」永远查不到
+    // 静默丢弃等于让「为什么选了它」永远查不到。失败路径必须自己把
+    // 定时器重新布上：没有新请求进来时 queueRouting 不会再排定时，
+    // 不重排的话这批数据就一直躺在内存里（流量一停就等于丢了）
     console.error('[网关] 决策日志写盘失败，已回队重试：', error)
     routingBuffer.unshift(...batch)
+    if (!routingTimer) routingTimer = setTimeout(flushRouting, 2000)
   })
 }
 
@@ -4300,18 +4306,29 @@ function queueRouting(entry) {
 const emptyBuffer = []
 let emptyTimer = null
 
+function flushEmpty() {
+  if (emptyTimer) {
+    clearTimeout(emptyTimer)
+    emptyTimer = null
+  }
+  if (!emptyBuffer.length) return
+  const batch = emptyBuffer.splice(0, emptyBuffer.length)
+  inv.recordEmptyBatch(batch).catch((error) => {
+    console.error('[网关] 空回合记录写盘失败：', error)
+    emptyBuffer.unshift(...batch)
+    // 失败后自己重新排定时：没有新事件进来时没人再排，不重排这批就丢在内存里
+    if (!emptyTimer) {
+      emptyTimer = setTimeout(flushEmpty, 2000)
+      emptyTimer.unref?.()
+    }
+  })
+}
+
 function queueEmptyEvent(event) {
   if (!event) return
   emptyBuffer.push(event)
   if (!emptyTimer) {
-    emptyTimer = setTimeout(() => {
-      emptyTimer = null
-      const batch = emptyBuffer.splice(0, emptyBuffer.length)
-      inv.recordEmptyBatch(batch).catch((error) => {
-        console.error('[网关] 空回合记录写盘失败：', error)
-        emptyBuffer.unshift(...batch)
-      })
-    }, 2000)
+    emptyTimer = setTimeout(flushEmpty, 2000)
     emptyTimer.unref?.()
   }
 }
@@ -4320,18 +4337,40 @@ function queueEmptyEvent(event) {
 const faultBuffer = []
 let faultTimer = null
 
+function flushFault() {
+  if (faultTimer) {
+    clearTimeout(faultTimer)
+    faultTimer = null
+  }
+  if (!faultBuffer.length) return
+  const batch = faultBuffer.splice(0, faultBuffer.length)
+  // 信号落库和故障账（failover ledger，路由据此剔除）放进**同一个** mutate：
+  // 以前故障账是每条信号一个独立 mutate（readDb + 整库重写），站宕机时每个
+  // 失败请求都广播一条 degraded 信号，等于每秒把 1MB 的 db.json 重写 N 遍
+  // ——单站故障放大成全机 IO 风暴（级联修复 2026-11-08）。notice 级不进故障账。
+  store
+    .mutate((db) => {
+      for (const signal of batch) recordFaultSignal(db, signal)
+      for (const signal of batch) {
+        if (signal.level && signal.level !== 'notice') applyFaultToFailover(db, signal)
+      }
+    })
+    .catch((error) => {
+      console.error('[网关] 故障信号写盘失败：', error)
+      faultBuffer.unshift(...batch)
+      // 同决策日志：失败后自己重新排定时，别让信号只活在内存里
+      if (!faultTimer) {
+        faultTimer = setTimeout(flushFault, 2000)
+        faultTimer.unref?.()
+      }
+    })
+}
+
 function queueFaultSignal(signal) {
   if (!signal) return
   faultBuffer.push(signal)
   if (!faultTimer) {
-    faultTimer = setTimeout(() => {
-      faultTimer = null
-      const batch = faultBuffer.splice(0, faultBuffer.length)
-      inv.recordFaultBatch(batch).catch((error) => {
-        console.error('[网关] 故障信号写盘失败：', error)
-        faultBuffer.unshift(...batch)
-      })
-    }, 2000)
+    faultTimer = setTimeout(flushFault, 2000)
     faultTimer.unref?.()
   }
   // 广播是同步的：订阅方（自动路由）要能立刻生效，不能等落盘。
@@ -4646,7 +4685,13 @@ export async function flushGatewayBuffers() {
     }
     if (faultBuffer.length > 0) {
       const batch = faultBuffer.splice(0, faultBuffer.length)
-      await inv.recordFaultBatch(batch)
+      // 与 flushFault 同口径：信号 + 故障账一个 mutate，退出前不丢路由侧的剔除状态
+      await store.mutate((db) => {
+        for (const signal of batch) recordFaultSignal(db, signal)
+        for (const signal of batch) {
+          if (signal.level && signal.level !== 'notice') applyFaultToFailover(db, signal)
+        }
+      })
     }
   } catch (error) {
     console.error('[网关] 退出前落盘失败：', error)
@@ -5869,7 +5914,13 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
   // max_tokens 传给编排层：短回答看首字、长回答看吐字，
   // 同一个站在两种场景下的最优顺序可能完全不同（见 core/speed-model.js#estimateTotalWait）
   const routeCtx = buildRoutingContext(db, { maxTokens: body?.max_tokens ?? null })
-  const decision = decideRoute(candidates, routeCtx, { tried: new Set(), maxPerTier: 4 })
+  // 手动顺序（offerId → 名次）传给 decideRoute：拖过的顺序在网关派活时同样是
+  // 第一排序键（契约「勾选 > 拖的先后 > 自动排序」，见 core/route-orchestrator.js）
+  const orderRank =
+    Array.isArray(manualOrder) && manualOrder.length > 0
+      ? new Map(manualOrder.map((id, index) => [String(id), index]))
+      : null
+  const decision = decideRoute(candidates, routeCtx, { tried: new Set(), maxPerTier: 4, orderRank })
   if (decision.chain.length === 0) {
     // 报错文案在 core/router.js：决策页要能显示同一句话，两处各写一遍必然漂移
     const failure = admissionFailure(candidates, {

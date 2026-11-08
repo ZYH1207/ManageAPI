@@ -52,6 +52,45 @@ console.log('[1] 上报落盘：形状 / 保持期钳制 / 历史封顶')
   ok(normalizeFailover('junk').reports.length === 0, '非法输入 → 空形状')
 }
 
+console.log('[1b] 同作用域去重：重复上报续期，不叠记录（级联修复回归）')
+{
+  const entry = { reports: [] }
+  const first = addFaultReport(entry, { offerId: 'o-dup', kind: 'timeout', message: '第一次', holdMs: 60_000 })
+  const firstUntil = first.until // 注意 first 就是 reports[0] 本体（同引用），先取值再比对
+  ok(!first.deduped, '首报不是重复：调用方要重选')
+  // 立刻再报同一件事：现实里就是「站宕机，每个失败请求都广播一次」
+  const dup = addFaultReport(entry, { offerId: 'o-dup', kind: 'timeout', message: '第二次' })
+  ok(dup.deduped === true, '重复上报标记 deduped，调用方跳过重选')
+  ok(entry.reports.length === 1, `不叠记录：${entry.reports.length} 条`)
+  ok(entry.reports[0].count === 2, `命中计数累加：${entry.reports[0].count}`)
+  ok(entry.reports[0].until > firstUntil + 30_000, 'until 续期到更晚（保持期被刷新）')
+  // kind 不同不算同一件事：余额类和超时类是两个病
+  const other = addFaultReport(entry, { offerId: 'o-dup', kind: 'quota' })
+  ok(!other.deduped && entry.reports.length === 2, '不同 kind 各记一条')
+  // 模型级上报的 scope 带 providerId：同模型不同站不互吞
+  const mA = { reports: [] }
+  const mB = { reports: [] }
+  const m1 = addFaultReport(mA, { modelKey: 'gpt-x', providerId: 'pA' })
+  const m2 = addFaultReport(mB, { modelKey: 'gpt-x', providerId: 'pB' })
+  ok(!m1.deduped && !m2.deduped, '同模型不同站（不同库）：互不去重')
+  const mShared = { reports: [] }
+  addFaultReport(mShared, { modelKey: 'gpt-x', providerId: 'pA' })
+  const mDup = addFaultReport(mShared, { modelKey: 'gpt-x', providerId: 'pA' })
+  ok(mDup.deduped === true, '同模型同站：去重')
+  // 活跃中的记录不被历史封顶切掉：先攒一批历史并让它们全部到期（真实 churn 顺序
+  // ——历史来自「报过、到期的旧账」，活跃记录是在这之后陆续插进来的），
+  // 再放两条活跃的：它们必须活着，最旧的已结算历史先出去
+  const storm = { reports: [] }
+  for (let i = 0; i < MAX_FAULT_REPORTS + 10; i += 1) addFaultReport(storm, { offerId: `o-old-${i}`, holdMs: 60_000 })
+  expireFaultReports(storm, Date.now() + 10 * 60_000) // 全部推到「已到期」
+  addFaultReport(storm, { offerId: 'o-keep', holdMs: 3_600_000 })
+  addFaultReport(storm, { offerId: 'o-new', holdMs: 60_000 })
+  ok(storm.reports.length === MAX_FAULT_REPORTS, `封顶仍生效：${storm.reports.length}`)
+  ok(storm.reports.some((r) => r.offerId === 'o-keep'), '生效中的记录没被历史挤掉')
+  ok(storm.reports.some((r) => r.offerId === 'o-new'), '新上报正常落库')
+  ok(storm.reports.every((r) => r.offerId !== 'o-old-0'), '最旧的已结算记录先出去')
+}
+
 console.log('[2] 活跃判定与到期：到期即「故障可能解除」，自动恢复参选资格')
 {
   const entry = { reports: [] }
