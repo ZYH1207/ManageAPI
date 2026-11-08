@@ -29,11 +29,6 @@ export const FAULT_HOLD_MS = 10 * 60_000
 /** 上报历史保留上限：监控打得多也不许把 db.json 撑爆 */
 export const MAX_FAULT_REPORTS = 200
 
-/** db.failover 的缺省形状（store.js 的 emptyDb 引用同一口径） */
-export function defaultFailover() {
-  return { reports: [] }
-}
-
 /** 任意输入 → 完整形状；reports 非数组丢弃 */
 export function normalizeFailover(value) {
   const raw = value && typeof value === 'object' ? value : {}

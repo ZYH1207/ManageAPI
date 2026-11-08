@@ -58,12 +58,6 @@ const ADAPTERS = [
   },
 ]
 
-/** 这个域名有专门的余额适配器吗（前端据此提示「能自动读」还是「只能手填」） */
-export function hasVendorBalanceAdapter(baseUrl) {
-  const host = String(baseUrl).match(/^https?:\/\/([^/]+)/i)?.[1] || ''
-  return ADAPTERS.some((a) => a.match.test(host))
-}
-
 /**
  * 尝试用厂商专用接口读余额。
  * @returns {Promise<{ok:true, remaining:number, currency:string, via:string} | {ok:false, reason:string} | null>}

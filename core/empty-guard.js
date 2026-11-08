@@ -19,23 +19,6 @@
  * 界面怎么展示在 web/app.js。
  */
 
-/** 病型 → 给人看的一句话。前端直接照着显示，不再各写一套文案 */
-export const EMPTY_REASON_LABEL = {
-  'no-content': '上游返回了空回合：没有正文，也没有工具调用',
-  'tool-call-dropped': '上游把工具调用弄丢了：带了 tools，却既不说话也不调工具',
-}
-
-/** 处置结果 → 给人看的一句话 */
-export const EMPTY_ACTION_LABEL = {
-  'repaired-local': '本地解析重建（不用问模型）',
-  'repair-failed': '认出了标记但解析不出，转补问',
-  off: '守卫关闭，只记录未处置',
-  'retry-same': '同站补问一次',
-  'retry-switch': '换一家补问一次',
-  'no-retry': '没有可换的站点，直接放行',
-  'gave-up': '补问后仍然空，放行（并记为站点失败）',
-}
-
 /** 守卫配置归一化：非法值回落默认，绝不让拼错的值悄悄变成「开着」 */
 export function normalizeEmptyGuard(raw) {
   const mode = raw?.mode === 'switch' ? 'switch' : 'same'
@@ -406,9 +389,4 @@ export function pickClosestCandidate(rows = [], current = {}) {
     }
   }
   return best
-}
-
-/** 改道复检结果的落库入口（与 noteDetourCheck 分开放，便于 inventory 层引用） */
-export function applyDetourCheck(db, offerId, { ok } = {}) {
-  return noteDetourCheck(db, offerId, { ok })
 }

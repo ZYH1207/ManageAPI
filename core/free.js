@@ -74,11 +74,6 @@ export function parseFreeModel(name) {
   return { isFree: false, model: raw }
 }
 
-/** 给模型名加上免费前缀，用于 `/v1/models` 里区分来源 */
-export function withFreePrefix(model) {
-  return `${FREE_PREFIX}${model}`
-}
-
 /**
  * 一个请求最终走哪个池。
  *

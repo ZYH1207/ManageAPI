@@ -20,8 +20,6 @@ export const TTFT_TIER_MIN = 1000
 export const TTFT_TIER_MAX = 20000
 export const TTFT_TIER_STEP = 1000
 /** 半档：跨过它就是上一档 */
-export const TTFT_SNAP_BOUNDARY = 500
-
 /** 20 个档位：1000, 2000, …, 20000 */
 export const TTFT_TIERS = (() => {
   const list = []

@@ -193,7 +193,3 @@ export const CONSUMERS = [
   },
 ]
 
-/** 按 id 找一条能力（跨协议）。 */
-export function findCapability(protocolId, capabilityId) {
-  return (PROTOCOLS[protocolId]?.capabilities || []).find((cap) => cap.id === capabilityId) || null
-}

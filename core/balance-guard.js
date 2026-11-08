@@ -216,21 +216,3 @@ export function assessAllBalances(providers = [], { dailySpendMap = new Map(), .
   return out
 }
 
-/** 面板用的一句话摘要。 */
-export function balanceSummary(assessments = new Map()) {
-  const counts = {}
-  let worst = null
-  for (const [providerId, a] of assessments) {
-    counts[a.state] = (counts[a.state] || 0) + 1
-    if (a.state === BALANCE.CRITICAL || a.state === BALANCE.LOW) {
-      if (!worst || (a.daysLeft ?? Infinity) < (worst.daysLeft ?? Infinity)) {
-        worst = { providerId, ...a }
-      }
-    }
-  }
-  return {
-    counts,
-    worst,
-    text: Object.entries(counts).map(([k, n]) => `${k}×${n}`).join(' ') || '无数据',
-  }
-}

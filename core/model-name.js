@@ -221,25 +221,6 @@ export function pickDisplayName(names, official = null) {
   return [...counts.keys()].sort(rank)[0]
 }
 
-/** 一组写法里的「多数派」（行内标少数派写法用：多数派不值得每行重复一遍） */
-export function dominantName(names) {
-  const counts = new Map()
-  for (const raw of names || []) {
-    const name = modelBaseKey(raw)
-    if (!name) continue
-    counts.set(name, (counts.get(name) || 0) + 1)
-  }
-  let best = ''
-  let bestCount = -1
-  for (const [name, count] of counts) {
-    if (count > bestCount || (count === bestCount && name < best)) {
-      best = name
-      bestCount = count
-    }
-  }
-  return best
-}
-
 /**
  * 合并总览：给界面用。
  *
@@ -349,18 +330,3 @@ export function benchmarkEntry(table, key) {
   return canonIndex(table).get(id) || null
 }
 
-/** 把用户从界面传来的别名表洗干净：键统一成 modelBaseKey，值原样（拆开要靠它） */
-export function normalizeAliasTable(input) {
-  const out = {}
-  if (!input || typeof input !== 'object' || Array.isArray(input)) return out
-  let count = 0
-  for (const [rawKey, rawValue] of Object.entries(input)) {
-    const key = modelBaseKey(rawKey)
-    const value = String(rawValue ?? '').trim().toLowerCase()
-    if (!key || !value) continue
-    out[key] = value
-    count += 1
-    if (count >= 500) break
-  }
-  return out
-}

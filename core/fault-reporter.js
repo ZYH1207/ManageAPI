@@ -78,11 +78,6 @@ export function resolveReportUrl(db) {
   return cfg.url || defaultReportUrl()
 }
 
-/** 事件账缺省形状 */
-export function defaultFaultEvents() {
-  return []
-}
-
 /** 幂等：缺键补上 */
 export function ensureFaultKeys(db) {
   if (!Array.isArray(db.faultEvents)) db.faultEvents = []
@@ -158,16 +153,6 @@ export async function recordFaultEvent(entry, { dedupeMs = 0 } = {}) {
       db.faultEvents.splice(0, db.faultEvents.length - MAX_FAULT_EVENTS)
     }
     return record
-  }).catch(() => null)
-}
-
-/** 更新一条事件的上报结果（成功/失败原因） */
-export async function markFaultEvent(id, patch) {
-  return mutate((db) => {
-    ensureFaultKeys(db)
-    const e = db.faultEvents.find((x) => x.id === id)
-    if (e) Object.assign(e, patch)
-    return e || null
   }).catch(() => null)
 }
 

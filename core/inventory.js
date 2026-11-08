@@ -93,13 +93,6 @@ export function normalizeBaseUrl(input) {
   return url
 }
 
-// ---------------------------------------------------------------- providers
-
-export async function listProviders() {
-  const db = await readDb()
-  return db.providers
-}
-
 export async function createProvider({ name, baseUrl, kind = 'unknown', note = '' }) {
   if (!name || !String(name).trim()) throw new Error('站点名称不能为空')
   const normalized = normalizeBaseUrl(baseUrl)
@@ -945,12 +938,6 @@ export async function setGatewayEnabled(enabled) {
   })
 }
 
-/** 按明文 key 找记录，鉴权用。 */
-export async function findGatewayKey(value) {
-  const db = await readDb()
-  return db.settings.gateway?.keys?.find((k) => k.key === value) || null
-}
-
 // ------------------------------------------------------------------- probes
 
 /** 探针记录的保留窗口：长期评分用 14 天半衰期，留 30 天足够，再老的数据只是占体积 */
@@ -1017,12 +1004,6 @@ export async function recordProbe(record) {
     return entry
   })
 }
-
-export async function listProbes(limit = 100) {
-  const db = await readDb()
-  return db.probes.slice(-limit).reverse()
-}
-
 /**
  * 给某个站的一个分组统一设置倍率。
  *
@@ -1403,11 +1384,6 @@ export async function setFreeQuota(offerId, rawQuota) {
   })
 }
 
-/** 清掉配额，回到「不限量」。 */
-export async function clearFreeQuota(offerId) {
-  return setFreeQuota(offerId, null)
-}
-
 /**
  * 真实调用后扣减免费额度。
  *
@@ -1581,13 +1557,6 @@ export async function setPinnedOffer(modelKey, offerId) {
     return db.pinnedOffer[key]
   })
 }
-
-export async function getManualOrder(modelKey) {
-  const db = await readDb()
-  const key = identityKey(modelKey, db.settings?.modelAliases || {})
-  return db.manualOrder?.[key] || null
-}
-
 // ----------------------------------------------------------- 真实流量计数
 
 const TRAFFIC_WINDOW_MS = 3600 * 1000
@@ -1703,12 +1672,6 @@ export async function addTraffic(entries, windowMs = TRAFFIC_WINDOW_MS) {
   })
 }
 
-// ------------------------------------------------------------ 路由决策日志
-
-export async function recordRouting(entry) {
-  return recordRoutingBatch([entry])
-}
-
 /**
  * 批量写空回合记录（异常诊断页）。
  *
@@ -1783,22 +1746,9 @@ export async function resolveEmptyDetour(offerId, options = {}) {
   return mutate((db) => resolveDetour(db, offerId, options))
 }
 
-/** 批量写故障信号（攒批理由同决策日志） */
-export async function recordFaultBatch(signals = []) {
-  if (!signals.length) return []
-  return mutate((db) => signals.map((signal) => recordFaultSignal(db, signal)))
-}
-
 /** 清掉某个供给上的故障信号（恢复时调） */
 export async function clearFaults({ offerId = null, providerId = null } = {}) {
   return mutate((db) => clearFaultSignals(db, { offerId, providerId }))
-}
-
-/** 故障快照（已把临时改道并进来）：自动路由挑优时读这一份就够 */
-export async function faultSnapshot() {
-  const db = await readDb()
-  ensureFaultSignals(db)
-  return combineWithDetours(db, activeFaultSignals(db))
 }
 
 /** 记一次改道复检的结果（连续正常到阈值就自动解除改道） */
@@ -2224,16 +2174,3 @@ export function publicProvider(p) {
       ? (p.kind === 'sub2api' && refreshTokenEnc ? 'refresh' : p.adminTokenSource === 'login' && loginCred ? 'login' : null) : null }
 }
 
-/**
- * 揭开登录凭据（仅供「重新登录」的编排使用）；没有返回 null。
- */
-export async function revealLoginCred(providerId) {
-  const db = await readDb()
-  const provider = db.providers.find((p) => p.id === providerId)
-  if (!provider?.loginCred) return null
-  try {
-    return JSON.parse(await decryptSecret(provider.loginCred))
-  } catch {
-    return null
-  }
-}
