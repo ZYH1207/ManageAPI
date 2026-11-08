@@ -314,7 +314,7 @@ export function scoreRow(row, ctx, opts = {}) {
  *   degraded: boolean,
  * }}
  */
-export function decideRoute(rows = [], ctx = {}, { tried = new Set(), maxPerTier = 3, scoring = {} } = {}) {
+export function decideRoute(rows = [], ctx = {}, { tried = new Set(), maxPerTier = 3, scoring = {}, orderRank = null } = {}) {
   // ① 逐条打分，并把余额状态**回填进行本身**
   //
   // 为什么必须回填：兜底阶梯（core/fallback-ladder.js）靠 `row.balanceDepleted`
@@ -338,8 +338,26 @@ export function decideRoute(rows = [], ctx = {}, { tried = new Set(), maxPerTier
     }
   })
 
-  // ② 按综合分排序（只调顺序，不改准入判定 —— 准入仍由 selectCandidates 负责）
-  scored.sort((a, b) => a.routeScore - b.routeScore)
+  // ② 排序。
+  //
+  // 调用方传了 orderRank（手动顺序 offerId → 名次）时，**手动顺序是第一排序键**，
+  // routeScore 只在手动顺序没覆盖的行之间起作用——「勾选 > 拖的先后 > 自动排序」
+  // 是决策页白纸黑字的契约，selectCandidates 已经按它排好了，这里不能再按分重排
+  // 把它抹掉（2026-11-08 级联修复：decideRoute 引入后手动拖序在网关侧全部失效，
+  // run-empty-guard 整条链红灯就是这么来的）。
+  // 安全不受伤：兜底阶梯（buildLadder）仍按准入分层，把坏站拖到第一位也只是
+  // 「同级里排前面」，不会越过准入。
+  if (orderRank instanceof Map && orderRank.size > 0) {
+    scored.sort((a, b) => {
+      const ra = orderRank.get(a.offer?.id)
+      const rb = orderRank.get(b.offer?.id)
+      const na = ra === undefined ? Number.MAX_SAFE_INTEGER : ra
+      const nb = rb === undefined ? Number.MAX_SAFE_INTEGER : rb
+      return na !== nb ? na - nb : a.routeScore - b.routeScore
+    })
+  } else {
+    scored.sort((a, b) => a.routeScore - b.routeScore)
+  }
 
   // ③ 兜底阶梯：保证非空
   let ladder = buildLadder(scored, { tried, maxPerTier })

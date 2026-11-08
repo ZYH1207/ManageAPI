@@ -117,6 +117,12 @@ try {
   startMock(5105, 'good')
   startMock(5106, 'leak', { EMPTY_ONCE: '1' })
   await startDaemon()
+  // 关掉定时探测：调度器首针（启动 5s 后）会把「从未探测」的 A 也探一遍，
+  // A 的空回合被探针消费/判可疑，后面 [1]-[3] 的剧本（A 便宜但坏、零证据兜底）
+  // 就全乱了。本测试的前提是「A 永远不被探测」（见下面「只探 B」的注释），
+  // 所以定时探测必须显式关掉——间隔 0 = 自愈模式，只复测冷却中的供给，
+  // 不会碰零证据的 A。这是测试配置，不是生产行为改动。
+  await api('PATCH', '/api/settings', { probeIntervalMinutes: 0 })
   await wait(500)
 
   let state = await api('GET', '/api/state')
