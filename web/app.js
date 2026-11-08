@@ -47,6 +47,93 @@ let decisionOnlyAdmitted = localStorage.getItem(DECISION_ONLY_ADMITTED_KEY) === 
 // （比价页已并入智能决策，见 renderDecision）
 const HEAVY_TABS = new Set(['decision'])
 
+// ---------------------------------------------------------------- 列设置与 CSV 导出
+// 参考外部网关日志页的「列设置 / 导出 Excel」动作组：列显示本地记住，导出走 CSV
+// （带 BOM，Excel 双击打开不乱码；改 .xlsx 要引依赖，这个项目零依赖）。
+const COLS_STORE_KEY = 'manageapi.cols'
+// 各页可隐藏的列：键与 th/td 上的 data-col 一一对应，CSS 里有配套的 hide-col-<键> 规则
+const DECISION_COLS = [
+  ['group', '分组'],
+  ['price', '价格'],
+  ['quality', '质量'],
+  ['effective', '有效成本'],
+  ['latency', '延迟'],
+  ['score', '排序分'],
+  ['status', '状态'],
+]
+const GWLOG_COLS = [
+  ['key', 'Key'],
+  ['model', '模型'],
+  ['site', '站点'],
+  ['tokens', 'TOKEN'],
+  ['latency', '延迟'],
+  ['outcome', '结果'],
+]
+let hiddenCols = (() => {
+  try {
+    const raw = JSON.parse(localStorage.getItem(COLS_STORE_KEY) || '{}')
+    return typeof raw === 'object' && raw ? raw : {}
+  } catch {
+    return {}
+  }
+})()
+
+function saveHiddenCols() {
+  try {
+    localStorage.setItem(COLS_STORE_KEY, JSON.stringify(hiddenCols))
+  } catch {
+    /* 隐私模式下 localStorage 可能不可用 */
+  }
+}
+
+/** 表格容器上的隐藏类（CSS 按 hide-col-<键> 整列藏掉） */
+function colHideClass(page) {
+  return (hiddenCols[page] || []).map((c) => `hide-col-${c}`).join(' ')
+}
+
+/** 「列设置」下拉：勾选 = 显示。勾选状态变化走 change 委托（data-colset） */
+function colMenuHtml(page, cols) {
+  const hidden = new Set(hiddenCols[page] || [])
+  return `
+    <span class="colmenu">
+      <button class="ghost with-icon" data-act="colmenu" title="${esc(t('勾掉哪列就整列隐藏，只影响这一页的显示'))}">${icon('columns')}${t('列设置')}</button>
+      <span class="colmenu-pop" hidden>
+        <span class="colmenu-title">${t('显示的列')}</span>
+        ${cols
+          .map(
+            ([key, label]) => `
+          <label><input type="checkbox" data-colset="${esc(page)}" data-col="${esc(key)}" ${hidden.has(key) ? '' : 'checked'} /> ${esc(label)}</label>`,
+          )
+          .join('')}
+      </span>
+    </span>`
+}
+
+/** CSV 单元格转义：带逗号/引号/换行就整体加引号 */
+function csvCell(value) {
+  const s = value === null || value === undefined ? '' : String(value)
+  return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
+}
+
+/** 下载 CSV（\ufeff BOM 让 Excel 认 UTF-8） */
+function downloadCsv(filename, header, rows) {
+  const body = [header, ...rows].map((r) => r.map(csvCell).join(',')).join('\r\n')
+  const blob = new Blob(['\ufeff' + body], { type: 'text/csv;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  a.click()
+  setTimeout(() => URL.revokeObjectURL(url), 1000)
+}
+
+/** 导出文件名里的时间戳：20261108-1259 */
+function fileStamp() {
+  const d = new Date()
+  const p = (n) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}`
+}
+
 /**
  * 价速比列：价格 ÷ 首字延迟，越小越优先（排序口径在 core/decision-mode.js#tierMetricOf，
  * 这里只负责展示）。排序按每毫秒算，展示换算成「每等 1 秒首字花多少钱」——
@@ -4098,39 +4185,52 @@ function renderDecision() {
           : null
       const officialPctText =
         officialPct === null ? '' : officialPct < 1 ? '<1%' : `${Math.round(officialPct)}%`
+      // 价格列参考版式：主行综合价，次行输入/输出单价细目（按次计费显示单次价）。
+      // 细目来自比价 rank 行透传（daemon/server.js），旧后端没这些字段时次行不画
+      const priceSub =
+        candidate.perCall && candidate.callPriceCny !== null && candidate.callPriceCny !== undefined
+          ? `${t('按次')} ${priceText(candidate.callPriceCny)}`
+          : candidate.inCnyPerMtok != null || candidate.outCnyPerMtok != null
+            ? `${t('输入')} ${priceText(candidate.inCnyPerMtok)} · ${t('输出')} ${priceText(candidate.outCnyPerMtok)}`
+            : ''
       // 整行可点 = 勾它为当前使用（点选逻辑见文件尾部的 pointerup 分支）：
       // 只改勾选，顺序不动；能不能真发出去看状态列，失败了网关会往后转移
       return `
         <tr class="dec-row${isChosen ? ' cheapest' : ''}" data-offer="${esc(candidate.offerId)}" title="${t('点击勾选这一行为当前使用（再点一下取消勾选），顺序不动')}">
           <td class="dec-grip-cell"><span class="dec-grip" title="${t('拖动调整顺序')}">${icon('grip')}</span></td>
           <td class="num" style="color:var(--faint)">${index + 1}</td>
-          <td>${esc(candidate.providerName || '—')}${isChosen ? ' <span class="badge ok">当前</span>' : ''}${
+          <td data-col="site"><span class="cell-main">${esc(candidate.providerName || '—')}</span>${isChosen ? ' <span class="badge ok">当前</span>' : ''}${
             candidate.faulted ? ` <span class="badge danger failover-badge" title="${t('外部监控上报了真实故障（探针没测到也以监控为准），已故障转移；保持期过后若仍是全场第一会自动提回')}">${t('故障转移')}</span>` : ''
           }${
             // 只标少数派写法：多数派每行重复一遍没信息量，
             // 而少数派恰恰是「为什么要合并」的证据，不能省
             candidate.upstreamName && dominant && candidate.upstreamName !== dominant
-              ? `<div class="sub mono">${t('该站写作 {name}', { name: candidate.upstreamName })}</div>`
+              ? `<div class="cell-subline mono">${t('该站写作 {name}', { name: candidate.upstreamName })}</div>`
               : ''
           }</td>
-          <td>${candidate.group ? `<span class="badge ${groupChipOf(candidate.providerId, candidate.group)}">${esc(candidate.group)}</span>` : '<span style="color:var(--faint)">默认</span>'}</td>
-          <td class="num${sortMark('price')}">${candidate.price === null ? '—' : priceText(candidate.price)}</td>
-          <td class="num">${candidate.quality === null ? '—' : candidate.quality.toFixed(2)}${
+          <td data-col="group">${candidate.group ? `<span class="badge ${groupChipOf(candidate.providerId, candidate.group)}">${esc(candidate.group)}</span>` : '<span style="color:var(--faint)">默认</span>'}</td>
+          <td class="num" data-col="price"><span class="num${sortMark('price')}">${candidate.price === null ? '—' : priceText(candidate.price)}</span>${
+            priceSub ? `<div class="cell-subline">${esc(priceSub)}</div>` : ''
+          }</td>
+          <td class="num" data-col="quality">${candidate.quality === null ? '—' : candidate.quality.toFixed(2)}${
             candidate.confidence && candidate.confidence !== 'high'
-              ? `<div class="sub">${candidate.samples} ${t('样本')}</div>`
+              ? `<div class="cell-subline">${candidate.samples} ${t('样本')}</div>`
               : ''
           }</td>
-          <td class="num${sortMark('value')}">${candidate.effective === null ? '—' : priceText(candidate.effective)}${
+          <td class="num" data-col="effective"><span class="num${sortMark('value')}">${candidate.effective === null ? '—' : priceText(candidate.effective)}</span>${
             // 官方参照（比价页并进来的那套）：本行综合成本是原厂有效成本的几折。
             // 与原比价页同口径：分子分母都是「输入25%/输出75%」加权的综合成本，
             // 不拿质量加权后的 effective 去比——那会比出另一个意思
             officialPct === null
               ? ''
-              : `<div class="sub" title="${esc(t('本行综合成本为原厂有效成本的 {pct}（按波峰口径）', { pct: officialPctText }))}">${t('原厂')} ${officialPctText}</div>`
+              : `<div class="cell-subline" title="${esc(t('本行综合成本为原厂有效成本的 {pct}（按波峰口径）', { pct: officialPctText }))}">${t('原厂')} ${officialPctText}</div>`
           }</td>
-          <td class="num${sortMark('speed')}">${ttftCell(candidate, stale)}</td>
-          <td class="num">${tpsCell(candidate)}</td>
-          <td>${badges}${candidate.statusReason ? `<div class="sub">${esc(candidate.statusReason)}</div>` : ''}${
+          <td data-col="latency"><div class="stack-cell">
+            <span class="stack-line"><span class="k">${t('首字')}</span><span class="v">${ttftCell(candidate, stale)}</span></span>
+            <span class="stack-line"><span class="k">${t('吐字')}</span><span class="v">${tpsCell(candidate)}</span></span>
+          </div></td>
+          <td data-col="score">${scoreCell(candidate)}${basisCell(candidate)}</td>
+          <td data-col="status">${badges}${candidate.statusReason ? `<div class="cell-subline">${esc(candidate.statusReason)}</div>` : ''}${
             // 失败率是统计量，统计量会冤枉人（网关自己的 bug 制造过 507 次假失败）。
             // 被判「失败率过高」的行必须有一条申诉通道，否则用户只能等——而旧代码
             // 的「等」实际可能比承诺久得多。只对 error-rate 给这个入口：余额不足、
@@ -4143,7 +4243,7 @@ function renderDecision() {
     }).join('')
 
     return `
-      <div class="table-wrap" data-model="${esc(decision.modelKey)}">
+      <div class="table-wrap ${colHideClass('decision')}" data-model="${esc(decision.modelKey)}">
         <div class="group-head">
           <button class="ghost tiny" data-act="toggle-panel" data-panel="${esc(panelKey)}">${isCollapsed ? '▸' : '▾'}</button>
           <span class="model mono">${esc(shownName)}</span>
@@ -4162,11 +4262,12 @@ function renderDecision() {
         ${isCollapsed ? '' : `
         <table>
           <thead><tr>
-            <th style="width:30px"></th><th class="num">#</th><th>站点</th><th>分组</th>
-            <th class="num${sortMark('price')}">价格</th><th class="num">质量</th>
-            <th class="num${sortMark('value')}">有效成本</th><th class="num${sortMark('speed')}">首字</th>
-            <th class="num" title="${esc(t('真实流量实测的吐字速度，每秒多少 token。没有真实样本时是「—」，不拿探针冒充'))}">吐字</th>
-            <th>状态</th>
+            <th style="width:30px"></th><th class="num">#</th><th data-col="site">站点</th><th data-col="group">分组</th>
+            <th class="num${sortMark('price')}" data-col="price">价格</th><th class="num" data-col="quality">质量</th>
+            <th class="num${sortMark('value')}" data-col="effective">有效成本</th>
+            <th data-col="latency" class="${sortMark('speed')}">${t('延迟')}</th>
+            <th data-col="score" title="${esc(t('自动路由真正用来排序的分数，越小越优先；下方小字写明它是怎么算出来的（实测 / 标定 / 仅探针）'))}">${t('排序分 / 依据')}</th>
+            <th data-col="status">状态</th>
           </tr></thead>
           <tbody>${rows}</tbody>
         </table>`}
@@ -4201,6 +4302,10 @@ function renderDecision() {
         <span class="switch-text"><b>${t('只显示可使用')}</b></span>
       </label>
       <span class="grow"></span>
+      <button class="ghost with-icon" data-act="refresh-state" title="${t('重新拉取评分、状态与当前选')}">${icon('refresh')}${t('刷新')}</button>
+      <button class="ghost" data-act="decision-reset" title="${t('清空搜索、恢复默认列显示并展开全部模型')}">${t('重置')}</button>
+      ${colMenuHtml('decision', DECISION_COLS)}
+      <button class="ghost with-icon" data-act="decision-export" title="${t('把当前显示的模型与候选导出成 CSV，可用 Excel / 表格软件打开')}">${icon('download')}${t('导出 CSV')}</button>
       <button class="with-icon" data-act="merge-models" title="${t('把同一个模型的不同写法归到一起（少个 v、点写成横线、带日期尾巴）')}">
         ${icon('swap')}${t('同模型合并')}${mergeGroupCount ? ` ${mergeGroupCount}` : ''}
       </button>
@@ -5226,6 +5331,98 @@ function formatTokens(value) {
 
 let lastCreatedGatewayKey = null
 
+// ---------------------------------------------------------------- 最近请求（参考版式）
+// 数据走 /api/usage/detail（逐条账本，字段最全：输入/输出/缓存、首字/总耗时/吐字、
+// 换站过程、协议与流式）。账本没数据时服务端自动退回决策日志，window.source 标明来源。
+// 只在网关页可见时拉一次（点「刷新」可强制重拉）；自动轮询仍走轻量 state.routing，
+// 不给每次 15 秒轮询都加一个明细请求。
+let gwLog = { data: null, loading: false, loadedOnce: false, error: null, seq: 0 }
+
+async function loadGatewayLog({ force = false } = {}) {
+  if (gwLog.loading) return
+  if (!force && gwLog.loadedOnce) return
+  const view = $('#view-gateway')
+  if (!view || view.hidden) return
+  const seq = ++gwLog.seq
+  gwLog.loading = true
+  renderGateway()
+  try {
+    const res = await api('GET', '/api/usage/detail?days=7&limit=80')
+    if (seq !== gwLog.seq) return
+    gwLog.data = res
+    gwLog.error = null
+    gwLog.loadedOnce = true
+  } catch (error) {
+    if (seq !== gwLog.seq) return
+    gwLog.error = error.message
+    gwLog.loadedOnce = true
+  } finally {
+    if (seq === gwLog.seq) {
+      gwLog.loading = false
+      renderGateway()
+    }
+  }
+}
+
+/** 智能决策页导出：把当前全部模型块的候选摊成 CSV（无服务端端点，前端拼）。
+ * 数字用原值不格式化，表格软件里才能继续算。 */
+function exportDecisionCsv() {
+  const rows = []
+  for (const decision of state.decisions || []) {
+    for (const [index, c] of (decision.candidates || []).entries()) {
+      rows.push([
+        decision.display || decision.modelKey,
+        index + 1,
+        c.providerName || '',
+        c.group || '',
+        c.upstreamName || '',
+        c.price ?? '',
+        c.inCnyPerMtok ?? '',
+        c.outCnyPerMtok ?? '',
+        c.quality ?? '',
+        c.samples ?? '',
+        c.effective ?? '',
+        c.ttftMs ?? '',
+        c.realTtftMs ?? '',
+        c.realMsPerToken ? Math.round((1000 / c.realMsPerToken) * 10) / 10 : '',
+        c.routeScore ?? '',
+        c.scoreExplain || '',
+        c.status || '',
+        c.statusReason || '',
+      ])
+    }
+  }
+  if (!rows.length) {
+    toast('没有可导出的决策', true)
+    return
+  }
+  downloadCsv(
+    `智能决策-${fileStamp()}.csv`,
+    [
+      '模型',
+      '名次',
+      '站点',
+      '分组',
+      '站上写法',
+      '综合价(元/百万token)',
+      '输入(元/百万token)',
+      '输出(元/百万token)',
+      '质量',
+      '样本',
+      '有效成本(元/百万token)',
+      '探针首字ms',
+      '真实首字ms',
+      '吐字tok/s',
+      '排序分',
+      '依据',
+      '状态',
+      '原因',
+    ],
+    rows,
+  )
+  toast(t('已导出 {n} 条候选', { n: rows.length }))
+}
+
 function renderGateway() {
   const view = $('#view-gateway')
   const gateway = state.gateway
@@ -5275,6 +5472,11 @@ function renderGateway() {
         <span class="badge ${gateway.enabled ? 'ok' : 'warn'}">${gateway.enabled ? '运行中' : '已关闭'}</span>
         <span class="badge">${gateway.keys.length} 把 Key</span>
         <span class="badge">${healthyModels} 条供给可路由</span>
+        ${
+          routing.length
+            ? `<span class="badge ${okCount === routing.length ? 'ok' : 'warn'}" title="${t('最近经过网关的请求里，正常返回的单数（客户端自己断开的不算失败）')}">${t('近期')} ${okCount}/${routing.length} ${t('成功')}</span>`
+            : ''
+        }
       </div>
     </div>`
 
@@ -5321,12 +5523,22 @@ function renderGateway() {
   const keyRows = gateway.keys.map((record) => {
     const used = byKey[record.id] || {}
     const total = (used.input || 0) + (used.output || 0)
+    // 参考版式：名称为主行、Key 掩码为次行；用量列带月限额进度条。
+    // 口径沿用旧表并在表头写明：分子是近 30 天用量，分母是「月限额」——
+    // 两个口径不同就不装作相同，超过 100% 时进度条变红
+    const limit = record.monthlyTokenLimit || 0
+    const pctUsed = limit > 0 ? Math.min(100, Math.round((total / limit) * 100)) : 0
     return `
       <tr data-gwkey="${esc(record.id)}">
-        <td>${esc(record.name)}</td>
-        <td class="mono">sk-mapi-••••${esc(String(record.key).slice(-4))}</td>
-        <td class="num">${formatTokens(total)}</td>
-        <td class="num">${record.monthlyTokenLimit ? formatTokens(record.monthlyTokenLimit) : '不限'}</td>
+        <td>
+          <span class="cell-main">${esc(record.name)}</span>
+          <div class="cell-subline mono">sk-mapi-••••${esc(String(record.key).slice(-4))}</div>
+        </td>
+        <td class="num">
+          <span class="num">${formatTokens(total)}</span>
+          <div class="cell-subline">${limit ? t('月限额 {n}', { n: formatTokens(limit) }) : t('不限')}</div>
+          ${limit ? `<div class="qbar${pctUsed >= 100 ? ' over' : ''}" title="${t('近 30 天用量 ÷ 月限额')}"><i style="width:${pctUsed}%"></i></div>` : ''}
+        </td>
         <td>
           <button class="ghost" data-act="toggle-gwkey" style="padding:0">
             <span class="badge ${record.enabled ? 'ok' : ''}">${record.enabled ? '启用' : '停用'}</span>
@@ -5346,8 +5558,9 @@ function renderGateway() {
     <div class="table-wrap">
       <table>
         <thead><tr>
-          <th>名称</th><th>Key</th><th class="num">30 天 token</th>
-          <th class="num">月限额</th><th>状态</th><th></th>
+          <th>Key</th>
+          <th class="num" title="${t('分子是近 30 天 token 用量；进度条拿它除以月限额，两个口径不同，仅供参考')}">${t('近 30 天用量 / 月限额')}</th>
+          <th>${t('状态')}</th><th></th>
         </tr></thead>
         <tbody>${keyRows}</tbody>
       </table>
@@ -5359,41 +5572,117 @@ function renderGateway() {
       <button type="submit" class="primary">新建 Key</button>
     </form>`
 
-  const logRows = routing.length === 0
-    ? `<tr><td colspan="9" style="text-align:center;color:var(--faint);padding:28px">还没有请求经过网关</td></tr>`
-    : routing.map((r) => `
-        <tr>
-          <td style="color:var(--faint)">${fmtDateTime(r.ts)}</td>
-          <td>${esc(r.keyName || '—')}</td>
-          <td class="mono">${esc(r.model)}${r.autoRoute ? ` <span class="badge" title="${t('这一单是被自动路由改派的，不是客户端真的点名了这个模型')}">${t('接管')}</span>` : ''}</td>
-          <td>${r.chosenProviderName ? `${esc(r.chosenProviderName)}${r.chosenGroup ? ` <span class="badge ${r.pool === 'free' ? 'vchip-free' : groupChipOf(r.chosenProviderId, r.chosenGroup)}">${esc(r.chosenGroup)}</span>` : ''}` : '<span class="badge danger">全部失败</span>'}</td>
-          <td class="num">${r.usage ? formatTokens((r.usage.prompt_tokens || 0) + (r.usage.completion_tokens || 0)) : '—'}</td>
-          <td class="num">${r.attempts}</td>
-          <td class="num">${r.ttftMs ? `${r.ttftMs}ms` : '—'}</td>
-          <td class="num">${r.latencyMs}ms</td>
-          <td>${r.outcome === 'ok' ? '<span class="badge ok">成功</span>' : r.outcome === 'client-aborted' ? `<span class="badge" title="${t('客户端主动断开请求，不予处理')}">${t('客户端断开')}</span>` : `<span class="badge danger">${esc(r.outcome)}</span>`}</td>
-        </tr>`).join('')
+  // ---- 最近请求：参考调用日志页的富行版式 ----
+  // 主行身份（Key/模型/站点），次行细节（上游模型、换站过程）；TOKEN 与延迟两列
+  // 纵向堆叠「小标签 + 值」。数据来自 /api/usage/detail（loadGatewayLog 拉一次）。
+  const gwAll = gwLog.data?.requests || []
+  const gwWin = gwLog.data?.window || {}
+  const gwFilter = (filters.gwlog || '').trim().toLowerCase()
+  const gwRows = gwFilter
+    ? gwAll.filter((r) =>
+        [r.model, r.keyName, r.providerName, r.group, r.upstreamModel]
+          .filter(Boolean)
+          .some((s) => String(s).toLowerCase().includes(gwFilter)),
+      )
+    : gwAll
+  const gwOkShown = gwRows.filter((r) => r.outcome === 'ok').length
+  const sourceNote =
+    gwWin.source === 'log'
+      ? t('逐条账本没数据，明细退回决策日志（最近 500 单）')
+      : gwWin.capped
+        ? t('近 7 天共 {n} 单，只展示最新 {m} 单', { n: gwWin.available, m: gwWin.shown })
+        : ''
+  const logRows = gwLog.error
+    ? `<tr><td colspan="7" style="text-align:center;color:var(--danger);padding:24px">${esc(gwLog.error)}</td></tr>`
+    : gwLog.loading && !gwRows.length
+      ? `<tr><td colspan="7" style="text-align:center;color:var(--faint);padding:24px">${t('正在载入最近请求…')}</td></tr>`
+      : gwRows.length === 0
+        ? `<tr><td colspan="7" style="text-align:center;color:var(--faint);padding:28px">${gwFilter ? t('没有匹配的请求') : t('还没有请求经过网关')}</td></tr>`
+        : gwRows
+            .map((r) => {
+              const ok = r.outcome === 'ok'
+              const clientAborted = r.outcome === 'client-aborted'
+              const failures = r.failures || []
+              const failureTip = failures
+                .map((f) => `${f.providerName}: ${f.error}${f.ms ? ` (${f.ms}ms)` : ''}`)
+                .join('\n')
+              const failureSub = failures.length
+                ? `<div class="cell-subline" title="${esc(failureTip)}">${t('先试 {name}', { name: failures[0].providerName })}：${esc(String(failures[0].error || '').slice(0, 42))}${failures.length > 1 ? t('（共 {n} 站）', { n: failures.length }) : ''}</div>`
+                : ''
+              const streamErrSub =
+                r.outcome === 'stream-broken' && r.streamError
+                  ? `<div class="cell-subline" title="${esc(String(r.streamError))}">${esc(String(r.streamError).slice(0, 60))}</div>`
+                  : ''
+              const tokens =
+                r.input === null || r.input === undefined
+                  ? `<span class="badge warn">${t('无 usage')}</span>`
+                  : `<div class="stack-cell">
+                      <span class="stack-line"><span class="k">${t('输入')}</span><span class="v">${formatTokens(r.input)}</span></span>
+                      <span class="stack-line"><span class="k">${t('输出')}</span><span class="v">${r.output === null || r.output === undefined ? '—' : formatTokens(r.output)}</span></span>
+                      ${r.cached !== null && r.cached !== undefined ? `<span class="stack-line"><span class="k">${t('缓存')}</span><span class="v" title="${t('缓存读 token（命中率 {pct}）', { pct: r.cacheHitRate === null || r.cacheHitRate === undefined ? '—' : Math.round(r.cacheHitRate) + '%' })}">${formatTokens(r.cached)}</span></span>` : ''}
+                    </div>`
+              const latency = `<div class="stack-cell">
+                      <span class="stack-line"><span class="k">${t('首字')}</span><span class="v">${msText(r.ttftMs)}</span></span>
+                      <span class="stack-line"><span class="k">${t('总耗时')}</span><span class="v">${msText(r.latencyMs)}</span></span>
+                      <span class="stack-line"><span class="k">${t('吐字')}</span><span class="v">${r.tps === null || r.tps === undefined ? '—' : `${r.tps} tok/s`}</span></span>
+                    </div>`
+              return `<tr class="${ok || clientAborted ? '' : 'ud-bad'}">
+        <td><span class="mono" style="font-size:12px">${fmtDateTime(r.ts)}</span></td>
+        <td data-col="key"><span class="cell-main">${esc(r.keyName || '—')}</span>${r.attempts > 1 ? ` <span class="badge" title="${t('含换站在内一共试了 {n} 次', { n: r.attempts })}">×${r.attempts}</span>` : ''}</td>
+        <td data-col="model"><span class="mono cell-main">${esc(r.model)}</span>${
+                r.autoRoute
+                  ? ` <span class="badge" title="${t('这一单是被自动路由改派的，不是客户端真的点名了这个模型')}">${t('接管')}</span>`
+                  : ''
+              }${
+                r.stream === true
+                  ? ` <span class="badge">${t('流式')}</span>`
+                  : r.stream === false
+                    ? ` <span class="badge">${t('非流式')}</span>`
+                    : ''
+              }${r.protocol ? ` <span class="badge" title="${t('客户端进站走的协议')}">${esc(r.protocol)}</span>` : ''}${
+                r.upstreamModel && r.upstreamModel !== r.model
+                  ? `<div class="cell-subline mono">${t('上游 {name}', { name: r.upstreamModel })}</div>`
+                  : ''
+              }</td>
+        <td data-col="site">${r.providerName ? `${esc(r.providerName)}${r.group ? ` <span class="badge ${r.pool === 'free' ? 'vchip-free' : groupChipOf(r.providerId, r.group)}">${esc(r.group)}</span>` : ''}` : `<span class="badge danger">${t('全部失败')}</span>`}${failureSub}${streamErrSub}</td>
+        <td class="num" data-col="tokens">${tokens}</td>
+        <td data-col="latency">${latency}</td>
+        <td data-col="outcome">${ok ? `<span class="badge ok">${t('成功')}</span>` : clientAborted ? `<span class="badge" title="${t('客户端主动断开请求，不予处理')}">${t('客户端断开')}</span>` : `<span class="badge danger" title="${esc(r.outcome)}">${esc(OUTCOME_LABEL[r.outcome] ? t(OUTCOME_LABEL[r.outcome]) : r.outcome)}</span>`}</td>
+      </tr>`
+            })
+            .join('')
 
   const logBlock = `
-    <h3 class="section-title">最近请求</h3>
-    <div class="table-wrap">
-      <div class="group-head">
-        <span class="model">路由决策</span>
-        <span class="count">${okCount} / ${routing.length} 成功</span>
+    <h3 class="section-title">${t('最近请求')}</h3>
+    <div class="table-wrap ${colHideClass('gwlog')}">
+      <div class="gwlog-toolbar" style="margin-bottom:10px">
+        <span class="hint" style="margin:0">${t('{ok} / {total} 单成功', { ok: gwOkShown, total: gwRows.length })}${gwFilter ? t('（已筛选）') : ''}${sourceNote ? ` · ${sourceNote}` : ''}</span>
+        <span class="grow"></span>
+        <input id="gwlog-search" class="search" type="search" placeholder="${t('搜模型 / Key / 站点…')}" value="${esc(filters.gwlog)}" />
+        <button class="ghost tiny with-icon" data-act="gwlog-refresh" title="${t('重新载入最近请求（含明细字段）')}">${icon('refresh')}${t('刷新')}</button>
+        ${colMenuHtml('gwlog', GWLOG_COLS)}
+        <a class="ghost tiny with-icon" href="/api/export/routing?format=csv" download title="${esc(t('导出路由历史全字段（最近 2000 单），CSV 可用 Excel 打开'))}" style="text-decoration:none;display:inline-flex;align-items:center;gap:4px">${icon('download')}${t('导出 CSV')}</a>
         <button class="ghost tiny" data-act="open-usage-detail" title="${esc(
           t('每次请求的 token、缓存读/写、首字、生成速度、换站原因'),
         )}">${icon('table')}${t('详细用量')}</button>
       </div>
       <table>
         <thead><tr>
-          <th>时间</th><th>Key</th><th>请求模型</th><th>选中站点</th>
-          <th class="num">token</th><th class="num">尝试</th><th class="num">首字</th><th class="num">耗时</th><th>结果</th>
+          <th>${t('时间')}</th>
+          <th data-col="key">${t('Key')}</th>
+          <th data-col="model">${t('模型')}</th>
+          <th data-col="site">${t('站点 / 分组')}</th>
+          <th class="num" data-col="tokens">TOKEN</th>
+          <th data-col="latency">${t('延迟')}</th>
+          <th data-col="outcome">${t('结果')}</th>
         </tr></thead>
         <tbody>${logRows}</tbody>
       </table>
+      ${gwLog.loading && gwRows.length ? `<p class="hint" style="margin:6px 0 0">${t('正在刷新…')}</p>` : ''}
     </div>`
 
   view.innerHTML = `${createdBanner}${entryCard}${lanCard}${keyBlock}${logBlock}`
+  if (!view.hidden) void loadGatewayLog()
 }
 
 // --------------------------------------------------------------- 用量视图
@@ -7034,7 +7323,7 @@ let platformConnectPending = null
 let connectCancelled = false
 
 /** 搜索框内容 */
-const filters = { pricing: '', decision: '', benchmark: '' }
+const filters = { pricing: '', decision: '', benchmark: '', gwlog: '' }
 
 // 协议探查 tab 的两个视图（顶栏胶囊切换）：probe=测的主页面，records=历史大库
 let protocolViewMode = 'probe'
@@ -7159,6 +7448,11 @@ function setTab(name) {
       m.routePaint()
     }).catch(() => {})
   }
+  // 网关页：进页就把「最近请求」明细拉一次。
+  // 与路由页同一个坑：首次 render() 在 setTab() 之前，那时 #view-gateway 还是
+  // hidden，loadGatewayLog 的可见性守卫会直接返回——不补这次，直接打开
+  // #gateway 要等下一轮 15 秒轮询才有明细（实测踩到）。
+  if (name === 'gateway') void loadGatewayLog()
   // 离开路由页时断掉长连接（别让后台一直挂着）
   else if (routeViewMod) {
     routeViewMod.routeDisconnect()
@@ -7522,6 +7816,12 @@ document.addEventListener('click', async (event) => {
   if (tab) {
     setTab(tab.dataset.tab)
     return
+  }
+
+  // 列设置下拉点别处收起：点到别的弹层/按钮上也要收，但点在本组内不动
+  //（「列设置」按钮自己的开合由 data-act="colmenu" 分支处理）
+  for (const pop of document.querySelectorAll('.colmenu-pop:not([hidden])')) {
+    if (!pop.parentElement.contains(event.target)) pop.hidden = true
   }
 
   const actionButton = event.target.closest('[data-act]')
@@ -8914,6 +9214,38 @@ document.addEventListener('click', async (event) => {
     return
   }
 
+  // ------------------------------------------------ 参考版式动作组（决策页 / 网关页）
+  // 「列设置」下拉的开关；点别处自动收起（收起逻辑在本处理器最前面）
+  if (action === 'colmenu') {
+    const pop = actionButton.parentElement?.querySelector('.colmenu-pop')
+    if (pop) pop.hidden = !pop.hidden
+    return
+  }
+
+  // 决策页「重置」：只动展示状态（搜索、列显示、折叠），不碰任何数据
+  if (action === 'decision-reset') {
+    filters.decision = ''
+    hiddenCols.decision = []
+    saveHiddenCols()
+    collapsedPanels.clear()
+    renderDecision()
+    translateDom($('#view-decision') || document.body)
+    toast(t('已重置搜索、列显示与折叠'))
+    return
+  }
+
+  if (action === 'decision-export') {
+    exportDecisionCsv()
+    return
+  }
+
+  if (action === 'gwlog-refresh') {
+    await withBusy(actionButton, () => loadGatewayLog({ force: true }))
+    if (gwLog.error) toast(`${t('载入失败')}：${gwLog.error}`, true)
+    else toast(t('已刷新'))
+    return
+  }
+
   if (action === 'toggle-autorefresh') {
     setAutoRefresh(!autoRefresh)
     // 切换必须有提示：绿色=开着（每 15 秒一次），灰色=关了
@@ -10012,6 +10344,7 @@ document.addEventListener('input', (event) => {
   const map = {
     'decision-search': ['decision', renderDecision],
     'benchmark-search': ['benchmark', renderBenchmark],
+    'gwlog-search': ['gwlog', renderGateway],
   }
   const hit = map[id]
   if (!hit) return
@@ -10118,6 +10451,20 @@ document.addEventListener('change', async (event) => {
       /* 隐私模式下 localStorage 可能不可用 */
     }
     renderDecision()
+    return
+  }
+
+  // 列设置下拉里的勾选：勾掉 = 整列隐藏，本地记住，只影响这一页显示
+  if (input.dataset.colset) {
+    const page = input.dataset.colset
+    const key = input.dataset.col
+    const list = new Set(hiddenCols[page] || [])
+    if (input.checked) list.delete(key)
+    else list.add(key)
+    hiddenCols[page] = [...list]
+    saveHiddenCols()
+    if (page === 'decision') renderDecision()
+    else if (page === 'gwlog') renderGateway()
     return
   }
 

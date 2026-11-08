@@ -608,6 +608,12 @@ async function buildState({ light = false } = {}) {
             blendedCnyPerMtok: row.blendedCnyPerMtok ?? null,
             offPeakBlendedCnyPerMtok: row.offPeakBlendedCnyPerMtok ?? null,
             hasOffPeak: Boolean(row.hasOffPeak),
+            // 价格细目（决策页价格列次行「输入 X · 输出 Y / 按次 Z」）：
+            // 比价 rank 行本来就带，这里只是透传，不算第二遍
+            inCnyPerMtok: row.inCnyPerMtok ?? null,
+            outCnyPerMtok: row.outCnyPerMtok ?? null,
+            perCall: Boolean(row.perCall),
+            callPriceCny: row.callPriceCny ?? null,
           }
         : c
       return rs

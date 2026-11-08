@@ -4383,3 +4383,90 @@ body.prov-dragging .drop-zone { display: flex; }
   .topbar-left h2 { font-size: 14px; }
   .topbar-left .sub { display: none; }
 }
+
+/* ═══════════ 参考版式改造（2026-11-08）：富行 / 堆叠指标 / 列设置 ═══════════
+ * 参照外部网关调用日志页的排版思路：
+ *   · 一格里「主行 + 次行」两层信息（cell-main / cell-subline）
+ *   · 指标列纵向堆叠多行「小标签 + 值」（延迟列：首字 / 总耗时 / 吐字）
+ *   · 工具栏右侧成组动作：刷新 / 重置 / 列设置 / 导出
+ * 颜色沿用本站主题变量，不引入参考图配色。 */
+
+/* ---- 富行两层结构 ---- */
+.cell-main { font-weight: 500; }
+.cell-subline {
+  font-size: 11.5px;
+  color: var(--muted);
+  line-height: 1.45;
+  margin-top: 2px;
+  overflow-wrap: anywhere;
+}
+
+/* ---- 堆叠指标单元格（参考图「延迟」列的样式骨架） ---- */
+.stack-cell { display: flex; flex-direction: column; gap: 3px; align-items: flex-start; }
+.stack-line { display: flex; align-items: baseline; gap: 6px; line-height: 1.3; white-space: nowrap; }
+.stack-line .k { font-size: 11px; color: var(--faint); flex: none; }
+.stack-line .v { font-size: 12.5px; font-variant-numeric: tabular-nums; }
+
+/* ---- 列设置按钮 + 下拉 ---- */
+.colmenu { position: relative; display: inline-flex; }
+.colmenu-pop {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  z-index: 40;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.14);
+  padding: 8px 12px;
+  min-width: 150px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.colmenu-pop label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.colmenu-pop .colmenu-title {
+  font-size: 11px;
+  color: var(--faint);
+  margin-bottom: 2px;
+}
+/* hidden 属性会被上面的 display:flex 盖掉，必须显式压回来（实测踩到：
+ * 截图里下拉默认全开，遮住了下面的表格） */
+.colmenu-pop[hidden] { display: none; }
+
+/* ---- 隐藏列：表格容器挂 hide-col-<键>，th/td 带 data-col=<键> ---- */
+.hide-col-group [data-col='group'] { display: none; }
+.hide-col-price [data-col='price'] { display: none; }
+.hide-col-quality [data-col='quality'] { display: none; }
+.hide-col-effective [data-col='effective'] { display: none; }
+.hide-col-latency [data-col='latency'] { display: none; }
+.hide-col-score [data-col='score'] { display: none; }
+.hide-col-status [data-col='status'] { display: none; }
+.hide-col-key [data-col='key'] { display: none; }
+.hide-col-model [data-col='model'] { display: none; }
+.hide-col-site [data-col='site'] { display: none; }
+.hide-col-tokens [data-col='tokens'] { display: none; }
+.hide-col-outcome [data-col='outcome'] { display: none; }
+
+/* ---- Key 月限额进度条 ---- */
+.qbar {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--border);
+  overflow: hidden;
+  margin-top: 5px;
+  width: 132px;
+}
+.qbar > i { display: block; height: 100%; background: var(--accent); border-radius: 2px; }
+.qbar.over > i { background: var(--danger); }
+
+/* ---- 最近请求工具行：与决策页工具栏同一套间距 ---- */
+.gwlog-toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.gwlog-toolbar .search { width: 200px; }

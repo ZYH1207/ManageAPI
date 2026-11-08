@@ -58,6 +58,10 @@ export function detailRow(entry) {
     // 老记录没有这两个字段（改动后才写），null 表示「当时没记」，界面不显示
     protocol: entry.protocol || null,
     stream: typeof entry.stream === 'boolean' ? entry.stream : null,
+    // 网关页最近请求要显示的另外两个标记：这单是否被自动路由改派、断流原因。
+    // 老记录同样可能没有，false / null 就是不显示
+    autoRoute: entry.autoRoute === true,
+    streamError: entry.streamError || null,
     attempts: Number(entry.attempts) || 1,
     outcome: entry.outcome || 'unknown',
     ttftMs,

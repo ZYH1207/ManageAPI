@@ -2047,3 +2047,56 @@ Object.assign(EN, {
   '真实美元 R.Dollar：国外模型专用，按汇率换算；站内美元与人民币 1:1':
     'Real Dollar (R.Dollar): for foreign models, converted by the FX rate; site dollars equal CNY 1:1',
 })
+
+// ---- 参考版式改造（2026-11-08）：决策页 / 网关页富行表格的新文案
+Object.assign(EN, {
+  '列设置': 'Columns',
+  '显示的列': 'Visible columns',
+  '勾掉哪列就整列隐藏，只影响这一页的显示': 'Untick a column to hide it. Affects this page only',
+  '重置': 'Reset',
+  '已重置搜索、列显示与折叠': 'Search, columns and panels reset',
+  '导出 CSV': 'Export CSV',
+  '把当前显示的模型与候选导出成 CSV，可用 Excel / 表格软件打开':
+    'Export the listed models and candidates as CSV for Excel / spreadsheet apps',
+  '已导出 {n} 条候选': 'Exported {n} candidates',
+  '重新拉取评分、状态与当前选': 'Refresh scores, status and the current pick',
+  '自动路由真正用来排序的分数，越小越优先；下方小字写明它是怎么算出来的（实测 / 标定 / 仅探针）':
+    'The score auto-routing actually sorts by, lower is better. The small line below shows how it was derived (real / calibrated / probe only)',
+  '排序分 / 依据': 'Score / Basis',
+  '延迟': 'Latency',
+  '总耗时': 'Total',
+  '流式': 'Stream',
+  '非流式': 'Non-stream',
+  '缓存': 'Cache',
+  '按次': 'Per call',
+  '近期': 'Recent',
+  '月限额 {n}': 'Monthly cap {n}',
+  '近 30 天用量 / 月限额': '30-day usage / monthly cap',
+  '分子是近 30 天 token 用量；进度条拿它除以月限额，两个口径不同，仅供参考':
+    'Numerator is 30-day token usage; the bar divides it by the monthly cap. Different periods — reference only',
+  '近 30 天用量 ÷ 月限额': '30-day usage ÷ monthly cap',
+  '搜模型 / Key / 站点…': 'Search model / key / site…',
+  '正在载入最近请求…': 'Loading recent requests…',
+  '正在刷新…': 'Refreshing…',
+  '没有匹配的请求': 'No matching requests',
+  '逐条账本没数据，明细退回决策日志（最近 500 单）':
+    'No per-request ledger yet; falling back to the decision log (last 500)',
+  '近 7 天共 {n} 单，只展示最新 {m} 单': '{n} requests in 7 days, showing the latest {m}',
+  '{ok} / {total} 单成功': '{ok} / {total} succeeded',
+  '（已筛选）': ' (filtered)',
+  '重新载入最近请求（含明细字段）': 'Reload recent requests (with detail fields)',
+  '导出路由历史全字段（最近 2000 单），CSV 可用 Excel 打开':
+    'Export the full routing history (last 2000) as CSV for Excel',
+  '载入失败': 'Load failed',
+  '已刷新': 'Refreshed',
+  '上游 {name}': 'Upstream {name}',
+  '先试 {name}': 'Tried {name} first',
+  '（共 {n} 站）': ' ({n} sites)',
+  '含换站在内一共试了 {n} 次': 'Tried {n} times in total (failovers included)',
+  '客户端进站走的协议': 'Protocol the client came in on',
+  '缓存读 token（命中率 {pct}）': 'Cached-read tokens (hit rate {pct})',
+  '最近经过网关的请求里，正常返回的单数（客户端自己断开的不算失败）':
+    'Successful responses among recent gateway requests (client aborts not counted as failures)',
+  '这一单是被自动路由改派的，不是客户端真的点名了这个模型': 'Auto-routed reassignment, not the model the client asked for',
+  '客户端主动断开请求，不予处理': 'Client aborted the request; not an upstream failure',
+})
