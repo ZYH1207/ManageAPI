@@ -235,6 +235,15 @@ export function routeConnect() {
   es.addEventListener('error', reconnect)
 }
 
+/** ISO 时间戳 → 当天 HH:MM:SS。给「最近的路由」行用：只有模型和结果没有时间，
+ * 连着来几单一样的就分不清先后。解析不了就原样给空串，不编一个 0 点出来。 */
+function routeClock(iso) {
+  const d = new Date(iso)
+  if (!iso || Number.isNaN(d.getTime())) return ''
+  const p = (n) => String(n).padStart(2, '0')
+  return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
+}
+
 /** 离开路由页时断开，别让后台一直挂着一条连接 */
 export function routeDisconnect() {
   clearTimeout(routeReconnectTimer)
@@ -419,6 +428,7 @@ export function routePaint() {
               const tried = run.attempts.length
               return `<div class="route-history-row">
                 <span class="dot ${ok ? 'ok' : run.outcome ? 'bad' : 'warn'}"></span>
+                <span class="route-h-time">${deps.esc(routeClock(run.startedAt))}</span>
                 <span class="route-h-client" title="${deps.esc(run.client)}">${deps.esc(run.client)}</span>
                 <span class="route-h-model"><code>${deps.esc(run.model)}</code></span>
                 <span class="route-h-tries">${tried}${deps.t('次尝试')}</span>

@@ -2100,3 +2100,15 @@ Object.assign(EN, {
   '这一单是被自动路由改派的，不是客户端真的点名了这个模型': 'Auto-routed reassignment, not the model the client asked for',
   '客户端主动断开请求，不予处理': 'Client aborted the request; not an upstream failure',
 })
+
+// ---- UI 打磨（2026-11-08，ui/polish）：准入门禁折叠 / 探针页说明收敛
+Object.assign(EN, {
+  '准入门禁': 'Admission gates',
+  '慢速': 'Slow-limit',
+  '可疑供给': 'suspects',
+  '放行': 'admitted',
+  '拦下': 'blocked',
+  '方案与计费说明': 'Probe plans & billing',
+  '每个模型最多发 4 个请求（指纹 + 计费、截断、缓存×2），结果进入评分，路由据此排除可疑的站。':
+    'Up to 4 requests per model (fingerprint + billing, truncation, cache ×2). Results feed the score; routing avoids suspect sites.',
+})

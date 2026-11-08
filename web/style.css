@@ -3306,7 +3306,7 @@ body.prov-dragging .drop-zone { display: flex; }
 }
 .route-history-row {
   display: grid;
-  grid-template-columns: 16px minmax(90px, 130px) 1fr 76px minmax(90px, 150px);
+  grid-template-columns: 16px 58px minmax(90px, 130px) 1fr 76px minmax(90px, 150px);
   align-items: center;
   gap: 10px;
   padding: 7px 10px;
@@ -4470,3 +4470,107 @@ body.prov-dragging .drop-zone { display: flex; }
 /* ---- 最近请求工具行：与决策页工具栏同一套间距 ---- */
 .gwlog-toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .gwlog-toolbar .search { width: 200px; }
+
+/* ═══════════ UI 打磨（2026-11-08，ui/polish 分支） ═══════════ */
+
+/* ---- 决策页：准入门禁折叠区 ----
+ * 自动路由是主控制留在卡顶；慢速档位刻度条 + 放行可疑是「门槛」性质的次级
+ * 设置，收进 details。收起时 summary 上带当前状态（慢速档位 + 可疑放行），
+ * 不展开也知道门现在是什么样。 */
+.gate-adv {
+  margin-top: 10px;
+  border-top: 1px solid var(--border);
+}
+.gate-adv summary {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 10px 2px 6px;
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+.gate-adv summary::-webkit-details-marker { display: none; }
+.gate-adv summary::before {
+  content: '▸';
+  color: var(--faint);
+  font-size: 11px;
+  transition: transform 0.15s ease;
+}
+.gate-adv[open] summary::before { transform: rotate(90deg); }
+.gate-adv-title { font-weight: 500; font-size: 13px; }
+.gate-adv-state { font-size: 12px; color: var(--muted); }
+.gate-adv-body { padding: 4px 2px 10px; display: flex; flex-direction: column; gap: 10px; }
+.gate-adv .gate-title { margin-bottom: 6px; }
+
+/* ---- 探针页：模型列限宽省略（模型名 + 分组徽章不再把表格撑歪） ---- */
+.probe-model {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  /* 注意不能用 100%：colgroup 给模型列分的是「剩余全部宽度」，100% 等于没限。
+   * 固定上限，超长名字自己省略，分组徽章始终可见。 */
+  max-width: 420px;
+  min-width: 0;
+}
+.probe-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.probe-table td:first-child { max-width: 380px; }
+
+/* ---- 探针页：百分比迷你比例条 ---- */
+.pct-num { font-variant-numeric: tabular-nums; }
+.pct-bar {
+  display: block;
+  height: 3px;
+  width: 54px;
+  margin: 3px 0 1px auto;
+  background: var(--border);
+  border-radius: 2px;
+  overflow: hidden;
+}
+.pct-bar > i {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  border-radius: 2px;
+}
+
+/* ---- 探针页：方案说明折叠 ---- */
+.probe-intro-more { margin-top: 4px; }
+.probe-intro-more summary {
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+  font-size: 12px;
+  color: var(--muted);
+}
+.probe-intro-more summary::-webkit-details-marker { display: none; }
+.probe-intro-more summary::before { content: '▸ '; color: var(--faint); }
+.probe-intro-more[open] summary::before { content: '▾ '; }
+.probe-intro-more summary:hover { color: var(--text, inherit); }
+
+/* ---- 次要徽标：证据老了这类「中性提示」，灰掉不和真警告抢眼 ---- */
+.badge.muted { color: var(--faint); border-color: var(--border); background: transparent; }
+
+/* ---- 路由页：最近路由行的时间列 ---- */
+.route-h-time {
+  font-size: 11.5px;
+  color: var(--faint);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* 分组徽章本身也可能是一长串（这份数据里分组名带模型清单）：徽章同样省略，
+ * 悬浮 title 看全文。没有这条，模型列限宽对长分组名无能为力。 */
+.probe-model .badge {
+  max-width: 280px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 0 1 auto;
+  min-width: 0;
+}

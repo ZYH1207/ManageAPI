@@ -4780,45 +4780,17 @@ function autoRouteSwitch() {
  * 探针页只管取证（探什么、多久探一次），不碰准入——可疑供给放不放行
  * 曾经长在探针页，但它是准入开关，归这里管。
  */
+// 准入门禁折叠区的展开状态：15 秒轮询会整页重绘，状态得放在模块级活过重绘
+let gateAdvOpen = false
+
 function gateCard() {
   const maxTtft = Number(state.settings.maxTtftMs) || 0
   const tiers = state.ttftTiers || []
   const allowUntrusted = Boolean(state.settings.allowUntrusted)
+  // 收起时也要让人一眼看到当前门禁状态：慢速档位和可疑放行都压进 summary 一行
+  const advState = `${t('慢速')} ${esc(state.ttftLimitText || '不限')} · ${t('可疑供给')}${allowUntrusted ? t('放行') : t('拦下')}`
   return `
     <div class="card gate-card">
-      <div class="gate-body">
-      <div class="gate-title">${t('慢速档位限制')}</div>
-      <div class="gate-top-switch">
-        <label class="switch">
-          <input type="checkbox" id="allow-untrusted" ${allowUntrusted ? 'checked' : ''} />
-          <span class="switch-track"><span class="switch-knob"></span></span>
-          <span class="switch-text">
-            <b>${t('放行可疑供给')}</b>
-            <span title="${esc(t('开启后，判定可疑（指纹不符 / 输出截断 / 用量虚报）的站，也可正常登场。若在意可信度，请关闭。'))}">${t('指纹不符/截断/虚报的站也允许登场')}</span>
-          </span>
-        </label>
-      </div>
-      <div class="ttft-scale">
-        <div class="ttft-scale-row">
-        <span class="ttft-ticks">
-          <button class="ttft-tick off${maxTtft === 0 ? ' active' : ''}" data-act="set-ttft" data-ms="0" title="不限：不按首字筛掉任何供给">不限</button>
-          ${tiers
-            .map(
-              (tier) =>
-                `<button class="ttft-tick lv-${tier.levelCls}${tier.ms === maxTtft ? ' active' : ''}" data-act="set-ttft" data-ms="${tier.ms}" title="第 ${tier.tier} 档 · ${tier.seconds}s · ${tier.level}"></button>`,
-            )
-            .join('')}
-        </span>
-        <label class="field-inline ttft-field">
-          <input id="max-ttft" type="number" min="0" max="20000" step="100" inputmode="numeric"
-            value="${maxTtft || ''}" placeholder="不限" style="width:74px"
-            title="填 0 或留空 = 不限；按 500 为界就近取档，最大 20000ms" /> ms
-        </label>
-        <span class="ttft-scale-now">当前 ${esc(state.ttftLimitText || '不限')}</span>
-        <span class="hint" style="margin:0">1000–20000ms 共 20 档 · 慢速即为不可用</span>
-        </div>
-      </div>
-      </div>
       <div class="gate-switches">
         <div class="gate-switch-left">
           ${autoRouteSwitch()}
@@ -4826,6 +4798,45 @@ function gateCard() {
           ${patrolBadge()}
         </div>
       </div>
+      <details class="gate-adv"${gateAdvOpen ? ' open' : ''}>
+        <summary data-act="gate-adv">
+          <span class="gate-adv-title">${t('准入门禁')}</span>
+          <span class="gate-adv-state">${advState}</span>
+        </summary>
+        <div class="gate-adv-body">
+          <div class="gate-top-switch">
+            <label class="switch">
+              <input type="checkbox" id="allow-untrusted" ${allowUntrusted ? 'checked' : ''} />
+              <span class="switch-track"><span class="switch-knob"></span></span>
+              <span class="switch-text">
+                <b>${t('放行可疑供给')}</b>
+                <span title="${esc(t('开启后，判定可疑（指纹不符 / 输出截断 / 用量虚报）的站，也可正常登场。若在意可信度，请关闭。'))}">${t('指纹不符/截断/虚报的站也允许登场')}</span>
+              </span>
+            </label>
+          </div>
+          <div class="ttft-scale">
+            <div class="gate-title">${t('慢速档位限制')}</div>
+            <div class="ttft-scale-row">
+            <span class="ttft-ticks">
+              <button class="ttft-tick off${maxTtft === 0 ? ' active' : ''}" data-act="set-ttft" data-ms="0" title="不限：不按首字筛掉任何供给">不限</button>
+              ${tiers
+                .map(
+                  (tier) =>
+                    `<button class="ttft-tick lv-${tier.levelCls}${tier.ms === maxTtft ? ' active' : ''}" data-act="set-ttft" data-ms="${tier.ms}" title="第 ${tier.tier} 档 · ${tier.seconds}s · ${tier.level}"></button>`,
+                )
+                .join('')}
+            </span>
+            <label class="field-inline ttft-field">
+              <input id="max-ttft" type="number" min="0" max="20000" step="100" inputmode="numeric"
+                value="${maxTtft || ''}" placeholder="不限" style="width:74px"
+                title="填 0 或留空 = 不限；按 500 为界就近取档，最大 20000ms" /> ms
+            </label>
+            <span class="ttft-scale-now">当前 ${esc(state.ttftLimitText || '不限')}</span>
+            <span class="hint" style="margin:0">1000–20000ms 共 20 档 · 慢速即为不可用</span>
+            </div>
+          </div>
+        </div>
+      </details>
     </div>`
 }
 
@@ -4837,7 +4848,9 @@ const PROBE_STATUS = {
   unstable: { label: '不稳定', cls: 'danger' },
   // 样本不足的失败：不参与路由，但不算「确定坏了」——不该催用户去修
   inconclusive: { label: '证据不足', cls: '' },
-  stale: { label: '评分过期', cls: 'warn' },
+  // 评分过期不是「坏」，是「证据老了」：灰色小徽标就够，满屏黄标反而把
+  // 真正要看的「结果可疑 / 不稳定」淹掉
+  stale: { label: '评分过期', cls: 'muted' },
   unknown: { label: '未探测', cls: '' },
 }
 
@@ -4850,6 +4863,19 @@ function confidenceLabel(level) {
 function pct(value) {
   if (value === null || value === undefined) return '—'
   return `${Math.round(value * 100)}%`
+}
+
+/**
+ * 百分比单元格：数字 + 底下一条迷你比例条。
+ *
+ * 探针表里四列全是百分比，一排 100% 里找一个 67% 靠读数字太费劲；
+ * 一条 3px 的小条让「哪行哪项不满」变成看得见的长度差。null 就只有「—」，
+ * 没有数据不画空条冒充。
+ */
+function pctCell(value) {
+  if (value === null || value === undefined) return '—'
+  const width = Math.max(0, Math.min(100, Math.round(value * 100)))
+  return `<span class="pct-num">${width}%</span><span class="pct-bar"><i style="width:${width}%"></i></span>`
 }
 
 function relTime(iso) {
@@ -5026,7 +5052,11 @@ function renderProbes() {
       <div style="display:flex;align-items:flex-start;gap:16px;flex-wrap:wrap">
         <div style="flex:1;min-width:240px">
           <div style="font-weight:500">${t('主动探测')}</div>
-          <div class="hint" style="margin:4px 0 0">${t('每个模型最多发 4 个请求：指纹 + 计费、截断、缓存（连发两次）。结果进入评分，路由据此排除可疑的站。手动探测可选：Lite 只发前 2 个（指纹+计费、截断），全量 4 个都发。定时/轮巡探测平时发 2 个，缓存数字满 2 小时过期的那一轮自动补成全量。自动路由开着时定时探针由轮巡接管，方案见下方。')}</div>
+          <div class="hint" style="margin:4px 0 0">${t('每个模型最多发 4 个请求（指纹 + 计费、截断、缓存×2），结果进入评分，路由据此排除可疑的站。')}</div>
+          <details class="probe-intro-more">
+            <summary>${t('方案与计费说明')}</summary>
+            <div class="hint" style="margin:4px 0 0">${t('手动探测可选：Lite 只发前 2 个（指纹+计费、截断），全量 4 个都发。定时/轮巡探测平时发 2 个，缓存数字满 2 小时过期的那一轮自动补成全量。自动路由开着时定时探针由轮巡接管，方案见下方。')}</div>
+          </details>
         </div>
         <div class="probe-run-col">
           <button class="primary" data-act="probe-all" ${probeTargets.length === 0 ? 'disabled' : ''}
@@ -5093,12 +5123,12 @@ function renderProbes() {
           }`
       return `
         <tr data-offer="${esc(offer.id)}" ${hasDetail ? 'data-act="toggle-detail" tabindex="0" style="cursor:pointer"' : ''}>
-          <td class="mono"><span class="probe-model" title="${esc(offer.upstreamName)}">${esc(offer.upstreamName)}${offer.group ? ` <span class="badge ${groupChipOf(offer.providerId, offer.group)}">${esc(offer.group)}</span>` : ''}${hasDetail ? ' <span style="color:var(--faint);font-size:10px">▾</span>' : ''}</span></td>
+          <td class="mono"><span class="probe-model" title="${esc(offer.upstreamName)}"><span class="probe-name">${esc(offer.upstreamName)}</span>${offer.group ? ` <span class="badge ${groupChipOf(offer.providerId, offer.group)}" title="${esc(offer.group)}">${esc(offer.group)}</span>` : ''}${hasDetail ? ' <span style="color:var(--faint);font-size:10px">▾</span>' : ''}</span></td>
           <td>${statusCell}</td>
-          <td class="num">${pct(score?.availability)}</td>
-          <td class="num">${pct(score?.fingerprintRate)}</td>
-          <td class="num">${pct(score?.truncationRate)}</td>
-          <td class="num">${pct(score?.billingRate)}</td>
+          <td class="num">${pctCell(score?.availability)}</td>
+          <td class="num">${pctCell(score?.fingerprintRate)}</td>
+          <td class="num">${pctCell(score?.truncationRate)}</td>
+          <td class="num">${pctCell(score?.billingRate)}</td>
           <td class="num">${score?.ttftMs ? `${score.ttftMs}ms` : '—'}</td>
           <td style="color:var(--faint)" title="${esc(t('探针：'))}${relTime(score?.lastProbeAt)}">${relTime(score?.evidenceAt)}</td>
           <td class="num"><button class="ghost" data-act="probe" title="${esc(t('单条探测走全量：发 4 个请求（指纹 + 计费、截断、缓存×2），要的就是完整证据'))}">探测</button></td>
@@ -9219,6 +9249,14 @@ document.addEventListener('click', async (event) => {
   if (action === 'colmenu') {
     const pop = actionButton.parentElement?.querySelector('.colmenu-pop')
     if (pop) pop.hidden = !pop.hidden
+    return
+  }
+
+  // 决策页「准入门禁」折叠条：原生 details 点击自己会翻 open，但 15 秒轮询
+  // 重绘会把展开态冲掉——这里记进模块级变量，重绘后原样还原
+  if (action === 'gate-adv') {
+    gateAdvOpen = !gateAdvOpen
+    renderDecision()
     return
   }
 
