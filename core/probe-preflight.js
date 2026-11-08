@@ -142,13 +142,28 @@ export async function probeConnectivity(baseUrl, { timeoutMs = {} } = {}) {
         ok: false,
         layer: 'tls',
         ms: Date.now() - started,
-        error: `TLS 握手失败：${error.message}`,
+        error: `TLS 握手失败：${error.message}${dnsFakeIpNote(ip)}`,
         resolvedIp: ip,
       }
     }
   }
 
   return { ok: true, layer: null, ms: Date.now() - started, error: null, resolvedIp: ip }
+}
+
+/**
+ * fake-ip 提示：本机开着代理的 fake-ip 模式时（DNS 把任何域名都解析成
+ * 198.18.0.0/15 的保留地址），「域名不存在」在 L1 是测不出来的——DNS 会
+ * 「成功」、TCP 会「通」，最后卡在 TLS。探测结论没错，但错误信息要告诉人
+ * 这是环境行为，不然看着就像「站方的证书坏了」。
+ */
+function dnsFakeIpNote(ip) {
+  const m = /^(\d+)\.(\d+)\./.exec(String(ip || ''))
+  if (!m) return ''
+  const a = Number(m[1])
+  const b = Number(m[2])
+  const isFakeIp = a === 198 && b >= 18 && b <= 19
+  return isFakeIp ? '（DNS 解析到 198.18.x.x 保留网段：本机代理多半开着 fake-ip 模式，「域名不存在」在这里表现为 TLS 失败，不是站方证书问题）' : ''
 }
 
 /**

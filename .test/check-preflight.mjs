@@ -69,7 +69,12 @@ try {
   ok(conn.ms < 2000, `连接层很快（${conn.ms}ms，远低于对话超时）`)
 
   const bad = await probeConnectivity('https://this-domain-should-not-exist-xyz.invalid/v1')
-  ok(bad.ok === false && bad.layer === 'dns', `不存在的域名 → 卡在 dns（${bad.layer}）`)
+  // 本机代理开 fake-ip 模式时（DNS 把任意域名解析成 198.18.x.x 保留网段），
+  // 「域名不存在」会走到 TCP 通、TLS 失败——两种结论都算对，关键是不放行
+  ok(
+    bad.ok === false && (bad.layer === 'dns' || bad.layer === 'tls'),
+    `不存在的域名 → 卡在 dns 或 tls（${bad.layer}）`,
+  )
 
   const badUrl = await probeConnectivity('not a url')
   ok(badUrl.ok === false && badUrl.layer === 'dns', '非法 URL → dns 层失败')
@@ -102,7 +107,11 @@ try {
   ok(failAuth.ok === false && failAuth.layer === 'auth', `Key 错 → 不进 L3（${failAuth.layer}）`)
 
   const failDns = await preflight({ baseUrl: 'https://nope-nope-nope.invalid/v1', apiKey: 'k' })
-  ok(failDns.ok === false && failDns.layer === 'dns', `DNS 失败 → 不进 L3（${failDns.layer}）`)
+  // 同上：fake-ip 环境下会以 tls 层失败——重点是「不进 L3、不花 token」
+  ok(
+    failDns.ok === false && (failDns.layer === 'dns' || failDns.layer === 'tls'),
+    `DNS 失败 → 不进 L3（${failDns.layer}）`,
+  )
 } finally {
   server.close()
 }
