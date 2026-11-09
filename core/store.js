@@ -31,6 +31,21 @@ import { kindEntryOf } from './failure.js'
 export const DB_VERSION = 8
 
 /**
+ * 自动同步（监控采集）间隔：默认 10 分钟，也是「未配置」时的口径。
+ *
+ * 单独导出是因为它有两个用户：emptyDb 的默认值，和前端「老库迁移」判定
+ * （见 migrateLegacyMonitorInterval）。后者要能分辨「用户主动设成 30」和
+ * 「老版本默认就是 30」，两边必须是同一个常量，否则改一处漏一处。
+ */
+export const MONITOR_INTERVAL_DEFAULT = 10
+
+/** 老版本的内置默认值：迁移时只有恰好等于它、且用户没标记过的库才跟着改 */
+export const MONITOR_INTERVAL_LEGACY_DEFAULT = 30
+
+/** 0 = 关闭；其它必须是有限正数。上限一天一次，再多就没意义了 */
+export const MONITOR_INTERVAL_MAX = 1440
+
+/**
  * 归一化分组名。定义在存储层（零依赖），台账层再导出——两边共用同一份，
  * 不允许各自写一份 trim，那正是「同步去重键与写入口径不一致」的根源。
  *
@@ -118,9 +133,10 @@ export function emptyDb() {
       freeCrossPane: 'remaining',
       // 免费池耗尽时是否允许回落付费。默认关闭——静默花钱比报错更糟。
       allowPaidFallback: false,
-      // 监控采集间隔（分钟），0 = 关闭。
-      // 和探针是两个节奏：探针要打真实请求，成本高；采集只是读后台数据，可以更勤。
-      monitorIntervalMinutes: 30,
+      // 监控采集间隔（分钟），0 = 关闭。用户可在站点页「自动同步」框里改。
+      // 和探针是两个节奏：探针要打真实请求，成本高；采集只是读后台数据，可以更勤
+      // （纯账户接口，不烧 token），所以默认给到 10 分钟。
+      monitorIntervalMinutes: MONITOR_INTERVAL_DEFAULT,
       // 余额低于这个美元金额就告警（人民币站按汇率折算后比）。0 = 不告警。
       // 之所以用美元：中转站余额基本都是美元，用人民币要先折一次，多一层容易错。
       balanceWarnUsd: 1.5,
@@ -437,6 +453,22 @@ function migrate(db) {
   if (db.settings?.displayCurrency === 'CNY') db.settings.displayCurrency = 'USD'
   for (const offer of db.offers || []) {
     if (String(offer.currency || '').toUpperCase() === 'CNY') offer.currency = 'USD'
+  }
+
+  // 自动同步间隔的默认值从 30 分钟改成 10 分钟（纯读账户接口，不烧 token，可以更勤）。
+  // 只有「用户从没在界面上动过」的老库才跟着走：动过的一律保留原值，
+  // 否则等于把用户明确选的节奏悄悄改掉。判定标记由 PATCH /api/settings 写入。
+  // 幂等：迁完值是 10，不再等于老默认 30，重复跑不会二次生效。
+  if (db.settings) {
+    const s = db.settings
+    if (s.monitorIntervalMinutes === undefined || s.monitorIntervalMinutes === null) {
+      s.monitorIntervalMinutes = MONITOR_INTERVAL_DEFAULT
+    } else if (
+      !s.monitorIntervalTouched &&
+      Number(s.monitorIntervalMinutes) === MONITOR_INTERVAL_LEGACY_DEFAULT
+    ) {
+      s.monitorIntervalMinutes = MONITOR_INTERVAL_DEFAULT
+    }
   }
 
   const version = Number(db.version) || 1

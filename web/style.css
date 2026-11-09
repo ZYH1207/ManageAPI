@@ -2516,8 +2516,10 @@ html[data-lang='en'] .doc[data-lang-block='en'] { display: block; }
   display: flex; flex-direction: column; align-items: flex-end; gap: 6px;
   flex: 0 0 auto; margin-left: auto;
 }
-/* 配置组：一个浅框把「两个输入 + 保存」包起来；标签用 placeholder 嵌在输入框里，
-   输入后自动消失，所以不需要额外的文字行、高度和其他控件一致 */
+/* 配置组：一个浅框把「间隔 + 阈值 + 汇率 + 保存」包起来。
+   间隔/阈值用 placeholder 当标签，输入后消失；自动同步间隔带常驻文字标签，
+   因为它是唯一一个「改了不立刻看出来」的数值（要等下一轮采集），
+   只靠 placeholder 会让人分不清那是已保存的值还是提示语 */
 .sync-panel {
   display: flex; align-items: center; gap: 8px;
   height: 30px; padding: 2px 4px;
@@ -2528,6 +2530,23 @@ html[data-lang='en'] .doc[data-lang-block='en'] { display: block; }
 .sync-panel input[type='number'] {
   width: 100px; height: 24px; padding: 0 9px; border-radius: 7px;
   font-size: 12px;
+}
+/* 自动同步间隔：文字标签 + 窄输入 + 单位。
+   宽度预算按实测定的——这条工具栏是 nowrap 的，多占 100px 就会把「新增站点」
+   挤出视口（1180~1600 之间最紧）。所以标签用单字「同步」、输入框收到 44px，
+   整体只比改动前的裸输入框多约 40px */
+.sync-panel .sync-interval {
+  display: inline-flex; align-items: center; gap: 4px;
+  font-size: 12px; color: var(--muted); white-space: nowrap;
+  padding-left: 4px;
+}
+.sync-panel .sync-interval input[type='number'] {
+  width: 44px; height: 24px; padding: 0 4px; text-align: right;
+}
+.sync-panel .sync-interval-unit { color: var(--faint); }
+/* 中等宽度先放弃「分钟」两个字：数字和「同步」都在，单位在 title 与保存后的提示里 */
+@media (max-width: 1240px) {
+  .sites-bar > .sync-panel .sync-interval-unit { display: none; }
 }
 .sync-panel input[type='number']::placeholder { color: var(--faint); }
 .sync-panel button.primary { height: 24px; padding: 0 12px; border-radius: 7px; }
@@ -2579,23 +2598,48 @@ html[data-lang='en'] .doc[data-lang-block='en'] { display: block; }
 .sites-actions button { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; height: 30px; }
 .sites-actions button svg { width: 14px; height: 14px; opacity: .8; }
 
-/* 窄窗口：先收搜索框，其次收分页里的区间文字，配置与动作按钮永远完整 */
+/* 窄窗口：先收搜索框，其次收分页里的区间文字，配置与动作按钮永远完整。
+   配置组比改动前宽了 60-80px（多了「同步」标签与单位），这笔预算从搜索框出——
+   它本来就是这一行里唯一允许压缩的控件。每个断点都用真浏览器量过
+   （1600/1400/1300/1240/1200/1180/1150/1100/1060/1040/1030/1000/980 全为 0 溢出），
+   不是拍脑袋写的；改这里的数字之前先重新量一遍 */
+@media (max-width: 1300px) {
+  /* 这一档最紧：配置组比原来宽了 60-80px，先从「显示 1-9，共 13 个」这段区间文字挤 */
+  .sites-bar .site-pager .range { display: none; }
+  .sites-bar > input[type='search'] { flex-basis: 150px; }
+  .sites-bar { gap: 8px; }
+}
 @media (max-width: 1180px) {
-  .sites-bar > input[type='search'] { flex-basis: 170px; }
+  .sites-bar > input[type='search'] { flex-basis: 120px; min-width: 76px; }
 }
 @media (max-width: 1100px) {
   /* 窄屏把两个输入框收窄，占位提示仍完整可读（放不下时浏览器自己截断） */
-  .sites-bar > .sync-panel input[type='number'] { width: 92px; }
+  .sites-bar > .sync-panel input[type='number'] { width: 88px; }
+  /* 间隔框例外：它只有 2-4 位数字，跟着放大反而把阈值挤没了 */
+  .sites-bar > .sync-panel .sync-interval input[type='number'] { width: 44px; }
+  .sites-bar > input[type='search'] { flex-basis: 96px; min-width: 68px; }
 }
 @media (max-width: 1040px) {
-  /* 只让「显示 1-9，共 13 个」让位，页码 1/2 必须留着 */
-  .sites-bar .site-pager .range { display: none; }
   .sites-title-block .hint { display: none; }
   /* 再把间距与配置输入压一档，保证最右侧按钮完整可见 */
-  .sites-bar { gap: 8px; }
+  .sites-bar { gap: 6px; }
   .sites-bar > .sync-panel { padding: 4px 6px; gap: 6px; }
-  .sites-bar > .sync-panel input[type='number'] { width: 62px; }
+  .sites-bar > .sync-panel input[type='number'] { width: 58px; }
+  .sites-bar > .sync-panel .sync-interval input[type='number'] { width: 38px; }
   .sites-bar .site-pager { gap: 6px; }
+}
+@media (max-width: 980px) {
+  /* 最后一道：搜索框已经缩到极限，只好把「同步」两个字也收起来。
+     间隔输入框本身和它的 title 还在，点开仍然知道这是自动同步间隔 */
+  .sites-bar > .sync-panel .sync-interval span:first-child { display: none; }
+  .sites-bar > input[type='search'] { flex-basis: 64px; min-width: 52px; }
+}
+@media (max-width: 960px) {
+  /* 再窄就别硬挤成一行了：像素已经抠到底，允许换行是唯一不给「新增站点」
+     制造横向溢出的办法。换成两行后每个控件都完整可见、都可点 */
+  .sites-bar { flex-wrap: wrap; row-gap: 8px; }
+  .sites-bar .grow { display: none; }
+  .sites-bar > input[type='search'] { flex: 1 1 100%; min-width: 0; }
 }
 
 /* 拖拽时的「放到最前 / 最后」落点：分页时别的页卡片不在 DOM 里，靠它跨页。
