@@ -1176,6 +1176,18 @@ main { flex: 1; min-width: 0; display: flex; flex-direction: column; overflow: h
    选中段：强调色淡底 + 细描边 + 标题染色。不用下划线：那看着像进度条，
    而这三档是互斥的选项，不是同一根滑轨上的位置。 */
 .mode-card { padding: 12px 14px; display: flex; flex-direction: column; gap: 8px; }
+
+/* 锁定失败后转移：和「决策侧重」同栏，但只占一行高度。
+   八档横向排会把上面那四段挤变形，所以用下拉；这里是下拉本身的容器样式 */
+.lockfail-card { padding: 12px 14px; display: flex; flex-direction: column; gap: 8px; }
+.lockfail-body { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.lockfail-select {
+  min-width: 240px; max-width: 420px;
+  padding: 6px 10px; border-radius: 7px;
+  background: var(--hover); color: var(--text);
+  border: 1px solid var(--border); font-size: 12px; cursor: pointer;
+}
+.lockfail-desc { margin: 0; flex: 1 1 320px; min-width: 0; }
 .mode-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
 .mode-label { font-size: 12px; font-weight: 500; color: var(--text); }
 .mode-note { font-size: 11px; color: var(--faint); }

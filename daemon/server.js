@@ -56,6 +56,15 @@ import {
   describeDecisionMode,
   normalizeDecisionMode,
 } from '../core/decision-mode.js'
+// 锁定失败后转移：手动勾选那条挂了之后还剩谁、按什么排。
+// 只管勾选的请求，没勾选的一律不受影响——语义边界写在模块头注释里
+import {
+  LOCK_FAILOVER_MODES,
+  applyLockFailover,
+  describeLockFailover,
+  lockFailoverTable,
+  normalizeLockFailover,
+} from '../core/lock-failover.js'
 import {
   pickAutoRoute,
   normalizeAutoRoute,
@@ -703,6 +712,11 @@ async function buildState({ light = false } = {}) {
     // 决策侧重：四档的标签 / 说明由服务端下发，前端只负责画和发 PATCH
     decisionMode: normalizeDecisionMode(db.settings.decisionMode),
     decisionModes: decisionModeTable(),
+    // 锁定失败后转移：档位表 + 当前值 + 一句话说明。
+    // 和 decisionMode 一样，标签/说明只由服务端下发，浏览器不另抄一份
+    lockFailover: normalizeLockFailover(db.settings.lockFailover),
+    lockFailoverModes: lockFailoverTable(),
+    lockFailoverText: describeLockFailover(db.settings.lockFailover),
     // 亲和档位清单：前端不另抄一份（口径的唯一定义在 core/affinity.js）
     affinityModes: listAffinityModes(),
     decisionModeText: describeDecisionMode(db.settings.decisionMode),
@@ -1443,6 +1457,16 @@ route('PATCH', /^\/api\/settings$/, async (ctx) => {
         const pick = pickAutoRoute(db, { scores: scoresFor(db), benchmarks: await bench.readBenchmarks(), force: true })
         if (pick) applyAutoRoutePick(db.settings, pick)
       }
+    }
+    // 锁定失败后转移：只能是我们认识的那八档。
+    // 理由同下面的决策档位——静默回落会让用户以为「我锁死了」，实际按别的口径在转。
+    // 这一档尤其不能猜：猜错就是又一夜把钱烧在别的站上。
+    if (ctx.body.lockFailover !== undefined) {
+      const v = String(ctx.body.lockFailover)
+      if (!LOCK_FAILOVER_MODES.some((mode) => mode.key === v)) {
+        throw new HttpError(400, `锁定失败后转移只能是 ${LOCK_FAILOVER_MODES.map((mode) => mode.key).join(' / ')}`)
+      }
+      db.settings.lockFailover = v
     }
     // 自动路由开关：开启时立刻全场挑选一次并落盘，决策页不用等第一个
     // 请求才有「正在使用」可显示；关闭时清掉挑选记录——模型名只是接管
@@ -5955,6 +5979,31 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
     db.pinnedOffer?.[inv.normalizeModelKey(model)] ||
     null
   candidates = applyPinnedChoice(candidates, pinnedOfferId).candidates
+  // 锁定失败后转移：勾选那条已经顶到第一了，这一步决定「它挂了之后还剩谁、按什么排」。
+  // 默认档 'none' = 链只剩这一条，失败直接把上游错误交出去，绝不偷偷换站。
+  // 没勾选的请求 applied=false，链原样，行为与改动前完全一致。
+  const lockFailover = applyLockFailover(candidates, {
+    mode: db.settings?.lockFailover,
+    pinnedOfferId,
+    routeGroups: db.settings?.routeGroups,
+    autoRoute: db.settings?.autoRoute,
+    settings: db.settings,
+  })
+  candidates = lockFailover.chain
+  if (lockFailover.applied) {
+    // 只在真的改了链的时候记一行：排查「为什么这单没换站」时，
+    // 日志里必须能直接看到是哪个档位把它锁住的
+    console.log(
+      `[锁定转移] ${model} 锁定 ${pinnedOfferId} · 档位 ${lockFailover.mode}` +
+        ` · 尝试链 ${candidates.length} 条${lockFailover.scope ? ` · 范围 ${lockFailover.scope}` : ''}` +
+        `${lockFailover.metric ? ` · 指标 ${lockFailover.metric}` : ''}`,
+    )
+  } else if (lockFailover.skipped) {
+    // 没勾选是常态（不刷屏），其余跳过原因才是要查的
+    if (lockFailover.skipped !== 'no-pin') {
+      console.log(`[锁定转移] ${model} 未应用（${lockFailover.skipped}）`)
+    }
+  }
 
   const started = Date.now()
   const failures = []

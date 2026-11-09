@@ -4283,6 +4283,7 @@ function renderDecision() {
 
   view.innerHTML = `
     ${modeCard(mode)}
+    ${lockFailoverCard()}
     ${algorithmCard()}
     ${gateCard()}
     <div class="toolbar">
@@ -4320,6 +4321,48 @@ function renderDecision() {
     (decisionOnlyAdmitted && hiddenCandidates
       ? `<div class="empty"><h3>${t('没有允许放行的供给')}</h3><p>${t('当前范围内有 {n} 条供给被这个开关隐藏了：慢速、结果可疑、不稳定、没有可信样本或冷却中。关掉开关就能看到它们。', { n: hiddenCandidates })}</p></div>`
       : '')}`
+}
+
+/**
+ * 锁定失败后转移：手动勾选那条挂了之后往哪儿转。
+ *
+ * 为什么值得单独一张卡：用户 2026-11-09 的遭遇是「我明明锁了秋，一夜烧在绿萝」。
+ * 原来这条链只有一个行为——按 routeScore 无条件往后试，勾选只是排第一、不是锁。
+ * 用户要的是「我能决定它到底转不转、转到多近的范围」，那就必须做成可见控件，
+ * 藏在 API 里等于这个能力不存在。
+ *
+ * 形态上用 <select> 不用分段按钮：八档横排会把「决策侧重」那四个大字挤成一行小字，
+ * 而且这八档不是同一个维度上的程度（有的是范围、有的是指标），
+ * 下拉 + 每档一句 hint 比八个长得差不多的按钮说得清。
+ */
+function lockFailoverCard() {
+  const modes = state.lockFailoverModes || []
+  // 表没到（首次渲染 state 还没回）就什么都不画，别拿一份本地副本顶上——
+  // 删档 / 改档时那份副本会闪出已经不存在的选项（decision-mode 踩过）
+  if (!modes.length) return ''
+  const current = state.lockFailover || state.settings?.lockFailover || 'none'
+  const def = modes.find((m) => m.key === current) || modes[0]
+  const pinnedHint = state.decisions?.some((d) => d.pinnedOfferId)
+    ? ''
+    : t('（你还没有在任何模型上勾选供给，这一档暂时不生效）')
+  return `
+    <div class="card lockfail-card">
+      <div class="mode-head">
+        <span class="mode-label">${t('锁定失败后转移')}</span>
+        <span class="mode-note">${esc(t('只管你在下面勾选的那一条；没勾选的请求不受影响'))}</span>
+      </div>
+      <div class="lockfail-body">
+        <select data-act="set-lock-failover" class="lockfail-select" aria-label="${esc(t('锁定失败后转移'))}">
+          ${modes
+            .map(
+              (m) =>
+                `<option value="${esc(m.key)}"${m.key === current ? ' selected' : ''} title="${esc(m.desc || '')}">${esc(t(m.label))} — ${esc(t(m.hint))}</option>`,
+            )
+            .join('')}
+        </select>
+        <p class="hint lockfail-desc">${esc(t(def.desc || ''))}${pinnedHint ? ` ${esc(pinnedHint)}` : ''}</p>
+      </div>
+    </div>`
 }
 
 /**
@@ -10403,6 +10446,27 @@ document.addEventListener('input', (event) => {
 
 document.addEventListener('change', async (event) => {
   const input = event.target
+
+  // 锁定失败后转移：改完立刻落库。服务端会校验档位，非法值直接 400——
+  // 静默回落会让用户以为「我锁死了」，实际按别的口径在转
+  if (input.dataset?.act === 'set-lock-failover') {
+    const mode = String(input.value || '')
+    if (!mode || mode === (state.lockFailover || state.settings?.lockFailover)) return
+    try {
+      state = await api('PATCH', '/api/settings', { lockFailover: mode })
+      render()
+      const label = (state.lockFailoverModes || []).find((m) => m.key === mode)?.label || mode
+      const tail =
+        mode === 'none'
+          ? t('；锁定的那条失败会直接报错，不再换站')
+          : t('；锁定的那条失败后按这个范围转移')
+      toast(t('锁定失败后转移已切到「{mode}」', { mode: t(label) }) + tail)
+    } catch (error) {
+      toast(error.message, true)
+      render() // 回到服务端真实值，别让下拉停在一个没存进去的档上
+    }
+    return
+  }
 
   // 选预置平台 → 自动填名称，省掉手打
   if (input.id === 'pf-preset') {

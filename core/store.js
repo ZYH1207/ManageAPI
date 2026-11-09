@@ -85,6 +85,10 @@ export function emptyDb() {
       // price = 名义价格、speed = 首字速度、priceSpeed = 价速比（价格 ÷ 首字延迟）。
       // 只改排序，不改准入，口径见 core/decision-mode.js
       decisionMode: 'value',
+      // 锁定失败后转移：手动勾选（db.pinnedOffer）的那条供给失败之后往哪儿转。
+      // 默认 'none' = 锁定即硬锁，失败直接报错、绝不偷偷换站。
+      // 只管手动勾选的请求，没勾选的一律不受影响；口径与档位表见 core/lock-failover.js
+      lockFailover: 'none',
       // 自动路由（一键接管）：开启后网关无视客户端请求的模型名，
       // 始终派给当前决策档位下全场最优的模型（口径见 core/auto-route.js）。
       // modelKey / offerId / pickedAt / reason 是最近一次挑选的落盘记录，
