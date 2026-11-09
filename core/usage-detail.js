@@ -50,10 +50,18 @@ export function detailRow(entry) {
     model: entry.model || '',
     keyId: entry.keyId || null,
     keyName: entry.keyName || null,
-    providerId: entry.chosenProviderId || null,
-    providerName: entry.chosenProviderName || null,
+    // 两种入参形状都要认，且**必须都认**：
+    //   · 决策日志（db.routing）：chosenProviderId / chosenProviderName / chosenGroup
+    //   · 逐条账本（usage-detail/*.jsonl）：providerId / providerName / group
+    //     （账本由 core/usage-ledger.js#ledgerEntry 写，那一层已经把 chosen* 落成短名）
+    // 只认 chosen* 时，走账本路径的每一行站点/分组都是空 —— 网关页「站点/分组」列
+    // 于是整列渲染成「全部失败」（web/app.js 里 providerName 为空就画那个红标），
+    // 而结果列照旧按 outcome 显示「成功」，看起来就是「明明成功了却写全部失败」。
+    // 2026-11-09 实测：/api/usage/detail 返回 2000 行，站点为空的 2000/2000。
+    providerId: entry.chosenProviderId || entry.providerId || null,
+    providerName: entry.chosenProviderName || entry.providerName || null,
     upstreamModel: entry.upstreamModel || null,
-    group: entry.chosenGroup || '',
+    group: entry.chosenGroup || entry.group || '',
     pool: entry.pool || null,
     // 老记录没有这两个字段（改动后才写），null 表示「当时没记」，界面不显示
     protocol: entry.protocol || null,

@@ -129,6 +129,50 @@ console.log('\n[2] detailRows：老日志 / 缺 usage / 区间过滤')
   ok(limited.shown === 1 && limited.capped === true, 'limit 生效且标记 capped')
 }
 
+console.log('\n[2b] 逐条账本（usage-detail/*.jsonl）形状的字段不能丢')
+{
+  // 回归 2026-11-09 的「全部失败 + 成功」：账本由 core/usage-ledger.js#ledgerEntry 写入，
+  // 字段名是 providerName / providerId / group（不是 chosen*）。detailRow 只认 chosen*
+  // 时，走账本路径的每一行站点/分组都是空，网关页「站点/分组」列整列画成「全部失败」，
+  // 而结果列照旧按 outcome 显示「成功」。实测 2000/2000 行站点为空。
+  const ledgerRow = detailRow({
+    id: 'g_ledger',
+    ts: '2026-11-09T04:29:01.987Z',
+    model: 'gpt-6.1-sol',
+    keyName: 'Mac',
+    providerId: 'p_d204c0cf',
+    providerName: '秋',
+    upstreamModel: 'gpt-6.1-sol',
+    group: '【自建】plus 过鹈鹕不降智（禁止破甲，蒸馏，发现直接封号）',
+    attempts: 1,
+    outcome: 'ok',
+    ttftMs: 4547,
+    latencyMs: 18754,
+    usage: { prompt_tokens: 527342, completion_tokens: 643 },
+    failures: [],
+  })
+  ok(ledgerRow.providerName === '秋', `账本行站点要读出来（实际 ${ledgerRow.providerName}）`)
+  ok(ledgerRow.providerId === 'p_d204c0cf', `账本行 providerId 要读出来（实际 ${ledgerRow.providerId}）`)
+  ok(ledgerRow.group.includes('【自建】plus'), `账本行分组要读出来（实际「${ledgerRow.group}」）`)
+  ok(ledgerRow.outcome === 'ok', '账本行结果仍是 ok（站点为空不等于失败）')
+
+  // 决策日志形状（chosen*）仍然优先，两条路都不能坏
+  const logRow = detailRow({
+    id: 'g_log', ts: '2026-11-09T04:29:01.987Z', model: 'gpt-6.1-sol',
+    chosenProviderId: 'p_d204c0cf', chosenProviderName: '秋', chosenGroup: '国模-007',
+    outcome: 'ok',
+  })
+  ok(logRow.providerName === '秋' && logRow.group === '国模-007', '决策日志（chosen*）形状照旧正确')
+
+  // 两个都有时以 chosen* 为准：它是路由日志的原始口径，账本只是它的投影
+  const both = detailRow({
+    id: 'g_both', ts: '2026-11-09T04:29:01.987Z', model: 'm',
+    chosenProviderName: '秋', providerName: '绿萝',
+    chosenGroup: 'A', group: 'B', outcome: 'ok',
+  })
+  ok(both.providerName === '秋' && both.group === 'A', '两套字段都在时以 chosen* 为准')
+}
+
 // ---------------------------------------------------------------- 3. 端到端
 const HOME = await mkdtemp(join(tmpdir(), 'mapi-usage-detail-'))
 const APP_PORT = 4396
