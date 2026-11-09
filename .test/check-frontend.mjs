@@ -137,6 +137,32 @@ console.log('[F] 关键交互元素带无障碍标签')
   ok(app.includes("自动探测间隔数值"), "探测间隔数值有 aria-label")
 }
 
+console.log('[G] 列设置：勾掉的列必须「表头 / 单元格 / CSS」三件齐全')
+{
+  // 加一列要同时改三处：GWLOG_COLS 的开关、th/td 的 data-col、style.css 的规则。
+  // 只加 th 不加 td 的话列设置勾掉那一列，表头消失而数据照着显示，整张表错位。
+  const css = await readFile(new URL('../web/style.css', import.meta.url), 'utf8')
+  const colsBlock = app.slice(app.indexOf('const GWLOG_COLS'), app.indexOf(']' + String.fromCharCode(10) + 'let hiddenCols'))
+  const keys = [...colsBlock.matchAll(/\['([a-z]+)'/g)].map((m) => m[1])
+  ok(keys.includes('cachehit'), '网关页最近请求有「命中率」列开关')
+  for (const key of keys) {
+    ok(
+      app.includes(`data-col="${key}"`),
+      `列 ${key} 在表格里有 data-col`,
+    )
+    ok(
+      css.includes(`.hide-col-${key} [data-col='${key}']`),
+      `列 ${key} 有对应的 hide-col CSS 规则`,
+    )
+  }
+  // 命中率列必须是独立一格，不能只藏在 TOKEN 的 tooltip 里（那正是这次的诉求）
+  ok(
+    /data-col="cachehit">\$\{cacheHit\}/.test(app),
+    '命中率单独一格渲染（不再只是缓存 token 的 tooltip）',
+  )
+  ok(/function hitCell\(/.test(app), 'hitCell 存在（命中率带迷你比例条）')
+}
+
 console.log('')
 if (failed) {
   console.log(`${failed} 项失败`)

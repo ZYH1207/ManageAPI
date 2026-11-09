@@ -583,6 +583,13 @@ const EN = {
   '缓存写': 'Cache write',
   '思考': 'Thinking',
   '命中率': 'Hit rate',
+  '缓存读 ÷（输入 + 缓存读 + 缓存写）': 'Cache read ÷ (input + cache read + cache write)',
+  '缓存读 ÷ 计费输入（净值 + 缓存读 + 缓存写）': 'Cache read ÷ billed input (net + cache read + cache write)',
+  '缓存读 {cached} ÷ 计费输入 {billed}': 'Cache read {cached} ÷ billed input {billed}',
+  '站方没服务好的次数（全部候选失败 / 断流）。客户端自己按 Esc 或到点取消不记在这里，见旁边那格。':
+    'Requests the site failed to serve (all candidates failed / stream broken). Esc or client-side cancellation is not counted here — see the cell next to it.',
+  '客户端自己断开的次数：没拿到完整结果，但不是站方的问题，所以不进「错误」也不进成功率。':
+    'Requests the client cancelled itself: no complete result, but not the site\'s fault — so it counts neither as an error nor in the success rate.',
   '速度': 'Speed',
   '无 usage': 'no usage',
   '全部失败': 'all failed',
@@ -1645,6 +1652,13 @@ Object.assign(EN, {
   '当前按手填单价算，切到「倍率」才能填': 'Priced by manual unit price — switch to "Ratio" to edit',
   '优先用令牌读「可用渠道」，没有则用模型广场': 'Prefers channels API with a token; falls back to the model plaza',
   '同步间隔（分钟），0 = 关闭': 'Sync interval (minutes), 0 = off',
+  '自动同步': 'Auto sync',
+  '同步': 'Sync',
+  '自动同步间隔（分钟）：只读站点账户余额，不烧 token；0 = 关闭自动同步':
+    'Auto-sync interval (minutes): only reads site account balances, no tokens burned; 0 = off',
+  '自动同步间隔（分钟）': 'Auto-sync interval (minutes)',
+  '自动同步间隔要填 0（关闭）或正数（分钟）': 'Auto-sync interval must be 0 (off) or a positive number of minutes',
+  '自动同步间隔最大 1440 分钟（一天一次）；要关就填 0': 'Auto-sync interval maxes out at 1440 minutes (once a day); enter 0 to turn it off',
   '余额告警阈值（美元），0 = 不告警': 'Balance alert threshold (USD), 0 = off',
   '每 15 秒自动刷新一次': 'Auto-refresh every 15s',
   '这把 Key 属于站点的哪个分组，同步模型时会自动带上': 'Which site group this key belongs to; carried into model sync',

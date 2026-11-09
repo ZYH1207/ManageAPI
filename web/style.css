@@ -4465,6 +4465,7 @@ body.prov-dragging .drop-zone { display: flex; }
 .hide-col-model [data-col='model'] { display: none; }
 .hide-col-site [data-col='site'] { display: none; }
 .hide-col-tokens [data-col='tokens'] { display: none; }
+.hide-col-cachehit [data-col='cachehit'] { display: none; }
 .hide-col-outcome [data-col='outcome'] { display: none; }
 
 /* ---- Key 月限额进度条 ---- */

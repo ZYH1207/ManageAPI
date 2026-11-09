@@ -38,6 +38,9 @@ const AUTOREFRESH_MS = 15000
 const AUTOREFRESH_KEY = 'manageapi.autorefresh'
 let autoRefresh = localStorage.getItem(AUTOREFRESH_KEY) !== '0'
 let refreshTimer = null
+// 自动同步（服务端站点采集）的默认间隔，只在 state 与监控接口都没给值时才用。
+// 真源永远是服务端 settings.monitorIntervalMinutes——这里不做本地化，避免两处各记一份
+const MONITOR_INTERVAL_DEFAULT = 10
 // 比价页「只显示允许放行」：纯前端过滤，本地记住开关。默认关（保持原来的全表视图）
 // 决策页「只显示可使用」：同款纯前端过滤，本地记住开关。默认关（保持原来的全表视图）。
 // 只改展示不改派活：网关仍按 admission.ok 派活，手动顺序也照旧整表参与
@@ -66,6 +69,7 @@ const GWLOG_COLS = [
   ['model', '模型'],
   ['site', '站点'],
   ['tokens', 'TOKEN'],
+  ['cachehit', '命中率'],
   ['latency', '延迟'],
   ['outcome', '结果'],
 ]
@@ -1369,7 +1373,10 @@ function longTermCard() {
         <td class="mono">${ms(r.avgTtftMs)}</td>
         <td class="mono">${ms(r.avgLatencyMs)}</td>
         <td class="mono">${tps(r.tps)}</td>
-        <td class="mono">${pct(r.cacheHitPct)}</td>
+        <td class="mono" title="${t('缓存读 {cached} ÷ 计费输入 {billed}', {
+          cached: formatTokens(r.cachedTokens || 0),
+          billed: formatTokens(r.billedInputTokens || 0),
+        })}">${hitCell(r.cacheHitPct)}</td>
         <td class="mono">¥${r.estCostCny.toFixed(2)}</td>
         <td class="mono">${r.errors}</td>
         <td class="mono">${r.hours}</td>
@@ -1393,10 +1400,10 @@ function longTermCard() {
           .join('')}
       </div>
       <table class="table">
-        <thead><tr><th>${tabs.find(([k]) => k === dim)?.[1] || '对象'}</th><th>请求</th><th>成功率</th><th>首字</th><th>总耗时</th><th>吐字/s</th><th>缓存命中</th><th>费用</th><th>错误</th><th>覆盖小时</th><th>最近</th></tr></thead>
+        <thead><tr><th>${tabs.find(([k]) => k === dim)?.[1] || '对象'}</th><th>请求</th><th>成功率</th><th>首字</th><th>总耗时</th><th>吐字/s</th><th title="${esc(t('缓存读 ÷ 计费输入（净值 + 缓存读 + 缓存写）'))}">${t('缓存命中')}</th><th>费用</th><th>错误</th><th>覆盖小时</th><th>最近</th></tr></thead>
         <tbody>${body}</tbody>
       </table>
-      <div class="desc" style="margin-top:8px">成功率 = 成功 / 已提交请求；总耗时与首字是真实请求实测；费用按当前报价估算（诊断级口径，非对账）。</div>
+      <div class="desc" style="margin-top:8px">成功率 = 成功 / 已提交请求（已剔除客户端主动断开）；缓存命中 = 缓存读 ÷（净值 + 缓存读 + 缓存写）；总耗时与首字是真实请求实测；费用按当前报价估算（诊断级口径，非对账）。</div>
     </div>`
 }
 
@@ -2662,9 +2669,19 @@ function providersHtml({ withForm = true, panel = '', actions = '' } = {}) {
 /** 同步设置面板与「立即同步 / 新增站点」按钮：renderMonitor 与 refreshSiteCards
  *  共用——此前 refreshSiteCards（搜索/翻页局部重绘）不带这两块，搜索一敲字面板就消失 */
 function syncPanelHtml(data = monitorData || {}) {
+  // 间隔可改（默认 10 分钟）。值优先取监控接口，接口还没回来时退回 state，
+  // 两处都缺才用默认——否则首屏会闪一个空框
+  const intervalValue =
+    data.settings?.monitorIntervalMinutes ?? state?.settings?.monitorIntervalMinutes ?? MONITOR_INTERVAL_DEFAULT
   return `
     <div class="sync-panel">
-      <input type="number" min="0" step="5" id="monitor-interval" placeholder="同步间隔（分钟）" title="同步间隔（分钟），0 = 关闭" value="${data.settings?.monitorIntervalMinutes ?? 30}" />
+      <label class="sync-interval" title="${esc(t('自动同步间隔（分钟）：只读站点账户余额，不烧 token；0 = 关闭自动同步'))}">
+        <span>${t('同步')}</span>
+        <input type="number" min="0" max="1440" step="1" id="monitor-interval"
+          aria-label="${esc(t('自动同步间隔（分钟）'))}"
+          value="${esc(String(intervalValue))}" />
+        <span class="sync-interval-unit">${t('分钟')}</span>
+      </label>
       <input type="number" min="0" step="0.5" id="monitor-warn" placeholder="告警阈值" title="余额告警阈值（站内额度单位，1:1 充值就是 ¥；0 = 不告警）" value="${data.settings?.balanceWarnUsd ?? 1.5}" />
       <input type="number" min="0" step="0.01" id="monitor-unit-price" placeholder="默认充值汇率（默认 1）" title="默认充值汇率（所有站口径一致时只填一次）：充 1 元到账 1 单位额度填 1（绝大多数中转站）；充 ¥100 到账 $120 填 0.83。留空 = 1:1" value="${state?.settings?.defaultUnitPrice ?? ''}" />
       <button class="primary" data-act="monitor-save-settings">保存</button>
@@ -5666,11 +5683,11 @@ function renderGateway() {
         ? t('近 7 天共 {n} 单，只展示最新 {m} 单', { n: gwWin.available, m: gwWin.shown })
         : ''
   const logRows = gwLog.error
-    ? `<tr><td colspan="7" style="text-align:center;color:var(--danger);padding:24px">${esc(gwLog.error)}</td></tr>`
+    ? `<tr><td colspan="8" style="text-align:center;color:var(--danger);padding:24px">${esc(gwLog.error)}</td></tr>`
     : gwLog.loading && !gwRows.length
-      ? `<tr><td colspan="7" style="text-align:center;color:var(--faint);padding:24px">${t('正在载入最近请求…')}</td></tr>`
+      ? `<tr><td colspan="8" style="text-align:center;color:var(--faint);padding:24px">${t('正在载入最近请求…')}</td></tr>`
       : gwRows.length === 0
-        ? `<tr><td colspan="7" style="text-align:center;color:var(--faint);padding:28px">${gwFilter ? t('没有匹配的请求') : t('还没有请求经过网关')}</td></tr>`
+        ? `<tr><td colspan="8" style="text-align:center;color:var(--faint);padding:28px">${gwFilter ? t('没有匹配的请求') : t('还没有请求经过网关')}</td></tr>`
         : gwRows
             .map((r) => {
               const ok = r.outcome === 'ok'
@@ -5694,6 +5711,13 @@ function renderGateway() {
                       <span class="stack-line"><span class="k">${t('输出')}</span><span class="v">${r.output === null || r.output === undefined ? '—' : formatTokens(r.output)}</span></span>
                       ${r.cached !== null && r.cached !== undefined ? `<span class="stack-line"><span class="k">${t('缓存')}</span><span class="v" title="${t('缓存读 token（命中率 {pct}）', { pct: r.cacheHitRate === null || r.cacheHitRate === undefined ? '—' : Math.round(r.cacheHitRate) + '%' })}">${formatTokens(r.cached)}</span></span>` : ''}
                     </div>`
+              // 命中率单独一列：以前它藏在「缓存」那格 tooltip 里，要悬停才看得见，
+              // 而这一栏正好是「这家站到底有没有真的开缓存」最直接的证据。
+              // 分母口径见 core/usage.js#finalize（缓存读 ÷ 计费输入），null 就是「—」
+              const cacheHit =
+                r.cacheHitRate === null || r.cacheHitRate === undefined
+                  ? '—'
+                  : pctCell(r.cacheHitRate)
               const latency = `<div class="stack-cell">
                       <span class="stack-line"><span class="k">${t('首字')}</span><span class="v">${msText(r.ttftMs)}</span></span>
                       <span class="stack-line"><span class="k">${t('总耗时')}</span><span class="v">${msText(r.latencyMs)}</span></span>
@@ -5719,6 +5743,7 @@ function renderGateway() {
               }</td>
         <td data-col="site">${r.providerName ? `${esc(r.providerName)}${r.group ? ` <span class="badge ${r.pool === 'free' ? 'vchip-free' : groupChipOf(r.providerId, r.group)}">${esc(r.group)}</span>` : ''}` : `<span class="badge danger">${t('全部失败')}</span>`}${failureSub}${streamErrSub}</td>
         <td class="num" data-col="tokens">${tokens}</td>
+        <td class="num" data-col="cachehit">${cacheHit}</td>
         <td data-col="latency">${latency}</td>
         <td data-col="outcome">${ok ? `<span class="badge ok">${t('成功')}</span>` : clientAborted ? `<span class="badge" title="${t('客户端主动断开请求，不予处理')}">${t('客户端断开')}</span>` : `<span class="badge danger" title="${esc(r.outcome)}">${esc(OUTCOME_LABEL[r.outcome] ? t(OUTCOME_LABEL[r.outcome]) : r.outcome)}</span>`}</td>
       </tr>`
@@ -5746,6 +5771,7 @@ function renderGateway() {
           <th data-col="model">${t('模型')}</th>
           <th data-col="site">${t('站点 / 分组')}</th>
           <th class="num" data-col="tokens">TOKEN</th>
+          <th class="num" data-col="cachehit" title="${esc(t('缓存读 ÷（输入 + 缓存读 + 缓存写）'))}">${t('命中率')}</th>
           <th data-col="latency">${t('延迟')}</th>
           <th data-col="outcome">${t('结果')}</th>
         </tr></thead>
@@ -5790,6 +5816,17 @@ function todayKey() {
 
 function tokenTotal(row) {
   return (row?.input || 0) + (row?.output || 0)
+}
+
+/**
+ * 命中率单元格：百分比 + 一条迷你比例条（样式复用探针页的 .pct-num / .pct-bar）。
+ *
+ * 为什么用比例条：这一列九成是 90% 以上，一排相近的数字靠读数字找不出「哪家没开
+ * 缓存」；一条 3px 的条让差距变成看得见的长度。null 就只画「—」，不画空条冒充。
+ */
+function hitCell(rate) {
+  if (rate === null || rate === undefined) return '—'
+  return pctCell(rate)
 }
 
 function renderUsage() {
@@ -5852,7 +5889,7 @@ function renderUsage() {
     const total = tokenTotal(row)
     const height = total ? Math.max(Math.round((total / maxTokens) * 100), 3) : 1
     const label = showLabels || index % 5 === 0 || index === dayEntries.length - 1 ? day.slice(5) : ''
-    return `<div class="bar-item ${total ? '' : 'zero'}" title="${day} · ${total} token · ${row.requests || 0} 次请求">
+    return `<div class="bar-item ${total ? '' : 'zero'}" title="${day} · ${total} token · ${row.requests || 0} ${t('次请求')}${row.cacheHitRate === null || row.cacheHitRate === undefined ? '' : ` · ${t('命中率')} ${pct(row.cacheHitRate)}`}">
       <div class="bar" style="height:${height}%"></div>
       <span class="bar-label">${label}</span>
     </div>`
@@ -5868,6 +5905,8 @@ function renderUsage() {
         <td class="num">${row.requests}</td>
         <td class="num">${formatTokens(row.input)}</td>
         <td class="num">${formatTokens(row.output)}</td>
+        <td class="num">${formatTokens(row.cached)}</td>
+        <td class="num">${hitCell(row.cacheHitRate)}</td>
         <td class="num">${row.avgTtftMs ? `${row.avgTtftMs}ms` : '—'}</td>
       </tr>`
     }).join('')
@@ -5880,6 +5919,8 @@ function renderUsage() {
       <td class="num">${row.requests}</td>
       <td class="num">${formatTokens(row.input)}</td>
       <td class="num">${formatTokens(row.output)}</td>
+      <td class="num">${formatTokens(row.cached)}</td>
+      <td class="num">${hitCell(row.cacheHitRate)}</td>
       <td class="num">${row.avgTtftMs ? `${row.avgTtftMs}ms` : '—'}</td>
     </tr>`).join('')
 
@@ -5894,6 +5935,8 @@ function renderUsage() {
         <td class="num">${row.requests}</td>
         <td class="num">${formatTokens(row.input)}</td>
         <td class="num">${formatTokens(row.output)}</td>
+        <td class="num">${formatTokens(row.cached)}</td>
+        <td class="num">${hitCell(row.cacheHitRate)}</td>
         <td class="num">${row.avgLatencyMs ? `${row.avgLatencyMs}ms` : '—'}</td>
       </tr>`
     }).join('')
@@ -5931,7 +5974,8 @@ function renderUsage() {
       )}"><div class="k">生成速度</div><div class="v">${
         totals.avgTps === null ? '—' : `${tpsText(totals.avgTps)}<small>tok/s</small>`
       }</div></div>
-      <div class="stat"><div class="k">错误</div><div class="v">${totals.errors || 0}</div></div>
+      <div class="stat" title="${esc(t('站方没服务好的次数（全部候选失败 / 断流）。客户端自己按 Esc 或到点取消不记在这里，见旁边那格。'))}"><div class="k">${t('错误')}</div><div class="v">${totals.errors || 0}</div></div>
+      <div class="stat" title="${esc(t('客户端自己断开的次数：没拿到完整结果，但不是站方的问题，所以不进「错误」也不进成功率。'))}"><div class="k">${t('客户端断开')}</div><div class="v">${totals.clientAborts || 0}</div></div>
     </div>
 
     <h3 class="section-title">按天</h3>
@@ -5943,24 +5987,24 @@ function renderUsage() {
     <h3 class="section-title">按 Key</h3>
     <div class="table-wrap">
       <table>
-        <thead><tr><th>Key</th><th class="num">请求</th><th class="num">输入</th><th class="num">输出</th><th class="num">平均首字</th></tr></thead>
-        <tbody>${keyRows || emptyRow(5)}</tbody>
+        <thead><tr><th>Key</th><th class="num">请求</th><th class="num">输入</th><th class="num">输出</th><th class="num" title="${esc(t('缓存读 ÷（输入 + 缓存读 + 缓存写）'))}">${t('缓存读')}</th><th class="num">${t('命中率')}</th><th class="num">${t('平均首字')}</th></tr></thead>
+        <tbody>${keyRows || emptyRow(7)}</tbody>
       </table>
     </div>
 
     <h3 class="section-title">按模型</h3>
     <div class="table-wrap">
       <table>
-        <thead><tr><th>模型</th><th class="num">请求</th><th class="num">输入</th><th class="num">输出</th><th class="num">平均首字</th></tr></thead>
-        <tbody>${modelRows || emptyRow(5)}</tbody>
+        <thead><tr><th>模型</th><th class="num">请求</th><th class="num">输入</th><th class="num">输出</th><th class="num" title="${esc(t('缓存读 ÷（输入 + 缓存读 + 缓存写）'))}">${t('缓存读')}</th><th class="num">${t('命中率')}</th><th class="num">${t('平均首字')}</th></tr></thead>
+        <tbody>${modelRows || emptyRow(7)}</tbody>
       </table>
     </div>
 
     <h3 class="section-title">按站点</h3>
     <div class="table-wrap">
       <table>
-        <thead><tr><th>站点</th><th class="num">请求</th><th class="num">输入</th><th class="num">输出</th><th class="num">平均耗时</th></tr></thead>
-        <tbody>${providerRows || emptyRow(5)}</tbody>
+        <thead><tr><th>站点</th><th class="num">请求</th><th class="num">输入</th><th class="num">输出</th><th class="num" title="${esc(t('缓存读 ÷（输入 + 缓存读 + 缓存写）'))}">${t('缓存读')}</th><th class="num">${t('命中率')}</th><th class="num">${t('平均耗时')}</th></tr></thead>
+        <tbody>${providerRows || emptyRow(7)}</tbody>
       </table>
     </div>`
 }
@@ -8321,10 +8365,23 @@ document.addEventListener('click', async (event) => {
   }
 
   if (action === 'monitor-save-settings') {
-    const interval = Number($('#monitor-interval')?.value ?? 30)
+    const intervalInput = $('#monitor-interval')
     const warnInput = $('#monitor-warn')
     // 阈值输入框可能不在页面上（设置面板收起来了），此时不要用默认值覆盖用户设置
-    const patch = { monitorIntervalMinutes: interval }
+    const patch = {}
+    if (intervalInput) {
+      const interval = intervalInput.value.trim() === '' ? MONITOR_INTERVAL_DEFAULT : Number(intervalInput.value)
+      // 前端先挡一道：服务端只认 0 与 [1, 1440]，这里给个能看懂的话，别让人等一个 400
+      if (!Number.isFinite(interval) || interval < 0) {
+        toast(t('自动同步间隔要填 0（关闭）或正数（分钟）'), true)
+        return
+      }
+      if (interval > 1440) {
+        toast(t('自动同步间隔最大 1440 分钟（一天一次）；要关就填 0'), true)
+        return
+      }
+      patch.monitorIntervalMinutes = interval
+    }
     if (warnInput) patch.balanceWarnUsd = Number(warnInput.value || 0)
     // 默认站点单价：空串表示「1:1」，要显式传 null 才能清掉
     const unitInput = $('#monitor-unit-price')
