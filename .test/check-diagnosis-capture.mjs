@@ -284,4 +284,126 @@ const SAMPLES = {
   ok(true, '坏类型不炸（重置为空对象）')
 }
 
+// 11. 缓存读/写必须走 wire.js#usageNumbers（唯一口径）
+//
+// 回归 2026-11-09：offer-stats 自己读 `prompt_tokens_details.cached_tokens`，
+// 而 sub2api 系上游把命中放在 prompt_cache_hit_tokens / cache_read_input_tokens
+// 里、prompt_tokens_details 那份是 0。真实库 12179 条明细里有 544 条命中被漏算，
+// 北辰 · deepseek-4.1-flash 的长期评价写着命中 26.8%，按同一份账应该是 37.9%。
+{
+  const { aggregateLongTerm } = await import('../core/offer-stats.js')
+  const offerById = new Map([
+    ['o_sub2api', { id: 'o_sub2api', priceUnit: 'per_mtok', inPrice: 10, outPrice: 20, currency: 'CNY', ratio: 1 }],
+  ])
+  const stats = {}
+  // 上游同时回「prompt_tokens_details.cached_tokens = 0」和真实命中 80000 的别名
+  applyRoutingToStats(stats, {
+    ts: '2026-11-09T08:00:00Z',
+    chosenOfferId: 'o_sub2api',
+    outcome: 'ok',
+    latencyMs: 5000,
+    ttftMs: 1000,
+    usage: {
+      prompt_tokens: 100000,
+      completion_tokens: 1000,
+      total_tokens: 101000,
+      prompt_tokens_details: { cached_tokens: 0 },
+      prompt_cache_hit_tokens: 80000,
+      cache_read_input_tokens: 0,
+      cache_creation_input_tokens: 10000,
+      prompt_cache_write_tokens: 10000,
+    },
+  }, { offerById, settings: {}, benchmarks: {} })
+
+  const b = stats['o_sub2api|2026-11-09T08']
+  eq(b.cachedTokens, 80000, '缓存读取到别名里的 80000（不是 prompt_tokens_details 的 0）')
+  eq(b.cacheCreationTokens, 10000, '缓存写取到别名里的 10000')
+  eq(b.inputTokens, 100000, 'inputTokens 保持上游 prompt 原值（老桶口径不变）')
+  eq(b.billedInputTokens, 100000, '计费输入 = 净值 10000 + 缓存读 80000 + 缓存写 10000')
+
+  // 费用：净值 10000 按输入价、80000 按缓存读价（站点没公布 → 退回输入价）、
+  // 10000 按缓存写价（同样退回输入价），输出 1000
+  const cost = estimateCostCny(offerById.get('o_sub2api'), {
+    prompt_tokens: 100000,
+    completion_tokens: 1000,
+    prompt_tokens_details: { cached_tokens: 0 },
+    prompt_cache_hit_tokens: 80000,
+  }, {}, {})
+  // 缓存 80000 走缓存价（没公布 → 退回输入价 10），剩 20000 走输入价，输出 1000 走 20
+  ok(
+    Math.abs(cost - (0.02 * 10 + 0.08 * 10 + 0.001 * 20)) < 1e-9,
+    `费用按别名里的缓存数算：0.02M×10 + 0.08M×10 + 0.001M×20（实际 ${cost}）`,
+  )
+  // 反证：旧实现只认 prompt_tokens_details.cached_tokens=0，会算成 0.1M 全按输入价
+  ok(Math.abs(cost - 1.1) > 1e-9, '不是旧口径的 1.1（0.1M 全按输入价 + 输出）')
+
+  // 长期评价：命中率分母用计费输入，不是 prompt 原值
+  const meta = new Map([
+    ['o_sub2api', { providerId: 'p1', providerName: '北辰', modelKey: 'deepseek-4.1-flash', group: '国模' }],
+  ])
+  const lt = aggregateLongTerm(stats, meta)
+  const row = lt.byProvider[0]
+  ok(
+    Math.abs(row.cacheHitPct - 0.8) < 1e-9,
+    `长期评价命中率 = 80000/100000 = 0.8（实际 ${row.cacheHitPct}）`,
+  )
+  eq(row.cachedTokens, 80000, '长期评价把分子也交出来（界面要能写清谁比谁）')
+  eq(row.billedInputTokens, 100000, '长期评价把分母也交出来')
+
+  // 老桶（没有 billedInputTokens）退回 inputTokens 兜底：旧口径「缓存 ÷ prompt」不变，
+  // 升级后老数据不会忽然从 96% 跳到 99%
+  const legacyStats = {
+    'o_legacy|2026-11-09T08': {
+      offerId: 'o_legacy', hour: '2026-11-09T08', requests: 1, ok: 1,
+      inputTokens: 100000, cachedTokens: 96000,
+    },
+  }
+  const legacyMeta = new Map([
+    ['o_legacy', { providerId: 'p2', providerName: '秋', modelKey: 'm', group: 'g' }],
+  ])
+  const legacyRow = aggregateLongTerm(legacyStats, legacyMeta).byProvider[0]
+  ok(
+    Math.abs(legacyRow.cacheHitPct - 0.96) < 1e-9,
+    `老桶没有 billedInputTokens 时按「缓存 ÷ prompt」兜底 = 0.96（实际 ${legacyRow.cacheHitPct}）`,
+  )
+
+  // anomaly 的窗口指标同一口径（诊断的「缓存被关」规则吃它）
+  const { mergeWindow, windowMetrics } = await import('../core/anomaly.js')
+  const m = mergeWindow([
+    { requests: 1, ok: 1, inputTokens: 100000, cachedTokens: 80000, billedInputTokens: 100000 },
+  ])
+  eq(windowMetrics(m).cacheHit, 0.8, 'anomaly 的命中率也是缓存读 ÷ 计费输入')
+  const legacyM = mergeWindow([{ requests: 1, ok: 1, inputTokens: 100000, cachedTokens: 50000 }])
+  eq(windowMetrics(legacyM).cacheHit, 0.5, 'anomaly 对老桶按 inputTokens 兜底')
+}
+
+// 12. 成功率不得超过 100%（老库里重复记账的桶）
+//
+// 回归 2026-11-09：长评价卡片上「格子云」那一行成功率显示 101%。根因是分母
+// 用 requests − clientAborts，而真实库有 11 个桶（2026-10-29 那批，来自修复
+// 「客户端断开被误记成断流」的那次数据修理）满足 ok+broken+clientAborts > requests。
+// 分母被撑小 → ok/分母 > 1。
+{
+  const { aggregateLongTerm, servedRequestsOf } = await import('../core/offer-stats.js')
+
+  // 现场原值（o_a402f83d|2026-10-29T05）：requests 1044、ok 1038、broken 6、clientAborts 10。
+  // 旧算法 1038/(1044-10) = 100.4%；其中 ok+broken+ca = 1054 > 1044，是记重复了
+  const broken = { requests: 1044, ok: 1038, broken: 6, clientAborts: 10 }
+  // 现场：requests 1044 − clientAborts 10 = 1034，但 ok+broken 就有 1044（重复记账），
+  // 旧算法 1038/1034 = 100.4%。分母取两者之大 → 1044
+  eq(servedRequestsOf(broken), 1044, '分母取「真的结过果的单」1044，不拿被撑小的 1034')
+  const stats = { 'o_x|2026-10-29T05': { ...broken, offerId: 'o_x', hour: '2026-10-29T05' } }
+  const meta = new Map([['o_x', { providerId: 'p1', providerName: '格子云', modelKey: 'm', group: 'g' }]])
+  const row = aggregateLongTerm(stats, meta).byProvider[0]
+  ok(row.okRate <= 1, `成功率不超过 100%（实际 ${(row.okRate * 100).toFixed(2)}%）`)
+  ok(Math.abs(row.okRate - 1038 / 1044) < 1e-9, `成功率 = 1038/1044（实际 ${row.okRate}）`)
+
+  // 正常桶不受影响：分母仍是 requests − clientAborts
+  eq(servedRequestsOf({ requests: 100, ok: 96, broken: 2, clientAborts: 2 }), 98, '正常桶分母 100−2=98')
+  // 不变量成立时两条公式一致
+  eq(servedRequestsOf({ requests: 100, ok: 96, broken: 2, clientAborts: 2 }), 0 + 96 + 2, '与 ok+broken 一致')
+  // 全是被取消的：分母 0，成功率 null 而不是除零
+  eq(servedRequestsOf({ requests: 5, ok: 0, broken: 0, clientAborts: 5 }), 0, '全取消时分母为 0')
+}
+
 console.log(`check-diagnosis-capture: ${n} 项全部通过`)

@@ -14,7 +14,7 @@
  */
 
 import { detectAnomalies } from './anomaly.js'
-import { clientAbortsOf } from './offer-stats.js'
+import { clientAbortsOf, servedRequestsOf } from './offer-stats.js'
 
 /** 五层归因的标签与顺序（severity 排序用） */
 export const LAYERS = {
@@ -122,7 +122,9 @@ export function checkConcurrency({ offerStats = {} } = {}) {
   // 每个桶的并发近似 = 该小时处于失败状态的事件数占比（没有精确 in-flight 记录时的代理指标）
   const recent = buckets.filter((b) => Date.parse(`${b.hour}:00:00Z`) > Date.now() - 6 * 3600000)
   // 分母剔除客户端取消：那不是失败，会把这个比率抹平
-  const served = (list) => list.reduce((a, b) => a + Math.max(0, (b.requests || 0) - (b.clientAborts || 0)), 0)
+  // 分母走 servedRequestsOf（唯一口径）：它挡住老库里「ok+broken+clientAborts 大于
+  // requests」那批重复记账的桶，否则这里算出的失败率会被分母撑大而偏低
+  const served = (list) => list.reduce((a, b) => a + servedRequestsOf(b), 0)
   const totalReq = served(recent)
   // 分子只算站方真的没服务好的：断流 + 失败。
   // 前提是 core/offer-stats.js 已按责任层记账——我方缺陷进 localDefects，不落 failed。
@@ -192,7 +194,7 @@ export function checkStreamBreaks({ offerStats = {}, offerById = null } = {}) {
   }
   const findings = []
   for (const [offerId, s] of byOffer) {
-    const served = Math.max(0, s.requests - s.clientAborts)
+    const served = servedRequestsOf(s)
     if (served < 20 || s.broken < 3) continue
     const rate = s.broken / served
     const byRate = rate >= 0.05

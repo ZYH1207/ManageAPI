@@ -58,6 +58,9 @@ export function mergeWindow(buckets) {
     inputTokens: 0,
     outputTokens: 0,
     cachedTokens: 0,
+    // 命中率分母「计费输入」= 净值 + 缓存读 + 缓存写（core/offer-stats.js#addUsage）。
+    // 老桶没有这个字段，读的时候退回 inputTokens（那时它存的正是 prompt 原值）
+    billedInputTokens: 0,
     reasoningTokens: 0,
     estCostSum: 0,
     estCostCount: 0,
@@ -80,6 +83,7 @@ export function mergeWindow(buckets) {
     m.inputTokens += b.inputTokens || 0
     m.outputTokens += b.outputTokens || 0
     m.cachedTokens += b.cachedTokens || 0
+    m.billedInputTokens += b.billedInputTokens || 0
     m.reasoningTokens += b.reasoningTokens || 0
     m.estCostSum += b.estCostSum || 0
     m.estCostCount += b.estCostCount || 0
@@ -90,13 +94,19 @@ export function mergeWindow(buckets) {
 
 /** 窗口累计量 → 可比较的指标；算不出来的给 null，不要用 0 假装 */
 export function windowMetrics(m) {
-  // 客户端取消的请求不算站方的成绩：既不算成功、也不算失败，分母里一并剔掉
-  const served = Math.max(0, (m.requests || 0) - (m.clientAborts || 0))
+  // 客户端取消的请求不算站方的成绩：既不算成功、也不算失败，分母里一并剔掉。
+  // 再与「真的结过果的单」（ok + broken）取大：老库里有 11 个桶
+  // （2026-10-29 那批重复记账）满足 ok+broken+clientAborts > requests，
+  // 只用 requests − clientAborts 当分母会让失败率偏低（见 offer-stats#servedRequestsOf）
+  const settled = (Number(m.ok) || 0) + (Number(m.broken) || 0)
+  const served = Math.max(0, (m.requests || 0) - (m.clientAborts || 0), settled)
   return {
     requests: m.requests,
     ttft: m.ttftCount ? m.ttftSum / m.ttftCount : null,
     tps: m.genTimeSum > 0 ? m.genOutSum / (m.genTimeSum / 1000) : null,
-    cacheHit: m.inputTokens > 0 ? m.cachedTokens / m.inputTokens : null,
+    // 命中率 = 缓存读 ÷ 计费输入（净值 + 缓存读 + 缓存写），与 usage.js / usage-detail.js
+    // 同一口径。老桶没有 billedInputTokens → 退回 inputTokens（旧口径就是「缓存 ÷ prompt」）
+    cacheHit: (m.billedInputTokens || m.inputTokens) > 0 ? m.cachedTokens / (m.billedInputTokens || m.inputTokens) : null,
     reasoningRatio: m.outputTokens > 0 ? m.reasoningTokens / m.outputTokens : null,
     outPerReq: m.requests > 0 ? m.outputTokens / m.requests : null,
     costPerReq: m.estCostCount > 0 ? m.estCostSum / m.estCostCount : null,

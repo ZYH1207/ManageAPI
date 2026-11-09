@@ -17,7 +17,9 @@
  *     ttftSum, ttftCount,                  // 首字
  *     latencySum, latencyCount,            // 总时长
  *     genOutSum, genCount, genTimeSum,     // 吐字速度分母/分子（TPS）
- *     inputTokens, outputTokens, cachedTokens, reasoningTokens,
+ *     inputTokens, outputTokens, cachedTokens, cacheCreationTokens, reasoningTokens,
+ *           // inputTokens 是**净值**（已扣掉缓存读/写），全部由 core/wire.js#usageNumbers 归一；
+ *           // cacheCreationTokens 是后加的字段，老桶没有 → 读的时候一律 || 0
  *     estCostSum, estCostCount,            // 按报价估算的费用（诊断级，非对账级）
  *     streamGapMax,                        // 流内最大停顿（毫秒）
  *     errors: { [kind|code]: n },          // 这条供给上失败的错误归类计数
@@ -30,6 +32,7 @@ import { offerCost } from './pricing.js'
 import { fingerprintError } from './error-fingerprint.js'
 import { classifyFailure } from './failure.js'
 import { OUTCOME } from './fault-triage.js'
+import { usageNumbers } from './wire.js'
 
 export const OFFER_STATS_MAX_AGE_DAYS = 30
 
@@ -71,6 +74,10 @@ function bucket(stats, offerId, hour) {
       inputTokens: 0,
       outputTokens: 0,
       cachedTokens: 0,
+      cacheCreationTokens: 0,
+      // 命中率分母「计费输入」= 净值 + 缓存读 + 缓存写（见 addUsage 注释）。
+      // 老桶没有这个字段，读的时候按 inputTokens 兜底
+      billedInputTokens: 0,
       reasoningTokens: 0,
       estCostSum: 0,
       estCostCount: 0,
@@ -99,23 +106,55 @@ export function estimateCostCny(offer, usage, settings = {}, benchmarks = {}) {
   const outP = cost.outCnyPerMtok
   if (inP === null || outP === null || !Number.isFinite(inP) || !Number.isFinite(outP)) return null
 
-  const cached = Number(usage.prompt_tokens_details?.cached_tokens) || 0
-  const fresh = Math.max(prompt - cached, 0)
+  // 缓存读/写必须走 core/wire.js 的 usageNumbers（**唯一口径**）。
+  // 这里以前自己读 `usage.prompt_tokens_details.cached_tokens`：sub2api 系上游把命中
+  // 放在 prompt_cache_hit_tokens / cache_read_input_tokens 里、prompt_tokens_details
+  // 那份是 0，于是缓存全按输入价算了钱（真实库实测 544/12179 条命中这样被漏掉）。
+  const numbers = usageNumbers(usage) || { cached: 0, cacheCreation: 0 }
+  const cached = Math.max(0, Number(numbers.cached) || 0)
+  const cacheCreation = Math.max(0, Number(numbers.cacheCreation) || 0)
+  // 净值口径：prompt 含缓存时减掉；只有 input_tokens（Anthropic 约定不含缓存）时原样
+  const fresh = Math.max(prompt - cached - cacheCreation, 0)
   const cachePerMtok =
     Number.isFinite(cost.cacheReadCnyPerMtok) && cost.cacheReadCnyPerMtok !== null
       ? cost.cacheReadCnyPerMtok
       : inP
-  const total = (fresh / 1e6) * inP + (cached / 1e6) * cachePerMtok + (completion / 1e6) * outP
+  let total = (fresh / 1e6) * inP + (cached / 1e6) * cachePerMtok + (completion / 1e6) * outP
+  // 缓存写入独立计费（通常 1.25× 输入价）；站点没公布就退回输入价
+  if (cacheCreation > 0) {
+    const writePerMtok =
+      Number.isFinite(cost.cacheWriteCnyPerMtok) && cost.cacheWriteCnyPerMtok !== null
+        ? cost.cacheWriteCnyPerMtok
+        : inP
+    total += (cacheCreation / 1e6) * writePerMtok
+  }
   return Number.isFinite(total) ? total : null
 }
 
 function addUsage(b, usage) {
   if (!usage) return
-  const numbers = usage.prompt_tokens_details || {}
-  b.inputTokens += Number(usage.prompt_tokens) || 0
-  b.outputTokens += Number(usage.completion_tokens) || 0
-  b.cachedTokens += Number(numbers.cached_tokens) || 0
-  b.reasoningTokens += Number(usage.completion_tokens_details?.reasoning_tokens) || 0
+  // 缓存读/写与思考 token 一律走 core/wire.js#usageNumbers（**唯一口径**）。
+  // 这里以前自己读 `usage.prompt_tokens_details.cached_tokens`，而 sub2api 系上游把
+  // 命中放在 prompt_cache_hit_tokens / cache_read_input_tokens 里、那份是 0——
+  // 真实库 12179 条里有 544 条命中被漏掉，北辰 · deepseek-4.1-flash 长期评价
+  // 于是写着命中 26.8%，按同一份账应该是 37.9%。
+  const numbers = usageNumbers(usage)
+  if (!numbers) return
+  // inputTokens 沿用「上游 prompt 原值」这个口径（老桶就是这样，不能就地改含义，
+  // 否则新老桶混在一个窗口里求命中率必然漂）。唯一的顺带修正：只有 input_tokens
+  // 的行（Anthropic 约定）以前连输入都记成 0，现在按 input_tokens 记——
+  // 那种行以前会让命中率分母偏小、命中率虚高。
+  b.inputTokens += Math.max(0, Number(numbers.prompt) || 0)
+  b.outputTokens += Math.max(0, Number(numbers.output) || 0)
+  b.cachedTokens += Math.max(0, Number(numbers.cached) || 0)
+  b.cacheCreationTokens = (b.cacheCreationTokens || 0) + Math.max(0, Number(numbers.cacheCreation) || 0)
+  b.reasoningTokens += Math.max(0, Number(numbers.reasoning) || 0)
+  // 命中率的分母「计费输入」= 净值 + 缓存读 + 缓存写（与 usage.js#finalize 同一口径）。
+  // 单独累加而不是现算：Anthropic 系只有 input_tokens（本身不含缓存）时，
+  // 用 prompt 当分母会把缓存重复算进去。老桶没有这个字段 → 退回 inputTokens
+  b.billedInputTokens =
+    (b.billedInputTokens || 0) +
+    Math.max(0, (Number(numbers.input) || 0) + Number(numbers.cached || 0) + Number(numbers.cacheCreation || 0))
 }
 
 const errKey = (kind, code) => `${kind || 'outage'}${code ? `/${code}` : ''}`
@@ -130,6 +169,27 @@ const errKey = (kind, code) => `${kind || 'outage'}${code ? `/${code}` : ''}`
 export function clientAbortsOf(bucket) {
   if (!bucket) return 0
   return (Number(bucket.clientAborts) || 0) + (Number(bucket.clientAborted) || 0)
+}
+
+/**
+ * 成功率的**分母**（唯一读法）：已交付请求 = requests − 客户端断开。
+ *
+ * 为什么不能直接拿 `ok / (requests - clientAborts)`：老库里有 11 个桶
+ * （2026-10-29 那批，来自修复客户端断开误记 broken 的那次数据修理）
+ * 满足 `ok + broken + clientAborts > requests`——都是记重复了。
+ * 直接除算出来的成功率会到 101%，界面上就是一句假话。
+ *
+ * 兜底规则：分母至少取「真的结过果的那些单」（ok + broken），
+ * 这样成功率恒 ≤ 100%，也不会因为老数据把分母撑大而虚高。
+ *
+ * @param {{requests?:number, ok?:number, broken?:number}} bucket
+ */
+export function servedRequestsOf(bucket) {
+  if (!bucket) return 0
+  const requests = Number(bucket.requests) || 0
+  const clientAborts = clientAbortsOf(bucket)
+  const settled = (Number(bucket.ok) || 0) + (Number(bucket.broken) || 0)
+  return Math.max(0, requests - clientAborts, settled)
 }
 
 /**
@@ -298,6 +358,22 @@ export function pruneOfferStats(stats, now = Date.now(), maxAgeDays = OFFER_STAT
 // ------------------------------------------------------------ 长期评价聚合
 
 /**
+ * 命中率的分母（**唯一读法**）：计费输入 = 净值 + 缓存读 + 缓存写。
+ *
+ * 2026-11 之前的桶没有 billedInputTokens，那时 inputTokens 存的是 prompt 原值、
+ * 命中率算的是「缓存 ÷ prompt」。老桶按那个口径兜底，否则升级后一读老数据，
+ * 分母从「含缓存的 prompt」变成「净值」会让命中率凭空跳到 96%→99%。
+ *
+ * @param {{billedInputTokens?:number, inputTokens?:number}} bucket
+ */
+function cacheHitBase(bucket) {
+  if (!bucket) return 0
+  const billed = Number(bucket.billedInputTokens)
+  if (Number.isFinite(billed) && billed > 0) return billed
+  return Number(bucket.inputTokens) || 0
+}
+
+/**
  * 长期评价：把小时桶聚合成「站点 / 模型 / 分组」三个维度的长期表现。
  *
  * 数据源就是 offerStats 本身（保留 30 天），没有额外请求——网关每单顺路记的
@@ -308,7 +384,9 @@ export function pruneOfferStats(stats, now = Date.now(), maxAgeDays = OFFER_STAT
  * @param {Map} offerMeta offerId → {label, modelKey, providerId, providerName, group}
  * @returns {{byProvider:Array, byModel:Array, byGroup:Array}}
  *   每条：{key, label, requests, ok, broken, failed, okRate, avgTtftMs, avgLatencyMs,
- *          tps, cacheHitPct, estCostCny, avgCostCny, hours, firstHour, lastHour}
+ *          tps, cacheHitPct, cachedTokens, cacheCreationTokens, estCostCny, avgCostCny, hours,
+ *          firstHour, lastHour}
+ *   tps 的单位是「token / 毫秒」，界面自己 ×1000 成 tok/s（与 core/anomaly.js 一致）
  */
 export function aggregateLongTerm(offerStats = {}, offerMeta = new Map()) {
   const dims = { byProvider: new Map(), byModel: new Map(), byGroup: new Map() }
@@ -330,6 +408,8 @@ export function aggregateLongTerm(offerStats = {}, offerMeta = new Map()) {
         genOutSum: 0,
         genTimeSum: 0,
         cachedTokens: 0,
+        cacheCreationTokens: 0,
+        billedInputTokens: 0,
         inputTokens: 0,
         estCostSum: 0,
         estCostCount: 0,
@@ -367,6 +447,8 @@ export function aggregateLongTerm(offerStats = {}, offerMeta = new Map()) {
       rec.genOutSum += Number(b.genOutSum) || 0
       rec.genTimeSum += Number(b.genTimeSum) || 0
       rec.cachedTokens += Number(b.cachedTokens) || 0
+      rec.cacheCreationTokens += Number(b.cacheCreationTokens) || 0
+      rec.billedInputTokens += Number(b.billedInputTokens) || 0
       rec.inputTokens += Number(b.inputTokens) || 0
       rec.estCostSum += Number(b.estCostSum) || 0
       rec.estCostCount += Number(b.estCostCount) || 0
@@ -388,12 +470,23 @@ export function aggregateLongTerm(offerStats = {}, offerMeta = new Map()) {
         broken: r.broken,
         failed: r.failed,
         clientAborts: r.clientAborts,
-        // 成功率的口径：分母剔除客户端取消（那不是站方的成绩）
-        okRate: r.requests - r.clientAborts > 0 ? r.ok / (r.requests - r.clientAborts) : null,
+        // 成功率的口径：分母剔除客户端取消（那不是站方的成绩），
+        // 且不会因为老库里重复记账的桶把分母撑小 → 成功率恒 ≤ 100%
+        // （2026-10-29 的 11 个老桶曾让格子云那一行显示 101%）
+        okRate: servedRequestsOf(r) > 0 ? Math.min(1, r.ok / servedRequestsOf(r)) : null,
         avgTtftMs: r.ttftCount > 0 ? r.ttftSum / r.ttftCount : null,
         avgLatencyMs: r.latencyCount > 0 ? r.latencySum / r.latencyCount : null,
         tps: r.genTimeSum > 0 ? r.genOutSum / r.genTimeSum : null,
-        cacheHitPct: r.inputTokens > 0 ? r.cachedTokens / r.inputTokens : null,
+        // 命中率 = 缓存读 ÷ **计费输入**（净值 + 缓存读 + 缓存写），与
+        // core/usage.js#finalize、core/usage-detail.js#sumBuckets 同一口径。
+        // 老桶没有 billedInputTokens（那时 inputTokens 就存 prompt 原值）→ 用它兜底：
+        // 老口径就是「缓存 ÷ prompt」，与旧页面数字一致，不会因为升级忽然跳一下。
+        cacheHitPct: cacheHitBase(r) > 0 ? r.cachedTokens / cacheHitBase(r) : null,
+        // 命中率的分子/分母也交出去：界面上写「96%」时，能同时说清
+        // 「缓存读 12.6 亿 ÷ 计费输入 13.2 亿」到底是谁比谁
+        cachedTokens: r.cachedTokens,
+        cacheCreationTokens: r.cacheCreationTokens,
+        billedInputTokens: cacheHitBase(r),
         estCostCny: r.estCostSum,
         avgCostCny: r.estCostCount > 0 ? r.estCostSum / r.estCostCount : null,
         errors: r.errors,
