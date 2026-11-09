@@ -5420,7 +5420,7 @@ async function loadGatewayLog({ force = false } = {}) {
   gwLog.loading = true
   renderGateway()
   try {
-    const res = await api('GET', '/api/usage/detail?days=7&limit=80')
+    const res = await api('GET', '/api/usage/detail?days=7&limit=500')
     if (seq !== gwLog.seq) return
     gwLog.data = res
     gwLog.error = null
@@ -5734,7 +5734,7 @@ function renderGateway() {
         <input id="gwlog-search" class="search" type="search" placeholder="${t('搜模型 / Key / 站点…')}" value="${esc(filters.gwlog)}" />
         <button class="ghost tiny with-icon" data-act="gwlog-refresh" title="${t('重新载入最近请求（含明细字段）')}">${icon('refresh')}${t('刷新')}</button>
         ${colMenuHtml('gwlog', GWLOG_COLS)}
-        <a class="ghost tiny with-icon" href="/api/export/routing?format=csv" download title="${esc(t('导出路由历史全字段（最近 2000 单），CSV 可用 Excel 打开'))}" style="text-decoration:none;display:inline-flex;align-items:center;gap:4px">${icon('download')}${t('导出 CSV')}</a>
+        <a class="ghost tiny with-icon" href="/api/export/routing?format=csv" download title="${esc(t('导出路由历史全字段（最近 500 单；逐条明细走「详细用量」），CSV 可用 Excel 打开'))}" style="text-decoration:none;display:inline-flex;align-items:center;gap:4px">${icon('download')}${t('导出 CSV')}</a>
         <button class="ghost tiny" data-act="open-usage-detail" title="${esc(
           t('每次请求的 token、缓存读/写、首字、生成速度、换站原因'),
         )}">${icon('table')}${t('详细用量')}</button>
@@ -6051,7 +6051,7 @@ const OUTCOME_LABEL = {
 }
 
 // 明细表最多画多少行：筛选在**全部**明细上做，只是不把 500 行一次性塞进 DOM
-const UD_ROW_LIMIT = 200
+const UD_ROW_LIMIT = 500
 
 function paintUsageDetail() {
   const sheet = $('#usage-detail')

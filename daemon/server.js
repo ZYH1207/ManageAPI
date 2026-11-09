@@ -3898,7 +3898,7 @@ route('GET', /^\/api\/usage$/, async (ctx) => {
  */
 route('GET', /^\/api\/usage\/detail$/, async (ctx) => {
   const days = Math.min(Math.max(Number(ctx.query.get('days')) || 7, 1), 90)
-  const limit = Math.min(Math.max(Number(ctx.query.get('limit')) || 200, 1), 2000)
+  const limit = Math.min(Math.max(Number(ctx.query.get('limit')) || 200, 1), 10000)
   const { from, to } = usageRangeParams(ctx)
   // 与 /api/usage 同一口径（模型身份键归一），否则同一模型两种写法会在两个接口里各算一行
   const dbForAliases = await store.readDb()
