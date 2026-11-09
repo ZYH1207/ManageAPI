@@ -1526,7 +1526,13 @@ route('PATCH', /^\/api\/settings$/, async (ctx) => {
     if (ctx.body.monitorIntervalMinutes !== undefined) {
       const v = Number(ctx.body.monitorIntervalMinutes)
       if (!Number.isFinite(v) || v < 0) throw new HttpError(400, '监控采集间隔不能为负')
+      // 上限一天一次：再长就等于关了，还不如直接填 0（语义还明确）
+      if (v > store.MONITOR_INTERVAL_MAX) {
+        throw new HttpError(400, `监控采集间隔最大 ${store.MONITOR_INTERVAL_MAX} 分钟（一天一次）；要关就填 0`)
+      }
       db.settings.monitorIntervalMinutes = v
+      // 用户亲手设过就不许迁移逻辑再改它（见 store.migrate）
+      db.settings.monitorIntervalTouched = true
     }
     if (ctx.body.displayCurrency !== undefined) {
       const v = String(ctx.body.displayCurrency).toUpperCase()
@@ -6265,8 +6271,9 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
             latencyMs,
             ttftMs: result.ttftMs,
             // 客户端自己关掉的请求：没拿到完整结果，但这不是站的错。
-            // usage 账上不能标成功（那是自欺），也不会进可用率。
-            ok: false,
+            // usage 账上不能标成功（那是自欺），也不会进可用率；
+            // 同样不能标 false（那会进 errors，把用户的 Esc 算成站点故障）
+            ok: 'client-aborted',
           })
           // 故障事件账：记一条 status='ignored'（聚合用），绝不上报自动路由
           void handleFaultSignals({
@@ -6344,8 +6351,15 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
           latencyMs,
           ttftMs: result.ttftMs,
           // 客户端自己关掉的请求：没拿到完整结果，但这不是站的错。
-          // usage 账上不能标成功（那是自欺），也不会进可用率（bufferTraffic 跳过）
-          ok: outcome === OUTCOME.OK,
+          // usage 账上不能标成功（那是自欺），也不会进可用率（bufferTraffic 跳过）；
+          // 但也不能标 false ——那是「站方没服务好」，会进 errors。
+          // 三态交给 core/usage.js#recordUsage 分栏（clientAborts 单列）。
+          ok:
+            outcome === OUTCOME.OK
+              ? true
+              : outcome === OUTCOME.CLIENT_ABORTED
+                ? 'client-aborted'
+                : false,
         })
         // 缓存亲和：记下「这段对话这一轮是谁服务的」，供下一轮判断要不要钉住。
         // 只在真正成功时记 —— 失败的请求没有缓存可言，记了反而会让下一轮

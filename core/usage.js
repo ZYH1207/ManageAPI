@@ -41,7 +41,13 @@ export function parseComposite(composite) {
 function emptyRow() {
   return {
     requests: 0,
+    // 站方真的没服务好的次数（全部候选失败 / 断流）
     errors: 0,
+    // 客户端自己断开的次数：**不进 errors**。用户按 Esc、客户端到点取消都不该
+    // 在「错误」里记一笔——诊断侧（core/offer-stats.js）早就是分开算的，
+    // 只有这一处把两者混在一起，于是用量页的错误数比错误账本多出一截。
+    // 2026-11-09 真实库：当天 41 次「错误」里 12 次是客户端自己断的。
+    clientAborts: 0,
     input: 0,
     output: 0,
     cached: 0,
@@ -134,7 +140,11 @@ export async function recordUsage(entry) {
   const row = bucket[composite] || emptyRow()
 
   row.requests += 1
-  if (entry.ok === false) row.errors += 1
+  // ok 三态：true = 成功交付；false = 站方没服务好（记 errors）；
+  // 'client-aborted' = 客户端自己断的，既不算成功也不算站方的错误（单列一栏）。
+  // 以前这里只认 false，客户端断开就被写成「错误」，和诊断侧的口径对不上。
+  if (entry.ok === 'client-aborted') row.clientAborts = (row.clientAborts || 0) + 1
+  else if (entry.ok === false) row.errors += 1
   const output = Number(entry.outputTokens) || 0
   row.input += Math.max(0, Number(entry.inputTokens) || 0)
   row.output += output
@@ -212,6 +222,8 @@ function recentDays(count) {
 function addRow(target, row) {
   target.requests += row.requests
   target.errors += row.errors
+  // 客户端断开单列（老行没有这个字段 → || 0）。它不进 errors，见 emptyRow 注释
+  target.clientAborts = (target.clientAborts || 0) + (row.clientAborts || 0)
   target.input += row.input
   target.output += row.output
   target.cached += row.cached
@@ -246,7 +258,9 @@ function finalize(row) {
     ...row,
     avgLatencyMs: row.latencyCount ? Math.round(row.latencySum / row.latencyCount) : null,
     avgTtftMs: row.ttftCount ? Math.round(row.ttftSum / row.ttftCount) : null,
-    // 命中率分母是「输入 + 缓存读 + 缓存写」，与 core/wire.js 的 usageNumbers 同口径
+    // 命中率分母是「输入 + 缓存读 + 缓存写」，与 core/wire.js 的 usageNumbers 同口径。
+    // 分母也交出去：界面写「96%」时要能说清它是「缓存读 ÷ 计费输入」
+    billedInput,
     cacheHitRate: billedInput > 0 ? row.cached / billedInput : null,
     // 真实生成速度：只统计有首字的流式请求（见 emptyRow 的 genSum 注释）
     avgTps: genSum > 0 ? Math.round((genOutput / (genSum / 1000)) * 10) / 10 : null,

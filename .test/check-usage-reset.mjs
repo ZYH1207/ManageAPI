@@ -42,6 +42,24 @@ console.log('[1] resetUsage：清空后汇总归零、落盘为空')
   ok(Object.keys(raw.days || {}).length === 0, 'usage.json 已落盘为空（重启后也不会回来）')
 }
 
+console.log('[1a] 客户端主动断开不进「错误」')
+{
+  // 回归 2026-11-09：ok 只有 true/false 两态，客户端按 Esc / 到点取消被写成
+  // ok:false → 直接进 errors。真实库当天 41 次「错误」里 12 次是这么来的，
+  // 而诊断侧（core/offer-stats.js）一直把这类单列成 clientAborts，两边口径打架。
+  await resetUsage()
+  await recordUsage({ keyId: 'k1', providerId: 'p1', model: 'm', inputTokens: 10, outputTokens: 1, ok: true })
+  await recordUsage({ keyId: 'k1', providerId: 'p1', model: 'm', inputTokens: 10, outputTokens: 1, ok: false })
+  await recordUsage({ keyId: 'k1', providerId: 'p1', model: 'm', inputTokens: 10, outputTokens: 1, ok: 'client-aborted' })
+  const s = await usageSummary({ days: 1 })
+  ok(s.totals.requests === 3, `三次请求都记进 requests（实际 ${s.totals.requests}）`)
+  ok(s.totals.errors === 1, `只有站方那次算错误（实际 ${s.totals.errors}）`)
+  ok(s.totals.clientAborts === 1, `客户端断开单列一栏（实际 ${s.totals.clientAborts}）`)
+  ok(s.totals.input === 30, '客户端断开的 token 照计（钱真花了）')
+  // 老行没有 clientAborts 字段 → 汇总不能变成 NaN
+  ok(Number.isFinite(s.byKey.k1.clientAborts) && s.byKey.k1.clientAborts === 1, '按 Key 切面也有 clientAborts')
+}
+
 console.log('[1b] 自定义区间 from/to：两端都含、写反自动调正')
 {
   // 重开一份干净数据，按「今天 / 昨天 / 30 天前」各记一笔
