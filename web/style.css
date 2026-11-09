@@ -4586,3 +4586,194 @@ body.prov-dragging .drop-zone { display: flex; }
   flex: 0 1 auto;
   min-width: 0;
 }
+
+/* ═══════════ 决策页视图档位（完整 / 简洁，2026-11-09） ═══════════
+ * 用户原话：「网关的智能决策页面塞的东西太多了，数据也太多，显得臃肿。
+ * 对想省心用的人不太好办，能不能在最上面加个简化的开关。」
+ *
+ * 所以这里是**页顶第一条**：二段切换，选中态用强调色填充。
+ * 不用 checkbox 开关：这是个二选一的视图档位，不是「开/关某个功能」，
+ * 两个并排的词把「有哪两种」直接说清，也省得解释「打开是什么样」。
+ */
+.viewswitch {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding: 7px 10px;
+  margin-bottom: 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-2);
+}
+.viewswitch-label {
+  font-size: 11.5px;
+  color: var(--faint);
+  padding-right: 2px;
+}
+.viewswitch-seg {
+  font-size: 12px;
+  padding: 3px 14px;
+  border-radius: 999px;
+  border: 1px solid var(--border-strong);
+  background: var(--surface);
+  color: var(--muted);
+  cursor: pointer;
+  font-family: inherit;
+  transition: background 0.14s ease, color 0.14s ease, border-color 0.14s ease;
+}
+.viewswitch-seg:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+.viewswitch-seg.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+  font-weight: 500;
+}
+.viewswitch-seg.active:hover { background: var(--accent); color: #fff; }
+.viewswitch-note {
+  font-size: 11.5px;
+  color: var(--faint);
+  margin-left: 4px;
+  min-width: 0;
+}
+
+/* ---- 简洁版：顶部状态条（自动路由 + 正在使用 + 轮巡） ---- */
+.simple-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 10px 14px;
+  margin-bottom: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+/* ---- 简洁版：决策侧重一行胶囊 ---- */
+.simple-modes {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+.simple-toolbar { margin-bottom: 10px; }
+/* 决策侧重胶囊在这里单独定色：通用的 .aff-inline-seg 用 var(--panel, #fff) 打底，
+ * 而深色主题里没有定义 --panel，兜底就落回纯白——深色下会变成一排白胶囊。
+ * 这里改用一定有定义的主题变量，两种主题都干净。 */
+.simple-modes .aff-inline-seg {
+  background: var(--surface);
+  border-color: var(--border-strong);
+  color: var(--muted);
+}
+.simple-modes .aff-inline-seg:hover {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.simple-modes .aff-inline-seg.active,
+.simple-modes .aff-inline-seg.active:hover {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+/* 同理，「更多设置」的虚线框与顶部状态条的底色在深色下也要有对比 */
+[data-theme='dark'] .simple-more > summary:hover { color: var(--text); }
+/* ---- 简洁版：「更多设置」折叠 ---- */
+.simple-more { margin-bottom: 14px; }
+.simple-more > summary {
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+  font-size: 12px;
+  color: var(--muted);
+  padding: 7px 10px;
+  border: 1px dashed var(--border-strong);
+  border-radius: 8px;
+}
+.simple-more > summary::-webkit-details-marker { display: none; }
+.simple-more > summary::before { content: '▸ '; color: var(--faint); }
+.simple-more[open] > summary::before { content: '▾ '; }
+.simple-more > summary:hover { color: var(--text); border-color: var(--accent); }
+.simple-more-body { display: flex; flex-direction: column; gap: 10px; padding-top: 12px; }
+
+/* ---- 简洁版：每个模型压成一行 ----
+ * 一整行都是按钮（点它展开候选表），但视觉上是一行数据而不是一颗按钮：
+ * 只有 hover 才浮出底色，避免满屏 8 颗大按钮比原来还吵。
+ *
+ * 布局用 flex 不用 grid：模型名那一格里面还可能多一个「已合并 N 种写法」徽章，
+ * grid 的固定列数会让多出来的元素自己新开一格（实测直接把行撑成两行）。
+ * flex 下模型名/徽章/站点挤在同一个可收缩的 .simple-main 里，
+ * 右侧三个指标各自 flex:none，因此永远是「左边自适应、右边对齐」。
+ */
+.simple-wrap { margin-bottom: 8px; }
+.simple-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 14px;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+  border-radius: var(--radius);
+  min-height: 38px;
+}
+.simple-row:hover { background: var(--hover); }
+.simple-row.open { border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
+.simple-caret { font-size: 10px; color: var(--faint); flex: none; width: 10px; }
+/* 左半边：模型名 + 合并徽章 + 当前选 */
+.simple-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+.simple-model {
+  font-weight: 500;
+  flex: 0 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.simple-merged {
+  font-size: 11px;
+  color: var(--faint);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0 7px;
+  white-space: nowrap;
+  flex: none;
+}
+.simple-where {
+  font-size: 12px;
+  color: var(--muted);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.simple-where .dim { color: var(--faint); }
+/* 右半边：三组指标各自不收缩，数字按 tabular-nums 对齐成一竖列 */
+.simple-metric { display: inline-flex; align-items: baseline; gap: 4px; white-space: nowrap; flex: none; min-width: 92px; }
+.simple-metric i { font-style: normal; font-size: 10.5px; color: var(--faint); }
+.simple-metric b { font-weight: 500; font-variant-numeric: tabular-nums; }
+/* 首字那格复用了 ttftCell：它自带一层 <div class="sub">真实/探针口径</div>，
+   一行放不下两层，这里把次行压成同行小字 */
+.simple-metric .sub { display: inline; margin-left: 3px; font-size: 10px; color: var(--faint); }
+.simple-status { display: inline-flex; gap: 4px; flex-wrap: nowrap; flex: none; }
+.simple-count { font-size: 11px; color: var(--faint); white-space: nowrap; font-variant-numeric: tabular-nums; flex: none; min-width: 62px; text-align: right; }
+
+/* 窄屏：指标组换成第二行（flex-wrap），别把模型名挤成省略号 */
+@media (max-width: 900px) {
+  .simple-row { flex-wrap: wrap; row-gap: 4px; }
+  .simple-main { flex-basis: 100%; }
+  .simple-metric { min-width: 0; }
+  .simple-count { text-align: left; }
+}
+

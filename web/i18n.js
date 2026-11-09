@@ -1064,6 +1064,41 @@ Object.assign(EN, {
     'Across all models — {verdict} on {basis}: {provider} for {model}, {metric}',
   '只改这句全场冠军的算法，不影响上面那句': 'Changes only this champion line — the sentence above is untouched',
   '全场冠军改按「{mode}」算': 'Champion line now uses "{mode}"',
+  // 决策页视图档位（完整 / 简洁）：页顶二段切换
+  '页面显示密度': 'Page density',
+  '显示': 'View',
+  '完整': 'Full',
+  '简洁': 'Simple',
+  '完整版：决策侧重、门禁、算法说明、每个模型的全部候选与每一列都摆出来':
+    'Full: decision basis, gates, algorithm notes and every candidate column for every model',
+  '简洁版：只留每个模型一行（当前选、有效成本、首字、状态），点一行才展开候选；门禁与算法说明等设置项收起':
+    'Simple: one line per model (current pick, effective cost, first token, status); click a line for the candidates. Gates and algorithm notes fold away',
+  '只显示结论，点任意一行展开该模型的完整候选':
+    "Conclusions only — click any line for that model's full candidate table",
+  '全部设置与每一列都在，想省心可以切到简洁':
+    'Everything is out — switch to Simple if you want it quieter',
+  '更多设置（门禁、算法说明、锁定转移、合并与忽略）':
+    'More settings (gates, algorithm notes, lock failover, merge & ignore)',
+  '点一下展开这个模型的全部候选（价格 / 质量 / 延迟 / 排序分 / 状态都在展开后的表里）':
+    'Click to expand every candidate for this model (price, quality, latency, route score and status live in the table below)',
+  '这个模型一共 {n} 条候选供给，其中 {ok} 条当前准入通过':
+    '{n} candidate supplies for this model, {ok} passing admission right now',
+  '{ok}/{n} 条可用': '{ok}/{n} usable',
+  '已切到简洁版：每个模型一行，点一行才展开候选；完整版随时点回来':
+    'Switched to Simple: one line per model, click a line for candidates. Switch back to Full anytime',
+  '已切回完整版': 'Switched back to Full',
+  // 决策侧重档位名（core/decision-mode.js 的 label/hint）：这排胶囊在简洁版里是
+  // 页顶第一行，英文界面若露出中文会很显眼。站点名、分组名、模型名属于用户数据，不在此列。
+  '性价比': 'Value',
+  '价格': 'Price',
+  '首字速度': 'First-token speed',
+  '实速（只信真实流量）': 'Real speed (real traffic only)',
+  '流畅度': 'Smoothness',
+  '价格 ÷ 质量': 'price ÷ quality',
+  '名义单价': 'list price',
+  '真实首字（没有就退回探针）': 'real TTFT, else probe',
+  '真实首字，无样本即淘汰': 'real TTFT only; no samples = out',
+  '首字 + 吐字速度（一屏回答要多久）': 'TTFT + tok/s (how long one screen takes)',
 })
 
 // 免费页
