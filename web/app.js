@@ -46,6 +46,19 @@ const MONITOR_INTERVAL_DEFAULT = 10
 // 只改展示不改派活：网关仍按 admission.ok 派活，手动顺序也照旧整表参与
 const DECISION_ONLY_ADMITTED_KEY = 'manageapi.decisionOnlyAdmitted'
 let decisionOnlyAdmitted = localStorage.getItem(DECISION_ONLY_ADMITTED_KEY) === '1'
+/**
+ * 决策页视图档位：'full' 完整版 / 'simple' 简洁版。
+ *
+ * 用户的诉求是「页面塞的东西太多、对想省心的人不友好」，要的是**同一个页面的两种密度**，
+ * 不是另开一页——所以做成页顶二段切换，切换只改渲染分支，不改任何路由/准入逻辑。
+ * 选择记在本地（和「只显示可使用」同款），刷新、切页回来都还在。
+ * 默认 full：默认值一变，老用户会以为功能被砍了。
+ */
+const DECISION_VIEW_KEY = 'manageapi.decisionView'
+let decisionView = localStorage.getItem(DECISION_VIEW_KEY) === 'simple' ? 'simple' : 'full'
+const decisionSimple = () => decisionView === 'simple'
+/** 简洁版里点开过明细的模型（服务端 key 与完整版折叠共用 collapsedPanels，语义相反） */
+const simpleExpanded = new Set()
 // 这两个页签要看评分/候选明细，轮询时走完整 state；其它页只要轻量那份省带宽
 // （比价页已并入智能决策，见 renderDecision）
 const HEAVY_TABS = new Set(['decision'])
@@ -4160,9 +4173,12 @@ function renderDecision() {
   const sortMark = (key) => (mode === key ? ' sort-by' : '')
 
 
+  const simple = decisionSimple()
   const blocks = visibleDecisions.map((decision) => {
     const panelKey = `decision:${decision.modelKey}`
-    const isCollapsed = collapsedPanels.has(panelKey)
+    // 两个档位共用同一个 key，但语义相反：完整版记的是「被我收起了」，
+    // 简洁版记的是「被我点开了」。各存一份状态互不影响，切回去还是原来那张表。
+    const isCollapsed = simple ? !simpleExpanded.has(panelKey) : collapsedPanels.has(panelKey)
     // 「合并后这个模型到底有几种写法、分别是谁」必须在决策页也能看见：
     // 同一行里 8 条候选来自两个站名，不标出来用户会以为候选重复了。
     // 展示名用来比对，命中说明这一站的写法就是常用写法，没必要在行里重复一遍
@@ -4259,6 +4275,55 @@ function renderDecision() {
         </tr>`
     }).join('')
 
+    // 简洁版：整块压成一行（模型 + 当前选 + 有效成本 + 首字 + 状态 + 候选数），
+    // 点这一行才展开下面那张完整候选表。完整版的 group-head 保持原样。
+    if (simple) {
+      const chosen = decision.candidates.find((c) => c.offerId === decision.chosenOfferId) || null
+      const okCount = decision.candidates.filter((c) => c.admission?.ok !== false).length
+      const stale = chosen?.status === 'stale'
+      const tags = chosen ? statusBadges(chosen.tags, { blocked: chosen.blocked || chosen.pendingRecovery }) : ''
+      const where = chosen
+        ? `${esc(chosen.providerName || '—')}${
+            chosen.group
+              ? ` <span class="badge ${groupChipOf(chosen.providerId, chosen.group)}" title="${esc(chosen.group)}">${esc(chosen.group)}</span>`
+              : ''
+          }`
+        : `<span class="dim">${t('没有可用供给')}</span>`
+      const cost =
+        chosen && chosen.effective !== null && chosen.effective !== undefined
+          ? priceText(chosen.effective)
+          : '—'
+      const ttft = chosen ? ttftCell(chosen, stale) : '—'
+      return `
+      <div class="table-wrap simple-wrap" data-model="${esc(decision.modelKey)}">
+        <button class="simple-row${isCollapsed ? '' : ' open'}" data-act="toggle-panel" data-panel="${esc(panelKey)}"
+          title="${esc(t('点一下展开这个模型的全部候选（价格 / 质量 / 延迟 / 排序分 / 状态都在展开后的表里）'))}">
+          <span class="simple-caret">${isCollapsed ? '▸' : '▾'}</span>
+          <span class="simple-main">
+            <span class="simple-model mono">${esc(shownName)}</span>
+            ${variants.length > 1 ? `<span class="simple-merged" title="${t('这些站里同一个模型有 {n} 种写法，已合并成一个模型一起排序', { n: variants.length })}：${esc(variants.join(' / '))}">${t('已合并 {n} 种写法', { n: variants.length })}</span>` : ''}
+            <span class="simple-where">${where}</span>
+          </span>
+          <span class="simple-metric"><i>${t('有效成本')}</i><b class="num">${cost}</b></span>
+          <span class="simple-metric"><i>${t('首字')}</i><b class="num">${ttft}</b></span>
+          <span class="simple-status">${tags || (chosen ? `<span class="badge ok">${t('可用')}</span>` : '')}</span>
+          <span class="simple-count" title="${esc(t('这个模型一共 {n} 条候选供给，其中 {ok} 条当前准入通过', { n: decision.candidates.length, ok: okCount }))}">${t('{ok}/{n} 条可用', { ok: okCount, n: decision.candidates.length })}</span>
+        </button>
+        ${isCollapsed ? '' : `
+        <table>
+          <thead><tr>
+            <th style="width:30px"></th><th class="num">#</th><th data-col="site">站点</th><th data-col="group">分组</th>
+            <th class="num${sortMark('price')}" data-col="price">价格</th><th class="num" data-col="quality">质量</th>
+            <th class="num${sortMark('value')}" data-col="effective">有效成本</th>
+            <th data-col="latency" class="${sortMark('speed')}">${t('延迟')}</th>
+            <th data-col="score" title="${esc(t('自动路由真正用来排序的分数，越小越优先；下方小字写明它是怎么算出来的（实测 / 标定 / 仅探针）'))}">${t('排序分 / 依据')}</th>
+            <th data-col="status">状态</th>
+          </tr></thead>
+          <tbody>${rows}</tbody>
+        </table>`}
+      </div>`
+    }
+
     return `
       <div class="table-wrap ${colHideClass('decision')}" data-model="${esc(decision.modelKey)}">
         <div class="group-head">
@@ -4299,6 +4364,8 @@ function renderDecision() {
     : ''
 
   view.innerHTML = `
+    ${viewSwitchHtml()}
+    ${simple ? simpleShell(mode, visibleDecisions, decisions, hiddenCandidates, blocks, mergedHint, ignoredCount, mergeGroupCount) : `
     ${modeCard(mode)}
     ${lockFailoverCard()}
     ${algorithmCard()}
@@ -4333,11 +4400,108 @@ function renderDecision() {
     </div>
     <p class="hint">排序按上面的「决策侧重」。拖动整行（或最左边的把手）能改默认先后（没勾选时按这个派活）；点一下整行就是勾它为当前使用——顺序不动，再点一下取消勾选。勾选 &gt; 拖的先后 &gt; 自动排序。</p>
     <p class="hint">${t('注意：<b>同一个模型在不同站的状态是各自独立的</b>（A 站健康、B 站掉包很正常），所以这里按「站 × 模型」逐条评估，状态下方会写明具体原因。')}</p>
-    ${mergedHint}
+    ${mergedHint}`}
     ${blocks ||
     (decisionOnlyAdmitted && hiddenCandidates
       ? `<div class="empty"><h3>${t('没有允许放行的供给')}</h3><p>${t('当前范围内有 {n} 条供给被这个开关隐藏了：慢速、结果可疑、不稳定、没有可信样本或冷却中。关掉开关就能看到它们。', { n: hiddenCandidates })}</p></div>`
       : '')}`
+}
+
+/**
+ * 视图档位切换（页面最上面那一条）。
+ *
+ * 用户原话：「塞的东西太多了、数据也太多、显得臃肿，对想省心的人不太好办，
+ * 能不能在最上面加个开关」。所以它是**页顶第一块**，不是藏在设置里。
+ *
+ * 两个词直接写在按钮上（完整 / 简洁），不另起「省心模式」这类名字：
+ * 名字要额外解释，而两个词本身就说清了是什么。
+ */
+function viewSwitchHtml() {
+  const simple = decisionSimple()
+  return `
+    <div class="viewswitch" role="group" aria-label="${esc(t('页面显示密度'))}">
+      <span class="viewswitch-label">${t('显示')}</span>
+      <button class="viewswitch-seg${simple ? '' : ' active'}" data-act="set-decision-view" data-view="full"
+        aria-pressed="${!simple}" title="${esc(t('完整版：决策侧重、门禁、算法说明、每个模型的全部候选与每一列都摆出来'))}">
+        ${t('完整')}
+      </button>
+      <button class="viewswitch-seg${simple ? ' active' : ''}" data-act="set-decision-view" data-view="simple"
+        aria-pressed="${simple}" title="${esc(t('简洁版：只留每个模型一行（当前选、有效成本、首字、状态），点一行才展开候选；门禁与算法说明等设置项收起'))}">
+        ${t('简洁')}
+      </button>
+      <span class="viewswitch-note">${simple
+        ? t('只显示结论，点任意一行展开该模型的完整候选')
+        : t('全部设置与每一列都在，想省心可以切到简洁')}</span>
+    </div>`
+}
+
+/**
+ * 简洁版外壳：一条状态栏 + 一排决策侧重胶囊 + 一排动作按钮。
+ *
+ * 刻意的取舍：
+ *   · 自动路由开关**必须在**——它是这页最主要的可操作项，收起来等于藏了开关；
+ *   · 决策侧重用胶囊不用四段大条：档位要能切，但不必占掉两行高度；
+ *   · 锁定失败后转移 / 缓存亲和 / 门禁 / 算法说明全部收进一个 details：
+ *     它们都是「设一次就不动」的东西，简洁版里属于「要看再点」。
+ */
+function simpleShell(mode, visibleDecisions, decisions, hiddenCandidates, blocks, mergedHint, ignoredCount, mergeGroupCount) {
+  const modes = state.decisionModes || []
+  const segs = modes
+    .map(
+      (item) => `<button class="aff-inline-seg${item.key === mode ? ' active' : ''}" role="tab"
+        aria-selected="${item.key === mode}" data-act="set-decision-mode" data-mode="${esc(item.key)}"
+        title="${esc(item.desc || item.hint || item.label)}">${esc(item.label)}</button>`,
+    )
+    .join('')
+  const countText =
+    decisionOnlyAdmitted && hiddenCandidates
+      ? t('{shown} / {total} 个模型 · 已隐藏 {n} 条供给', {
+          shown: visibleDecisions.length,
+          total: decisions.length,
+          n: hiddenCandidates,
+        })
+      : t('{shown} / {total} 个模型', { shown: visibleDecisions.length, total: decisions.length })
+  return `
+    <div class="simple-bar">
+      ${autoRouteSwitch()}
+      ${routeNowPill()}
+      ${patrolBadge()}
+    </div>
+    <div class="simple-modes">
+      <span class="pill-label">${t('决策侧重')}</span>
+      <span class="aff-inline" role="tablist" aria-label="${esc(t('决策侧重'))}">${segs}</span>
+    </div>
+    <div class="toolbar simple-toolbar">
+      <input id="decision-search" class="search" type="search" placeholder="搜索模型名…" value="${esc(filters.decision)}" />
+      <span class="hint" style="margin:0">${countText}</span>
+      <label class="switch switch-inline" title="${t('打开后只显示准入通过的供给：慢速 / 结果可疑 / 不稳定 / 没有可信样本 / 冷却中（额度不足、限流）整行隐藏；评分过期、未探测的仍然显示（它们不是坏站）。只是展示筛选，不影响网关派活和手动顺序。随时可切。')}">
+        <input type="checkbox" id="decision-only-admitted" ${decisionOnlyAdmitted ? 'checked' : ''} />
+        <span class="switch-track"><span class="switch-knob"></span></span>
+        <span class="switch-text"><b>${t('只显示可使用')}</b></span>
+      </label>
+      <span class="grow"></span>
+      <button class="ghost with-icon" data-act="refresh-state" title="${t('重新拉取评分、状态与当前选')}">${icon('refresh')}${t('刷新')}</button>
+      <button class="ghost with-icon" data-act="decision-export" title="${t('把当前显示的模型与候选导出成 CSV，可用 Excel / 表格软件打开')}">${icon('download')}${t('导出 CSV')}</button>
+    </div>
+    <details class="simple-more">
+      <summary>${t('更多设置（门禁、算法说明、锁定转移、合并与忽略）')}</summary>
+      <div class="simple-more-body">
+        ${lockFailoverCard()}
+        ${algorithmCard()}
+        ${gateCard({ withAutoRoute: false })}
+        <div class="toolbar">
+          <button class="ghost" data-act="decision-reset" title="${t('清空搜索、恢复默认列显示并展开全部模型')}">${t('重置')}</button>
+          ${colMenuHtml('decision', DECISION_COLS)}
+          <button class="with-icon" data-act="merge-models" title="${t('把同一个模型的不同写法归到一起（少个 v、点写成横线、带日期尾巴）')}">
+            ${icon('swap')}${t('同模型合并')}${mergeGroupCount ? ` ${mergeGroupCount}` : ''}
+          </button>
+          <button class="with-icon" data-act="ignored-models" title="${t('忽略后不再参与比价、智能决策、探针和网关')}">
+            ${icon('eye-off')}${t('忽略模型')}${ignoredCount ? ` ${ignoredCount}` : ''}
+          </button>
+        </div>
+        ${mergedHint}
+      </div>
+    </details>`
 }
 
 /**
@@ -4843,7 +5007,14 @@ function autoRouteSwitch() {
 // 准入门禁折叠区的展开状态：15 秒轮询会整页重绘，状态得放在模块级活过重绘
 let gateAdvOpen = false
 
-function gateCard() {
+/**
+ * 准入门禁卡。
+ *
+ * `withAutoRoute:false` 用于简洁版：自动路由开关已经画在顶部状态条上，
+ * 这里再画一次会出现两个 id="auto-route-switch"——label 与 input 的
+ * 关联和 change 监听都会错乱。同一个控件在一页里只画一份。
+ */
+function gateCard({ withAutoRoute = true } = {}) {
   const maxTtft = Number(state.settings.maxTtftMs) || 0
   const tiers = state.ttftTiers || []
   const allowUntrusted = Boolean(state.settings.allowUntrusted)
@@ -4851,13 +5022,15 @@ function gateCard() {
   const advState = `${t('慢速')} ${esc(state.ttftLimitText || '不限')} · ${t('可疑供给')}${allowUntrusted ? t('放行') : t('拦下')}`
   return `
     <div class="card gate-card">
-      <div class="gate-switches">
+      ${withAutoRoute
+        ? `<div class="gate-switches">
         <div class="gate-switch-left">
           ${autoRouteSwitch()}
           ${routeNowPill()}
           ${patrolBadge()}
         </div>
-      </div>
+      </div>`
+        : ''}
       <details class="gate-adv"${gateAdvOpen ? ' open' : ''}>
         <summary data-act="gate-adv">
           <span class="gate-adv-title">${t('准入门禁')}</span>
@@ -9195,9 +9368,34 @@ document.addEventListener('click', async (event) => {
   if (action === 'toggle-panel') {
     const key = actionButton.dataset.panel
     if (!key) return
-    if (collapsedPanels.has(key)) collapsedPanels.delete(key)
+    // 简洁版里同一颗按钮的方向是反的：记的是「点开了哪些」，不是「收起了哪些」。
+    // 两套状态各存一份，切档位互不干扰。
+    if (decisionSimple()) {
+      if (simpleExpanded.has(key)) simpleExpanded.delete(key)
+      else simpleExpanded.add(key)
+    } else if (collapsedPanels.has(key)) collapsedPanels.delete(key)
     else collapsedPanels.add(key)
     render()
+    return
+  }
+
+  // 决策页视图档位（完整 / 简洁）：纯前端显示开关，不落库、不影响派活
+  if (action === 'set-decision-view') {
+    const next = actionButton.dataset.view === 'simple' ? 'simple' : 'full'
+    if (next === decisionView) return
+    decisionView = next
+    try {
+      localStorage.setItem(DECISION_VIEW_KEY, decisionView)
+    } catch {
+      /* 隐私模式下 localStorage 可能不可用 */
+    }
+    renderDecision()
+    translateDom($('#view-decision') || document.body)
+    toast(
+      decisionView === 'simple'
+        ? t('已切到简洁版：每个模型一行，点一行才展开候选；完整版随时点回来')
+        : t('已切回完整版'),
+    )
     return
   }
 
@@ -9366,6 +9564,7 @@ document.addEventListener('click', async (event) => {
     hiddenCols.decision = []
     saveHiddenCols()
     collapsedPanels.clear()
+    simpleExpanded.clear()
     renderDecision()
     translateDom($('#view-decision') || document.body)
     toast(t('已重置搜索、列显示与折叠'))
