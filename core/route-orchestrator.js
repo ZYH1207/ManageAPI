@@ -30,7 +30,8 @@
 
 import { assessAllBalances, dailySpendByProvider, BALANCE, BALANCE_PENALTY } from './balance-guard.js'
 import { buildCalibration, estimateSpeed, speedMetric, calibrationSummary, estimateTotalWait, estimateOutputTokens } from './speed-model.js'
-import { buildLadder, rescueFromEmpty, ladderSummary, TIER, TIER_LABEL } from './fallback-ladder.js'
+import { buildLadder, rescueFromEmpty, ladderSummary, tierOf, TIER, TIER_LABEL } from './fallback-ladder.js'
+import { compareByBasis, normalizeDecisionMode } from './decision-mode.js'
 
 /** 默认的评分权重。 */
 export const SCORING = {
@@ -135,6 +136,10 @@ export function buildRoutingContext(db, { now = Date.now(), maxTokens = null, ex
     dailySpend,
     providerSpeedPrior,
     expectedOutput,
+    // 决策侧重跟着上下文走：decideRoute 的主排序键就是它。
+    // 放在 ctx 里而不是要求每个调用方都传参——漏传一处就会退回默认档
+    // （那正是「切了档等于没切」这个 bug 的复现条件）。
+    decisionMode: normalizeDecisionMode(settings.decisionMode),
   }
 }
 
@@ -294,6 +299,35 @@ export function scoreRow(row, ctx, opts = {}) {
 }
 
 /**
+ * 「这一单会先派谁」的**唯一**排序口径（决策页行号与网关尝试链共用）。
+ *
+ * 四级键，顺序即优先级：
+ *   1. 兜底阶梯层级（tierOf）——准入通过的必须排在强制兜底前面。
+ *      少了这一级，按档位排出来的第一名可能是个冷却中的站：价格档说它最便宜，
+ *      于是它排第一，而网关根本不会派给它——页面和网关又成了两套口径。
+ *   2. 决策侧重（compareByBasis）——用户切档的意图，这是主键。
+ *   3. routeScore——同档并列时速度/余额/质量才发言。
+ *
+ * 手动顺序（拖拽/勾选）不在这里：它是网关侧的 chain 首键、页面侧的「跳过重排」，
+ * 两个位置各自处理，因为语义不同（网关要排链，页面要保住显示顺序）。
+ *
+ * @param {object} a 路由行
+ * @param {object} b 路由行
+ * @param {{decisionMode?: string, tried?: Set<string>}} [opts]
+ */
+export function compareRoutedRows(a, b, { decisionMode = null, tried = new Set() } = {}) {
+  const mode = normalizeDecisionMode(decisionMode)
+  const ta = tierOf(a, { triedAlready: Boolean(a.offer?.id && tried.has(a.offer.id)) }).tier
+  const tb = tierOf(b, { triedAlready: Boolean(b.offer?.id && tried.has(b.offer.id)) }).tier
+  if (ta !== tb) return ta - tb
+  const byBasis = compareByBasis(a, b, mode)
+  if (byBasis !== 0) return byBasis
+  const sa = Number.isFinite(a.routeScore) ? a.routeScore : Number.MAX_SAFE_INTEGER
+  const sb = Number.isFinite(b.routeScore) ? b.routeScore : Number.MAX_SAFE_INTEGER
+  return sa - sb
+}
+
+/**
  * 完整路由决策。
  *
  * 这是**唯一该被网关和诊断页调用的入口** —— 它保证：
@@ -301,12 +335,32 @@ export function scoreRow(row, ctx, opts = {}) {
  *   2. 链里每一条都带 tier（为什么在这个位置）
  *   3. 每条都带可解释的评分明细
  *
+ * ## 排序主键 = 决策侧重，routeScore 只做主键打平时的次级参考
+ *
+ * 这一条是 2026-11-11 修的 bug 的核心。在此之前这里无条件按 routeScore 排，
+ * 而 routeScore = 速度 × 余额惩罚 × 质量惩罚（**价格权重恒为 0**）。后果：
+ *
+ *   · 「价格」档完全失效 —— 贵 2.9 倍的那家一分钱都不扣，照样第一
+ *   · 「首字速度 / 实速 / 流畅度」档也会被余额惩罚翻转 ——
+ *     实测 9025ms×1.6（余额只剩 1.7 天）= 14440，输给 12571ms 但余额健康的那家
+ *
+ * 用户在页面上切档是明确意图，切了等于没切比算错更难发现（同一个毛病
+ * core/decision-mode.js 的注释里已经记过一次）。所以：
+ *
+ *   · 主键：compareByBasis（selectCandidates 已经按它排好，这里的稳定排序保住它）
+ *   · 次键：routeScore（同档内并列时，速度/余额/质量才说了算）
+ *
+ * 余额「还剩几天」不再能一票否决用户的档位选择——它降级成同档内打平才发言。
+ * 想真正「余量优先」请用路由组的对应档（core/route-groups.js），那里是显式选择。
+ *
  * @param {Array<object>} rows  selectCandidates 的产物
  * @param {object} ctx          buildRoutingContext 的产物
  * @param {object} [opts]
  * @param {Set<string>} [opts.tried]     本次请求已试过的 offerId
  * @param {number} [opts.maxPerTier]     每级最多几条
  * @param {object} [opts.scoring]        覆盖 SCORING
+ * @param {Map<string,number>|null} [opts.orderRank] 手动顺序（offerId → 名次），第一排序键
+ * @param {string} [opts.decisionMode]   决策侧重；缺省读 ctx.decisionMode，再缺省 'value'
  * @returns {{
  *   chain: Array<object>,
  *   summary: object,
@@ -314,7 +368,13 @@ export function scoreRow(row, ctx, opts = {}) {
  *   degraded: boolean,
  * }}
  */
-export function decideRoute(rows = [], ctx = {}, { tried = new Set(), maxPerTier = 3, scoring = {}, orderRank = null } = {}) {
+export function decideRoute(
+  rows = [],
+  ctx = {},
+  { tried = new Set(), maxPerTier = 3, scoring = {}, orderRank = null, decisionMode = null } = {},
+) {
+  const mode = normalizeDecisionMode(decisionMode ?? ctx?.decisionMode)
+
   // ① 逐条打分，并把余额状态**回填进行本身**
   //
   // 为什么必须回填：兜底阶梯（core/fallback-ladder.js）靠 `row.balanceDepleted`
@@ -338,26 +398,24 @@ export function decideRoute(rows = [], ctx = {}, { tried = new Set(), maxPerTier
     }
   })
 
-  // ② 排序。
+  // ② 排序。首键是手动顺序（orderRank），其后全部交给 compareRoutedRows。
   //
-  // 调用方传了 orderRank（手动顺序 offerId → 名次）时，**手动顺序是第一排序键**，
-  // routeScore 只在手动顺序没覆盖的行之间起作用——「勾选 > 拖的先后 > 自动排序」
-  // 是决策页白纸黑字的契约，selectCandidates 已经按它排好了，这里不能再按分重排
-  // 把它抹掉（2026-11-08 级联修复：decideRoute 引入后手动拖序在网关侧全部失效，
-  // run-empty-guard 整条链红灯就是这么来的）。
-  // 安全不受伤：兜底阶梯（buildLadder）仍按准入分层，把坏站拖到第一位也只是
-  // 「同级里排前面」，不会越过准入。
-  if (orderRank instanceof Map && orderRank.size > 0) {
-    scored.sort((a, b) => {
+  // 手动顺序为什么排在最前：它是「勾选 > 拖的先后 > 自动排序」这条决策页契约的
+  // 实现，selectCandidates 已经按它排好了，这里不能再抹掉（2026-11-08 级联修复：
+  // decideRoute 引入后手动拖序在网关侧全部失效）。安全不受伤——梯队仍按准入分层，
+  // 把坏站拖到第一位也只是同级里排前面。
+  // 其余三级键（梯队 → 决策侧重 → routeScore）收在 compareRoutedRows 里，
+  // 决策页行号用同一个函数，两边不会再漂。
+  scored.sort((a, b) => {
+    if (orderRank instanceof Map && orderRank.size > 0) {
       const ra = orderRank.get(a.offer?.id)
       const rb = orderRank.get(b.offer?.id)
       const na = ra === undefined ? Number.MAX_SAFE_INTEGER : ra
       const nb = rb === undefined ? Number.MAX_SAFE_INTEGER : rb
-      return na !== nb ? na - nb : a.routeScore - b.routeScore
-    })
-  } else {
-    scored.sort((a, b) => a.routeScore - b.routeScore)
-  }
+      if (na !== nb) return na - nb
+    }
+    return compareRoutedRows(a, b, { decisionMode: mode, tried })
+  })
 
   // ③ 兜底阶梯：保证非空
   let ladder = buildLadder(scored, { tried, maxPerTier })

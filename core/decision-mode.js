@@ -126,9 +126,14 @@ export function compareByBasis(a, b, value) {
     return ka - kb
   }
 
+  // 次级比较本身也要防「两条都缺价」：`Infinity - Infinity = NaN`，
+  // 而比较函数返回 NaN 时 V8 的排序结果是未定义的（谁前谁后看实现）。
+  // 这种情况下两条在本档位上确实无从比较，交给调用方的下一级口径（routeScore）
+  // 去分先后，这里必须返回 0 而不是 NaN。
   const delta = cost(a) - cost(b)
-  if (delta !== 0) return delta
-  return price(a) - price(b)
+  if (Number.isFinite(delta) && delta !== 0) return delta
+  const priceDelta = price(a) - price(b)
+  return Number.isFinite(priceDelta) ? priceDelta : 0
 }
 
 /** 价格 ÷ 首字延迟（价速比的标量）；首字缺失 / 非正数一律 Infinity，不冒充最优 */

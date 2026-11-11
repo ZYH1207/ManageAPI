@@ -321,5 +321,118 @@ check('decideRoute 输出带评分解释', () => {
   assert.ok(Number.isFinite(d.chain[0].routeScore))
 })
 
+console.log('\n[5/5] 决策侧重是排序主键，routeScore 只做主键打平时的次键')
+
+// 回归：2026-11-11 的现场。「价格」档选了半天，永远还是最贵的那家第一，
+// 因为 decideRoute 无条件按 routeScore 排，而 routeScore 里 priceWeight = 0
+// ——价格一分钱都不参与，贵 2.9 倍和便宜 2.9 倍算出来一样。
+// 同一个链路还让「首字速度」档被余额惩罚翻转：快站余额只剩 1.7 天 ×1.6，
+// 直接输给慢 400ms 但余额健康的站。
+//
+// 造两条供给：穷站 = 又快又便宜，但余额低；富站 = 又慢又贵，余额健康。
+const priceFight = () => {
+  const ctx = {
+    calibration: null,
+    providerSpeedPrior: new Map(),
+    // 穷站余额低（1.6 倍惩罚），富站健康
+    balances: new Map([
+      ['poor', { state: BALANCE.LOW, penalty: 1.6 }],
+      ['rich', { state: BALANCE.HEALTHY, penalty: 1 }],
+    ]),
+  }
+  // row 上带齐 compareByBasis 需要的字段（effective / price 用人民币口径，等价）
+  const cheap = {
+    offer: { id: 'cheap', providerId: 'poor' },
+    admission: { ok: true },
+    quality: 1,
+    price: 0.455,
+    priceUsd: 0.455,
+    effective: 0.455,
+    effectiveUsd: 0.455,
+    realTtftMs: 4400,
+    realTtftSamples: 10,
+  }
+  const pricey = {
+    offer: { id: 'pricey', providerId: 'rich' },
+    admission: { ok: true },
+    quality: 1,
+    price: 1.3,
+    priceUsd: 1.3,
+    effective: 1.3,
+    effectiveUsd: 1.3,
+    realTtftMs: 5000,
+    realTtftSamples: 10,
+  }
+  return { ctx, rows: [pricey, cheap] }
+}
+
+check('价格档：便宜的那家排第一，哪怕它余额低、routeScore 更差', () => {
+  const { ctx, rows } = priceFight()
+  const d = decideRoute(rows, ctx, { decisionMode: 'price' })
+  // 先确认前提成立：routeScore 这边确实是富站（慢但有钱）赢，
+  // 否则这条测试就是空的——测了半天没人违反它
+  assert.ok(
+    d.chain.find((r) => r.offer.id === 'pricey').routeScore
+      < d.chain.find((r) => r.offer.id === 'cheap').routeScore,
+    '前提：按 routeScore 排富站赢（余额惩罚翻转了速度差）',
+  )
+  assert.equal(d.chain[0].offer.id, 'cheap', '价格档必须由价格说了算，不能被余额惩罚夺权')
+})
+
+check('首字速度档：快的那家排第一，哪怕它余额低', () => {
+  const { ctx, rows } = priceFight()
+  const d = decideRoute(rows, ctx, { decisionMode: 'speed' })
+  assert.equal(d.chain[0].offer.id, 'cheap', '速度档必须由首字说了算')
+})
+
+check('性价比档：仍然是便宜那家（0.455 < 1.3）', () => {
+  const { ctx, rows } = priceFight()
+  const d = decideRoute(rows, ctx, { decisionMode: 'value' })
+  assert.equal(d.chain[0].offer.id, 'cheap')
+})
+
+check('档次不同，第一名就该不同——不是永远同一家', () => {
+  // 便宜但慢 vs 贵但快：两个档必须给出相反的首名，否则档位就是摆设
+  const ctx = { calibration: null, providerSpeedPrior: new Map(), balances: new Map() }
+  const rows = [
+    { offer: { id: 'slowCheap', providerId: 'p1' }, admission: { ok: true }, quality: 1, price: 0.3, priceUsd: 0.3, effective: 0.3, effectiveUsd: 0.3, realTtftMs: 12000, realTtftSamples: 10 },
+    { offer: { id: 'fastPricey', providerId: 'p2' }, admission: { ok: true }, quality: 1, price: 2.0, priceUsd: 2.0, effective: 2.0, effectiveUsd: 2.0, realTtftMs: 1500, realTtftSamples: 10 },
+  ]
+  assert.equal(decideRoute(rows, ctx, { decisionMode: 'price' }).chain[0].offer.id, 'slowCheap', '价格档选便宜的')
+  assert.equal(decideRoute(rows, ctx, { decisionMode: 'speed' }).chain[0].offer.id, 'fastPricey', '速度档选快的')
+})
+
+check('准入不通过的不因为档位靠前就越过梯队', () => {
+  // 便宜且最快的站被冷却了（hard-fail）：任何档位下它都不该是链首
+  const ctx = { calibration: null, providerSpeedPrior: new Map(), balances: new Map() }
+  const rows = [
+    {
+      offer: { id: 'cooled', providerId: 'p1' }, admission: { ok: false, kind: 'blocked', text: '限流中' },
+      quality: 1, price: 0.01, priceUsd: 0.01, effective: 0.01, effectiveUsd: 0.01,
+      realTtftMs: 100, realTtftSamples: 10, blocked: { kind: 'rate', until: '2999-01-01T00:00:00Z' },
+    },
+    { offer: { id: 'ok', providerId: 'p2' }, admission: { ok: true }, quality: 1, price: 5, priceUsd: 5, effective: 5, effectiveUsd: 5, realTtftMs: 9000, realTtftSamples: 10 },
+  ]
+  for (const mode of ['value', 'price', 'speed', 'realSpeed', 'flow']) {
+    const d = decideRoute(rows, ctx, { decisionMode: mode })
+    assert.equal(d.chain[0].offer.id, 'ok', `${mode} 档不能让冷却中的站排第一`)
+  }
+})
+
+check('决策侧重从 ctx 兜底：调用方不改代码也能吃到 db 里的档位', () => {
+  const { rows } = priceFight()
+  // buildRoutingContext 会把 settings.decisionMode 放进 ctx
+  const ctx = {
+    calibration: null,
+    providerSpeedPrior: new Map(),
+    balances: new Map([
+      ['poor', { state: BALANCE.LOW, penalty: 1.6 }],
+      ['rich', { state: BALANCE.HEALTHY, penalty: 1 }],
+    ]),
+    decisionMode: 'price',
+  }
+  assert.equal(decideRoute(rows, ctx).chain[0].offer.id, 'cheap', '没显式传 decisionMode 时读 ctx')
+})
+
 console.log(`\n${fail === 0 ? '✓ 全部通过' : '✗ 有失败'}（${pass} 项）`)
 process.exit(fail === 0 ? 0 : 1)

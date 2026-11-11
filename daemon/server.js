@@ -97,7 +97,7 @@ import * as usageLib from '../core/usage.js'
 // 缓存亲和（借鉴 Magpie）：对话指纹 + 「该不该为了缓存钉住上次那个供给」
 import { conversationFingerprint, recordFrom, listAffinityModes } from '../core/affinity.js'
 // 路由编排：速度模型（标定）+ 余额守卫（阈值切换）+ 兜底阶梯（绝不报错）
-import { buildRoutingContext, decideRoute, scoreRow } from '../core/route-orchestrator.js'
+import { buildRoutingContext, compareRoutedRows, decideRoute, scoreRow } from '../core/route-orchestrator.js'
 // 请求耗时细分（借鉴 Magpie 的 net 明细）：分开 own / wait / head / flow
 import { PhaseTimer, diagnosePhases } from '../core/net-timing.js'
 import {
@@ -572,6 +572,8 @@ async function buildState({ light = false } = {}) {
   const routeCtxForDecisions = (() => {
     try { return buildRoutingContext(db) } catch { return null }
   })()
+  // 页面重排用的决策侧重：与 /api/state 下发的 state.decisionMode 同一份
+  const decisionModeForDecisions = normalizeDecisionMode(db.settings.decisionMode)
 
   const decisions = rankedWithCache.map((group) => {
     const model = group.rows[0]?.upstreamName || group.modelKey
@@ -638,20 +640,22 @@ async function buildState({ light = false } = {}) {
           }
         : base
     })
-    // 按自动路由真正的排序分重排 —— 让页面的行号和「排序分」列一致。
+    // 页面的行号必须与「网关会先派谁」一致，但**不能按 routeScore 重排** ——
+    // routeScore 里价格权重恒为 0，按它排会让「价格」「首字速度」「流程度」
+    // 这几档一起失效：贵 2.9 倍的那家一分钱不扣照样第一，速度档也会被余额
+    // 惩罚（×1.6）翻转。用户切了档等于没切，比算错更难发现（2026-11-11 修）。
+    //
+    // 现在直接调网关那个排序函数 compareRoutedRows（梯队 → 决策侧重 → routeScore），
+    // 两处同一份实现。以前这里是「页面按分重排、网关按档重排」，同一份数据给出
+    // 两个第一名——页面写着「当前选 绿萝」，网关却在派秋，用户根本没法判断谁对。
     //
     // 手动顺序存在时**跳过重排**：拖过的顺序必须原样显示（网关侧同一契约，
     // decideRoute 以 orderRank 为第一排序键）。页面按分重排会把拖好的顺序
     // 打乱，用户只会以为拖拽坏了（2026-11-08 修复，run-empty-guard 的根因）。
-    // 一个已知的细微差别：页面算 routeScore 时没有请求上下文，用历史平均输出长度
-    // 估算生成耗时；网关那边用当次请求的 max_tokens。所以长/短回答的排序可能
-    // 略有不同——这是必然的（页面无法预知未来的请求）。
     if (!order) {
-      rankedCandidates.sort((a, b) => {
-        const sa = Number.isFinite(a.routeScore) ? a.routeScore : Number.MAX_SAFE_INTEGER
-        const sb = Number.isFinite(b.routeScore) ? b.routeScore : Number.MAX_SAFE_INTEGER
-        return sa - sb
-      })
+      rankedCandidates.sort((a, b) =>
+        compareRoutedRows(a, b, { decisionMode: decisionModeForDecisions }),
+      )
     }
 
     // 勾选 > 排序：决策页点选的那条就是「当前选」，与顺序无关（顺序不动）。
@@ -5950,7 +5954,14 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
     Array.isArray(manualOrder) && manualOrder.length > 0
       ? new Map(manualOrder.map((id, index) => [String(id), index]))
       : null
-  const decision = decideRoute(candidates, routeCtx, { tried: new Set(), maxPerTier: 4, orderRank })
+  // 决策侧重显式传：路由组配了自己的算法档就用组里的，否则用全局设置。
+  // 组的档位在 routingTargetOf 里已经是归一化过的（缺失时是 null）。
+  const decision = decideRoute(candidates, routeCtx, {
+    tried: new Set(),
+    maxPerTier: 4,
+    orderRank,
+    decisionMode: routeTarget?.decisionMode || db.settings.decisionMode,
+  })
   if (decision.chain.length === 0) {
     // 报错文案在 core/router.js：决策页要能显示同一句话，两处各写一遍必然漂移
     const failure = admissionFailure(candidates, {
