@@ -434,5 +434,121 @@ check('决策侧重从 ctx 兜底：调用方不改代码也能吃到 db 里的�
   assert.equal(decideRoute(rows, ctx).chain[0].offer.id, 'cheap', '没显式传 decisionMode 时读 ctx')
 })
 
+console.log('\n[6/6] 人工勾选：准入没放行也必须排在链首')
+
+// 回归（2026-11-12 现场）：决策页勾的是秋「国模-007」，网关一直派「国模-0055」。
+// 根因不是勾选没存下，而是 decideRoute 先跑、勾选那条因失败率过高被阶梯当硬失败
+// 踢出链，之后 applyPinnedChoice 找不到它 → 静默回退自动第一名。
+check('勾选那条被标 blocked，仍在链首（回归：页面写 007、网关派 0055）', () => {
+  const ctx = { calibration: null, balances: new Map(), providerSpeedPrior: new Map() }
+  const rows = [
+    { offer: { id: '0055', providerId: 'p1' }, admission: { ok: true, kind: 'ok' }, quality: 1 },
+    { offer: { id: '005', providerId: 'p1' }, admission: { ok: true, kind: 'ok' }, quality: 1 },
+    {
+      offer: { id: '007', providerId: 'p1' },
+      admission: { ok: false, kind: 'blocked', text: '失败率过高：约 3 分钟后自动重试' },
+      blocked: { kind: 'error-rate', until: Date.now() + 180000 },
+      status: 'unstable',
+      quality: 1,
+    },
+  ]
+  const d = decideRoute(rows, ctx, { pinnedOfferId: '007' })
+  assert.equal(d.chain[0].offer.id, '007', `勾选必须在链首，实际 ${d.chain.map((r) => r.offer.id).join(' > ')}`)
+  assert.equal(d.summary.pinned, '007')
+  assert.equal(d.summary.pinnedAdmitted, false, '要如实标出勾选那条没准入')
+  assert.ok(d.chain[0].tierReason.includes('准入未放行'), '链首要能解释「为什么它没准入还在第一」')
+  assert.ok(d.chain.length >= 2, '后面仍有兜底，勾选失败还能转移')
+})
+
+check('勾选那条余额为 0 也照样排第一（人手点的压过余额硬失败）', () => {
+  const ctx = { calibration: null, balances: new Map(), providerSpeedPrior: new Map() }
+  const rows = [
+    { offer: { id: 'ok', providerId: 'p1' }, admission: { ok: true, kind: 'ok' }, quality: 1 },
+    { offer: { id: 'broke', providerId: 'p2' }, admission: { ok: true, kind: 'ok' }, quality: 1, balanceDepleted: true },
+  ]
+  const d = decideRoute(rows, ctx, { pinnedOfferId: 'broke' })
+  assert.equal(d.chain[0].offer.id, 'broke')
+})
+
+check('勾选那条本次已试过 → 不再塞回链首（防死循环）', () => {
+  const ctx = { calibration: null, balances: new Map(), providerSpeedPrior: new Map() }
+  const rows = [
+    { offer: { id: 'a', providerId: 'p1' }, admission: { ok: true, kind: 'ok' }, quality: 1 },
+    { offer: { id: 'b', providerId: 'p1' }, admission: { ok: true, kind: 'ok' }, quality: 1 },
+  ]
+  const d = decideRoute(rows, ctx, { pinnedOfferId: 'a', tried: new Set(['a']) })
+  assert.equal(d.chain[0].offer.id, 'b')
+  assert.equal(d.summary.pinned, null)
+})
+
+check('勾选的牌不在候选里（被暂停/删掉）→ 不影响链，如实报 null', () => {
+  const ctx = { calibration: null, balances: new Map(), providerSpeedPrior: new Map() }
+  const rows = [{ offer: { id: 'a', providerId: 'p1' }, admission: { ok: true, kind: 'ok' }, quality: 1 }]
+  const d = decideRoute(rows, ctx, { pinnedOfferId: 'ghost' })
+  assert.equal(d.chain.length, 1)
+  assert.equal(d.chain[0].offer.id, 'a')
+  assert.equal(d.summary.pinned, null)
+})
+
+check('没勾选时行为与改动前一致（不注入任何东西）', () => {
+  const ctx = { calibration: null, balances: new Map(), providerSpeedPrior: new Map() }
+  const rows = [
+    { offer: { id: 'a', providerId: 'p1' }, admission: { ok: false, kind: 'blocked' }, blocked: { kind: 'error-rate', until: Date.now() + 60000 }, quality: 1 },
+    { offer: { id: 'b', providerId: 'p1' }, admission: { ok: true, kind: 'ok' }, quality: 1 },
+  ]
+  const d = decideRoute(rows, ctx)
+  assert.equal(d.chain[0].offer.id, 'b', 'blocked 的仍被阶梯排除')
+  assert.equal(d.summary.pinned, null)
+})
+
+check('勾选那条本身不让整单被标降级', () => {
+  const ctx = { calibration: null, balances: new Map(), providerSpeedPrior: new Map() }
+  const rows = [
+    { offer: { id: 'a', providerId: 'p1' }, admission: { ok: true, kind: 'ok' }, quality: 1 },
+    { offer: { id: 'pin', providerId: 'p1' }, admission: { ok: false, kind: 'blocked' }, blocked: { kind: 'error-rate', until: Date.now() + 60000 }, quality: 1 },
+  ]
+  assert.equal(decideRoute(rows, ctx, { pinnedOfferId: 'pin' }).degraded, false)
+  assert.equal(decideRoute(rows, ctx).degraded, false)
+})
+
+// 第二条路径（同一天实测到的）：勾选那条**准入通过**，但它排在第 6 名之后，
+// 被「每级最多 4 条」的 maxPerTier 截断，一样不在链里 → 一样被静默忽略。
+// 现场：勾的是 rapid「科学家大雄」，网关派的是秋「国模-007」。
+check('勾选那条被每级条数上限截断，也必须进链首（回归：科学家大雄）', () => {
+  const ctx = { calibration: null, balances: new Map(), providerSpeedPrior: new Map() }
+  const rows = []
+  for (let i = 0; i < 6; i += 1) {
+    rows.push({
+      offer: { id: `fast${i}`, providerId: 'p1' },
+      admission: { ok: true, kind: 'ok' },
+      quality: 1,
+      realTtftMs: 1000 + i,
+      realTtftSamples: 10,
+    })
+  }
+  rows.push({
+    offer: { id: 'pinSlow', providerId: 'p1' },
+    admission: { ok: true, kind: 'ok' },
+    quality: 1,
+    realTtftMs: 9000,
+    realTtftSamples: 10,
+  })
+  const d = decideRoute(rows, ctx, { pinnedOfferId: 'pinSlow', maxPerTier: 4 })
+  assert.equal(d.chain[0].offer.id, 'pinSlow', `勾选必须在链首，实际 ${d.chain.map((r) => r.offer.id).join(' > ')}`)
+  assert.ok(d.chain.length <= 5, `链长受 maxPerTier 约束，勾选另算（实际 ${d.chain.length}）`)
+  assert.equal(d.summary.pinnedAdmitted, true)
+  assert.ok(!d.chain.slice(1).some((r) => r.offer.id === 'pinSlow'), '不重复出现')
+})
+
+check('勾选那条在链里本来就排第一时，不重复也不改顺序', () => {
+  const ctx = { calibration: null, balances: new Map(), providerSpeedPrior: new Map() }
+  const rows = [
+    { offer: { id: 'pin', providerId: 'p1' }, admission: { ok: true, kind: 'ok' }, quality: 1 },
+    { offer: { id: 'b', providerId: 'p1' }, admission: { ok: true, kind: 'ok' }, quality: 1 },
+  ]
+  const d = decideRoute(rows, ctx, { pinnedOfferId: 'pin' })
+  assert.equal(d.chain.map((r) => r.offer.id).join(' > '), 'pin > b')
+})
+
 console.log(`\n${fail === 0 ? '✓ 全部通过' : '✗ 有失败'}（${pass} 项）`)
 process.exit(fail === 0 ? 0 : 1)
