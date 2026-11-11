@@ -137,6 +137,22 @@ console.log('\n[2] pinnedOfferStateOf：能派 / 派不到都要说清原因')
   ok(other?.state === 'not-in-model', `指向别的模型 → not-in-model（实际 ${other?.state}）`)
 }
 
+console.log('\n[2b] 状态必须用「命中的那个键」去查，不能固定只查一个')
+{
+  // 合并组里 group.modelKey 是身份键、组内写法（upstreamName）是站点原名。
+  // 勾选只挂在其中一个下面时，状态查询必须跟着命中的那个键走，
+  // 否则「勾了但派不到」会报 null，页面就少了红标（静默失效）。
+  const db = makeDb({
+    pinnedOffer: { 'deepseek-4.1-flash': 'o_007' },
+    settings: { ignoredModels: ['deepseek-4.1-flash'] },
+  })
+  const viaIdentity = pinnedOfferStateOf(db, 'deepseek-4.1-flash')
+  const viaSpelling = pinnedOfferStateOf(db, 'deepseek-v4.1-flash')
+  ok(viaIdentity?.state === 'ignored', `身份键查得出 ignored（实际 ${viaIdentity?.state}）`)
+  ok(viaSpelling?.state === 'ignored', `站点写法也查得出 ignored（实际 ${viaSpelling?.state}）`)
+  ok(viaIdentity?.offerId === viaSpelling?.offerId, '两种写法指向同一条供给')
+}
+
 console.log('\n[3] 与 routeableOffers 同口径：能被 routeable 留下的，state 一定是 ok')
 {
   const cases = [

@@ -680,8 +680,13 @@ async function buildState({ light = false } = {}) {
     // 查找口径收在 inv.pinnedOfferIdOf：这里以前用裸键、网关用身份键，
     // 两套查法必然漂移（2026-11-12 的「页面写当前选、网关派别人」就是这么来的）。
     // pinnedState 说明「勾了但派不到」的原因，页面据此报警，不再假装它生效。
-    const pinnedOfferId = inv.pinnedOfferIdOf(db, model) || inv.pinnedOfferIdOf(db, group.modelKey)
-    const pinnedState = pinnedOfferId ? inv.pinnedOfferStateOf(db, model) || inv.pinnedOfferStateOf(db, group.modelKey) : null
+    //
+    // 两个键要各查一遍、并且**用同一个键**去查状态：分组身份键与组内写法
+    // （upstreamName）在合并组里可能不同，勾选只挂在其中一个下面。以前状态那一行
+    // 只按 model 查，勾选是按 group.modelKey 命中的时候会报 null，页面就少了红标。
+    const pinKey = inv.pinnedOfferIdOf(db, model) ? model : inv.pinnedOfferIdOf(db, group.modelKey) ? group.modelKey : null
+    const pinnedOfferId = pinKey ? inv.pinnedOfferIdOf(db, pinKey) : null
+    const pinnedState = pinKey ? inv.pinnedOfferStateOf(db, pinKey) : null
     const winner =
       (pinnedOfferId && rankedCandidates.find((c) => c.offerId === pinnedOfferId)) ||
       rankedCandidates.find((c) => c.admission?.ok && !c.faulted) ||
