@@ -577,7 +577,8 @@ async function buildState({ light = false } = {}) {
 
   const decisions = rankedWithCache.map((group) => {
     const model = group.rows[0]?.upstreamName || group.modelKey
-    const order = db.manualOrder?.[model] || db.manualOrder?.[group.modelKey] || null
+    // 手动顺序与勾选同一口径：收在 inv.manualOrderOf，别在这里再拼一份
+    const order = inv.manualOrderOf(db, model) || inv.manualOrderOf(db, group.modelKey)
     // 候选行要标「官方 xx%」：综合成本从 rank 行按 offerId 取，不重复算
     const costByOffer = new Map(group.rows.map((r) => [r.offerId, r]))
     const candidates = selectCandidates({
@@ -5865,10 +5866,7 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
 
   // 手动排序键是身份键（合并后一组共用一个键）。自动路由接管后 model 可能已被改派，
   // 所以要在接管之后再取；老数据里可能还存着 normalizeModelKey 时代的键，兜一次
-  const manualOrder =
-    db.manualOrder?.[inv.modelIdentityKey(model, db.settings?.modelAliases || {})] ||
-    db.manualOrder?.[inv.normalizeModelKey(model)] ||
-    null
+  const manualOrder = inv.manualOrderOf(db, model)
   // 外部监控上报的真实故障：降级不拉黑（探针准入不受影响），但自动路由不把它当最优
   const isFaulted = faultMatcher(db.failover)
   // 临时改道的站：空回合守卫把它挂起了，流量应该已经走别家。

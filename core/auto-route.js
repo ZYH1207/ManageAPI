@@ -34,7 +34,7 @@
  * 「下游只读不改」），切换结果由调用方决定要不要经 store.mutate 落盘。
  */
 import { selectCandidates } from './router.js'
-import { normalizeModelKey, modelIdentityKey, routeableOffers, pinnedOfferIdOf } from './inventory.js'
+import { normalizeModelKey, modelIdentityKey, routeableOffers, pinnedOfferIdOf, manualOrderOf } from './inventory.js'
 import { normalizeDecisionMode, tierMetricOf } from './decision-mode.js'
 import { splitOffers } from './free.js'
 import { faultMatcher } from './failover.js'
@@ -293,7 +293,8 @@ export function pickAutoRoute(db, {
       settings,
       model: modelKey,
       // 手动顺序只改「先试谁」，不改变准入——和网关派活同一口径
-      order: db.manualOrder?.[modelKey] || null,
+      // 手动顺序与勾选同一口径（inv.manualOrderOf），别自己再拼一份键
+      order: manualOrderOf(db, modelKey),
       isFaulted,
     })
     // 「最优」必须同时过准入和无故障：故障转移的供给哪怕探针说健康也不参选。

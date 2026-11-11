@@ -13,7 +13,7 @@
  *
  * 用法：node .test/check-pinned-offer.mjs
  */
-import { pinnedOfferIdOf, pinnedOfferStateOf } from '../core/inventory.js'
+import { pinnedOfferIdOf, pinnedOfferStateOf, manualOrderOf } from '../core/inventory.js'
 
 let failed = 0
 function ok(cond, label, detail = '') {
@@ -151,6 +151,24 @@ console.log('\n[3] 与 routeableOffers 同口径：能被 routeable 留下的，
     )
     ok(st?.state === 'ok' ? alive : true, `第 ${i + 1} 份库：state=ok 时不与「不可路由」矛盾（${st?.state}）`)
   }
+}
+
+console.log('\n[4] manualOrderOf：手动拖拽顺序与勾选同一套查法')
+{
+  const db = {
+    ...makeDb(),
+    settings: { modelAliases: { 'deepseek-v4.1-flash': 'deepseek-4.1-flash' }, ignoredModels: [], modelOverrides: {} },
+    manualOrder: { 'deepseek-4-pro': ['o_a', 'o_b'] },
+  }
+  // 现场：库里键是 deepseek-4-pro，请求/组内写法是 deepseek-v4-pro，
+  // 页面第一跳（裸键）查不到，以前靠第二跳才命中
+  ok(JSON.stringify(manualOrderOf(db, 'deepseek-v4-pro')) === '["o_a","o_b"]', '写法不同也命中（v4-pro → 4-pro）')
+  ok(JSON.stringify(manualOrderOf(db, 'deepseek-4-pro')) === '["o_a","o_b"]', '身份键直查命中')
+  ok(manualOrderOf(db, 'other-model') === null, '没拖过 → null（调用方据此跳过重排）')
+  ok(manualOrderOf({ ...db, manualOrder: { 'deepseek-4-pro': [] } }, 'deepseek-4-pro') === null, '空数组算没拖过')
+  ok(manualOrderOf({ ...db, manualOrder: null }, 'deepseek-4-pro') === null, 'manualOrder 缺失 → null')
+  // 值与勾选共用一个查法，但类型不同：这里必须只认数组
+  ok(manualOrderOf({ ...db, manualOrder: { 'deepseek-4-pro': 'o_a' } }, 'deepseek-4-pro') === null, '值不是数组 → null（不冒充顺序）')
 }
 
 console.log(`\n${failed === 0 ? '✓ 全部通过' : `✗ ${failed} 项失败`}`)

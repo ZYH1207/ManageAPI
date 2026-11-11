@@ -617,6 +617,52 @@ export function routeableOffers(db) {
 }
 
 /**
+ * 按身份键从一张「模型名 → 任意值」的表里取值（pinnedOffer / manualOrder 共用）。
+ *
+ * 为什么要有它：这两张表的键都是「用户点选/拖拽那一刻界面上的名字」，写法可能
+ * 是任意一种（deepseek-v4.1-flash / DeepSeek-V4.1-Flash / 带日期尾巴 / 合并别名）。
+ * 而读的地方有三个：页面、网关、自动路由。以前各拼一份查法——
+ *   页面 `table[model]`、网关 `table[identityKey(model)] || table[baseKey(model)]`、
+ *   自动路由 `table[identityKey(model)]`
+ * 三者只在「写进去的键恰好等于自己那份归一结果」时才一致。2026-11-12 实测：
+ * 同一个库里 `manualOrder` 的键是 deepseek-4-pro，页面第一跳（裸键
+ * deepseek-v4-pro）查不到、靠第二跳才命中；`pinnedOffer` 则是页面命中网关不命中。
+ *
+ * 查法固定为：身份键 → 存储键 → 原样键 → 按身份键反查整张表。
+ * 反查那一步是根治：任何写法只要归一到同一个身份键就认得出，不依赖写入时的拼法。
+ *
+ * @param {object|null|undefined} table
+ * @param {string} modelKey
+ * @param {object} aliases db.settings.modelAliases
+ * @returns {any|null} 命中返回原值（空数组/空串也算未命中），否则 null
+ */
+function lookupByIdentity(table, modelKey, aliases) {
+  if (!table || typeof table !== 'object') return null
+  const raw = String(modelKey || '').trim()
+  if (!raw) return null
+  const aliasTable = aliases && typeof aliases === 'object' ? aliases : {}
+  const filled = (value) => {
+    if (value === null || value === undefined) return null
+    if (Array.isArray(value)) return value.length > 0 ? value : null
+    if (typeof value === 'string') return value.trim() ? value : null
+    return value
+  }
+  for (const key of [identityKey(raw, aliasTable), modelBaseKey(raw), raw]) {
+    if (!key) continue
+    const hit = filled(table[key])
+    if (hit !== null) return hit
+  }
+  const want = identityKey(raw, aliasTable)
+  if (!want) return null
+  for (const [key, value] of Object.entries(table)) {
+    if (identityKey(key, aliasTable) !== want) continue
+    const hit = filled(value)
+    if (hit !== null) return hit
+  }
+  return null
+}
+
+/**
  * 人工勾选（决策页点选）的那条供给 id。
  *
  * 为什么必须收成一份实现：页面侧（buildState 的 decisions）和网关侧
@@ -625,37 +671,28 @@ export function routeableOffers(db) {
  * 概念两套查法，迟早出现「页面认得出、网关认不出」（2026-11-12 实测：
  * 页面显示当前选 A，网关派 B）。这里只留一份，两边都调它。
  *
- * 顺序：身份键 → 存储键 → 原样键。前两个覆盖名字写法变动（v4.1 ↔ 4.1、
- * 大小写、日期尾巴），最后一个是老库里直接按界面显示名写进去的键。
- *
  * @param {object} db
  * @param {string} modelKey 请求里的模型名或分组身份键
  * @returns {string|null}
  */
 export function pinnedOfferIdOf(db, modelKey) {
-  const pins = db?.pinnedOffer
-  if (!pins || typeof pins !== 'object') return null
-  const raw = String(modelKey || '').trim()
-  if (!raw) return null
-  const aliases = db.settings?.modelAliases || {}
-  // 先按三种正向写法查（命中率最高、也不用遍历）
-  for (const key of [identityKey(raw, aliases), modelBaseKey(raw), raw]) {
-    if (!key) continue
-    const hit = pins[key]
-    if (hit) return String(hit)
-  }
-  // 再反查一遍：老库的键是「点选那一刻界面上的名字」，可能是任意写法
-  // （deepseek-v4.1-flash / DeepSeek-V4.1-Flash / 带日期尾巴）。
-  // 只比身份键，所以同一个模型的任何写法都能对上——这正是「页面认得出、
-  // 网关认不出」那类漂移的根治办法。键最多几十条，遍历代价可忽略。
-  const want = identityKey(raw, aliases)
-  if (want) {
-    for (const [key, value] of Object.entries(pins)) {
-      if (!value) continue
-      if (identityKey(key, aliases) === want) return String(value)
-    }
-  }
-  return null
+  const hit = lookupByIdentity(db?.pinnedOffer, modelKey, db?.settings?.modelAliases || {})
+  return hit === null ? null : String(hit)
+}
+
+/**
+ * 手动拖拽顺序（模型 → offerId 数组）。
+ *
+ * 与 pinnedOfferIdOf 同一个理由收成一份：以前页面、网关、自动路由各查一遍，
+ * 只是靠「多兜一层」碰巧对上。没拖过返回 null（调用方据此跳过重排）。
+ *
+ * @param {object} db
+ * @param {string} modelKey
+ * @returns {string[]|null}
+ */
+export function manualOrderOf(db, modelKey) {
+  const hit = lookupByIdentity(db?.manualOrder, modelKey, db?.settings?.modelAliases || {})
+  return Array.isArray(hit) ? hit.map(String) : null
 }
 
 /**
