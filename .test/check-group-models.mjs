@@ -522,17 +522,21 @@ try {
   }
   ok(reloaded, '英文界面刷新后站点卡还在')
   await ev(clickChip('主力分组'))
-  for (let i = 0; i < 40; i += 1) {
+  // 等「打开 **且内容已就绪**」：只等 open 会在英文刷新后立刻通过——
+  // 抽屉 DOM 先出现、rows/meta 还是空的（渲染是异步的），断言就会读到空串
+  // 而误报成「没翻成英文」。本用例以前偶发失败（两次里红一次）就是这里。
+  for (let i = 0; i < 60; i += 1) {
     view = await ev(drawer)
-    if (view.open) break
+    if (view.open && view.meta && view.rows.length > 0) break
     await sleep(100)
   }
   ok(view.meta.includes('models'), `模型数翻成英文（实际「${view.meta}」）`)
   ok(view.rows.some((r) => r.text.includes('Ignored')), '「已忽略」翻成 Ignored')
   await ev(clickChip('备用分组'))
-  for (let i = 0; i < 40; i += 1) {
+  for (let i = 0; i < 60; i += 1) {
     view = await ev(drawer)
-    if (view.title === '备用分组') break
+    // 同理：标题切过去还不够，目标行也得渲染出来
+    if (view.title === '备用分组' && view.rows.some((r) => r.name === 'model-e')) break
     await sleep(100)
   }
   const rowEEn = view.rows.find((r) => r.name === 'model-e')?.text || ''
