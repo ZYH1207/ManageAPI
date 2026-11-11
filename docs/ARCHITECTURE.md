@@ -199,10 +199,10 @@ core/fallback-ladder.js  (232 行)
                     失败但已过冷却（现在可能好了）
 ```
 
-### 第 6.5 步：人工勾选 —— 它压过准入，且只有一份查法
+### 第 6.5 步：人工勾选 —— 它压过准入和忽略，且只有一份查法
 
 ```
-core/inventory.js#pinnedOfferIdOf / pinnedOfferStateOf / manualOrderOf
+core/inventory.js#routeableOffers（勾选压过忽略）/ pinnedOfferIdOf / pinnedOfferStateOf / manualOrderOf
 core/route-orchestrator.js#decideRoute（④ 人工勾选不许被阶梯吃掉）
 ```
 
@@ -213,8 +213,9 @@ core/route-orchestrator.js#decideRoute（④ 人工勾选不许被阶梯吃掉�
 | 决策页写「当前选 007」，网关一直派 0055 | 勾选那条准入没过（失败率过高/冷却）被阶梯当硬失败踢出链；勾选那条准入过了但排在 `maxPerTier` 之外也会被切掉。两种情况下链里没有它，`applyPinnedChoice` 找不到 → 静默回退自动第一名 |
 | 页面写「当前选 秋」，网关一直派 rapid | 勾选那条被「忽略模型」整类挡掉，页面仍显示它生效，且日志每单刷一行「未应用」 |
 | 拖拽顺序时灵时不灵 | `pinnedOffer` / `manualOrder` 的键是「点选那一刻界面上的名字」，页面用裸键、网关用身份键、自动路由又一份，写法一变就有一处认不出 |
+| 勾了被忽略的那条，请求直接 404「没有可用供给」 | `routeableOffers` 先按忽略名单把它滤掉，勾选根本没机会生效 |
 
-三条硬规则（改这块之前先看）：
+四条硬规则（改这块之前先看）：
 
 1. **勾选压过准入，但不压过「本次已试过」**。准入是给自动选择用的判据，管不住人手点的；
    人的指定等于「我就要这条，慢/在冷却我也认」。真发失败照旧沿「锁定失败后转移」档往后走。
@@ -222,9 +223,18 @@ core/route-orchestrator.js#decideRoute（④ 人工勾选不许被阶梯吃掉�
 2. **查勾选/查拖拽顺序只调 `pinnedOfferIdOf` / `manualOrderOf`**。查法固定为
    身份键 → 存储键 → 原样键 → 按身份键反查整张表；最后那步是根治，任何写法只要
    归一到同一身份键就认得出，不依赖写入时的拼法。页面、网关、自动路由三处共用。
-3. **「勾了但派不到」必须显式告诉用户**。`buildState` 的 decisions 下发
-   `pinnedState`（ok/missing/delisted/paused/ignored/not-in-model + 人话原因）与
+3. **勾选压过「忽略模型」，但不压过站点暂停 / 已下线**。用户原话：
+   「我单独放出来的站点，应该不受到模型忽略影响。我手动勾选把它开启了，
+     然后这个时候忽略模型不应该能挡掉它们的流量。也就是它应该是生效的。」
+   忽略名单管的是**自动选择**（比价、自动路由、探针该不该烧钱）；人手勾的那一条是
+   「我就要它」。实现收在 `routeableOffers`（唯一入口）：被勾选的供给 id 直接放行。
+   站点暂停 / 已下线仍然压过勾选——那是「这个站现在不该收流量」和「上游已经没这个
+   模型了」，与用户想不想要它无关。
+   **注意别顺手放宽**：勾选只放开**它自己那一条**，同模型的其他供给照样被忽略挡掉。
+4. **「勾了但派不到」必须显式告诉用户**。`buildState` 的 decisions 下发
+   `pinnedState`（ok/missing/delisted/paused/not-in-model + 人话原因）与
    `pinnedApplied`；页面据此挂「勾选未生效」红标，而不是继续假装它生效。
+   `ignored` 不在这个列表里——勾选压过忽略，它不该再被报成失效原因。
 
 另外：决策页的重排档位必须与网关同源——都是
 `routingTargetOf(...).decisionMode || settings.decisionMode`。只读全局设置的话，

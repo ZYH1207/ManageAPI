@@ -13,7 +13,7 @@
  *
  * 用法：node .test/check-pinned-offer.mjs
  */
-import { pinnedOfferIdOf, pinnedOfferStateOf, manualOrderOf } from '../core/inventory.js'
+import { pinnedOfferIdOf, pinnedOfferStateOf, manualOrderOf, routeableOffers } from '../core/inventory.js'
 
 let failed = 0
 function ok(cond, label, detail = '') {
@@ -105,14 +105,20 @@ console.log('\n[2] pinnedOfferStateOf：能派 / 派不到都要说清原因')
   ok(paused?.state === 'paused', `站点暂停 → paused（实际 ${paused?.state}）`)
   ok(/暂停站/.test(paused?.text || ''), '文案点出是哪个站暂停了')
 
-  // 现场 2：整类被忽略
+  // 整类被忽略，但这条正是勾选的那一条 → 勾选压过忽略，state 必须是 ok
+  // （2026-11-12 用户定的语义：我单独放出来、手动勾选的，忽略模型不该挡它的流量）
   const ignoredDb = makeDb({
     pinnedOffer: { 'deepseek-4.1-flash': 'o_007' },
     settings: { ignoredModels: ['deepseek-4.1-flash'] },
   })
-  const ignored = pinnedOfferStateOf(ignoredDb, 'deepseek-4.1-flash')
-  ok(ignored?.state === 'ignored', `整类忽略 → ignored（实际 ${ignored?.state}）`)
-  ok(/忽略模型/.test(ignored?.text || ''), '文案指向忽略模型面板')
+  const pinnedIgnored = pinnedOfferStateOf(ignoredDb, 'deepseek-4.1-flash')
+  ok(pinnedIgnored?.state === 'ok', `勾选那条即使被整类忽略也算 ok（实际 ${pinnedIgnored?.state}）`)
+  ok(pinnedIgnored?.text === '', '生效时不挂红标（不给噪音文案）')
+  // 但同模型的**其他**供给仍然被忽略挡住——忽略名单不是失效了，只是压不过勾选
+  ok(
+    routeableOffers(ignoredDb).every((o) => o.id === 'o_007'),
+    `同模型未被勾选的那些仍被挡掉（在役 ${routeableOffers(ignoredDb).map((o) => o.id).join(',')}）`,
+  )
 
   // 单行例外：整类忽略但这一行被显式放开 → 仍算 ok（与 routeableOffers 同口径）
   const shownDb = makeDb({
@@ -141,16 +147,63 @@ console.log('\n[2b] 状态必须用「命中的那个键」去查，不能固定
 {
   // 合并组里 group.modelKey 是身份键、组内写法（upstreamName）是站点原名。
   // 勾选只挂在其中一个下面时，状态查询必须跟着命中的那个键走，
-  // 否则「勾了但派不到」会报 null，页面就少了红标（静默失效）。
+  // 否则会报 null，页面拿不到状态（静默失效）。
   const db = makeDb({
     pinnedOffer: { 'deepseek-4.1-flash': 'o_007' },
     settings: { ignoredModels: ['deepseek-4.1-flash'] },
   })
   const viaIdentity = pinnedOfferStateOf(db, 'deepseek-4.1-flash')
   const viaSpelling = pinnedOfferStateOf(db, 'deepseek-v4.1-flash')
-  ok(viaIdentity?.state === 'ignored', `身份键查得出 ignored（实际 ${viaIdentity?.state}）`)
-  ok(viaSpelling?.state === 'ignored', `站点写法也查得出 ignored（实际 ${viaSpelling?.state}）`)
+  ok(viaIdentity?.state === 'ok', `身份键查得出 ok（实际 ${viaIdentity?.state}）`)
+  ok(viaSpelling?.state === 'ok', `站点写法也查得出 ok（实际 ${viaSpelling?.state}）`)
   ok(viaIdentity?.offerId === viaSpelling?.offerId, '两种写法指向同一条供给')
+}
+
+console.log('\n[2c] 勾选压过忽略：在役判定与状态判定必须一致')
+{
+  // 这组是用户 2026-11-12 定下的语义，也是最容易再次分叉的地方：
+  // 「我单独放出来的站点，手动勾选开启了，忽略模型不该挡它的流量」。
+  const mk = (pinned, extra = {}) => ({
+    settings: { modelAliases: {}, ignoredModels: ['deepseek-4.1-flash'], modelOverrides: {}, ...(extra.settings || {}) },
+    providers: [{ id: 'p1', name: '站1', paused: false }, ...(extra.providers || [])],
+    offers: [
+      { id: 'o_pin', providerId: 'p1', group: 'G', upstreamName: 'deepseek-v4.1-flash', modelKey: 'deepseek-v4.1-flash' },
+      { id: 'o_twin', providerId: 'p1', group: 'G2', upstreamName: 'deepseek-v4.1-flash', modelKey: 'deepseek-v4.1-flash' },
+      { id: 'o_other', providerId: 'p1', group: 'G3', upstreamName: 'glm-5.3-flash', modelKey: 'glm-5.3-flash' },
+      ...(extra.offers || []),
+    ],
+    pinnedOffer: pinned,
+  })
+
+  const pinnedDb = mk({ 'deepseek-4.1-flash': 'o_pin' })
+  const live = routeableOffers(pinnedDb).map((o) => o.id)
+  ok(live.includes('o_pin'), `勾选那条越过了忽略名单（在役 ${live.join(',')}）`)
+  ok(!live.includes('o_twin'), '同模型另一条仍被忽略挡住（忽略名单没失效）')
+  ok(pinnedOfferStateOf(pinnedDb, 'deepseek-4.1-flash')?.state === 'ok', '状态与在役一致：ok')
+
+  const noPin = mk({})
+  ok(!routeableOffers(noPin).some((o) => o.id.startsWith('o_pin') || o.id === 'o_twin'), '没勾选时整类仍被忽略')
+  ok(pinnedOfferStateOf(noPin, 'deepseek-4.1-flash') === null, '没勾选 → 状态 null')
+
+  // 勾的是没被忽略的模型 → 忽略名单照常挡 deepseek
+  const pinOther = mk({ 'glm-5.3-flash': 'o_other' })
+  const liveOther = routeableOffers(pinOther).map((o) => o.id)
+  ok(liveOther.includes('o_other'), '勾选的那条在役')
+  ok(!liveOther.includes('o_pin') && !liveOther.includes('o_twin'), '勾了别的模型不会顺带放开被忽略的 deepseek')
+
+  // 站点暂停 / 已下线压过勾选：那是「这个站现在不该收流量」，与「用户想不想要它」无关
+  const pausedDb = mk({ 'deepseek-4.1-flash': 'o_pin' })
+  pausedDb.providers[0].paused = true
+  ok(!routeableOffers(pausedDb).some((o) => o.id === 'o_pin'), '站点暂停时勾选救不回来')
+  ok(pinnedOfferStateOf(pausedDb, 'deepseek-4.1-flash')?.state === 'paused', '状态报 paused')
+
+  const delistedDb = mk({ 'deepseek-4.1-flash': 'o_pin' })
+  delistedDb.offers[0].delistedAt = '2026-01-01T00:00:00.000Z'
+  ok(!routeableOffers(delistedDb).some((o) => o.id === 'o_pin'), '已下线时勾选救不回来')
+  ok(pinnedOfferStateOf(delistedDb, 'deepseek-4.1-flash')?.state === 'delisted', '状态报 delisted')
+
+  // 一条勾选都没生效时，pinnedOffer 表本身不空也不该放开任何东西
+  ok(routeableOffers(mk({ 'deepseek-4.1-flash': 'o_ghost' })).every((o) => o.id === 'o_other'), '勾选指向不存在的供给不放开任何东西')
 }
 
 console.log('\n[3] 与 routeableOffers 同口径：能被 routeable 留下的，state 一定是 ok')

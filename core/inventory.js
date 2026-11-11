@@ -600,20 +600,55 @@ export function modelIgnored(db, name, scope) {
  * 注意：余额探底不在这里过滤——那是准入门禁的事（要挂标、要能被「只显示准入」隐藏），
  * 见 core/router.js#admissionOf；探针/复检的「不撞墙」各自显式跳过。
  * 纯函数：只读 db，不改；调用方拿到的是 db.offers 里的原对象，不要原地修改。
+ *
+ * ## 人工勾选压过「忽略模型」（2026-11-12，用户原话）
+ *
+ *   「我单独放出来的站点，应该不受到模型忽略影响。我手动勾选把它开启了，
+ *     然后这个时候忽略模型不应该能挡掉它们的流量。也就是它应该是生效的。」
+ *
+ * 语义：忽略名单管的是**自动选择**（比价、自动路由、探针该不该烧钱）；
+ * 人手勾的那一条是「我就要它」，忽略名单挡不住它。所以被勾选的那条供给
+ * 即使整类被忽略，也照样算在役——否则勾选只是页面上好看，流量永远走不到它
+ * （实测：勾了 o_pin，在役供给直接变成空数组，网关报「没有可用供给」）。
+ *
+ * 站点暂停 / 已下线仍然压过勾选：那是「这个站现在不该收流量」和
+ * 「上游已经没这个模型了」，与「用户想不想要它」无关。
  */
 export function routeableOffers(db) {
   const pausedIds = new Set(db.providers.filter((p) => p.paused).map((p) => p.id))
   // 忽略判定（整类名单 + 单行例外）唯一实现在 ignoreChecker，别在这里再拼一份
   const isIgnored = ignoreChecker(db)
+  // 勾选的那条：忽略名单挡不住它（口径见上面那段）。用 identityKey 反查，
+  // 与 pinnedOfferIdOf 同一套写法——两处各拼一份键，迟早一处认得出、一处认不出。
+  const pinnedIds = pinnedOfferIdSet(db)
   return db.offers.filter((offer) => {
     if (offer.delistedAt) return false
     if (pausedIds.has(offer.providerId)) return false
+    if (pinnedIds.has(offer.id)) return true
     // 作用域必须传：否则「只开这一行」会被读成「整类都开」
     if (isIgnored(offer.modelKey || offer.upstreamName || '', { providerId: offer.providerId, group: offer.group })) {
       return false
     }
     return true
   })
+}
+
+/**
+ * 所有被人工勾选中的供给 id 集合。
+ *
+ * 为什么单独一支：routeableOffers 需要「这一条是不是被勾选的」这个判断，
+ * 而 pinnedOffer 是「模型 → 供给 id」的表，要反过来查。写在这里而不是
+ * 每个调用方自己遍历，是因为**忽略判定与勾选的关系只该有一处定义**。
+ */
+export function pinnedOfferIdSet(db) {
+  const pins = db?.pinnedOffer
+  if (!pins || typeof pins !== 'object') return new Set()
+  const out = new Set()
+  for (const value of Object.values(pins)) {
+    if (!value) continue
+    out.add(String(value))
+  }
+  return out
 }
 
 /**
@@ -698,15 +733,16 @@ export function manualOrderOf(db, modelKey) {
 /**
  * 勾选那条现在到底能不能派——给人看的一句话结论。
  *
- * 为什么要有：勾选的供给可能因为「整类忽略 / 站点暂停 / 已下线 / 已被删掉」
+ * 为什么要有：勾选的供给可能因为「站点暂停 / 已下线 / 已被删掉 / 指向别的模型」
  * 从候选里消失，此时网关会静默回退到自动第一名。旧代码在页面上照样把它写成
- * 「当前选」，用户只能靠对用量才看得出两边不一致（2026-11-12 现场：
- * claude-opus-5.5 勾的是秋的供给，那条被「忽略模型」整类过滤掉了，
- * 页面写「当前选 秋」，网关一直派 rapid，日志刷了 1665 行「未应用」）。
+ * 「当前选」，用户只能靠对用量才看得出两边不一致。
+ *
+ * 注意「忽略模型」**不**在这个列表里：勾选压过忽略（2026-11-12 用户定的语义，
+ * 见 routeableOffers 的注释）。勾了它，它就是在役的。
  *
  * @returns {null | {
  *   offerId: string,
- *   state: 'ok' | 'missing' | 'delisted' | 'paused' | 'ignored' | 'not-in-model',
+ *   state: 'ok' | 'missing' | 'delisted' | 'paused' | 'not-in-model',
  *   text: string,
  *   offer: object|null,
  * }}
@@ -732,19 +768,10 @@ export function pinnedOfferStateOf(db, modelKey) {
       text: `勾选的供给所在站点「${provider.name || offer.providerId}」已暂停，网关按自动顺序派活`,
     }
   }
-  // 忽略判定走 ignoreChecker（整类名单 + 单行例外），与 routeableOffers 同一份
-  const ignored = ignoreChecker(db)(offer.modelKey || offer.upstreamName || '', {
-    providerId: offer.providerId,
-    group: offer.group,
-  })
-  if (ignored) {
-    return {
-      offerId,
-      state: 'ignored',
-      offer,
-      text: '勾选的供给所在那一行被「忽略模型」挡掉了，网关按自动顺序派活（去忽略模型面板放开它）',
-    }
-  }
+  // 「忽略模型」不再是失效原因：勾选压过忽略（2026-11-12 用户定的语义）。
+  // routeableOffers 会放它进来，这里就不能再报「被忽略挡掉了」——否则页面挂红标
+  // 说失效、实际流量走得好好的，又成了两套口径。
+  // 只有「站点暂停 / 已下线 / 已被删 / 指向别的模型」这四种才是真的派不到。
   // 勾选的供给属于别的模型（模型被拆开/改名后老勾选会指向另一档）
   const aliases = db.settings?.modelAliases || {}
   const want = identityKey(modelKey, aliases)
