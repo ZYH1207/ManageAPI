@@ -4630,6 +4630,27 @@ function shouldLogPinSkip(model, offerId, reason) {
   return true
 }
 
+/**
+ * 「锁定转移生效」的日志限流：稳态下每一单都会打一行完全相同的记录。
+ *
+ * 为什么必须限流：勾选长期有效时 lockFailover.applied 每单都成立，日志里
+ * 同一句会重复成千上万次（生产实测单句重复 1549 次，这类行共 2100+ 行）。
+ * 排查时真正要看的「它什么时候换了链、为什么」全被压在噪音下面。
+ *
+ * 键里带上链长与档位：勾选那条失败后转移、候选增删、档位切换都会改变结果，
+ * 那正是需要重新记一笔的时刻，不会被限流吞掉。
+ */
+const lockAppliedLogAt = new Map()
+function shouldLogLockApplied(model, lockFailover, chainLength) {
+  const key = `${model}|${lockFailover.mode}|${lockFailover.scope || '-'}|${chainLength}`
+  const now = Date.now()
+  const last = lockAppliedLogAt.get(key) || 0
+  if (now - last < PIN_SKIP_LOG_INTERVAL_MS) return false
+  lockAppliedLogAt.set(key, now)
+  if (lockAppliedLogAt.size > 500) lockAppliedLogAt.clear()
+  return true
+}
+
 /** 已结束的整单活动（前端首屏要能画出「最近发生了什么」） */
 function recentActivity(limit = 60) {
   return activityLog.slice(-limit)
@@ -6060,12 +6081,19 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
   candidates = lockFailover.chain
   if (lockFailover.applied) {
     // 只在真的改了链的时候记一行：排查「为什么这单没换站」时，
-    // 日志里必须能直接看到是哪个档位把它锁住的
-    console.log(
-      `[锁定转移] ${model} 锁定 ${pinnedOfferId} · 档位 ${lockFailover.mode}` +
-        ` · 尝试链 ${candidates.length} 条${lockFailover.scope ? ` · 范围 ${lockFailover.scope}` : ''}` +
-        `${lockFailover.metric ? ` · 指标 ${lockFailover.metric}` : ''}`,
-    )
+    // 日志里必须能直接看到是哪个档位把它锁住的。
+    //
+    // 但「勾了 → 生效」是**稳态**：一旦勾选长期有效，每一单都会打一行，内容完全相同。
+    // 生产日志实测 2100+ 行这种行（其中同一句重复 1549 次），把探测/采集/报错全冲走。
+    // 限流口径：同模型 + 同档位 + 同链长 10 分钟一行；链长变了（勾选失败后转移、
+    // 候选增删）说明情况真的变了，会立刻重新打一行。
+    if (shouldLogLockApplied(model, lockFailover, candidates.length)) {
+      console.log(
+        `[锁定转移] ${model} 锁定 ${pinnedOfferId} · 档位 ${lockFailover.mode}` +
+          ` · 尝试链 ${candidates.length} 条${lockFailover.scope ? ` · 范围 ${lockFailover.scope}` : ''}` +
+          `${lockFailover.metric ? ` · 指标 ${lockFailover.metric}` : ''}`,
+      )
+    }
   } else if (lockFailover.skipped) {
     // 没勾选是常态（不刷屏），其余跳过原因才是要查的
     if (lockFailover.skipped !== 'no-pin') {

@@ -223,6 +223,25 @@ try {
       `勾选被 blocked 后仍先派它（attempts=${after.attempts}；=1 说明勾选被阶梯吃掉、直接派了别人）`,
     )
 
+    // 日志限流：勾选长期有效时「锁定转移生效」是稳态，每单一行会刷满日志
+    // （生产实测单句重复 1549 次）。同模型+同档位+同链长应 10 分钟一行。
+    // 这里连打 6 单，只允许新增 ≤1 行。
+    // 注意：daemon 的 stdout 由本测试的 pipe 收走，没有落盘文件。
+    // 从 daemonOut 这份内存日志里数，别去读 home/daemon.out.log——那里永远是空的，
+    // 断言会空转成「0 行新增」的假绿。
+    const countLockLines = () =>
+      daemonOut.split('\n').filter((l) => l.includes('[锁定转移]') && l.includes('锁定 ')).length
+    const beforeLog = countLockLines()
+    for (let i = 0; i < 6; i += 1) await chat()
+    await sleep(500)
+    const afterLog = countLockLines()
+    ok(beforeLog > 0, `日志里本来就有「锁定转移生效」行（${beforeLog} 行），断言不会空转`)
+    ok(
+      afterLog - beforeLog <= 1,
+      `「锁定转移生效」日志被限流：6 单只新增 ${afterLog - beforeLog} 行`,
+      afterLog - beforeLog > 1 ? '每单都打 = 日志会被刷满' : '',
+    )
+
     // 路由日志（攒批写盘 2000ms，等够再断言）
     await sleep(2600)
     state = await api(base, 'GET', '/api/state')
