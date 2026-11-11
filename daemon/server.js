@@ -572,8 +572,21 @@ async function buildState({ light = false } = {}) {
   const routeCtxForDecisions = (() => {
     try { return buildRoutingContext(db) } catch { return null }
   })()
-  // 页面重排用的决策侧重：与 /api/state 下发的 state.decisionMode 同一份
-  const decisionModeForDecisions = normalizeDecisionMode(db.settings.decisionMode)
+  // 页面重排用的决策侧重：必须与网关派活用**同一个来源**。
+  //
+  // 网关是 `routeTarget?.decisionMode || db.settings.decisionMode`（见
+  // handleChatCompletions），也就是「有生效路由组就听组里的档位」。这里以前只读
+  // 全局设置，于是「选了一个价格优先的路由组」时：页面按全局档（比如流畅度）排，
+  // 网关按组里的价格档排，两边给出不同的「当前选」——用户看到的又是两套口径。
+  // 2026-11-12 与勾选那批 bug 同族，一并收口。
+  const routeTargetForDecisions = routingTargetOf(
+    db.settings.routeGroups,
+    normalizeAutoRoute(db.settings.autoRoute),
+    db.settings,
+  )
+  const decisionModeForDecisions = normalizeDecisionMode(
+    routeTargetForDecisions?.decisionMode || db.settings.decisionMode,
+  )
 
   const decisions = rankedWithCache.map((group) => {
     const model = group.rows[0]?.upstreamName || group.modelKey
