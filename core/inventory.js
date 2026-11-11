@@ -617,6 +617,113 @@ export function routeableOffers(db) {
 }
 
 /**
+ * 人工勾选（决策页点选）的那条供给 id。
+ *
+ * 为什么必须收成一份实现：页面侧（buildState 的 decisions）和网关侧
+ * （handleChatCompletions）各自查过一次 db.pinnedOffer，而且查法不一样——
+ * 页面用**裸键** `pinnedOffer[model]`，网关用**身份键** + 旧键兜底。同一个
+ * 概念两套查法，迟早出现「页面认得出、网关认不出」（2026-11-12 实测：
+ * 页面显示当前选 A，网关派 B）。这里只留一份，两边都调它。
+ *
+ * 顺序：身份键 → 存储键 → 原样键。前两个覆盖名字写法变动（v4.1 ↔ 4.1、
+ * 大小写、日期尾巴），最后一个是老库里直接按界面显示名写进去的键。
+ *
+ * @param {object} db
+ * @param {string} modelKey 请求里的模型名或分组身份键
+ * @returns {string|null}
+ */
+export function pinnedOfferIdOf(db, modelKey) {
+  const pins = db?.pinnedOffer
+  if (!pins || typeof pins !== 'object') return null
+  const raw = String(modelKey || '').trim()
+  if (!raw) return null
+  const aliases = db.settings?.modelAliases || {}
+  // 先按三种正向写法查（命中率最高、也不用遍历）
+  for (const key of [identityKey(raw, aliases), modelBaseKey(raw), raw]) {
+    if (!key) continue
+    const hit = pins[key]
+    if (hit) return String(hit)
+  }
+  // 再反查一遍：老库的键是「点选那一刻界面上的名字」，可能是任意写法
+  // （deepseek-v4.1-flash / DeepSeek-V4.1-Flash / 带日期尾巴）。
+  // 只比身份键，所以同一个模型的任何写法都能对上——这正是「页面认得出、
+  // 网关认不出」那类漂移的根治办法。键最多几十条，遍历代价可忽略。
+  const want = identityKey(raw, aliases)
+  if (want) {
+    for (const [key, value] of Object.entries(pins)) {
+      if (!value) continue
+      if (identityKey(key, aliases) === want) return String(value)
+    }
+  }
+  return null
+}
+
+/**
+ * 勾选那条现在到底能不能派——给人看的一句话结论。
+ *
+ * 为什么要有：勾选的供给可能因为「整类忽略 / 站点暂停 / 已下线 / 已被删掉」
+ * 从候选里消失，此时网关会静默回退到自动第一名。旧代码在页面上照样把它写成
+ * 「当前选」，用户只能靠对用量才看得出两边不一致（2026-11-12 现场：
+ * claude-opus-5.5 勾的是秋的供给，那条被「忽略模型」整类过滤掉了，
+ * 页面写「当前选 秋」，网关一直派 rapid，日志刷了 1665 行「未应用」）。
+ *
+ * @returns {null | {
+ *   offerId: string,
+ *   state: 'ok' | 'missing' | 'delisted' | 'paused' | 'ignored' | 'not-in-model',
+ *   text: string,
+ *   offer: object|null,
+ * }}
+ *   没勾选返回 null。state='ok' 表示它确实在候选里；其余都说明「勾了但派不到」，
+ *   text 是给人看的原因。
+ */
+export function pinnedOfferStateOf(db, modelKey) {
+  const offerId = pinnedOfferIdOf(db, modelKey)
+  if (!offerId) return null
+  const offer = (db?.offers || []).find((o) => o.id === offerId) || null
+  if (!offer) {
+    return { offerId, state: 'missing', offer: null, text: '勾选的供给已被删除，网关按自动顺序派活' }
+  }
+  if (offer.delistedAt) {
+    return { offerId, state: 'delisted', offer, text: '勾选的供给已下线，网关按自动顺序派活' }
+  }
+  const provider = (db?.providers || []).find((p) => p.id === offer.providerId) || null
+  if (provider?.paused) {
+    return {
+      offerId,
+      state: 'paused',
+      offer,
+      text: `勾选的供给所在站点「${provider.name || offer.providerId}」已暂停，网关按自动顺序派活`,
+    }
+  }
+  // 忽略判定走 ignoreChecker（整类名单 + 单行例外），与 routeableOffers 同一份
+  const ignored = ignoreChecker(db)(offer.modelKey || offer.upstreamName || '', {
+    providerId: offer.providerId,
+    group: offer.group,
+  })
+  if (ignored) {
+    return {
+      offerId,
+      state: 'ignored',
+      offer,
+      text: '勾选的供给所在那一行被「忽略模型」挡掉了，网关按自动顺序派活（去忽略模型面板放开它）',
+    }
+  }
+  // 勾选的供给属于别的模型（模型被拆开/改名后老勾选会指向另一档）
+  const aliases = db.settings?.modelAliases || {}
+  const want = identityKey(modelKey, aliases)
+  const got = identityKey(offer.modelKey || offer.upstreamName || '', aliases)
+  if (want && got && want !== got) {
+    return {
+      offerId,
+      state: 'not-in-model',
+      offer,
+      text: `勾选的供给属于另一个模型（${offer.modelKey || offer.upstreamName}），网关按自动顺序派活`,
+    }
+  }
+  return { offerId, state: 'ok', offer, text: '' }
+}
+
+/**
  * 把一次拉取到的模型列表合并进台账。
  * 已存在的 upstreamName 保留用户手填的价格与分组，只更新"还在不在"。
  * 分组需要手动维护——大多数站的 /v1/models 不返回分组信息。

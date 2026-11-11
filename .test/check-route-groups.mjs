@@ -240,6 +240,21 @@ console.log('[9] 三档语义真的区分开了（不是「名字不同、行为
   const pManualEmpty = pickAutoRoute(manualEmpty.db, { scores: manualEmpty.scores, benchmarks: {} })
   ok(pManualEmpty?.modelKey === 'model-a', `手动档没勾时正常竞争（${pManualEmpty?.modelKey}）`)
 
+  // 手动档的键口径：勾选键可能是任意写法（别名表里的老键 / 大小写 / 带空白），
+  // 不能只认「身份键恰好等于某个字符串」那一种。2026-11-12 同族 bug：
+  // 三处（页面 / 网关 / 这里）各拼一份键，写法一变就有一处认不出。
+  const manualAliased = mkDb('manual', {
+    pinnedOffer: { 'MODEL-B': 'o_b' },
+    settings: {
+      decisionMode: 'value',
+      modelAliases: { 'model-b': 'model-b' },
+      autoRoute: { enabled: true, modelKey: null, offerId: null, pickedAt: null, reason: null, failoverFrom: null, scope: [], affinity: '', conversations: {} },
+      routeGroups: { groups: [{ id: 'rg_01', name: 'g', models: ['model-a', 'model-b'], algo: 'manual', sessionKeep: 'auto', firstTokenMs: 60000, allBusyMs: 0, weights: {} }], activeId: 'rg_01' },
+    },
+  })
+  const pAliased = pickAutoRoute(manualAliased.db, { scores: manualAliased.scores, benchmarks: {} })
+  ok(pAliased?.modelKey === 'model-b', `手动档：勾选键大小写不同也认得出（${pAliased?.modelKey}）`)
+
   // until-reset：带降级标记（站点没上报重置周期时等同余量优先）
   const ur = algoOf('until-reset')
   ok(ur.degradedWithout === 'resetAt', 'until-reset 明确标注降级条件')

@@ -34,7 +34,7 @@
  * 「下游只读不改」），切换结果由调用方决定要不要经 store.mutate 落盘。
  */
 import { selectCandidates } from './router.js'
-import { normalizeModelKey, modelIdentityKey, routeableOffers } from './inventory.js'
+import { normalizeModelKey, modelIdentityKey, routeableOffers, pinnedOfferIdOf } from './inventory.js'
 import { normalizeDecisionMode, tierMetricOf } from './decision-mode.js'
 import { splitOffers } from './free.js'
 import { faultMatcher } from './failover.js'
@@ -307,8 +307,10 @@ export function pickAutoRoute(db, {
     )
     // 手动档：用户在当前模型的候选里勾了某一条供给 → 组内只认它。
     // 这不是「客户端点名」（那是请求里的 model），是面板里的人工指定。
+    // 查找走 inv.pinnedOfferIdOf：本文件以前自己拼一份键（身份键 → 原样键），
+    // 与页面/网关那份写法不同，勾选在「手动」档里会认不出——同族 bug 的第三处。
     if (target.manualPick) {
-      const want = db.pinnedOffer?.[modelIdentityKey(modelKey, settings.modelAliases) || modelKey]
+      const want = pinnedOfferIdOf(db, modelKey)
       if (want) {
         const hit = rows.find((row) => row.offer.id === want && row.admission?.ok)
         if (hit) {

@@ -4306,7 +4306,7 @@ function renderDecision() {
           </span>
           <span class="simple-metric"><i>${t('有效成本')}</i><b class="num">${cost}</b></span>
           <span class="simple-metric"><i>${t('首字')}</i><b class="num">${ttft}</b></span>
-          <span class="simple-status">${tags || (chosen ? `<span class="badge ok">${t('可用')}</span>` : '')}</span>
+          <span class="simple-status">${pinnedWarnChip(decision)}${tags || (chosen ? `<span class="badge ok">${t('可用')}</span>` : '')}</span>
           <span class="simple-count" title="${esc(t('这个模型一共 {n} 条候选供给，其中 {ok} 条当前准入通过', { n: decision.candidates.length, ok: okCount }))}">${t('{ok}/{n} 条可用', { ok: okCount, n: decision.candidates.length })}</span>
         </button>
         ${isCollapsed ? '' : `
@@ -4337,6 +4337,7 @@ function renderDecision() {
                   : ''
               }`
             : '没有可用供给'}</span>
+          ${pinnedWarnChip(decision)}
           ${officialChipHtml(decision.official)}
           ${autorouteScopeButton(decision)}
           ${decision.manual ? '<button class="ghost tiny" data-act="reset-order">恢复自动</button>' : ''}
@@ -4820,6 +4821,25 @@ function routeNowPill() {
  * 自动路由只在勾选的那几个里挑。再点一次移出。勾选的是分组键（身份键口径），
  * 服务端按身份键匹配——站点把同一模型写成别的名字也能勾得住。
  */
+/**
+ * 「勾了但派不到」的警示徽章。
+ *
+ * 为什么必须有：勾选的供给被「忽略模型」整类挡掉 / 站点被暂停 / 供给被删之后，
+ * 它根本不在候选里，网关只能回落到自动第一名。旧页面照样把这行写成「当前选」，
+ * 用户只能靠对用量才看得出两边不一致（2026-11-12 现场：claude-opus-5.5 勾的是
+ * 秋的那条，被忽略后页面一直写「当前选 秋」，网关一直派 rapid）。
+ *
+ * 判定全部由服务端给（decision.pinnedApplied / decision.pinnedState），
+ * 浏览器不重新推一遍——这类「两边各判一次」正是本项目头号 bug 类型。
+ */
+function pinnedWarnChip(decision) {
+  if (!decision.pinnedOfferId) return ''
+  // 勾选确实生效：不画徽章（正常状态不该有噪音）
+  if (decision.pinnedApplied) return ''
+  const reason = decision.pinnedState?.text || t('勾选的供给现在派不到，网关按自动顺序派活')
+  return `<span class="badge danger" title="${esc(reason)}">${t('勾选未生效')}</span>`
+}
+
 function autorouteScopeButton(decision) {
   // 2026-11-02：不再按「自动路由是否开着」藏这个加号。
   //
