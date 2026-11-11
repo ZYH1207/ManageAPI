@@ -687,10 +687,33 @@ async function buildState({ light = false } = {}) {
     const pinKey = inv.pinnedOfferIdOf(db, model) ? model : inv.pinnedOfferIdOf(db, group.modelKey) ? group.modelKey : null
     const pinnedOfferId = pinKey ? inv.pinnedOfferIdOf(db, pinKey) : null
     const pinnedState = pinKey ? inv.pinnedOfferStateOf(db, pinKey) : null
-    const winner =
-      (pinnedOfferId && rankedCandidates.find((c) => c.offerId === pinnedOfferId)) ||
-      rankedCandidates.find((c) => c.admission?.ok && !c.faulted) ||
-      null
+
+    // 「当前选」必须与网关**同一个判定**，不能各写一套「谁算可用」。
+    //
+    // 以前这里是自己筛：`rankedCandidates.find(c => c.admission?.ok && !c.faulted)`。
+    // 而网关走的是 decideRoute 的兜底阶梯——准入没通过但「偏慢 / 无证据 / 降级 /
+    // 冷却已过」的供给**照样会被派出去**（core/fallback-ladder.js 的设计原则：
+    // 报错是最后手段）。于是页面写「没有可用供给」，网关却在正常派活；
+    // 反过来，页面挑中的那条若被 maxPerTier 截断，网关也不派它。
+    //
+    // 现在直接问 decideRoute 要链首：准入 → 阶梯 → 勾选顶到最前 → 档位排序，
+    // 全部同一份实现。顺序参数也照传（拖过的手动顺序是第一排序键）。
+    const pageOrderRank = order && order.length > 0
+      ? new Map(order.map((id, index) => [String(id), index]))
+      : null
+    const pageDecision = routeCtxForDecisions
+      ? decideRoute(candidates, routeCtxForDecisions, {
+          tried: new Set(),
+          maxPerTier: 4,
+          orderRank: pageOrderRank,
+          decisionMode: decisionModeForDecisions,
+          pinnedOfferId,
+        })
+      : null
+    const winnerOfferId = pageDecision?.chain?.[0]?.offer?.id ?? null
+    const winner = winnerOfferId
+      ? rankedCandidates.find((c) => c.offerId === winnerOfferId) || null
+      : null
     return {
       modelKey: group.modelKey,
       display: group.display || group.modelKey,
