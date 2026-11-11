@@ -139,6 +139,10 @@ const CHROME_CANDIDATES = [
 const chromePath = CHROME_CANDIDATES.find((p) => existsSync(p))
 let chrome = null
 let wsPort = null
+// CDP 的 WebSocket 必须提到外层：它原来声明在 try 里面，finally 够不到，
+// 于是连接一直开着、Node 事件循环永远不空——断言全过了进程也不退出，
+// 全量跑 check-*.mjs 时会卡在这一条上（实测卡 19 分钟以上）。
+let cdpSocket = null
 const profile = await mkdtemp(join(tmpdir(), 'mapi-diag-chrome-'))
 if (chromePath) {
   wsPort = 9333 + Math.floor(Math.random() * 300)
@@ -182,6 +186,7 @@ try {
   const page = targets.find((t) => t.type === 'page')
   const WebSocket2 = WebSocket
   const ws = new WebSocket(page.webSocketDebuggerUrl)
+  cdpSocket = ws
   await new Promise((r, j) => { ws.onopen = r; ws.onerror = j })
   let mid = 0
   const waiters = new Map()
@@ -338,6 +343,8 @@ try {
 
   console.log(`check-diagnosis-page: ${n} 项全部通过`)
 } finally {
+  // 先关 CDP 连接再杀浏览器：顺序反了的话 close 会等到超时才结束
+  try { cdpSocket?.close() } catch {}
   try { chrome?.kill() } catch {}
   daemon.kill()
   await rm(home, { recursive: true, force: true }).catch(() => {})
