@@ -207,13 +207,24 @@ export function anthropicToChat(input, opts = {}) {
   if (choice.parallel_tool_calls !== undefined) out.parallel_tool_calls = choice.parallel_tool_calls
 
   const messages = []
+  const systemParts = []
   const system = flattenSystem(input.system)
-  if (system) messages.push({ role: 'system', content: system })
+  if (system) systemParts.push(system)
 
   for (let i = 0; i < input.messages.length; i += 1) {
     const message = input.messages[i]
     if (!message || typeof message !== 'object' || Array.isArray(message)) {
       throw new Error(`messages[${i}] 必须是对象`)
+    }
+    // Claude Code may include environment context as a system message in
+    // addition to the top-level Anthropic `system` field. Merge it into the
+    // single system message expected by Chat Completions providers.
+    if (message.role === 'system') {
+      const extra = typeof message.content === 'string'
+        ? message.content
+        : Array.isArray(message.content) ? textOfBlocks(message.content) : ''
+      if (extra) systemParts.push(extra)
+      continue
     }
     const role = message.role === 'assistant' ? 'assistant' : message.role === 'user' ? 'user' : null
     if (!role) throw new Error(`messages[${i}].role 必须是 user 或 assistant`)
@@ -266,6 +277,7 @@ export function anthropicToChat(input, opts = {}) {
     messages.push(entry)
   }
 
+  if (systemParts.length > 0) messages.unshift({ role: 'system', content: systemParts.join('\n\n') })
   out.messages = messages
   return out
 }

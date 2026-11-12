@@ -39,6 +39,14 @@ import {
 // Anthropic Messages 适配：客户端说 Anthropic，上游基本只会 Chat，出入口各翻一次。
 // 只在这一层翻译，路由 / 评分 / 计费 / 空回合守卫全部照旧吃 Chat 形状
 import { anthropicToChat, attachAnthropicSink } from '../core/anthropic-wire.js'
+import {
+  anthropicMessageToChat, anthropicUpstreamToChatStream, chatToAnthropicRequest,
+  looksLikeAnthropicMessage,
+} from '../core/anthropic-upstream.js'
+import {
+  forgetUpstreamProtocol, learnUpstreamProtocol, resolveUpstreamProtocol,
+  shouldLearnNativeAnthropic, upstreamPathFor,
+} from '../core/upstream-protocol.js'
 import { detailRows, detailRow, sumBuckets, facetOptions } from '../core/usage-detail.js'
 import {
   selectCandidates,
@@ -3720,6 +3728,24 @@ route('PATCH', /^\/api\/offers\/([\w-]+)$/, async (ctx) => {
       // 倍率保留：价格模式下 resolveOfferPrice 不看它（pricingMode 是权威），
       // 但切回倍率模式时靠它换算，丢了就得让用户重填
     }
+    // 上游协议：'auto' 交回自动判定（清掉学习结果），其余是人为钉死。
+    // 这是给「自动学习猜错了」留的出口 —— 没有它，判错一次就再也回不来。
+    if (b.upstreamProtocol !== undefined) {
+      const mode = String(b.upstreamProtocol || 'auto').trim()
+      if (!['auto', 'chat', 'anthropic', 'responses'].includes(mode)) {
+        throw new HttpError(400, '上游协议只能是 auto / chat / anthropic / responses')
+      }
+      if (mode === 'auto') {
+        delete offer.upstreamProtocol
+        forgetUpstreamProtocol(db, {
+          providerId: offer.providerId,
+          group: offer.group || '',
+          model: offer.upstreamName || offer.modelKey,
+        })
+      } else {
+        offer.upstreamProtocol = mode
+      }
+    }
     offer.updatedAt = new Date().toISOString()
   })
   return buildState()
@@ -5216,6 +5242,10 @@ async function streamAttempt({
   clientSignal = null,
   protocol = 'chat',
   resume = false,
+  // 客户端协议（chat/responses/anthropic）与**上游协议**是两件事：
+  // 客户端说 Anthropic 时内部已翻成 Chat，上游仍可能是原生 /messages。
+  // upstream 由 core/upstream-protocol.js#resolveUpstreamProtocol 判定后传进来。
+  upstream = null,
   // 组级「迟迟不出字」：见到第一个内容字节之前的最长等待。
   // 0 = 一直等（不做首字超时，退回原来的空闲超时）。
   firstTokenMs = 0,
@@ -5228,11 +5258,37 @@ async function streamAttempt({
   // usage 的「客户端是否要」只对 Chat 有意义：Responses 的 usage 内含在
   // response.completed 事件里，没法单独关掉，也不需要 include 参数
   const clientWantsUsage = Boolean(body.stream_options?.include_usage)
-  const upstreamBody = { ...body, model: candidate.offer.upstreamName }
-  // 客户端没要求 usage 时也让它返回——网关自己统计用，转发时再把那个 chunk 滤掉
-  if (isStream && !isResponses && !clientWantsUsage) {
+
+  // 上游协议：clientProtocol 只决定「网关怎么和客户端说话」，这里才是「怎么和上游说话」。
+  // 两者相等是常态（chat→chat），但 anthropic 客户端可能打的是只有原生 /messages 的站。
+  const upstreamProtocol = upstream && upstream.protocol ? upstream.protocol : 'chat'
+  const useNativeAnthropic = upstreamProtocol === 'anthropic'
+
+  const upstreamBody = useNativeAnthropic
+    // 原生 /messages：形状完全是 Anthropic 的，不能带 stream_options / max_tokens 这些 Chat 字段
+    ? chatToAnthropicRequest(body, { model: candidate.offer.upstreamName })
+    : { ...body, model: candidate.offer.upstreamName }
+  // 客户端没要求 usage 时也让它返回——网关自己统计用，转发时再把那个 chunk 滤掉。
+  // 原生 Anthropic 不需要这一步：它的 usage 固定在 message_start / message_delta 里。
+  if (!useNativeAnthropic && isStream && !isResponses && !clientWantsUsage) {
     upstreamBody.stream_options = { ...(body.stream_options || {}), include_usage: true }
   }
+
+  // 鉴权头：原生 Anthropic 认 x-api-key（真官方 API 只认这个），中转站两种都有人认，
+  // 所以两个都带（与 core/protocol-probe.js#authHeaders 同口径，不另发明一套）。
+  const upstreamHeaders = useNativeAnthropic
+    ? {
+        'Content-Type': 'application/json',
+        Accept: isStream ? 'text/event-stream' : 'application/json',
+        'x-api-key': apiKey,
+        Authorization: `Bearer ${apiKey}`,
+        'anthropic-version': '2023-06-01',
+      }
+    : {
+        'Content-Type': 'application/json',
+        Accept: isStream ? 'text/event-stream' : 'application/json',
+        Authorization: `Bearer ${apiKey}`,
+      }
 
   const controller = new AbortController()
   const startedAt = Date.now()
@@ -5284,14 +5340,10 @@ async function streamAttempt({
   let upstreamRes
   try {
     upstreamRes = await fetch(
-      `${candidate.provider.baseUrl.replace(/\/+$/, '')}${upstreamPath(protocol)}`,
+      `${candidate.provider.baseUrl.replace(/\/+$/, '')}${upstreamPathFor(upstreamProtocol)}`,
       {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Accept: isStream ? 'text/event-stream' : 'application/json',
-          Authorization: `Bearer ${apiKey}`,
-        },
+        headers: upstreamHeaders,
         body: JSON.stringify(upstreamBody),
         signal: controller.signal,
       },
@@ -5311,7 +5363,7 @@ async function streamAttempt({
 // 「连接失败：fetch failed」，既没有错误码也没有主机名——连本机中转站失败
 // 也就判不出来，会被当成站点故障记进可用率。fetch 的失败原因通常在 error.cause 里。
     const cause = error?.cause?.code || error?.code || error?.message || 'unknown'
-    const target = `${candidate.provider.baseUrl.replace(/\/+$/, '')}${upstreamPath(protocol)}`
+    const target = `${candidate.provider.baseUrl.replace(/\/+$/, '')}${upstreamPathFor(upstreamProtocol)}`
     return { committed: resume, error: `连接失败（${cause}）：${target}` }
   }
 
@@ -5365,6 +5417,13 @@ async function streamAttempt({
       if (clientSignal?.aborted) return { committed: resume, error: '客户端已断开' }
       return { committed: resume, error: `上游读体中断：${error.message}` }
     }
+    // 上游说 Anthropic、内部只认 Chat：这里把 message 形状翻成 chat.completion，
+    // 之后 extractNonStream / 空回合守卫 / 工具重建 / 计费一律照旧（它们只认 Chat）。
+    // 判定用 looksLikeAnthropicMessage 而不是「只要 useNativeAnthropic 就翻」：
+    // 上游可能返回 Anthropic 形状的 error 对象，那种要原样交给下游判失败。
+    if (useNativeAnthropic && looksLikeAnthropicMessage(payload)) {
+      payload = anthropicMessageToChat(payload, { model: candidate.offer.upstreamName })
+    }
     // 协议差异收在 wire.js 里：Responses 的 error / status:"failed" /
     // usage 字段改名都在那边处理，这里只消费归一化结果
     const extracted = extractNonStream(protocol, payload)
@@ -5396,7 +5455,14 @@ async function streamAttempt({
     'X-ManageAPI-Pool': pool || 'paid',
   }
 
-  const reader = upstreamRes.body.getReader()
+  // 流式同理：上游的 Anthropic SSE 先包成「Chat SSE 字节流」再交给原来的读取循环。
+  // 这样终端块判定、工具重建、usage 归集、客户端侧翻译全都不用改一行。
+  // 必须锚定在 streamAttempt 的这处（`let committed = resume` 紧随其后），
+  // 别改到 readUpstreamText 那个独立函数里——那里拿不到 useNativeAnthropic。
+  const upstreamStream = useNativeAnthropic
+    ? anthropicUpstreamToChatStream(upstreamRes.body, { model: candidate.offer.upstreamName })
+    : upstreamRes.body
+  const reader = upstreamStream.getReader()
   const decoder = new TextDecoder()
   let buffer = ''
   let committed = resume
@@ -5674,6 +5740,9 @@ async function forwardToUpstream({
   // 就是漏传导致每次转发都抛 ReferenceError（routeTarget is not defined），
   // 表现为「全部供给 1ms 内失败、502」，而站点后台一切正常。
   routeTarget = null,
+  // 网关 settings：上游协议判定要读 settings.upstreamProtocols（学习表）。
+  // 显式传入而不是从模块作用域偷：这个函数是模块级的，拿不到 handleChatCompletions 的局部 db。
+  settings = null,
 }) {
   const requestHasTools = Array.isArray(body?.tools) && body.tools.length > 0
   let current = candidate
@@ -5709,6 +5778,9 @@ async function forwardToUpstream({
       offerId: current.offer.id,
       pool: pool || 'paid',
     })
+    // 每条候选单独判定上游协议：同一次请求里，A 供给可能走 /chat/completions、
+    // B 供给可能走原生 /messages（取决于各自的 station/分组支持什么）。
+    const upstream = resolveUpstreamProtocol(current, settings, { clientProtocol: protocol })
     const outcome = await streamAttempt({
       candidate: current,
       body,
@@ -5717,6 +5789,7 @@ async function forwardToUpstream({
       pool,
       clientSignal,
       protocol,
+      upstream,
       resume,
       // 组级「迟迟不出字」；没有组时用全局默认 60s（与 Magpie 一致）
       firstTokenMs: routeTarget?.firstTokenMs || 60_000,
@@ -5737,6 +5810,29 @@ async function forwardToUpstream({
 
     // 连接层/HTTP 层失败：不 commit 的照旧让上层换站；已 commit 的只能收尾
     if (outcome.error) {
+      // 自动学习：Anthropic 系模型走 chat 打不通时，记下「这条路该换原生 /messages」，
+      // 下次同一供给直接走对的路。只在失败形态确实像「站不认这条路」时记——
+      // 429 限流 / 401 鉴权换协议也没用，记下来反而会把正常站带偏（见 shouldLearnNativeAnthropic）。
+      //
+      // 一定要 await 落盘：这条学习结果就是下一次请求的行为依据，
+      // fire-and-forget 会在「连试两次」的场景里丢掉第一次的结论。
+      if (settings && shouldLearnNativeAnthropic({
+        model: current.offer.upstreamName || current.offer.modelKey,
+        protocol: upstream && upstream.protocol ? upstream.protocol : 'chat',
+        error: outcome.error,
+      })) {
+        try {
+          await store.mutate((db) => {
+            learnUpstreamProtocol(db, {
+              providerId: current.provider.id,
+              group: current.offer.group || current.credential?.group,
+              model: current.offer.upstreamName || current.offer.modelKey,
+              mode: 'anthropic',
+              note: `自动学习：走 /chat/completions 失败（${String(outcome.error).slice(0, 80)}），下次改走原生 /messages`,
+            })
+          })
+        } catch { /* 学习失败不影响本次请求的失败结论 */ }
+      }
       if (outcome.committed) return finish(outcome)
       return outcome
     }
@@ -6529,6 +6625,7 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
         clientSignal: clientAbort.signal,
         protocol,
         routeTarget,
+        settings: db.settings,
         hooks: {
           // 估算这次补问要多久 → 查档位 → 越贵补得越少（RETRY_TIERS）
           plan: async ({ facts, candidate: current }) => {
@@ -6981,6 +7078,7 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
           clientSignal: clientAbort.signal,
           protocol,
           routeTarget,
+          settings: db.settings,
           hooks: {},
         })
         if (result.ok) {
