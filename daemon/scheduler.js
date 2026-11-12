@@ -35,6 +35,13 @@ const FIRST_RUN_DELAY_MS = 5000
 const RETRY_INTERVAL_FLOOR_MIN = 10
 /** 冷却到期后的复测节奏：限流通常几分钟就过去，等一整轮（可能几小时）太慢 */
 const RECOVERY_INTERVAL_MIN = 10
+/**
+ * 站点账单同步的默认节奏（分钟）。
+ * 账单是「实际花了多少钱」和「真实单价」的唯一权威来源，但它不像余额那样
+ * 需要分钟级新鲜度——当天累计值几分钟才涨一点，10 分钟一轮够用，
+ * 也不会把慢站（翻 5 页要 5 秒）压得太频繁。
+ */
+const LEDGER_INTERVAL_DEFAULT = 10
 
 export function startProbeScheduler({
   runProbes,
@@ -46,6 +53,9 @@ export function startProbeScheduler({
   // 真实价速比漂移监视器（daemon/drift-watcher.js）：每分钟判一次漂移、执行转移，
   // 也放在间隔/暂停检查之前——它同样只由自动路由开关与真实流量驱动
   driftWatcher = null,
+  // 站点账单同步（daemon/ledger-runner.js）：把各站自己的走账清单拉回来。
+  // 和监控采集同档（纯读后台、不烧 token），但独立到期判断，见下面的账板块
+  syncLedger = null,
   logger = console,
   // 测试用：e2e 要把「60 秒一轮」压到亚秒级才验得出「到点关、到点开」
   tickMs = Number(process.env.MANAGE_API_PROBE_TICK_MS) || CHECK_INTERVAL_MS,
@@ -55,6 +65,8 @@ export function startProbeScheduler({
   let collecting = false
   let refreshingFx = false
   let rechecking = false
+  // 账单同步正在跑：翻页慢站一轮要几秒到十几秒，不加锁会被下一分钟的 tick 重入
+  let ledgerSyncing = false
   // 暂停状态只在「翻转」时打一条日志：每分钟刷一条会把日志淹掉
   let pausedLogged = false
 
@@ -101,6 +113,49 @@ export function startProbeScheduler({
           logger.warn?.(`[监控] 采集失败：${error.message}`)
         } finally {
           collecting = false
+        }
+      }
+    }
+
+    // ------------------------------------------------------------ 站点账单同步
+    // 跟监控采集同一档节奏（都是纯读后台、不烧 token），但**独立判断是否到期**：
+    // 采集挂掉不该连带账单停更，账单是比价和台账校验的唯一权威数据源。
+    // 放在「探测间隔 <= 0 就返回」之前——关掉定时探针的人照样要账单。
+    if (syncLedger && !ledgerSyncing) {
+      // 0 = 明确关闭，必须显式判 null/undefined 再取默认值。
+      // 写成 `Number(x) || DEFAULT` 会把 0 当成"没填"→ 关不掉（实测踩过）
+      const rawInterval = db.settings.ledgerIntervalMinutes
+      const ledgerMinutes =
+        rawInterval === null || rawInterval === undefined || rawInterval === ''
+          ? LEDGER_INTERVAL_DEFAULT
+          : Number(rawInterval)
+      const lastLedger = db.ledgerSyncedAt ? new Date(db.ledgerSyncedAt).getTime() : 0
+      const ledgerDue =
+        Number.isFinite(ledgerMinutes) &&
+        ledgerMinutes > 0 &&
+        db.providers.length > 0 &&
+        (!lastLedger || Date.now() - lastLedger >= ledgerMinutes * 60000)
+      if (ledgerDue) {
+        ledgerSyncing = true
+        try {
+          const res = await syncLedger({ logger })
+          const ok = (res.providers || []).filter((p) => p.ok).length
+          logger.info?.(`[账单] 本轮同步 ${ok}/${(res.providers || []).length} 个站点`)
+        } catch (error) {
+          logger.warn?.(`[账单] 同步失败：${error.message}`)
+        } finally {
+          // 时间戳由调度器自己写，不交给注入的 syncLedger——依赖调用方
+          // "记得写"是脆弱设计：少写一次就变成每轮都跑（实测每 120ms 跑一次）。
+          // 失败也写：否则一个坏站会让整轮同步每分钟重试，把慢站压垮
+          try {
+            await store.mutate((d) => {
+              d.ledgerSyncedAt = new Date().toISOString()
+              return d
+            })
+          } catch (error) {
+            logger.warn?.(`[账单] 记录同步时间失败：${error.message}`)
+          }
+          ledgerSyncing = false
         }
       }
     }

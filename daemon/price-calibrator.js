@@ -168,8 +168,11 @@ export async function calibratePrices(db, options = {}) {
     spent += estimateOneCost()
   }
 
-  // 校准发完之后必须**主动同步一次账单**：账单没有定时任务，不拉就永远读不到
-  // 刚发的那些请求。同步是纯读站点后台（不打模型），免费且必要。
+  // 校准发完之后必须**主动同步一次账单**。
+  //
+  // 账单虽然有定时同步（daemon/scheduler.js 的 LEDGER_INTERVAL_DEFAULT = 10 分钟），
+  // 但 10 分钟对「刚点完校准想看结果」来说太久——所以这里同步一次，
+  // 让校准闭环在秒级完成。同步是纯读站点后台（不打模型），免费。
   // 只同步本轮涉及过的站点，不惊动其他站。
   const touched = [...new Set(results.filter((r) => r.ok).map((r) => r.providerId))]
   const synced = {}
