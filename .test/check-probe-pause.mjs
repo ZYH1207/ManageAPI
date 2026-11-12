@@ -295,8 +295,20 @@ try {
   models = ['test-model-a', 'test-model-b', 'test-model-c', 'test-model-d']
   await call('POST', `/api/providers/${providerId}/sync`, {})
   await sleep(2500)
-  const hitsBeforeChain = chatHits
   check('自动路由关闭时，新到期模型照常被定时探针探测', chatHits > 0, `hits=${chatHits}`)
+
+  // 取基线前必须先等这一批探测**跑完**。
+  // 原来直接拿 sleep(2500) 之后的计数当基线，而调度器 400ms 一轮、一轮会连探多个
+  // 目标——基线取在批次中间，剩下的探测在打开自动路由之后才落地，就被算成
+  // 「自动路由开着还在探」。全量串行跑（机器更忙、批次更长）时因此偶发红。
+  // 判据：连续 1.2 秒计数不再变化 = 这一批已经结束。
+  let stable = chatHits
+  for (let i = 0; i < 40; i += 1) {
+    await sleep(600)
+    if (chatHits === stable) break
+    stable = chatHits
+  }
+  const hitsBeforeChain = chatHits
 
   await call('PATCH', '/api/settings', { autoRouteEnabled: true })
   await sleep(3000)

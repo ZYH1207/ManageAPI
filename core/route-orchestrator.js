@@ -361,6 +361,8 @@ export function compareRoutedRows(a, b, { decisionMode = null, tried = new Set()
  * @param {object} [opts.scoring]        覆盖 SCORING
  * @param {Map<string,number>|null} [opts.orderRank] 手动顺序（offerId → 名次），第一排序键
  * @param {string} [opts.decisionMode]   决策侧重；缺省读 ctx.decisionMode，再缺省 'value'
+ * @param {string|null} [opts.pinnedOfferId] 人工勾选的那条供给：它必须出现在链首，
+ *   哪怕准入没放行（见下面「勾选不许被阶梯吃掉」）
  * @returns {{
  *   chain: Array<object>,
  *   summary: object,
@@ -371,7 +373,14 @@ export function compareRoutedRows(a, b, { decisionMode = null, tried = new Set()
 export function decideRoute(
   rows = [],
   ctx = {},
-  { tried = new Set(), maxPerTier = 3, scoring = {}, orderRank = null, decisionMode = null } = {},
+  {
+    tried = new Set(),
+    maxPerTier = 3,
+    scoring = {},
+    orderRank = null,
+    decisionMode = null,
+    pinnedOfferId = null,
+  } = {},
 ) {
   const mode = normalizeDecisionMode(decisionMode ?? ctx?.decisionMode)
 
@@ -434,16 +443,58 @@ export function decideRoute(
   }
 
   const summary = ladderSummary(ladder)
+
+  // ④ 人工勾选不许被阶梯吃掉
+  //
+  // 现场（2026-11-12）：决策页手动勾的是秋的「国模-007」，网关却一直在派
+  // 「国模-0055」。原因不是勾选没存下（db.pinnedOffer 里好好的），而是顺序反了：
+  // 勾选那条因为真实流量失败率过高被标成 blocked，buildLadder 把它当硬失败扔进
+  // hardFails —— 链里根本没有它。等 server 再调 applyPinnedChoice 时，
+  // findIndex 找不到 → pinned=null，勾选被静默忽略，日志只留一句
+  // 「未应用（pin-not-in-chain）」。页面写「当前选 007」，网关派 0055，
+  // 用户只能看到两边对不上。
+  //
+  // 为什么勾选必须压过准入：准入是给**自动选择**用的判据，管不住人手点的。
+  // 人的指定等于「我就要这条，它慢/在冷却我也认」，网关的职责是照办并在
+  // 真发失败时沿链往后转移（core/lock-failover.js），不是替人改主意。
+  //
+  // 唯一的例外是「本次请求已经试过它」——再排进来就是死循环，与 tierOf 同口径。
+  const pinRow = pinnedOfferId
+    ? scored.find((row) => row?.offer?.id === pinnedOfferId && !tried.has(pinnedOfferId))
+    : null
+  if (pinRow) {
+    const pinnedEntry = {
+      ...pinRow,
+      tier: TIER.HARD_FAIL,
+      tierLabel: '人工勾选',
+      tierReason: pinRow.admission?.ok
+        ? '决策页手动勾选'
+        : `决策页手动勾选（准入未放行：${pinRow.admission?.text || pinRow.status || '未知原因'}）`,
+      pinned: true,
+    }
+    ladder = {
+      ...ladder,
+      chain: [pinnedEntry, ...ladder.chain.filter((row) => row?.offer?.id !== pinnedOfferId)],
+    }
+  }
+
   return {
     chain: ladder.chain,
     summary: {
       ...summary,
+      pinned: pinRow?.offer?.id ?? null,
+      pinnedAdmitted: pinRow ? Boolean(pinRow.admission?.ok) : null,
       rescued: rescued?.why ?? null,
       calibration: ctx?.calibrationText ?? '',
     },
     context: ctx,
-    // 只有「连强制兜底都用上」或「全是次优级」才算降级
-    degraded: ladder.chain.length > 0 && ladder.chain.every((r) => (r.tier ?? 0) > TIER.SLOW),
+    // 只有「连强制兜底都用上」或「全是次优级」才算降级。
+    // 勾选那条不算：它是人自己挑的，不该把整单标成降级（否则页面会误报「全线告急」）。
+    degraded: ladder.chain.filter((r) => r?.offer?.id !== pinnedOfferId).length > 0
+      ? ladder.chain
+          .filter((r) => r?.offer?.id !== pinnedOfferId)
+          .every((r) => (r.tier ?? 0) > TIER.SLOW)
+      : false,
   }
 }
 

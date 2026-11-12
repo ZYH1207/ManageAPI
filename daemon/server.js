@@ -619,12 +619,26 @@ async function buildState({ light = false } = {}) {
   const routeCtxForDecisions = (() => {
     try { return buildRoutingContext(db) } catch { return null }
   })()
-  // 页面重排用的决策侧重：与 /api/state 下发的 state.decisionMode 同一份
-  const decisionModeForDecisions = normalizeDecisionMode(db.settings.decisionMode)
+  // 页面重排用的决策侧重：必须与网关派活用**同一个来源**。
+  //
+  // 网关是 `routeTarget?.decisionMode || db.settings.decisionMode`（见
+  // handleChatCompletions），也就是「有生效路由组就听组里的档位」。这里以前只读
+  // 全局设置，于是「选了一个价格优先的路由组」时：页面按全局档（比如流畅度）排，
+  // 网关按组里的价格档排，两边给出不同的「当前选」——用户看到的又是两套口径。
+  // 2026-11-12 与勾选那批 bug 同族，一并收口。
+  const routeTargetForDecisions = routingTargetOf(
+    db.settings.routeGroups,
+    normalizeAutoRoute(db.settings.autoRoute),
+    db.settings,
+  )
+  const decisionModeForDecisions = normalizeDecisionMode(
+    routeTargetForDecisions?.decisionMode || db.settings.decisionMode,
+  )
 
   const decisions = rankedWithCache.map((group) => {
     const model = group.rows[0]?.upstreamName || group.modelKey
-    const order = db.manualOrder?.[model] || db.manualOrder?.[group.modelKey] || null
+    // 手动顺序与勾选同一口径：收在 inv.manualOrderOf，别在这里再拼一份
+    const order = inv.manualOrderOf(db, model) || inv.manualOrderOf(db, group.modelKey)
     // 候选行要标「官方 xx%」：综合成本从 rank 行按 offerId 取，不重复算
     const costByOffer = new Map(group.rows.map((r) => [r.offerId, r]))
     const candidates = selectCandidates({
@@ -718,15 +732,47 @@ async function buildState({ light = false } = {}) {
     }
 
     // 勾选 > 排序：决策页点选的那条就是「当前选」，与顺序无关（顺序不动）。
-    // 勾选的不在候选里（被暂停/删了）才回落到「第一条能登场的」。
     // 勾选的牌哪怕准入没放行也算数——人的明确指定，探针准入管不住人手点的；
-    // 网关侧同口径（见下方 handleChatCompletions 里的 applyPinnedChoice），
+    // 网关侧同口径（handleChatCompletions 把同一个 id 交给 decideRoute），
     // 真发失败了照样沿候选链故障转移。
-    const pinnedOfferId = db.pinnedOffer?.[model] || db.pinnedOffer?.[group.modelKey] || null
-    const winner =
-      (pinnedOfferId && rankedCandidates.find((c) => c.offerId === pinnedOfferId)) ||
-      rankedCandidates.find((c) => c.admission?.ok && !c.faulted) ||
-      null
+    //
+    // 查找口径收在 inv.pinnedOfferIdOf：这里以前用裸键、网关用身份键，
+    // 两套查法必然漂移（2026-11-12 的「页面写当前选、网关派别人」就是这么来的）。
+    // pinnedState 说明「勾了但派不到」的原因，页面据此报警，不再假装它生效。
+    //
+    // 两个键要各查一遍、并且**用同一个键**去查状态：分组身份键与组内写法
+    // （upstreamName）在合并组里可能不同，勾选只挂在其中一个下面。以前状态那一行
+    // 只按 model 查，勾选是按 group.modelKey 命中的时候会报 null，页面就少了红标。
+    const pinKey = inv.pinnedOfferIdOf(db, model) ? model : inv.pinnedOfferIdOf(db, group.modelKey) ? group.modelKey : null
+    const pinnedOfferId = pinKey ? inv.pinnedOfferIdOf(db, pinKey) : null
+    const pinnedState = pinKey ? inv.pinnedOfferStateOf(db, pinKey) : null
+
+    // 「当前选」必须与网关**同一个判定**，不能各写一套「谁算可用」。
+    //
+    // 以前这里是自己筛：`rankedCandidates.find(c => c.admission?.ok && !c.faulted)`。
+    // 而网关走的是 decideRoute 的兜底阶梯——准入没通过但「偏慢 / 无证据 / 降级 /
+    // 冷却已过」的供给**照样会被派出去**（core/fallback-ladder.js 的设计原则：
+    // 报错是最后手段）。于是页面写「没有可用供给」，网关却在正常派活；
+    // 反过来，页面挑中的那条若被 maxPerTier 截断，网关也不派它。
+    //
+    // 现在直接问 decideRoute 要链首：准入 → 阶梯 → 勾选顶到最前 → 档位排序，
+    // 全部同一份实现。顺序参数也照传（拖过的手动顺序是第一排序键）。
+    const pageOrderRank = order && order.length > 0
+      ? new Map(order.map((id, index) => [String(id), index]))
+      : null
+    const pageDecision = routeCtxForDecisions
+      ? decideRoute(candidates, routeCtxForDecisions, {
+          tried: new Set(),
+          maxPerTier: 4,
+          orderRank: pageOrderRank,
+          decisionMode: decisionModeForDecisions,
+          pinnedOfferId,
+        })
+      : null
+    const winnerOfferId = pageDecision?.chain?.[0]?.offer?.id ?? null
+    const winner = winnerOfferId
+      ? rankedCandidates.find((c) => c.offerId === winnerOfferId) || null
+      : null
     return {
       modelKey: group.modelKey,
       display: group.display || group.modelKey,
@@ -736,6 +782,12 @@ async function buildState({ light = false } = {}) {
       official: group.official || null,
       candidates: rankedCandidates,
       pinnedOfferId,
+      // 勾选状态：'ok' = 真的在候选里；'missing'/'delisted'/'paused'/'ignored'/
+      // 'not-in-model' = 勾了但派不到，text 给人看原因。没勾选是 null
+      pinnedState,
+      // 页面要能一眼看出「当前选」到底是不是你勾的那条：勾了但派不到时
+      // winner 会回落到自动第一名，两个 id 不相等就是证据
+      pinnedApplied: Boolean(pinnedOfferId && winner?.offerId === pinnedOfferId),
       chosenOfferId: winner?.offerId ?? null,
       chosenProviderId: winner?.providerId ?? null,
       chosenProviderName: winner?.providerName ?? null,
@@ -4839,6 +4891,50 @@ function pushActivity(frame) {
   }
 }
 
+/**
+ * 「勾选派不到」的日志限流：同一件事（模型 + 勾选 id + 原因）10 分钟只打一行。
+ *
+ * 为什么必须限流：勾选的供给一旦被忽略 / 站点暂停 / 删掉，它就不在候选里，
+ * 于是**每一单**都会走到「未应用（pin-not-in-chain）」这条分支。真实日志里
+ * 这样刷了 1665 行（占全文 8%），把真正有用的行全冲走了，而「勾了却派不到」
+ * 本来应该是个显眼的异常，不是背景噪音。
+ *
+ * 只在进程内存里记：重启后重新打一行正是想要的语义（重启本身值得重新报一次）。
+ */
+const pinSkipLogAt = new Map()
+const PIN_SKIP_LOG_INTERVAL_MS = 10 * 60_000
+function shouldLogPinSkip(model, offerId, reason) {
+  const key = `${model}|${offerId || '-'}|${reason}`
+  const now = Date.now()
+  const last = pinSkipLogAt.get(key) || 0
+  if (now - last < PIN_SKIP_LOG_INTERVAL_MS) return false
+  pinSkipLogAt.set(key, now)
+  // 键会随模型/勾选变化增长，但一次改动最多几十条；超上限就整表清掉（不保留过期项）
+  if (pinSkipLogAt.size > 500) pinSkipLogAt.clear()
+  return true
+}
+
+/**
+ * 「锁定转移生效」的日志限流：稳态下每一单都会打一行完全相同的记录。
+ *
+ * 为什么必须限流：勾选长期有效时 lockFailover.applied 每单都成立，日志里
+ * 同一句会重复成千上万次（生产实测单句重复 1549 次，这类行共 2100+ 行）。
+ * 排查时真正要看的「它什么时候换了链、为什么」全被压在噪音下面。
+ *
+ * 键里带上链长与档位：勾选那条失败后转移、候选增删、档位切换都会改变结果，
+ * 那正是需要重新记一笔的时刻，不会被限流吞掉。
+ */
+const lockAppliedLogAt = new Map()
+function shouldLogLockApplied(model, lockFailover, chainLength) {
+  const key = `${model}|${lockFailover.mode}|${lockFailover.scope || '-'}|${chainLength}`
+  const now = Date.now()
+  const last = lockAppliedLogAt.get(key) || 0
+  if (now - last < PIN_SKIP_LOG_INTERVAL_MS) return false
+  lockAppliedLogAt.set(key, now)
+  if (lockAppliedLogAt.size > 500) lockAppliedLogAt.clear()
+  return true
+}
+
 /** 已结束的整单活动（前端首屏要能画出「最近发生了什么」） */
 function recentActivity(limit = 60) {
   return activityLog.slice(-limit)
@@ -6134,10 +6230,7 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
 
   // 手动排序键是身份键（合并后一组共用一个键）。自动路由接管后 model 可能已被改派，
   // 所以要在接管之后再取；老数据里可能还存着 normalizeModelKey 时代的键，兜一次
-  const manualOrder =
-    db.manualOrder?.[inv.modelIdentityKey(model, db.settings?.modelAliases || {})] ||
-    db.manualOrder?.[inv.normalizeModelKey(model)] ||
-    null
+  const manualOrder = inv.manualOrderOf(db, model)
   // 外部监控上报的真实故障：降级不拉黑（探针准入不受影响），但自动路由不把它当最优
   const isFaulted = faultMatcher(db.failover)
   // 临时改道的站：空回合守卫把它挂起了，流量应该已经走别家。
@@ -6256,6 +6349,16 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
     Array.isArray(manualOrder) && manualOrder.length > 0
       ? new Map(manualOrder.map((id, index) => [String(id), index]))
       : null
+  // 人工勾选（决策页点选）的那条供给。
+  //
+  // 取在这里而不是排在 decideRoute 之后：勾选那条如果是 blocked（真实流量失败率
+  // 过高 / 限流冷却），兜底阶梯会把它当硬失败踢出链，之后的 applyPinnedChoice
+  // 就找不到它、静默回退到自动排序的第一名——页面写「当前选 007」、网关派 0055
+  // 的现场就是这么来的（2026-11-12）。把勾选交给 decideRoute，它保证勾选在链首。
+  //
+  // 查找口径与页面共用 inv.pinnedOfferIdOf（身份键 → 存储键 → 原样键），
+  // 这里以前自己拼一份，和页面那份迟早漂移。
+  const pinnedOfferId = inv.pinnedOfferIdOf(db, model)
   // 决策侧重显式传：路由组配了自己的算法档就用组里的，否则用全局设置。
   // 组的档位在 routingTargetOf 里已经是归一化过的（缺失时是 null）。
   const decision = decideRoute(candidates, routeCtx, {
@@ -6263,6 +6366,7 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
     maxPerTier: 4,
     orderRank,
     decisionMode: routeTarget?.decisionMode || db.settings.decisionMode,
+    pinnedOfferId,
   })
   if (decision.chain.length === 0) {
     // 报错文案在 core/router.js：决策页要能显示同一句话，两处各写一遍必然漂移
@@ -6289,14 +6393,10 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
     reason: 'direct',
     basis: candidates[0]?.speedBasis || null,
   })
-  // 人工勾选 > 一切自动排序：决策页点选的那条顶到尝试链最前（与决策页「当前选」
-  // 同一份口径，见 core/router.js#applyPinnedChoice）；哪怕准入没放行也算数——
-  // 这是人的明确指定，真发失败了照样沿候选链往后故障转移。
-  // 键与手动顺序同口径：身份键，老数据兜一次 normalizeModelKey 时代的键
-  const pinnedOfferId =
-    db.pinnedOffer?.[inv.modelIdentityKey(model, db.settings?.modelAliases || {})] ||
-    db.pinnedOffer?.[inv.normalizeModelKey(model)] ||
-    null
+  // 人工勾选 > 一切自动排序：decideRoute 已经把勾选那条放在链首（哪怕准入没放行，
+  // 见 core/route-orchestrator.js 的「人工勾选不许被阶梯吃掉」）。这里再调一次
+  // applyPinnedChoice 只是幂等的兜底——决策页「当前选」与网关首选吃同一份口径
+  // （core/router.js#applyPinnedChoice），万一上游链路有人先重排过也不会漏。
   candidates = applyPinnedChoice(candidates, pinnedOfferId).candidates
   // 锁定失败后转移：勾选那条已经顶到第一了，这一步决定「它挂了之后还剩谁、按什么排」。
   // 默认档 'none' = 链只剩这一条，失败直接把上游错误交出去，绝不偷偷换站。
@@ -6311,16 +6411,32 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
   candidates = lockFailover.chain
   if (lockFailover.applied) {
     // 只在真的改了链的时候记一行：排查「为什么这单没换站」时，
-    // 日志里必须能直接看到是哪个档位把它锁住的
-    console.log(
-      `[锁定转移] ${model} 锁定 ${pinnedOfferId} · 档位 ${lockFailover.mode}` +
-        ` · 尝试链 ${candidates.length} 条${lockFailover.scope ? ` · 范围 ${lockFailover.scope}` : ''}` +
-        `${lockFailover.metric ? ` · 指标 ${lockFailover.metric}` : ''}`,
-    )
+    // 日志里必须能直接看到是哪个档位把它锁住的。
+    //
+    // 但「勾了 → 生效」是**稳态**：一旦勾选长期有效，每一单都会打一行，内容完全相同。
+    // 生产日志实测 2100+ 行这种行（其中同一句重复 1549 次），把探测/采集/报错全冲走。
+    // 限流口径：同模型 + 同档位 + 同链长 10 分钟一行；链长变了（勾选失败后转移、
+    // 候选增删）说明情况真的变了，会立刻重新打一行。
+    if (shouldLogLockApplied(model, lockFailover, candidates.length)) {
+      console.log(
+        `[锁定转移] ${model} 锁定 ${pinnedOfferId} · 档位 ${lockFailover.mode}` +
+          ` · 尝试链 ${candidates.length} 条${lockFailover.scope ? ` · 范围 ${lockFailover.scope}` : ''}` +
+          `${lockFailover.metric ? ` · 指标 ${lockFailover.metric}` : ''}`,
+      )
+    }
   } else if (lockFailover.skipped) {
     // 没勾选是常态（不刷屏），其余跳过原因才是要查的
     if (lockFailover.skipped !== 'no-pin') {
-      console.log(`[锁定转移] ${model} 未应用（${lockFailover.skipped}）`)
+      // 但「勾了却派不到」会**每单**都发生：勾选的供给被忽略 / 站点暂停 / 已删除时，
+      // 它根本不在候选里，这条分支就永远命中。真实日志里这么刷了 1665 行，
+      // 把有用的行全冲走了。按「模型 + 勾选 id + 原因」限流：同一件事 10 分钟一行。
+      if (shouldLogPinSkip(model, pinnedOfferId, lockFailover.skipped)) {
+        const state = inv.pinnedOfferStateOf(db, model)
+        console.log(
+          `[锁定转移] ${model} 未应用（${lockFailover.skipped}）` +
+            `${pinnedOfferId ? ` · 勾选 ${pinnedOfferId}` : ''}${state?.text ? ` · ${state.text}` : ''}`,
+        )
+      }
     }
   }
 

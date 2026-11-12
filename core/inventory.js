@@ -600,20 +600,191 @@ export function modelIgnored(db, name, scope) {
  * 注意：余额探底不在这里过滤——那是准入门禁的事（要挂标、要能被「只显示准入」隐藏），
  * 见 core/router.js#admissionOf；探针/复检的「不撞墙」各自显式跳过。
  * 纯函数：只读 db，不改；调用方拿到的是 db.offers 里的原对象，不要原地修改。
+ *
+ * ## 人工勾选压过「忽略模型」（2026-11-12，用户原话）
+ *
+ *   「我单独放出来的站点，应该不受到模型忽略影响。我手动勾选把它开启了，
+ *     然后这个时候忽略模型不应该能挡掉它们的流量。也就是它应该是生效的。」
+ *
+ * 语义：忽略名单管的是**自动选择**（比价、自动路由、探针该不该烧钱）；
+ * 人手勾的那一条是「我就要它」，忽略名单挡不住它。所以被勾选的那条供给
+ * 即使整类被忽略，也照样算在役——否则勾选只是页面上好看，流量永远走不到它
+ * （实测：勾了 o_pin，在役供给直接变成空数组，网关报「没有可用供给」）。
+ *
+ * 站点暂停 / 已下线仍然压过勾选：那是「这个站现在不该收流量」和
+ * 「上游已经没这个模型了」，与「用户想不想要它」无关。
  */
 export function routeableOffers(db) {
   const pausedIds = new Set(db.providers.filter((p) => p.paused).map((p) => p.id))
   // 忽略判定（整类名单 + 单行例外）唯一实现在 ignoreChecker，别在这里再拼一份
   const isIgnored = ignoreChecker(db)
+  // 勾选的那条：忽略名单挡不住它（口径见上面那段）。用 identityKey 反查，
+  // 与 pinnedOfferIdOf 同一套写法——两处各拼一份键，迟早一处认得出、一处认不出。
+  const pinnedIds = pinnedOfferIdSet(db)
   return db.offers.filter((offer) => {
     if (offer.delistedAt) return false
     if (pausedIds.has(offer.providerId)) return false
+    if (pinnedIds.has(offer.id)) return true
     // 作用域必须传：否则「只开这一行」会被读成「整类都开」
     if (isIgnored(offer.modelKey || offer.upstreamName || '', { providerId: offer.providerId, group: offer.group })) {
       return false
     }
     return true
   })
+}
+
+/**
+ * 所有被人工勾选中的供给 id 集合。
+ *
+ * 为什么单独一支：routeableOffers 需要「这一条是不是被勾选的」这个判断，
+ * 而 pinnedOffer 是「模型 → 供给 id」的表，要反过来查。写在这里而不是
+ * 每个调用方自己遍历，是因为**忽略判定与勾选的关系只该有一处定义**。
+ */
+export function pinnedOfferIdSet(db) {
+  const pins = db?.pinnedOffer
+  if (!pins || typeof pins !== 'object') return new Set()
+  const out = new Set()
+  for (const value of Object.values(pins)) {
+    if (!value) continue
+    out.add(String(value))
+  }
+  return out
+}
+
+/**
+ * 按身份键从一张「模型名 → 任意值」的表里取值（pinnedOffer / manualOrder 共用）。
+ *
+ * 为什么要有它：这两张表的键都是「用户点选/拖拽那一刻界面上的名字」，写法可能
+ * 是任意一种（deepseek-v4.1-flash / DeepSeek-V4.1-Flash / 带日期尾巴 / 合并别名）。
+ * 而读的地方有三个：页面、网关、自动路由。以前各拼一份查法——
+ *   页面 `table[model]`、网关 `table[identityKey(model)] || table[baseKey(model)]`、
+ *   自动路由 `table[identityKey(model)]`
+ * 三者只在「写进去的键恰好等于自己那份归一结果」时才一致。2026-11-12 实测：
+ * 同一个库里 `manualOrder` 的键是 deepseek-4-pro，页面第一跳（裸键
+ * deepseek-v4-pro）查不到、靠第二跳才命中；`pinnedOffer` 则是页面命中网关不命中。
+ *
+ * 查法固定为：身份键 → 存储键 → 原样键 → 按身份键反查整张表。
+ * 反查那一步是根治：任何写法只要归一到同一个身份键就认得出，不依赖写入时的拼法。
+ *
+ * @param {object|null|undefined} table
+ * @param {string} modelKey
+ * @param {object} aliases db.settings.modelAliases
+ * @returns {any|null} 命中返回原值（空数组/空串也算未命中），否则 null
+ */
+function lookupByIdentity(table, modelKey, aliases) {
+  if (!table || typeof table !== 'object') return null
+  const raw = String(modelKey || '').trim()
+  if (!raw) return null
+  const aliasTable = aliases && typeof aliases === 'object' ? aliases : {}
+  const filled = (value) => {
+    if (value === null || value === undefined) return null
+    if (Array.isArray(value)) return value.length > 0 ? value : null
+    if (typeof value === 'string') return value.trim() ? value : null
+    return value
+  }
+  for (const key of [identityKey(raw, aliasTable), modelBaseKey(raw), raw]) {
+    if (!key) continue
+    const hit = filled(table[key])
+    if (hit !== null) return hit
+  }
+  const want = identityKey(raw, aliasTable)
+  if (!want) return null
+  for (const [key, value] of Object.entries(table)) {
+    if (identityKey(key, aliasTable) !== want) continue
+    const hit = filled(value)
+    if (hit !== null) return hit
+  }
+  return null
+}
+
+/**
+ * 人工勾选（决策页点选）的那条供给 id。
+ *
+ * 为什么必须收成一份实现：页面侧（buildState 的 decisions）和网关侧
+ * （handleChatCompletions）各自查过一次 db.pinnedOffer，而且查法不一样——
+ * 页面用**裸键** `pinnedOffer[model]`，网关用**身份键** + 旧键兜底。同一个
+ * 概念两套查法，迟早出现「页面认得出、网关认不出」（2026-11-12 实测：
+ * 页面显示当前选 A，网关派 B）。这里只留一份，两边都调它。
+ *
+ * @param {object} db
+ * @param {string} modelKey 请求里的模型名或分组身份键
+ * @returns {string|null}
+ */
+export function pinnedOfferIdOf(db, modelKey) {
+  const hit = lookupByIdentity(db?.pinnedOffer, modelKey, db?.settings?.modelAliases || {})
+  return hit === null ? null : String(hit)
+}
+
+/**
+ * 手动拖拽顺序（模型 → offerId 数组）。
+ *
+ * 与 pinnedOfferIdOf 同一个理由收成一份：以前页面、网关、自动路由各查一遍，
+ * 只是靠「多兜一层」碰巧对上。没拖过返回 null（调用方据此跳过重排）。
+ *
+ * @param {object} db
+ * @param {string} modelKey
+ * @returns {string[]|null}
+ */
+export function manualOrderOf(db, modelKey) {
+  const hit = lookupByIdentity(db?.manualOrder, modelKey, db?.settings?.modelAliases || {})
+  return Array.isArray(hit) ? hit.map(String) : null
+}
+
+/**
+ * 勾选那条现在到底能不能派——给人看的一句话结论。
+ *
+ * 为什么要有：勾选的供给可能因为「站点暂停 / 已下线 / 已被删掉 / 指向别的模型」
+ * 从候选里消失，此时网关会静默回退到自动第一名。旧代码在页面上照样把它写成
+ * 「当前选」，用户只能靠对用量才看得出两边不一致。
+ *
+ * 注意「忽略模型」**不**在这个列表里：勾选压过忽略（2026-11-12 用户定的语义，
+ * 见 routeableOffers 的注释）。勾了它，它就是在役的。
+ *
+ * @returns {null | {
+ *   offerId: string,
+ *   state: 'ok' | 'missing' | 'delisted' | 'paused' | 'not-in-model',
+ *   text: string,
+ *   offer: object|null,
+ * }}
+ *   没勾选返回 null。state='ok' 表示它确实在候选里；其余都说明「勾了但派不到」，
+ *   text 是给人看的原因。
+ */
+export function pinnedOfferStateOf(db, modelKey) {
+  const offerId = pinnedOfferIdOf(db, modelKey)
+  if (!offerId) return null
+  const offer = (db?.offers || []).find((o) => o.id === offerId) || null
+  if (!offer) {
+    return { offerId, state: 'missing', offer: null, text: '勾选的供给已被删除，网关按自动顺序派活' }
+  }
+  if (offer.delistedAt) {
+    return { offerId, state: 'delisted', offer, text: '勾选的供给已下线，网关按自动顺序派活' }
+  }
+  const provider = (db?.providers || []).find((p) => p.id === offer.providerId) || null
+  if (provider?.paused) {
+    return {
+      offerId,
+      state: 'paused',
+      offer,
+      text: `勾选的供给所在站点「${provider.name || offer.providerId}」已暂停，网关按自动顺序派活`,
+    }
+  }
+  // 「忽略模型」不再是失效原因：勾选压过忽略（2026-11-12 用户定的语义）。
+  // routeableOffers 会放它进来，这里就不能再报「被忽略挡掉了」——否则页面挂红标
+  // 说失效、实际流量走得好好的，又成了两套口径。
+  // 只有「站点暂停 / 已下线 / 已被删 / 指向别的模型」这四种才是真的派不到。
+  // 勾选的供给属于别的模型（模型被拆开/改名后老勾选会指向另一档）
+  const aliases = db.settings?.modelAliases || {}
+  const want = identityKey(modelKey, aliases)
+  const got = identityKey(offer.modelKey || offer.upstreamName || '', aliases)
+  if (want && got && want !== got) {
+    return {
+      offerId,
+      state: 'not-in-model',
+      offer,
+      text: `勾选的供给属于另一个模型（${offer.modelKey || offer.upstreamName}），网关按自动顺序派活`,
+    }
+  }
+  return { offerId, state: 'ok', offer, text: '' }
 }
 
 /**

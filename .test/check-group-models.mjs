@@ -517,22 +517,51 @@ try {
   await send('Page.reload', { ignoreCache: true })
   let reloaded = false
   for (let i = 0; i < 150 && !reloaded; i += 1) {
-    reloaded = await ev(`!!document.querySelector('#monitor-sites-host .prov-group-chips')`)
+    // 「站点卡在」不够：分组胶囊要带着 data-group 渲染出来，否则下一步点不到。
+    // 全量串行跑（前面几十个用例轮番起 Chrome）时机器更忙，这一步会慢，
+    // 原来只等胶囊容器存在就往下走，紧接着 clickChip 找不到目标 → 抽屉没开 → 读空串。
+    reloaded = await ev(
+      `!!document.querySelector('#monitor-sites-host .prov-group-chips .group-chip[data-group]')`,
+    )
     if (!reloaded) await sleep(200)
   }
-  ok(reloaded, '英文界面刷新后站点卡还在')
-  await ev(clickChip('主力分组'))
-  for (let i = 0; i < 40; i += 1) {
+  ok(reloaded, '英文界面刷新后站点卡与分组胶囊都在')
+  // 点之前先确认抽屉是**关着**的：英文刷新会重建 DOM，但刷新若比预期慢，
+  // 上一次（中文）的抽屉可能还开着——这时点胶囊是「换目标」，而内容签名
+  // （语言/标题/meta/models）与旧的一致时 paintGroupModels 会直接 return，
+  // 于是一直读到中文内容。先确保关闭，再点。
+  await ev(`(() => { const s = document.querySelector('#group-models'); if (s) s.hidden = true; return true })()`)
+  // 点击要**重试**：`[data-group]` 胶囊存在 ≠ 它稳定了。英文刷新后站点卡会随
+  // 首屏 state 到达而整体重绘，重绘瞬间点到的是即将被替换掉的旧节点，
+  // 事件冒泡不到新 DOM 上，clickChip 就会返回 'missing'（实测全量串行跑时发生）。
+  // 真实现场：失败那次 DEBUG 里 chips 明明在，只是点击落在了重绘的缝里。
+  let clicked = 'missing'
+  for (let i = 0; i < 60; i += 1) {
+    clicked = await ev(clickChip('主力分组'))
+    if (clicked === 'ok') {
+      // 再确认抽屉真的开了（否则就是又踩进重绘）
+      const opened = await ev(`!document.querySelector('#group-models')?.hidden`)
+      if (opened) break
+      clicked = 'clicked-but-closed'
+    }
+    await sleep(100)
+  }
+  ok(clicked === 'ok', `点得到「主力分组」胶囊（${clicked}）`)
+  // 等「打开 **且内容已就绪**」：只等 open 会在英文刷新后立刻通过——
+  // 抽屉 DOM 先出现、rows/meta 还是空的（渲染是异步的），断言就会读到空串
+  // 而误报成「没翻成英文」。本用例以前偶发失败（两次里红一次）就是这里。
+  for (let i = 0; i < 100; i += 1) {
     view = await ev(drawer)
-    if (view.open) break
+    if (view.open && view.meta && view.rows.length > 0) break
     await sleep(100)
   }
   ok(view.meta.includes('models'), `模型数翻成英文（实际「${view.meta}」）`)
   ok(view.rows.some((r) => r.text.includes('Ignored')), '「已忽略」翻成 Ignored')
   await ev(clickChip('备用分组'))
-  for (let i = 0; i < 40; i += 1) {
+  for (let i = 0; i < 60; i += 1) {
     view = await ev(drawer)
-    if (view.title === '备用分组') break
+    // 同理：标题切过去还不够，目标行也得渲染出来
+    if (view.title === '备用分组' && view.rows.some((r) => r.name === 'model-e')) break
     await sleep(100)
   }
   const rowEEn = view.rows.find((r) => r.name === 'model-e')?.text || ''

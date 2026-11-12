@@ -115,7 +115,10 @@ export function patrolTargets(db, record = normalizeAutoRoute(db.settings?.autoR
       benchmarks: {},
       settings,
       model: modelKey,
-      order: db.manualOrder?.[modelKey] || null,
+      // 手动顺序与勾选同一口径（inv.manualOrderOf），别自己用裸键查——
+      // 库里存的键是「拖拽那一刻界面上的名字」，裸键在写法不同时查不到，
+      // 于是探针轮巡会按自动顺序挑，与网关实际派活的先后不一致
+      order: inv.manualOrderOf(db, modelKey),
     })
     const winner = rows.find((row) => row.admission?.ok && !row.balanceDepleted)
     if (!winner) continue
