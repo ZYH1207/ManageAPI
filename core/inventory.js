@@ -525,15 +525,21 @@ export function parseOverrideKey(key) {
   return { scope: raw.slice(0, at), model: raw.slice(at + 2) }
 }
 /**
- * 写「整类忽略」名单（身份键），并把这次**新加**进来的那一类里遗留的
- * 「单行显示」例外一起清掉。
+ * 写「整类忽略」名单（身份键）。
  *
- * 为什么必须清：整组忽略之后，以前在分组弹窗里点过「显示」的那一行还会单蹦出来
- * （判定优先级是单行例外 > 整类名单），用户在「忽略模型」面板里看到的是「已忽略」，
- * 决策/比价里却照样出现——这种不一致在界面上完全查不出来。
+ * **不清「单行显示」例外**（2026-11-12 按用户口径改）：
  *
- * 为什么只清新加的：别的操作（单个开关、搜索后重发名单）会把整份名单再写一遍，
- * 那股脑清下去会顺手废掉用户故意捞出来的那一个。
+ *   用户的诉求是「哪怕我忽略了整个 Opus，我手动放出来的那个站也应该能用」。
+ *   所以这里只写名单，一行 overrides 都不动 —— 判定器（ignoreChecker）的
+ *   优先级本来就把作用域例外排在整类名单之前，写库时把它删掉等于把用户的
+ *   意图从存储层吃掉，界面上再也找不回来。
+ *
+ *   以前的实现会在「这类是新加进名单的」时清掉对应 shown，理由是「整组忽略
+ *   之后还单蹦一行，界面上看起来不一致」。但那恰恰是用户想要的：整类忽略是
+ *   「默认都不要」，手动显示是「就这一个我要」。两者不冲突，是叠加。
+ *
+ *   一致性由界面负责说明（忽略面板会标出「其中 N 个被单独显示」），
+ *   而不是靠偷偷删掉用户的设置。
  *
  * @param {object} db 会被就地修改
  * @param {string[]} list 身份键名单（调用方已归一过）
@@ -543,22 +549,9 @@ export function applyIgnoredModels(db, list, { enforce = [] } = {}) {
   // 名单里存的必须是身份键（同一模型的不同写法归一个），传进来的可能是任一写法
   const toId = (name) => identityKey(String(name), aliases)
   const next = [...new Set((Array.isArray(list) ? list : []).map(toId).filter(Boolean))]
-  const before = new Set(db.settings?.ignoredModels || [])
-  // enforce：调用方明确要「这一类现在就消失」的身份键（点「整组忽略」/单行忽略时带上）。
-  // 它比「新增了才清」更强：名单里本来就有、但被单行例外捞出来的那些也要清掉——
-  // 否则用户点第二遍「整组忽略」毫无反应，界面上却看不出为什么。
-  const explicit = new Set((Array.isArray(enforce) ? enforce : []).map(toId).filter(Boolean))
-  const purge = new Set([...next.filter((id) => !before.has(id)), ...[...explicit].filter((id) => next.includes(id))])
-  if (purge.size > 0 && db.settings?.modelOverrides) {
-    const overrides = db.settings.modelOverrides
-    for (const [key, mode] of Object.entries(overrides)) {
-      if (mode !== 'shown') continue
-      // 键可能是作用域写法（providerId::group::模型名），比的是它里面的模型名
-      const { model } = parseOverrideKey(key)
-      if (purge.has(toId(model))) delete overrides[key]
-    }
-    if (Object.keys(overrides).length === 0) delete db.settings.modelOverrides
-  }
+  // enforce 保留在签名里：调用方仍在传，语义已变为「不额外做事」。
+  // 保留参数是为了不改所有调用点，也为了将来真要「强制清例外」时有明确的入口。
+  void enforce
   if (db.settings) db.settings.ignoredModels = next
   return next
 }
@@ -575,10 +568,38 @@ export function ignoreChecker(db) {
   const identities = ignoredModelSet(db)
   const overrides = db.settings?.modelOverrides || {}
   const decide = (mode) => (mode === 'shown' ? false : mode === 'ignored' ? true : null)
+  /**
+   * 在同一条供给上找「作用域例外」，允许模型名写法不一致。
+   *
+   * 为什么必须容错（2026-11-12 实测）：
+   *   同一个 Claude 模型在站上可能写作 claude-opus-5 / -5-5 / 5.5 三种；
+   *   用户点「显示」时存的是**站点那个写法**的精确键，而判定时拿到的是
+   *   **请求里那个写法**。overrideKey 只做 normalizeModelKey（裁空白），
+   *   不把 5-5 和 5.5 归一 —— 于是「我明明放出来了，它就是不出现在决策里」。
+   *
+   * 兜底顺序：精确键 → 同 providerId+group 下身份键相同的任意键。
+   * 只在精确键没命中时才扫，正常路径零额外开销。
+   */
+  const scopedOverride = (exact, scope) => {
+    if (!scope?.providerId) return null
+    const direct = decide(overrides[overrideKey(exact, scope)])
+    if (direct !== null) return direct
+    const wantId = identityKey(exact, aliases)
+    if (!wantId) return null
+    const prefix = `${scope.providerId}::${scope.group || ''}::`
+    for (const [key, mode] of Object.entries(overrides)) {
+      if (!key.startsWith(prefix)) continue
+      const { model } = parseOverrideKey(key)
+      if (identityKey(model, aliases) !== wantId) continue
+      const hit = decide(mode)
+      if (hit !== null) return hit
+    }
+    return null
+  }
   return (name, scope) => {
     const exact = normalizeModelKey(name)
     if (exact) {
-      const scoped = scope?.providerId ? decide(overrides[overrideKey(exact, scope)]) : null
+      const scoped = scopedOverride(exact, scope)
       if (scoped !== null) return scoped
       const global = decide(overrides[exact])
       if (global !== null) return global

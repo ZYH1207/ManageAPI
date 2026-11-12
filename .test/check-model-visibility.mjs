@@ -101,14 +101,21 @@ console.log('[7] 幂等：例外删空不留空对象')
   ok(modelIgnored(db(), 'kimi-k3') === false, '无配置 → 显示')
 }
 
-console.log('[8] 整组忽略要「这一行也别再漏出来」：清掉单行显示例外')
+console.log('[8] 整组忽略【不】清单行显示例外（2026-11-12 用户口径反转）')
 {
-  // 现场：GPT 全家已整类忽略，但 gpt-6.1-sol 上留着一个早先点出来的 shown 例外，
-  // 决策页就单蹦一行——面板上却写着「已忽略」，查不出来。
+  // 旧行为：整组忽略时把这一类的 shown 例外一起删掉，理由是「面板写已忽略、
+  // 决策页却单蹦一行，看起来不一致」。
+  //
+  // 用户明确否决了这个理由（2026-11-12 原话）：
+  //   「哪怕我忽略了 Opus 整个模型，但是我手动放出来那一个站，那一个站应该是可以用的呀。」
+  // 整类忽略 = 默认都不要；手动显示 = 就这一个我要。两者叠加，不是冲突。
+  // 一致性由界面说明（忽略面板标出「其中 N 个被单独显示」），不靠偷偷删用户设置。
   const d = db({ settings: { ignoredModels: [], modelOverrides: { 'deepseek-v4.1-flash': 'shown' } } })
   applyIgnoredModels(d, ['deepseek-v4.1-flash'])
-  ok(d.settings.modelOverrides?.['deepseek-v4.1-flash'] === undefined, '新加的身份键上的 shown 例外被清掉')
-  ok(modelIgnored(d, 'deepseek-v4.1-flash'), '清完之后这一类真的出役了')
+  ok(d.settings.modelOverrides?.['deepseek-v4.1-flash'] === 'shown', 'shown 例外必须保留')
+  ok(!modelIgnored(d, 'deepseek-v4.1-flash'), '于是这一行仍然显示（手动例外优先）')
+  ok(modelIgnored(d, 'deepseek-v4.1-flash', { providerId: 'pa', group: 'g1' }) === false,
+    '带作用域问也必须显示')
 }
 
 console.log('[9] 重发老名单不动例外（别的操作不能顺手废掉用户捞出来的那一个）')
@@ -118,23 +125,24 @@ console.log('[9] 重发老名单不动例外（别的操作不能顺手废掉用
   ok(d.settings.modelOverrides?.['other-model'] === 'shown', '没涉及的例外原样保留')
 }
 
-console.log('[10] enforce：点「整组忽略」时，名单里本来就有也要清')
+console.log('[10] enforce 参数保留但不再清例外（用户口径：手动永远优先）')
 {
   const d = db({ settings: { ignoredModels: ['deepseek-v4.1-flash'], modelOverrides: { 'deepseek-v4.1-flash': 'shown' } } })
   applyIgnoredModels(d, ['deepseek-v4.1-flash'], { enforce: ['deepseek-v4.1-flash'] })
-  ok(d.settings.modelOverrides?.['deepseek-v4.1-flash'] === undefined, 'enforce 指定的那一类，例外被清掉')
-  ok(modelIgnored(d, 'deepseek-v4.1-flash'), '于是整类真的都不在役')
+  ok(d.settings.modelOverrides?.['deepseek-v4.1-flash'] === 'shown', 'enforce 也不再清掉手动显示')
+  ok(!modelIgnored(d, 'deepseek-v4.1-flash'), '这一行仍然在役')
 
   const keep = db({ settings: { ignoredModels: ['deepseek-v4.1-flash'], modelOverrides: { 'other-model': 'shown' } } })
   applyIgnoredModels(keep, ['deepseek-v4.1-flash'], { enforce: ['deepseek-v4.1-flash'] })
-  ok(keep.settings.modelOverrides?.['other-model'] === 'shown', 'enforce 只清自己那一类，别的例外不动')
+  ok(keep.settings.modelOverrides?.['other-model'] === 'shown', '别人的例外更不该动')
 }
 
-console.log('[11] 只清 shown，单押的 ignored 例外不动')
+console.log('[11] 任何例外都不动（shown 与 ignored 一视同仁）')
 {
-  const d = db({ settings: { ignoredModels: [], modelOverrides: { 'other-model': 'ignored' } } })
-  applyIgnoredModels(d, ['other-model', 'deepseek-v4.1-flash'])
-  ok(d.settings.modelOverrides?.['other-model'] === 'ignored', 'ignored 例外保留（它本来就表示忽略）')
+  const d = db({ settings: { ignoredModels: [], modelOverrides: { 'other-model': 'ignored', 'third-model': 'shown' } } })
+  applyIgnoredModels(d, ['other-model', 'deepseek-v4.1-flash', 'third-model'])
+  ok(d.settings.modelOverrides?.['other-model'] === 'ignored', 'ignored 例外保留')
+  ok(d.settings.modelOverrides?.['third-model'] === 'shown', 'shown 例外也保留')
 }
 
 console.log('[12] 站点页的开关只作用于「这一行」：同名模型在别的站/分组不受影响')
@@ -189,7 +197,7 @@ console.log('[15] 作用域键的解析（分组名里带冒号也不切坏）')
   const key = overrideKey('deepseek-v4.1-flash', { providerId: 'p1', group: 'g1' })
   d.settings.modelOverrides[key] = 'shown'
   applyIgnoredModels(d, ['deepseek-v4.1-flash'])
-  ok(d.settings.modelOverrides?.[key] === undefined, '整类忽略清掉了作用域写法上的 shown 例外')
+  ok(d.settings.modelOverrides?.[key] === 'shown', '整类忽略不动作用域写法上的 shown 例外')
 }
 
 console.log(failed === 0 ? '\n全部通过' : `\n${failed} 项失败`)
