@@ -568,6 +568,65 @@ export async function fetchAnnouncements({ baseUrl, apiKey, adminToken, kind, ti
   return out
 }
 /**
+ * 取一页账单明细，供 core/site-ledger.js 的翻页器调用。
+ *
+ * 为什么单独暴露一个「单页」函数而不是在这里翻完：翻页策略（上限、page_size
+ * 校验、什么时候算拉完）属于聚合层的知识，放在 core/site-ledger.js 一处；
+ * 这里只负责「打一次接口，把 JSON 交回去」。
+ *
+ * @param {{baseUrl:string, adminToken:string, page?:number, pageSize?:number,
+ *          day?:string|null, timeoutMs?:number}} input
+ */
+export async function fetchUsagePage({
+  baseUrl,
+  adminToken,
+  page = 1,
+  pageSize = 1000,
+  day = null,
+  timeoutMs = 20000,
+}) {
+  const origin = originOf(baseUrl, { stripApiPrefix: true })
+  if (!origin) throw new Error(`站点地址无法解析：${baseUrl}`)
+  const params = new URLSearchParams({ page: String(page), page_size: String(pageSize) })
+  // 不传日期 = 站点返回全量（最新在前）；传了才按天过滤。
+  // 两种写法实测都成立，但按天过滤能显著减少翻页数，有 day 就用。
+  const d = String(day || '').slice(0, 10)
+  if (/^\d{4}-\d{2}-\d{2}$/.test(d)) {
+    params.set('start_date', d)
+    params.set('end_date', d)
+  }
+  return requestJson(`${origin}/api/v1/usage?${params.toString()}`, { apiKey: adminToken, timeoutMs })
+}
+
+/**
+ * 读站点分组表：group_id → { name, rate }。
+ *
+ * 账单明细里只有 group_id 数字，名字和倍率要从这里换。读不到不算失败——
+ * 聚合层会把 group 留空，只是没法按分组名比对台账而已。
+ *
+ * @returns {Promise<Map<number, {id:number, name:string, rate:number|null}>>}
+ */
+export async function fetchGroupIndex({ baseUrl, adminToken, timeoutMs = 10000 }) {
+  const origin = originOf(baseUrl, { stripApiPrefix: true })
+  if (!origin) throw new Error(`站点地址无法解析：${baseUrl}`)
+  const payload = await requestJson(`${origin}/api/v1/groups/available`, {
+    apiKey: adminToken,
+    timeoutMs,
+  })
+  const list = Array.isArray(payload) ? payload : Array.isArray(payload?.data) ? payload.data : []
+  const index = new Map()
+  for (const g of list) {
+    if (!g || g.id === undefined || g.id === null) continue
+    index.set(Number(g.id), {
+      id: Number(g.id),
+      name: String(g.name ?? '').trim(),
+      rate: typeof g.rate_multiplier === 'number' ? g.rate_multiplier : null,
+    })
+  }
+  return index
+}
+
+/**
  * 拉取站点自己的账单（按天）。
  *
  * 为什么必须读站点账单、而不是拿网关记录的 token 乘单价：

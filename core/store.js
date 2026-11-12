@@ -85,6 +85,12 @@ export function emptyDb() {
       // fxUsdCny 只是给老代码留的镜像，每次写入都会同步。
       fx: { base: 'USD', rates: { CNY: 7.2 }, updatedAt: null, source: 'default', manual: false },
       blendInputWeight: 0.25,
+      // 比价时假设输入有多大比例命中缓存（0 = 不算缓存，保持历史口径）。
+      // 默认 0 是有意的：命中率是**用量属性**不是供给属性，同一个站被不同
+      // 客户端打能差好几倍。打开后只影响 blendedWithCache* 那个新增口径，
+      // 不改 blendedUsdPerMtok 的含义——现有排序和结论不会集体跳变。
+      // 真实成本以站点账单为准（core/site-ledger.js），那份是站方自己记的账。
+      blendCacheHitRate: 0,
       probeTimeoutMs: 45000,
       // 0 = 关闭定时探测
       probeIntervalMinutes: 60,
@@ -137,6 +143,10 @@ export function emptyDb() {
       // 和探针是两个节奏：探针要打真实请求，成本高；采集只是读后台数据，可以更勤
       // （纯账户接口，不烧 token），所以默认给到 10 分钟。
       monitorIntervalMinutes: MONITOR_INTERVAL_DEFAULT,
+      // 站点账单同步间隔（分钟），0 = 关闭。和监控采集同档（都是纯读后台、
+      // 不烧 token），但独立配置：账单是「实际花了多少钱」和「真实单价」的
+      // 唯一权威来源，不该因为采集那边被关掉就跟着停更。
+      ledgerIntervalMinutes: MONITOR_INTERVAL_DEFAULT,
       // 余额低于这个美元金额就告警（人民币站按汇率折算后比）。0 = 不告警。
       // 之所以用美元：中转站余额基本都是美元，用人民币要先折一次，多一层容易错。
       balanceWarnUsd: 1.5,
@@ -180,6 +190,11 @@ export function emptyDb() {
     failover: { reports: [] },
     // 监控时序数据（余额快照 / 倍率变动 / 公告 / 告警）
     monitor: defaultMonitor(),
+    // 站点原始走账清单：providerId → 'YYYY-MM-DD' → { day, at, rows[], 汇总 }。
+    // 「实际花了多少钱」的权威来源——站点自己按分项记账（连缓存读价都单列），
+    // 比网关侧用 token 估算准得多（缺 usage、cached_tokens 不稳、缓存价根本没算）。
+    // 结构与聚合口径见 core/site-ledger.js
+    ledger: {},
   }
 }
 
@@ -480,6 +495,8 @@ function migrate(db) {
     ensureDiagnosisKeys(db)
     ensureFaultKeys(db)
     ensureLanPanel(db)
+    // 站点账单是新键：老库没有它，补个空对象就行（纯新增，幂等，不升版本号）
+    if (!db.ledger || typeof db.ledger !== 'object') db.ledger = {}
     return db
   }
 
@@ -538,6 +555,8 @@ function migrate(db) {
   }
   db.version = DB_VERSION
   ensureMonitor(db)
+  // 站点账单（纯新增键，跨级升上来的库也要补）
+  if (!db.ledger || typeof db.ledger !== 'object') db.ledger = {}
   return db
 }
 

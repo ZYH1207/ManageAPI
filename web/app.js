@@ -1,6 +1,6 @@
 /** 前端：无框架，全量状态 + 重渲染。 */
 import { getLang, onLangChange, restoreDom, setLang, t, translateDom } from './i18n.js'
-import { renderFreeRelayPane, vendorChipClass, vendorOf, vendorLabel } from './free-relay.js'
+import { renderFreeRelayPane, vendorChipClass, vendorOf, vendorLabel, vendorKeyOf, vendorKeyLabel } from './free-relay.js'
 import { renderFreePlatformPane } from './free-platform.js'
 import { ensureProtocolView } from './protocol-view.js'
 import { ensureProtocolRecordsView } from './protocol-records-view.js'
@@ -1675,6 +1675,7 @@ function render() {
   renderFree()
   renderRoute()
   renderDecision()
+  renderPriceBoard()
   renderProbes()
   renderGateway()
   renderUsage()
@@ -3523,12 +3524,23 @@ function officialChipHtml(official) {
     w,
     ow: 100 - w,
   })
+  // 有效成本**已经是站内口径**（RUSD 已在 officialCost 里乘过汇率），
+  // 不能再走 priceText() 按显示币种折第二次——R$ 模式下同一个数会被折两遍，
+  // 而 $ 模式下又会出现「原厂 R$2/R$10 → 有效 $53.50」这种标签和数值对不上的
+  // 显示（看着像贵了 148 倍，其实是 8.00 站内口径 × 6.69 汇率的展示错位）。
+  // 这里用 raw 版：只加当前显示币种符号，不再做任何换算。
+  const rawPrice = (v) =>
+    v === null || v === undefined || !Number.isFinite(v) ? '—' : `${priceSym()}${money(v)}`
   // 填了峰谷价（如 DeepSeek 空闲时段减半）：分「峰 / 谷」展示两个有效成本
   const hasPeak = official.hasOffPeak && official.offPeakBlendedCnyPerMtok !== null
   const eff = hasPeak
-    ? `${t('峰')}${priceText(official.blendedCnyPerMtok)} / ${t('谷')}${priceText(official.offPeakBlendedCnyPerMtok)}`
-    : priceText(official.blendedCnyPerMtok)
-  return `<span class="official-chip" title="${esc(title)}">${t('原厂')} ${cur}${official.in ?? '—'}/${cur}${official.out ?? '—'} /M → ${t('有效')} ${eff}/M</span>`
+    ? `${t('峰')}${rawPrice(official.blendedCnyPerMtok)} / ${t('谷')}${rawPrice(official.offPeakBlendedCnyPerMtok)}`
+    : rawPrice(official.blendedCnyPerMtok)
+  // 明确标出两个口径的差别：原厂价用原币种（R$ / ¥ / $），有效成本统一换算成
+  // 站内口径（¥/$，1:1）。两者差一个汇率是**正常的**——原厂是真实美元、
+  // 站内是中转站自己的计价单位。不写清楚就会被读成「官方价贵了 148 倍」，
+  // 而实际含义是「官方 $2/10 vs 中转站 0.047 折 = 21 倍，再乘 6.69 汇率」
+  return `<span class="official-chip" title="${esc(title)}">${t('原厂')} ${cur}${official.in ?? '—'}/${cur}${official.out ?? '—'} /M → ${t('站内口径')} ${eff}/M</span>`
 }
 
 // --------------------------------------------------------------- 刷新
@@ -4208,16 +4220,80 @@ function renderDecision() {
         blocked: candidate.blocked || candidate.pendingRecovery,
       })
       const isChosen = candidate.offerId === decision.chosenOfferId
-      // 官方参照（比价页并进来的那套）：分子分母都是综合成本（同口径），
-      // 不是质量加权后的 effective——那个和官方比不出「几折」的意思
-      const officialPct =
-        decision.official &&
-        decision.official.blendedCnyPerMtok > 0 &&
-        candidate.blendedCnyPerMtok !== null
-          ? (candidate.blendedCnyPerMtok / decision.official.blendedCnyPerMtok) * 100
-          : null
+      // 官方参照：本行价格是原厂有效成本的几折。
+      //
+      // 2026-11-12 改口径：优先用账单实测价（candidate.effIn，不含缓存），
+      // 没有账单才退回 blended（offerCost 估算）。
+      //
+      // 为什么不能继续只用 blended：实测 24 条可比供给里 23 条与真实扣费
+      // 偏差 >30%（主因是估算把 94.9% 的缓存读当成原价输入算），
+      // 拿它算「几折」会给出系统性错误的结论，进而误导用户选站。
+      //
+      // 为什么分子不用 paidPerMtok（实付）：它含缓存效应——同一条线价格没变，
+      // 缓存命中率从 43% 涨到 99% 就能让 paidPerMtok 差 16 倍。
+      // 拿它做分子会算出 0.2% 这种毫无意义的「折扣」。
+      // 正确做法：分子分母都取「不含缓存」的挂牌价，同口径才有意义。
+      const officialPct = (() => {
+        const oc = decision.official
+        if (!oc || !(oc.blendedCnyPerMtok > 0)) return null
+        // 分子：**站点标价的输入单价**（candidate.inCnyPerMtok），
+        // 不是账单实测——网关实际按标价扣费，折扣比要回答「标价是原厂几折」。
+        // 实测价只在旁边做校验提示（见下方 verify 徽章）。
+        const numerator = candidate.inCnyPerMtok != null
+          ? candidate.inCnyPerMtok
+          : candidate.blendedCnyPerMtok
+        if (numerator == null) return null
+        // 分母：官方的「输入价」而非 blended——分子是输入单价，量纲要对齐。
+        // officialCost 的 blended 是输入25%/输出75%加权，拿它除输入单价会偏。
+        // 官方 in 若非人民币口径（RUSD），officialCost 已把 blended 换算过，
+        // 这里用 blended 与其原币种 blended 之比还原出同口径的输入价。
+        const officialInCny = (() => {
+          const rawIn = oc.in
+          const rawOut = oc.out == null ? rawIn : oc.out
+          if (rawIn == null) return null
+          const w = 0.25
+          const rawBlend = rawIn * w + rawOut * (1 - w)
+          if (!(rawBlend > 0)) return null
+          const factor = oc.blendedCnyPerMtok / rawBlend
+          return rawIn * factor
+        })()
+        if (officialInCny == null || officialInCny <= 0) return null
+        return (numerator / officialInCny) * 100
+      })()
       const officialPctText =
-        officialPct === null ? '' : officialPct < 1 ? '<1%' : `${Math.round(officialPct)}%`
+        officialPct === null
+          ? ''
+          : officialPct < 1
+            ? '<1%'
+            : officialPct < 10
+              ? `${officialPct.toFixed(1)}%`
+              : `${Math.round(officialPct)}%`
+      // 校验徽章：价格一律是**站点标价**，这里只表达「标价与站点账单是否一致」。
+      //   已核对  = 有账单且偏差 <5% → 标价可信
+      //   不符    = 有账单但偏差 >5% → 站点页面标价与实际记账不一致，要查
+      //   未核对  = 没有账单数据 → 无从校验，但标价仍然是网关扣费的依据
+      const priceCheckBadge = (() => {
+        const hasLedger = candidate.priceSource === 'ledger'
+        if (!hasLedger) {
+          return `<span class="badge" style="opacity:.55" title="${esc(t('没有该供给的账单数据，无法核对标价；价格仍以站点标价为准'))}">${t('未核对')}</span>`
+        }
+        const diff = candidate.verifyDiffPct
+        const thin = candidate.ledgerThin
+        const tok = formatTokens(candidate.ledgerTokens || 0)
+        const days = candidate.ledgerDays || 0
+        if (diff == null) {
+          return `<span class="badge" style="opacity:.55" title="${esc(t('账单样本不足以核对标价（{tok} token / {days} 天）', { tok, days }))}">${t('未核对')}</span>`
+        }
+        if (Math.abs(diff) <= 5) {
+          return `<span class="badge ok" title="${esc(t('标价与站点账单一致（偏差 {d}%，{tok} token / {days} 天）', { d: diff, tok, days }))}">${t('已核对')}</span>`
+        }
+        // 偏差正好是汇率倍数 → 几乎必然是基准价币种标错（RUSD/CNY 混淆），
+        // 这比「价格不符」更具体也更可修，所以优先报这个。
+        if (candidate.verifyCurrencySuspect) {
+          return `<span class="badge danger" title="${esc(t('疑似基准价币种标错：账单反推价与标价差 {d}%，接近汇率倍数。请检查基准价页该模型的币种（RUSD / CNY）', { d: diff }))}">${t('币种疑似标错')}</span>`
+        }
+        return `<span class="badge danger" title="${esc(t('标价与站点账单不符：账单反推单价与标价差 {d}%（{tok} token / {days} 天）{thin}', { d: diff, tok, days, thin: thin ? '，样本偏薄仅供参考' : '' }))}">${t('不符 {d}%', { d: diff })}</span>`
+      })()
       // 价格列参考版式：主行综合价，次行输入/输出单价细目（按次计费显示单次价）。
       // 细目来自比价 rank 行透传（daemon/server.js），旧后端没这些字段时次行不画
       const priceSub =
@@ -4243,7 +4319,13 @@ function renderDecision() {
           }</td>
           <td data-col="group">${candidate.group ? `<span class="badge ${groupChipOf(candidate.providerId, candidate.group)}">${esc(candidate.group)}</span>` : '<span style="color:var(--faint)">默认</span>'}</td>
           <td class="num" data-col="price"><span class="num${sortMark('price')}">${candidate.price === null ? '—' : priceText(candidate.price)}</span>${
+            priceCheckBadge ? ` ${priceCheckBadge}` : ''
+          }${
             priceSub ? `<div class="cell-subline">${esc(priceSub)}</div>` : ''
+          }${
+            candidate.paidPerMtok != null
+              ? `<div class="cell-subline" title="${esc(t('这几天的实际单 token 花费（含缓存命中），与挂牌价的差别主要来自缓存'))}">${t('实付')} ${priceText(candidate.paidPerMtok)}</div>`
+              : ''
           }</td>
           <td class="num" data-col="quality">${candidate.quality === null ? '—' : candidate.quality.toFixed(2)}${
             candidate.confidence && candidate.confidence !== 'high'
@@ -4256,7 +4338,7 @@ function renderDecision() {
             // 不拿质量加权后的 effective 去比——那会比出另一个意思
             officialPct === null
               ? ''
-              : `<div class="cell-subline" title="${esc(t('本行综合成本为原厂有效成本的 {pct}（按波峰口径）', { pct: officialPctText }))}">${t('原厂')} ${officialPctText}</div>`
+              : `<div class="cell-subline" title="${esc(t('本行挂牌价为原厂输入价的 {pct}{src}', { pct: officialPctText, src: candidate.priceSource === 'ledger' ? '（账单实测口径，不含缓存）' : '（估算口径，不含缓存）' }))}">${t('原厂')} ${officialPctText}</div>`
           }</td>
           <td data-col="latency"><div class="stack-cell">
             <span class="stack-line"><span class="k">${t('首字')}</span><span class="v">${ttftCell(candidate, stale)}</span></span>
@@ -5197,6 +5279,325 @@ const PROBE_COLS = `<colgroup>
             <col style="width:78px" /><col style="width:78px" />
             <col style="width:76px" /><col style="width:96px" /><col style="width:86px" />
           </colgroup>`
+
+// ------------------------------------------------------------- 数据比价视图
+//
+// 这一页只回答一个问题：**同一个模型，到底哪家实惠**。
+//
+// 它和「智能决策」的分工：决策页回答「这一单派谁」，会被准入、探针、余额、
+// 亲和一堆因素影响，是**执行**视角；本页回答「谁的价格实在」，是**采购**视角。
+// 所以这一页刻意不画质量分、不画首字、不画排序分——那些都是「派谁」的输入，
+// 放进采购视角只会让「哪家便宜」这个结论被稀释。
+//
+// 口径（两档开关，默认全站）：
+//   all    全站：只要站没暂停、供给没下线就算，**不套忽略名单**。
+//          忽略是「别拿它派活」，不是「别让我看见价格」——藏价格恰好废掉本页用途。
+//   routed 只统计参与智能决策的：与决策页/网关同一份 routeableOffers。
+// 两档都在后端 core/price-board.js#offersForScope 收口，前端不自己过滤。
+
+/** 口径开关记在本地，和决策页「只显示可使用」同款。默认全站。 */
+const PRICE_BOARD_SCOPE_KEY = 'manageapi.priceBoardScope'
+let priceBoardScope = localStorage.getItem(PRICE_BOARD_SCOPE_KEY) === 'routed' ? 'routed' : 'all'
+/** 后端按需拉回来的数据。不塞进 state：全站口径 99 个模型约 165KB。 */
+let priceBoardData = null
+let priceBoardLoading = null
+let priceBoardError = null
+/** 展开过明细的模型（记 modelKey），轮询重绘后保持展开 */
+const priceBoardExpanded = new Set()
+/**
+ * 选中的厂牌（多选筛选）。**空集合 = 全部显示**。
+ *
+ * 为什么空集代表「全部」而不是「一个都不显示」：进页面第一眼该看到全貌，
+ * 而不是一个空列表等着用户去点。点第一个标签才进入「只看这几家」的筛选态，
+ * 再点掉最后一个又回到全貌——这样「全部」不需要单独一个按钮。
+ */
+const priceBoardVendorPicked = new Set()
+
+async function loadPriceBoard({ force = false } = {}) {
+  if (!force && priceBoardData && priceBoardData.scope === priceBoardScope) return priceBoardData
+  if (priceBoardLoading) return priceBoardLoading
+  priceBoardError = null
+  const wanted = priceBoardScope
+  priceBoardLoading = (async () => {
+    try {
+      const res = await api('GET', `/api/price-board?scope=${encodeURIComponent(wanted)}`)
+      // 请求期间用户可能又切了口径：只认最后想要的那一份，否则界面会闪回旧口径
+      if (wanted === priceBoardScope) priceBoardData = res
+      return res
+    } catch (error) {
+      if (wanted === priceBoardScope) priceBoardError = error.message || String(error)
+      return null
+    } finally {
+      priceBoardLoading = null
+    }
+  })()
+  return priceBoardLoading
+}
+
+/**
+ * 一行里那句「便宜多少」。
+ *
+ * 只有一个站供货时**不写 0%**：0 会被读成「打平」，而真相是「没得比」。
+ * 这是本页最容易出错的语义，所以判定只在这里写一次。
+ */
+function priceBoardLeadText(board) {
+  if (!board.comparable) {
+    return `<span class="pb-lead none">只有一家供货</span>`
+  }
+  const pct = board.leadPct
+  // 领先幅度分档只影响颜色深浅，不改文案口径
+  const tone = pct !== null && pct >= 20 ? 'big' : pct !== null && pct >= 5 ? 'mid' : 'small'
+  const pctText = pct === null ? '—' : `${pct}%`
+  // 折叠态只给百分比：一行里再塞绝对值会挤掉模型名。绝对值在展开的线路表里
+  // 能自己看出来（第一名和后面的价差），不需要在摘要行重复一遍。
+  const absTip = t('比第二名便宜 {pct}，每百万 token 省 {abs}', {
+    pct: pctText,
+    abs: priceText(board.leadAbsCny),
+  })
+  return `<span class="pb-lead ${tone}" title="${esc(absTip)}">-<b>${esc(pctText)}</b></span>`
+}
+
+/** 实测情况：只陈述「测过几次」，不下「可信/可疑」的判定——那是探针页的结论 */
+function priceBoardEvidenceHtml(evidence) {
+  if (!evidence || evidence.samples === 0) {
+    return `<span class="pb-evidence none" title="${esc(t('这条供给还没有任何探针或真实流量证据，价格是站方标价'))}">${t('未实测')}</span>`
+  }
+  const tip = t('探针 {p} 次 · 真实流量 {t} 次', { p: evidence.probeSamples, t: evidence.trafficSamples })
+  return `<span class="pb-evidence has" title="${esc(tip)}">${esc(evidence.label)}</span>`
+}
+
+/**
+ * 一行一个模型太占地方（106 个模型 = 106 个整屏行），所以这一页用**两段式密度**：
+ *
+ *   1. 折叠态：一行一个模型，但压成紧凑的一行（模型 / 最低价 / 领先 / 实测），
+ *      一个厂牌一张卡，同厂牌的模型排在同一张卡里。
+ *   2. 展开态：点这一行，下拉出**全部线路**（站 × 分组，按价升序），
+ *      每站几组、每组多少钱、各自测过没有，一次看全。
+ *
+ * 厂牌分类直接复用 free-relay.js 的 vendorOf / vendorLabel（忽略模型弹窗用的同一份），
+ * 不在这里另写一套前缀表——两处口径不一致，用户会看到同一个模型在 A 页归 OpenAI、
+ * 在 B 页归「其它」。
+ */
+function priceBoardVendorOf(board) {
+  // 用展示名判厂牌：modelKey 是身份键（可能被改写过），display 才是站上的写法
+  return vendorKeyOf(board.display || board.modelKey)
+}
+
+/**
+ * 按厂牌分组，并标出哪些被选中。
+ *
+ * 排序：**选中的排前面**（用户点了就是要看它），其余按模型数降序——
+ * 模型多的厂牌更可能是用户想找的。和忽略模型弹窗同一套「多的在前」口径。
+ */
+function priceBoardVendorGroups(boards) {
+  const groups = new Map()
+  for (const board of boards) {
+    const key = priceBoardVendorOf(board)
+    if (!groups.has(key)) groups.set(key, [])
+    groups.get(key).push(board)
+  }
+  return [...groups.entries()]
+    .map(([key, items]) => ({
+      key,
+      label: vendorKeyLabel(key),
+      chip: vendorChipClass(items[0]?.display || key),
+      items,
+      comparable: items.filter((b) => b.comparable).length,
+      picked: priceBoardVendorPicked.has(key),
+    }))
+    .sort(
+      (a, b) =>
+        Number(b.picked) - Number(a.picked) ||
+        b.items.length - a.items.length ||
+        a.label.localeCompare(b.label),
+    )
+}
+
+/** 按当前多选筛选出要显示的模型行。空选 = 全部 */
+function priceBoardFilteredBoards(boards) {
+  if (priceBoardVendorPicked.size === 0) return boards
+  return boards.filter((board) => priceBoardVendorPicked.has(priceBoardVendorOf(board)))
+}
+
+/** 展开后的「全部线路」表：站 / 分组 / 价格 / 输入 / 输出 / 实测 */
+function priceBoardLinesHtml(board) {
+  const lines = board.allLines || []
+  if (lines.length === 0) return ''
+  const cheapestPrice = lines[0].blendedCnyPerMtok
+  const rows = lines
+    .map((line, i) => {
+      // 差距表达：3 倍以内给百分比，超过 3 倍改说倍数。
+      // 实测 deepseek-4-pro 最低线 $0.056、最贵线 $1.13，百分比是 +1920%——
+      // 数学没错，但没人能读；说「贵 20 倍」一眼就懂。
+      let delta = null
+      if (cheapestPrice > 0 && line.blendedCnyPerMtok > cheapestPrice) {
+        const times = line.blendedCnyPerMtok / cheapestPrice
+        delta = times >= 3 ? t('贵 {n} 倍', { n: Math.round(times) }) : t('+{p}%', { p: Math.round((times - 1) * 100) })
+      }
+      return `<tr class="${i === 0 ? 'pb-line-best' : ''}">
+        <td class="pb-l-rank">${i + 1}</td>
+        <td class="pb-l-site">${esc(line.providerName || '—')}</td>
+        <td class="pb-l-group">${esc(line.group || t('默认'))}</td>
+        <td class="pb-l-price">${priceText(line.blendedCnyPerMtok)}${
+          delta === null ? '' : `<span class="pb-l-delta">${esc(delta)}</span>`
+        }</td>
+        <td class="pb-l-io">${priceText(line.inCnyPerMtok)} / ${priceText(line.outCnyPerMtok)}</td>
+        <td class="pb-l-ev">${priceBoardEvidenceHtml(line.evidence)}</td>
+      </tr>`
+    })
+    .join('')
+  return `<div class="pb-lines">
+    <table class="pb-lines-table">
+      <thead><tr>
+        <th class="pb-l-rank"></th>
+        <th>${t('站点')}</th>
+        <th>${t('分组')}</th>
+        <th class="pb-l-price">${t('混合价')}</th>
+        <th class="pb-l-io">${t('输入 / 输出')}</th>
+        <th class="pb-l-ev">${t('实测')}</th>
+      </tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+  </div>`
+}
+
+function renderPriceBoard() {
+  const view = $('#view-priceboard')
+  if (!view) return
+  if (state.providers.length === 0) {
+    view.innerHTML = `
+      <div class="empty">
+        <h3>还没有站点</h3>
+        <p>先添加站点并同步模型，这里会显示每个模型哪家实惠。</p>
+        <button class="primary" data-act="add-provider">${icon('plus')}新增站点</button>
+      </div>`
+    return
+  }
+
+  void ensurePriceBoard()
+
+  const scopeSwitch = `
+    <div class="pb-scope">
+      <span class="pb-scope-label">${t('统计范围')}</span>
+      <div class="viewswitch-seg">
+        <button class="${priceBoardScope === 'all' ? 'active' : ''}" data-act="set-price-board-scope" data-scope="all"
+          title="${esc(t('所有未暂停站点、未下线的供给都算进来，包括你在智能决策里忽略掉的模型'))}">${t('全站')}</button>
+        <button class="${priceBoardScope === 'routed' ? 'active' : ''}" data-act="set-price-board-scope" data-scope="routed"
+          title="${esc(t('只统计参与智能决策的供给：忽略掉的模型、暂停的站都不算'))}">${t('只看在用的')}</button>
+      </div>
+    </div>`
+
+  if (priceBoardError) {
+    view.innerHTML = `${scopeSwitch}
+      <div class="empty"><h3>读取失败</h3><p>${esc(priceBoardError)}</p>
+      <button class="ghost" data-act="reload-price-board">${t('重试')}</button></div>`
+    return
+  }
+
+  if (!priceBoardData || priceBoardData.scope !== priceBoardScope) {
+    view.innerHTML = `${scopeSwitch}<div class="empty"><h3>${t('正在统计…')}</h3></div>`
+    return
+  }
+
+  const boards = priceBoardData.boards || []
+  const summary = priceBoardData.summary
+  if (boards.length === 0) {
+    view.innerHTML = `${scopeSwitch}
+      <div class="empty"><h3>${t('没有可比的供给')}</h3>
+      <p>${priceBoardScope === 'routed' ? t('当前没有参与智能决策的供给，试试切到「全站」') : t('先给模型填上价格')}</p></div>`
+    return
+  }
+
+  const groups = priceBoardVendorGroups(boards)
+  const picked = priceBoardVendorPicked
+  const visible = priceBoardFilteredBoards(boards)
+
+  // 筛选条：一排厂牌标签，可多选。空选 = 全部（不需要单独的「全部」按钮——
+  // 把选中的都点掉就回到全部，少一个按钮少一份困惑）。
+  const filterChips = groups
+    .map(
+      (group) => `<button class="pb-chip${group.picked ? ' on' : ''}${group.chip ? ` ${group.chip}` : ''}"
+        data-act="pick-price-board-vendor" data-vendor="${esc(group.key)}"
+        title="${esc(t('{n} 个模型，{c} 个可比', { n: group.items.length, c: group.comparable }))}">
+        <span class="pb-chip-label">${esc(group.label)}</span>
+        <span class="pb-chip-count">${group.items.length}</span>
+      </button>`,
+    )
+    .join('')
+
+  const filterBar = `
+    <div class="pb-filter">
+      <div class="pb-filter-chips">${filterChips}</div>
+      ${picked.size > 0 ? `<button class="ghost tiny pb-filter-clear" data-act="clear-price-board-vendor">${t('清除筛选')}</button>` : ''}
+    </div>`
+
+  // 按厂牌分节展示（不是平铺）：选中的厂牌各一节，节内是紧凑模型行。
+  // 只画被选中的那些节——这就是「点哪个出哪个」。
+  const sections = groups
+    .filter((group) => picked.size === 0 || picked.has(group.key))
+    .map((group) => {
+      const rows = group.items
+        .map((board) => {
+          const open = priceBoardExpanded.has(board.modelKey)
+          const cheap = board.cheapest
+          const lineCount = (board.allLines || []).length
+          return `
+          <div class="pb-row${open ? ' open' : ''}" data-model="${esc(board.modelKey)}">
+            <button class="pb-row-head" data-act="toggle-price-board" data-model="${esc(board.modelKey)}"
+              title="${esc(t('点开看这个模型的全部线路'))}">
+              <span class="pb-name">${esc(board.display || board.modelKey)}</span>
+              <span class="pb-where">${esc(cheap.providerName || '—')}${
+                cheap.group ? `<span class="pb-where-group">${esc(cheap.group)}</span>` : ''
+              }</span>
+              <span class="pb-price">${priceText(cheap.blendedCnyPerMtok)}</span>
+              <span class="pb-lead-cell">${priceBoardLeadText(board)}</span>
+              <span class="pb-ev-cell">${priceBoardEvidenceHtml(cheap.evidence)}</span>
+              <span class="pb-linecount">${lineCount > 1 ? t('{n} 条线', { n: lineCount }) : ''}</span>
+              <span class="pb-caret">${open ? '▾' : '▸'}</span>
+            </button>
+            ${open ? priceBoardLinesHtml(board) : ''}
+          </div>`
+        })
+        .join('')
+      return `
+        <section class="pb-vendor">
+          <div class="pb-vendor-head">
+            <span class="badge ${group.chip || ''} pb-vendor-chip">${esc(group.label)}</span>
+            <span class="pb-vendor-count">${t('{n} 个模型', { n: group.items.length })}${
+              group.comparable ? ` · ${t('{n} 个可比', { n: group.comparable })}` : ''
+            }</span>
+          </div>
+          <div class="pb-vendor-body">${rows}</div>
+        </section>`
+    })
+    .join('')
+
+  const emptyFiltered = visible.length === 0
+    ? `<div class="empty"><h3>${t('这些厂牌下没有模型')}</h3></div>`
+    : ''
+
+  view.innerHTML = `
+    ${scopeSwitch}
+    <div class="pb-summary">${esc(summary?.text || '')}${picked.size > 0 ? ` · ${t('已筛 {n} 家', { n: picked.size })}` : ''}</div>
+    ${filterBar}
+    <div class="pb-vendors">${sections}${emptyFiltered}</div>
+    <div class="pb-foot">
+      ${t('价格是「每百万 token 混合价」（输入 {w}% / 输出 {r}%），按站方标价与倍率换算，与比价页同一套算法。点任意一行看这个模型的全部线路。', {
+        w: Math.round((Number(state.settings?.blendInputWeight) || 0.25) * 100),
+        r: Math.round((1 - (Number(state.settings?.blendInputWeight) || 0.25)) * 100),
+      })}
+    </div>`
+}
+
+/** 进页面时拉一次；和探针花费一样按需，不参与 15 秒轮询 */
+async function ensurePriceBoard() {
+  if (priceBoardData && priceBoardData.scope === priceBoardScope) return
+  await loadPriceBoard()
+  if (activeTab === 'priceboard') {
+    renderPriceBoard()
+    translateDom($('#view-priceboard') || document.body)
+  }
+}
 
 function renderProbes() {
   const view = $('#view-probes')
@@ -6179,8 +6580,259 @@ function renderUsage() {
         <thead><tr><th>站点</th><th class="num">请求</th><th class="num">输入</th><th class="num">输出</th><th class="num" title="${esc(t('缓存读 ÷（输入 + 缓存读 + 缓存写）'))}">${t('缓存读')}</th><th class="num">${t('命中率')}</th><th class="num">${t('平均耗时')}</th></tr></thead>
         <tbody>${providerRows || emptyRow(7)}</tbody>
       </table>
-    </div>`
+    </div>
+
+    ${renderSiteLedger()}`
 }
+
+// ------------------------------------------------------- 站点原始走账清单
+
+/**
+ * 账单视图的折叠状态与同步中标记。
+ *
+ * 为什么不直接铺在页面上：这张表回答的是「我到底花了多少钱、真实单价是多少」，
+ * 和上面「网关自己数了多少 token」是两个口径。混在一起看会重现那个经典误判
+ * （GPT 看着比 DeepSeek 便宜，实际贵 1.6 倍）。所以默认折叠、单独一块，
+ * 标题就把两个口径的差别写清楚。
+ */
+let ledgerOpen = false
+let ledgerSyncing = false
+/** 同步结果横幅：{ ok:boolean, text:string } */
+let ledgerNotice = null
+
+/**
+ * 账单表的单价格式：这类数字动辄 0.006 与 0.010 相邻，用 money() 的三位小数
+ * 会把 1.6 倍的差距显示成「看着差不多」（实测 0.006234 和 0.010097 都被舍成
+ * $0.006 / $0.010 但更小的值会舍成 $0.006/$0.006）。所以这里按量级给精度：
+ *   ≥1      → 2 位
+ *   ≥0.01   → 3 位
+ *   <0.01   → 4 位（账单里最常见的量级）
+ */
+function ledgerPrice(cny) {
+  const v = dispPrice(cny)
+  if (v === null) return '—'
+  const abs = Math.abs(v)
+  const digits = abs >= 1 ? 2 : abs >= 0.01 ? 3 : 4
+  return `${priceSym()}${v.toFixed(digits)}`
+}
+
+/**
+ * 渲染「站点原始账单」这一块。
+ *
+ * 数据来自 /api/state 的 ledger 视图（daemon/ledger-runner.js#buildLedgerView）：
+ *   providers —— 各站今天/七天花了多少
+ *   cheapest  —— 同模型按**真实实付单价**排（已跨天加权合并）
+ *   drift     —— 账单反推的原价 vs 台账，差在哪
+ *
+ * 三种单价要分清，界面上必须各自标名：
+ *   挂牌 blended（比价页那列）= 输入×0.25 + 输出×0.75，**不算缓存价**
+ *   折后单价 eff*             = 站点原价 × 分组倍率
+ *   真实实付 paidPerMtok      = 站点实扣 ÷ 全部 token（含缓存命中率），这才是花了多少
+ */
+function renderSiteLedger() {
+  const ledger = state?.ledger
+  if (!ledger) return ''
+  const providers = ledger.providers || []
+  const withLedger = providers.filter((p) => p.hasLedger)
+  const without = providers.filter((p) => !p.hasLedger)
+
+  const head = `
+    <h3 class="section-title" style="display:flex;align-items:center;gap:10px">
+      <button class="ghost" data-act="ledger-toggle" style="padding:2px 8px">
+        ${ledgerOpen ? '▾' : '▸'} ${t('站点原始账单')}
+      </button>
+      <span class="hint" style="font-weight:400">
+        ${t('站点自己算的账，含缓存读价——「实际花了多少」只认这个')}
+      </span>
+      <button class="ghost" data-act="ledger-sync" ${ledgerSyncing ? 'disabled' : ''} style="margin-left:auto">
+        ${ledgerSyncing ? t('同步中…') : t('立即同步')}
+      </button>
+      <button class="ghost" data-act="ledger-heal" ${ledgerSyncing ? 'disabled' : ''}
+        title="${esc(t('用账单反推出的站点原价，确诊并纠正「输入框存了折后价」的供给。只改能精确对上账的行，手改过的价格一律不动。'))}">
+        ${t('治折后价')}
+      </button>
+    </h3>`
+
+  const notice = !ledgerNotice
+    ? ''
+    : `<div class="hint" style="margin:6px 0 10px;color:${ledgerNotice.ok ? 'var(--ok, #2a7)' : 'var(--danger, #c33)'}">${esc(ledgerNotice.text)}</div>`
+
+  // 折叠时只留一行摘要：今天 + 七天合计，够回答「最近花了多少」
+  if (!ledgerOpen) {
+    const today = withLedger.reduce((s, p) => s + (Number(p.todayActual) || 0), 0)
+    const week = withLedger.reduce((s, p) => s + (Number(p.weekActual) || 0), 0)
+    const summary = withLedger.length
+      ? `${t('今天')} ${priceText(today)} · ${t('近七天')} ${priceText(week)} · ${withLedger.length} ${t('个站点有账单')}`
+      : t('还没有账单数据，点「立即同步」拉一次')
+    return `${head}${notice}<div class="hint" style="margin-bottom:10px">${esc(summary)}</div>`
+  }
+
+  // ---- 展开：各站花费
+  const providerRows = providers
+    .map((p) => {
+      if (!p.hasLedger) {
+        return `<tr class="muted">
+          <td>${esc(p.providerName)}</td>
+          <td colspan="5" class="hint">${esc(t('读不到账单（令牌过期 / 该站没有 usage 接口），比价仍走网关估算'))}</td>
+        </tr>`
+      }
+      return `<tr>
+        <td>${esc(p.providerName)}</td>
+        <td class="num">${priceText(p.todayActual)}</td>
+        <td class="num">${priceText(p.weekActual)}</td>
+        <td class="num">${formatTokens(p.tokens)}</td>
+        <td class="num">${p.requests}</td>
+        <td class="num">${p.lastAt ? fmtDateTime(p.lastAt) : '—'}</td>
+      </tr>`
+    })
+    .join('')
+
+  // ---- 展开：同模型真实实付排序
+  const cheapest = ledger.cheapest || {}
+  const cheapestBlocks = Object.entries(cheapest)
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([model, list]) => {
+      const rows = (list || [])
+        .map((r, i) => `<tr class="${i === 0 ? 'is-best' : ''}">
+          <td>${i === 0 ? '★ ' : ''}${esc(r.providerName)}</td>
+          <td title="${esc(r.groupLabel || '')}">${esc(r.groupLabel || r.group || '—')}</td>
+          <td class="num">${r.rate === null || r.rate === undefined ? '—' : r.rate}</td>
+          <td class="num"><b>${ledgerPrice(r.paidPerMtok)}</b></td>
+          <td class="num">${ledgerPrice(r.effIn)}</td>
+          <td class="num">${ledgerPrice(r.effOut)}</td>
+          <td class="num">${formatTokens(r.tokens)}</td>
+          <td class="num">${r.days || '—'}</td>
+        </tr>`)
+        .join('')
+      return `
+        <h4 class="ledger-model">${esc(model)}</h4>
+        <div class="table-wrap">
+          <table>
+            <thead><tr>
+              <th>${t('站点')}</th><th>${t('分组')}</th><th class="num">${t('倍率')}</th>
+              <th class="num" title="${esc(t('站点实扣 ÷ 全部 token，已含缓存命中率——这是你真正花的钱'))}">${t('真实实付/Mtok')}</th>
+              <th class="num" title="${esc(t('站点原价 × 分组倍率，不含缓存命中率'))}">${t('折后输入')}</th>
+              <th class="num">${t('折后输出')}</th>
+              <th class="num">${t('样本 token')}</th>
+              <th class="num">${t('天数')}</th>
+            </tr></thead>
+            <tbody>${rows}</tbody>
+          </table>
+        </div>`
+    })
+    .join('')
+
+  // ---- 展开：台账差异
+  const drift = ledger.drift || []
+  const kindLabel = {
+    'rate-drift': t('倍率过期'),
+    'price-drift': t('原价不符'),
+    'group-gone': t('分组已消失'),
+    fillable: t('可补价'),
+  }
+  const driftRows = drift
+    .map(
+      (d) => `<tr>
+        <td><span class="badge">${esc(kindLabel[d.kind] || d.kind)}</span></td>
+        <td>${esc(d.providerName)}</td>
+        <td>${esc(d.modelKey)}</td>
+        <td>${esc(d.group || '—')}</td>
+        <td class="hint">${esc(d.note || '')}</td>
+      </tr>`,
+    )
+    .join('')
+
+  return `${head}${notice}
+    <h4 class="ledger-model">${t('各站花费')}</h4>
+    <div class="table-wrap">
+      <table>
+        <thead><tr>
+          <th>${t('站点')}</th><th class="num">${t('今天')}</th><th class="num">${t('近七天')}</th>
+          <th class="num">${t('token')}</th><th class="num">${t('请求')}</th><th class="num">${t('最后同步')}</th>
+        </tr></thead>
+        <tbody>${providerRows || `<tr><td colspan="6" style="text-align:center;color:var(--faint);padding:20px">${t('无数据')}</td></tr>`}</tbody>
+      </table>
+    </div>
+
+    <h4 class="ledger-model">${t('同模型真实实付（越低越便宜）')}</h4>
+    <div class="hint" style="margin-bottom:8px">
+      ${t('按站点实扣 ÷ 全部 token 排，跨天按 token 加权合并。带 ★ 的是这个模型真正最便宜的供给。')}
+      ${t('注意：这和上面「按模型」表的 token 数不是一回事——那张表数的是网关记到的量，这张表数的是站点认的量。')}
+    </div>
+    ${cheapestBlocks || `<div class="hint">${t('无数据')}</div>`}
+
+    ${
+      drift.length === 0
+        ? ''
+        : `<h4 class="ledger-model">${t('台账与账单不一致')}（${drift.length}）</h4>
+           <div class="hint" style="margin-bottom:8px">
+             ${t('拿账单反推出的原价回头核对台账。分组已消失 = 站方删了/改了名，那几条供给的价格已经不可信。')}
+           </div>
+           <div class="table-wrap">
+             <table>
+               <thead><tr><th>${t('类型')}</th><th>${t('站点')}</th><th>${t('模型')}</th><th>${t('台账分组')}</th><th>${t('说明')}</th></tr></thead>
+               <tbody>${driftRows}</tbody>
+             </table>
+           </div>`
+    }`
+}
+
+/** 同步账单：全站或单站。跑完刷新 state，横幅报结果 */
+async function syncSiteLedger(providerId = '', { healPrices = false } = {}) {
+  if (ledgerSyncing) return
+  ledgerSyncing = true
+  ledgerNotice = null
+  renderUsage()
+  try {
+    const path = providerId ? `/api/ledger/sync/${providerId}` : '/api/ledger/sync'
+    const res = await api('POST', path, { ...(healPrices ? { healPrices: true } : {}) })
+    // 同步结果在 ledgerResult 里，**不能读 res.providers**——那是 state 的站点列表
+    // （同名键，读错会得到「6 个失败、providerName undefined」）
+    const r = res.ledgerResult
+    const results = r ? (r.providers || [r]) : []
+    const ok = results.filter((r) => r.ok)
+    const bad = results.filter((r) => !r.ok)
+    // 失败原因只取第一条、并截断：站点报错原文可能带整段 JSON 和多个日期，
+    // 全塞进横幅会把版面撑破，而且真正要看的是「哪家为什么不行」
+    const whyOf = (r) => {
+      const raw = String(r.error || '未知原因')
+      const first = raw.split(';')[0].trim()
+      const short = first.replace(/^\d{4}-\d{2}-\d{2}:\s*/, '')
+      return short.length > 60 ? `${short.slice(0, 60)}…` : short
+    }
+    // 折后价自愈结果：只报「确诊几条」，不报「改了什么」——明细在下方差异表里
+    const healedRows = results.flatMap((r) => r.priceHeal?.healed || [])
+    const healText = healPrices
+      ? healedRows.length > 0
+        ? t('；顺手治好了 {n} 条折后价（输入框存的是折后价，已改回站点原价）', { n: healedRows.length })
+        : t('；没有发现折后价残留')
+      : ''
+    ledgerNotice = {
+      ok: ok.length > 0,
+      text: (bad.length === 0
+        ? t('已同步 {n} 个站点', { n: ok.length })
+        : t('已同步 {ok} 个站点，{bad} 个读不到账单：{why}', {
+            ok: ok.length,
+            bad: bad.length,
+            why: bad.map((r) => `${r.providerName}（${whyOf(r)}）`).join('、'),
+          })) + healText,
+    }
+    // 服务端同步接口已经把新 state 一起返回了，直接用，省一次往返
+    if (res.settings) {
+      // 同步接口把新 state 一起返回了，直接用，省一次往返
+      state = res
+      render()
+    } else {
+      await refreshState({ silent: true })
+    }
+  } catch (error) {
+    ledgerNotice = { ok: false, text: error.message || String(error) }
+  } finally {
+    ledgerSyncing = false
+    renderUsage()
+  }
+}
+
 
 // ------------------------------------------------------------- 详细用量
 
@@ -6571,6 +7223,120 @@ function fxNoteHtml() {
 // 和「手动改过」的条目，其余（导入后没用上的）收进折叠区
 let benchShowAll = false
 
+/**
+ * 价格校准的前端逻辑。
+ *
+ * 三段式，刻意不合成一步：
+ *   1. 预览 —— 先算目标和花费，**不花钱**。用户看到「要校准 228 个、约 ¥0.021」才决定。
+ *   2. 校准 —— 真正发请求。每个目标一次，约 ¥0.0001。
+ *   3. 判定 —— 校准后自动同步账单，再比对。
+ *
+ * 为什么不合成一步：站点导进来可能几百个模型，一键跑掉就是几百次上游请求。
+ * 用户明确要求手动控制，所以「预览」这一步是硬门槛，未预览时「开始校准」是禁用的。
+ */
+let calibPreview = null
+
+function calibTargetsPayload() {
+  const pid = $('#calib-provider')?.value || ''
+  const modelText = ($('#calib-model-filter')?.value || '').trim()
+  return {
+    providerIds: pid ? [pid] : undefined,
+    modelKeys: modelText ? [modelText] : undefined,
+    onlyDrifted: $('#calib-only-drifted')?.checked ? true : undefined,
+  }
+}
+
+function renderCalibReport(html) {
+  const el = $('#calib-report')
+  if (el) el.innerHTML = html
+}
+
+function calibVerdictBadge(v) {
+  if (v === 'ok') return `<span class="badge ok">${t('一致')}</span>`
+  if (v === 'mismatch') return `<span class="badge danger">${t('不符')}</span>`
+  if (v === 'currency') return `<span class="badge danger">${t('币种疑似标错')}</span>`
+  if (v === 'error') return `<span class="badge danger">${t('请求失败')}</span>`
+  return `<span class="badge">${t('未知')}</span>`
+}
+
+async function calibPreviewRun() {
+  const btn = $('#btn-calib-preview')
+  if (btn) btn.disabled = true
+  try {
+    const res = await api('POST', '/api/price-calibrate/preview', calibTargetsPayload())
+    calibPreview = res
+    const c = res.cost || {}
+    const rows = (res.targets || []).slice(0, 12).map((x) => `
+      <tr><td>${esc(x.providerName || '—')}</td><td class="mono">${esc(x.group || '—')}</td><td class="mono">${esc(x.upstreamName || '')}</td></tr>`).join('')
+    renderCalibReport(`
+      <div class="hint" style="margin-bottom:8px">
+        ${t('将校准 <b>{n}</b> 个供给，预估花费 <b>¥{cost}</b>（每个约 ¥{per}）。确认后点「开始校准」。', {
+          n: c.count ?? 0,
+          cost: Number(c.estimateCny ?? 0).toFixed(4),
+          per: Number(c.perItemCny ?? 0).toFixed(6),
+        })}
+      </div>
+      ${rows ? `<table class="table-wrap"><thead><tr><th>${t('站点')}</th><th>${t('分组')}</th><th>${t('模型')}</th></tr></thead><tbody>${rows}</tbody></table>` : ''}
+      ${(res.targets || []).length > 12 ? `<p class="hint">${t('… 还有 {n} 个', { n: res.targets.length - 12 })}</p>` : ''}
+    `)
+    const runBtn = $('#btn-calib-run')
+    if (runBtn) runBtn.disabled = !(c.count > 0)
+  } catch (error) {
+    renderCalibReport(`<div class="banner danger">${esc(error.message || String(error))}</div>`)
+  } finally {
+    if (btn) btn.disabled = false
+  }
+}
+
+async function calibRun() {
+  if (!calibPreview || !(calibPreview.cost?.count > 0)) return
+  const btn = $('#btn-calib-run')
+  if (btn) { btn.disabled = true; btn.textContent = t('校准中…') }
+  renderCalibReport(`<div class="hint">${t('正在校准 {n} 个供给，每个发一次请求后会自动同步该站账单…', { n: calibPreview.cost.count })}</div>`)
+  try {
+    const payload = calibTargetsPayload()
+    const run = await api('POST', '/api/price-calibrate/run', { ...payload, settleMs: 0 })
+    const results = run.results || []
+    const okResults = results.filter((r) => r.ok)
+    // 账单已经由后端同步过了，这里直接判定
+    let judged = []
+    if (okResults.length) {
+      try {
+        const j = await api('POST', '/api/price-calibrate/judge', { results: okResults })
+        judged = j.results || []
+      } catch { /* 判定失败不影响校准本身 */ }
+    }
+    const rows = (judged.length ? judged : results).map((r) => `
+      <tr>
+        <td>${esc(r.providerName || '—')}</td>
+        <td class="mono">${esc(r.group || '—')}</td>
+        <td class="mono">${esc(r.upstreamName || '')}</td>
+        <td class="num">${r.listPrice != null ? priceText(r.listPrice) : '—'}</td>
+        <td class="num">${r.diffPct != null ? `${r.diffPct}%` : '—'}</td>
+        <td>${calibVerdictBadge(r.verdict)}</td>
+        <td>${r.suggestedPrice != null ? `<button class="ghost tiny" data-act="calib-apply" data-offer="${esc(r.offerId)}" data-price="${esc(r.suggestedPrice)}" data-key="${esc(r.upstreamName || '')}">${t('用 {p} 覆盖标价', { p: priceText(r.suggestedPrice) })}</button>` : ''}</td>
+      </tr>`).join('')
+    const bad = judged.filter((r) => r.verdict === 'mismatch' || r.verdict === 'currency').length
+    const synced = Object.entries(run.ledgerSynced || {}).filter(([, v]) => v.ok).length
+    renderCalibReport(`
+      <div class="hint" style="margin-bottom:8px">
+        ${t('校准完成：{ok}/{n} 成功，账单同步 {s} 个站点，{bad} 个有问题。花费约 ¥{cost}。', {
+          ok: okResults.length, n: results.length, s: synced, bad,
+          cost: Number(run.cost?.estimateCny ?? 0).toFixed(4),
+        })}
+      </div>
+      ${rows ? `<table class="table-wrap"><thead><tr>
+        <th>${t('站点')}</th><th>${t('分组')}</th><th>${t('模型')}</th>
+        <th>${t('标价')}</th><th>${t('偏差')}</th><th>${t('结论')}</th><th></th>
+      </tr></thead><tbody>${rows}</tbody></table>` : ''}
+    `)
+  } catch (error) {
+    renderCalibReport(`<div class="banner danger">${esc(error.message || String(error))}</div>`)
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = t('开始校准') }
+  }
+}
+
 function renderBenchmark() {
   const view = $('#view-benchmark')
   const filterText = filters.benchmark.trim().toLowerCase()
@@ -6704,6 +7470,29 @@ function renderBenchmark() {
           asOf: esc(state.reference?.asOf || '—'),
         })}
       </p>
+    </div>
+    <div class="card">
+      <div class="card-title" style="display:flex;align-items:center;gap:8px">
+        <span>${t('价格校准')}</span>
+        <span class="badge" style="opacity:.65">${t('手动触发，不自动跑')}</span>
+      </div>
+      <p class="hint" style="margin:8px 0 10px">
+        ${t('给选中的供给各发<b>一次</b>最小请求，拿站点账单反推单价，再和这里的标价比。用来发现「站点页面标价」与「实际扣费」不一致、或基准价币种标错（RUSD/CNY）。<b>不会自动运行</b>——站点可能有几百个模型，自动跑等于几百次上游请求。')}
+      </p>
+      <div class="inline-form" style="border-top:none;margin:0;padding-top:0;flex-wrap:wrap;gap:8px">
+        <select id="calib-provider" style="max-width:180px">
+          <option value="">${t('全部站点')}</option>
+          ${state.providers.map((p) => `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join('')}
+        </select>
+        <input id="calib-model-filter" class="search" type="search" placeholder="${t('模型名筛选（留空=全部）')}" style="width:200px" />
+        <label class="hint" style="display:flex;align-items:center;gap:5px;margin:0">
+          <input type="checkbox" id="calib-only-drifted" />
+          ${t('只校准已有预警的')}
+        </label>
+        <button id="btn-calib-preview" class="ghost">${t('预览目标与花费')}</button>
+        <button id="btn-calib-run" disabled>${t('开始校准')}</button>
+      </div>
+      <div id="calib-report" style="margin-top:10px"></div>
     </div>
     <div class="card" id="bench-official-card">
       <h3>${t('模型厂商官方价（原厂价）')}</h3>
@@ -7541,7 +8330,7 @@ const SIDEBAR_KEY = 'manageapi.sidebarCollapsed'
   }
 })()
 
-const TABS = ['overview', 'monitor', 'route', 'decision', 'probes', 'protocol', 'gateway', 'usage', 'benchmark', 'diagnosis']
+const TABS = ['overview', 'monitor', 'route', 'decision', 'priceboard', 'probes', 'protocol', 'gateway', 'usage', 'benchmark', 'diagnosis']
 
 /** 暂时隐藏但代码全部保留的 tab：恢复 = index.html 取消导航注释 + 从这里移除。
  *  隐藏视图的循环必须包含它们，否则切页时 #view-free 不会被动收起来。 */
@@ -7648,6 +8437,7 @@ const TAB_META = {
   pricing: { title: '比价', sub: '同一模型跨站对比' },
   route: { title: '路由', sub: '实时 · 网关正在做的决定' },
   decision: { title: '智能决策', sub: '候选排序与手动调整' },
+  priceboard: { title: '数据比价', sub: '同一模型到底哪家实惠' },
   probes: { title: '探针', sub: '指纹 / 截断 / 计费 / 缓存' },
   protocol: { title: '协议探查', sub: '表面协议 · 真实协议 · 原生能力差异' },
   gateway: { title: '网关', sub: '一个入口接管全部流量' },
@@ -8229,8 +9019,35 @@ document.addEventListener('click', async (event) => {
     return
   }
 
-  if (action === 'overview-issues-toggle') {
-    overviewIssuesOpen = !overviewIssuesOpen
+  // 站点原始账单：折叠开关与手动同步。同步是纯读站点后台（不打模型请求），
+  // 不烧 token，所以不用二次确认
+  if (action === 'ledger-toggle') {
+    ledgerOpen = !ledgerOpen
+    renderUsage()
+    translateDom($('#view-usage') || document.body)
+    return
+  }
+
+  if (action === 'ledger-sync') {
+    await syncSiteLedger()
+    return
+  }
+
+  // 治折后价：会真的改台账价格，所以要确认一次
+  if (action === 'ledger-heal') {
+    if (
+      !confirm(
+        t(
+          '用账单反推出的站点原价，纠正「输入框存了折后价」的供给？\n\n只会改能精确对上账的行（现值 ≈ 原价 × 倍率），你手改过的价格一律不动。改完可以再点一次同步核对。',
+        ),
+      )
+    )
+      return
+    await syncSiteLedger('', { healPrices: true })
+    return
+  }
+
+  if (action === 'overview-issues-toggle') {    overviewIssuesOpen = !overviewIssuesOpen
     renderOverview()
     // renderOverview 内部不走 t()，英文界面下靠这层 DOM 翻译兜底
     translateDom($('#view-overview') || document.body)
@@ -9396,6 +10213,64 @@ document.addEventListener('click', async (event) => {
         ? t('已切到简洁版：每个模型一行，点一行才展开候选；完整版随时点回来')
         : t('已切回完整版'),
     )
+    return
+  }
+
+  if (action === 'set-price-board-scope') {
+    const next = actionButton.dataset.scope === 'routed' ? 'routed' : 'all'
+    if (next === priceBoardScope) return
+    priceBoardScope = next
+    try {
+      localStorage.setItem(PRICE_BOARD_SCOPE_KEY, priceBoardScope)
+    } catch {
+      /* 隐私模式下 localStorage 可能不可用 */
+    }
+    // 换口径要重新算：数据在后端按 scope 过滤，前端不自己筛
+    priceBoardData = null
+    renderPriceBoard()
+    translateDom($('#view-priceboard') || document.body)
+    void ensurePriceBoard()
+    toast(
+      priceBoardScope === 'all'
+        ? t('已切到全站：忽略掉的模型也算进来，看的是所有站的真实报价')
+        : t('已切到只看在用的：只统计参与智能决策的供给'),
+    )
+    return
+  }
+
+  if (action === 'pick-price-board-vendor') {
+    const vendor = actionButton.dataset.vendor
+    if (!vendor) return
+    // 多选开关：点一次选中，再点取消。全部取消 = 回到「看全部」
+    if (priceBoardVendorPicked.has(vendor)) priceBoardVendorPicked.delete(vendor)
+    else priceBoardVendorPicked.add(vendor)
+    renderPriceBoard()
+    translateDom($('#view-priceboard') || document.body)
+    return
+  }
+
+  if (action === 'clear-price-board-vendor') {
+    priceBoardVendorPicked.clear()
+    renderPriceBoard()
+    translateDom($('#view-priceboard') || document.body)
+    return
+  }
+
+  if (action === 'toggle-price-board') {
+    const modelKey = actionButton.dataset.model
+    if (!modelKey) return
+    if (priceBoardExpanded.has(modelKey)) priceBoardExpanded.delete(modelKey)
+    else priceBoardExpanded.add(modelKey)
+    renderPriceBoard()
+    translateDom($('#view-priceboard') || document.body)
+    return
+  }
+
+  if (action === 'reload-price-board') {
+    priceBoardData = null
+    priceBoardError = null
+    renderPriceBoard()
+    void ensurePriceBoard()
     return
   }
 
@@ -11106,6 +11981,36 @@ document.addEventListener('change', async (event) => {
   }
 })
 document.addEventListener('click', async (event) => {
+  // ---- 价格校准 ----
+  if (event.target.id === 'btn-calib-preview') {
+    calibPreview = null
+    const runBtn = $('#btn-calib-run')
+    if (runBtn) runBtn.disabled = true
+    await calibPreviewRun()
+    return
+  }
+  if (event.target.id === 'btn-calib-run') {
+    await calibRun()
+    return
+  }
+  // 用校准结果覆盖标价：只改基准价表里那一条的 in 值，不碰倍率、不碰其他字段
+  const applyBtn = event.target.closest?.('[data-act="calib-apply"]')
+  if (applyBtn) {
+    const price = Number(applyBtn.dataset.price)
+    const key = applyBtn.dataset.key
+    if (!Number.isFinite(price) || !key) return
+    await withBusy(applyBtn, async () => {
+      try {
+        // 基准价的写入口是 PUT /api/benchmarks，body 要带 modelKey（不是路径参数）
+        await api('PUT', '/api/benchmarks', { modelKey: key, in: price })
+        toast(t('已把 {name} 的输入价改为 {p}', { name: key, p: priceText(price) }))
+        await refresh()
+      } catch (error) {
+        toast(error.message || String(error), true)
+      }
+    })
+    return
+  }
   if (event.target.id === 'btn-plaza-benchmark') {
     const providerId = $('#import-provider')?.value
     if (!providerId) {

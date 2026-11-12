@@ -112,6 +112,15 @@ import {
 } from '../core/failover.js'
 import { splitOffers, isFreeOffer, resolvePool, FREE_PREFIX, FREE_BASE_PATH } from '../core/free.js'
 import { rankFreePool } from '../core/rank-free.js'
+import {
+  offersForScope,
+  buildPriceBoard,
+  priceBoardSummary,
+  normalizePriceBoardScope,
+} from '../core/price-board.js'
+import { buildLedgerIndex, ledgerForOffer } from '../core/ledger-index.js'
+import * as pc from './price-calibrator.js'
+import * as pcProbe from '../core/price-probe.js'
 import * as platforms from '../core/platforms/index.js'
 import { recordUsage, usageSummary, tokensUsedByKey, resetUsage, readUsage, localMonthStart, parseComposite } from '../core/usage.js'
 import {
@@ -124,6 +133,7 @@ import { buildMonitorView, markAlertsRead, markAnnouncementsRead, applySnapshot 
 import { aggregateLongTerm } from '../core/offer-stats.js'
 import { readProbeSpend, clearProbeSpend, buildProbeSpendView } from '../core/probe-spend.js'
 import { collectProviderSnapshots } from './monitor-runner.js'
+import { syncProviderLedger, syncAllLedgers, buildLedgerView, BACKFILL_DAYS } from './ledger-runner.js'
 import { buildStamp, injectBuildStamp } from './build-stamp.js'
 import { instanceInfo } from './instance-info.js'
 import { runProbes } from './probe-runner.js'
@@ -519,11 +529,24 @@ async function buildState({ light = false } = {}) {
 
   // 把缓存命中率与延迟挂到比价行上，供前端展示；
   // official 是官方有效成本（基准价表 + offerCost 同一算法），供比价组头做参照
+  //
+  // 2026-11-12 增：账单实测价（effIn/effOut）与实付（paidPerMtok）也挂到每行。
+  // 决策页的「官方 xx%」和价格列改用它——原来的 blended 是 offerCost 估算，
+  // 实测与真实扣费偏差 96% 的供给超过 30%，拿它指导选站是错的。
+  const ledgerIndexForRank = buildLedgerIndex(db)
+  // 当前汇率（唯一真源 fx 模块）：用于「币种疑似标错」判定，不硬编码 6.69
+  const fxNow = Number(fxLib.ensureFx(db.settings).rates?.CNY) || 6.6878
   const rankedWithCache = ranked.map((group) => ({
     ...group,
     official: pricing.officialCost(benchmarks[group.modelKey], db.settings),
     rows: group.rows.map((row) => {
       const score = scoreMap.get(row.offerId)
+      const offer = db.offers.find((o) => o.id === row.offerId)
+      const lg = offer ? ledgerForOffer(ledgerIndexForRank, offer) : null
+      const verifyDiff =
+        lg && lg.effIn !== null && row.inCnyPerMtok
+          ? Math.round(((lg.effIn - row.inCnyPerMtok) / row.inCnyPerMtok) * 1000) / 10
+          : null
       return {
         ...row,
         cacheHitRate: score?.cacheHitRate ?? null,
@@ -532,6 +555,27 @@ async function buildState({ light = false } = {}) {
         realTtftMs: score?.realTtftMs ?? null,
         realTtftSamples: score?.realTtftSamples ?? 0,
         avgLatencyMs: score?.latencyMs ?? null,
+        // ---- 标价校验（2026-11-12）----
+        // 价格一律用站点标价（row.inCnyPerMtok / blendedCnyPerMtok），
+        // 这里只传「账单能否核对上标价」的证据，不传替代价格。
+        priceSource: lg && lg.effIn !== null ? 'ledger' : 'benchmark',
+        // 账单反推单价与标价的偏差百分比：0 = 一致，null = 无从核对
+        verifyDiffPct: verifyDiff,
+        // 币种疑似标错（比值 ≈ 汇率倍）：单独标记，界面要给不同提示。
+        // 判定用比值而非百分比差——百分比差为负时反推会漏判（实测踩过）。
+        verifyCurrencySuspect: (() => {
+          if (verifyDiff === null || !(row.inCnyPerMtok > 0)) return null
+          const ratio = lg.effIn / row.inCnyPerMtok
+          const inv = ratio > 0 ? 1 / ratio : null
+          const near = (r) => Math.abs(r - fxNow) / fxNow <= 0.15
+          return near(ratio) || (inv !== null && near(inv))
+        })(),
+        effIn: lg?.effIn ?? null,
+        effOut: lg?.effOut ?? null,
+        paidPerMtok: lg?.paidPerMtok ?? null,
+        ledgerTokens: lg?.tokens ?? null,
+        ledgerDays: lg?.days ?? null,
+        ledgerThin: lg?.thin ?? null,
       }
     }),
   }))
@@ -626,6 +670,18 @@ async function buildState({ light = false } = {}) {
             outCnyPerMtok: row.outCnyPerMtok ?? null,
             perCall: Boolean(row.perCall),
             callPriceCny: row.callPriceCny ?? null,
+            // ---- 标价校验证据（2026-11-12）----
+            // explain() 是白名单，会丢掉 rank 行上新加的字段；而决策页
+            // 要显示「已核对/不符/未核对」和实付价，所以在这里按 offerId 搬回来。
+            priceSource: row.priceSource ?? null,
+            verifyDiffPct: row.verifyDiffPct ?? null,
+            verifyCurrencySuspect: row.verifyCurrencySuspect ?? null,
+            effIn: row.effIn ?? null,
+            effOut: row.effOut ?? null,
+            paidPerMtok: row.paidPerMtok ?? null,
+            ledgerTokens: row.ledgerTokens ?? null,
+            ledgerDays: row.ledgerDays ?? null,
+            ledgerThin: row.ledgerThin ?? null,
           }
         : c
       return rs
@@ -941,6 +997,10 @@ async function buildState({ light = false } = {}) {
     champion: pricing.decisionChampion({ decisions, settings: db.settings }),
     // 结论句里可点的模型下拉：本机未忽略且填了价格的模型，带可用供给数
     headlineModels,
+    // 站点原始走账清单：真实实付单价、台账校验差异、同模型谁真的便宜。
+    // 与 ranked（挂牌 blended，不算缓存价）是两个口径，前端要分开标——
+    // 混着显示会重现「GPT 看着比 DeepSeek 便宜」那个结论错误
+    ledger: buildLedgerView(db, { days: 7 }),
     siteRanking,
     scores,
     probeTotal: db.probes.length,
@@ -2457,6 +2517,56 @@ route('POST', /^\/api\/providers\/([\w-]+)\/restore-ratio$/, async (ctx) => {
 })
 
 /**
+ * 同步站点原始走账清单。
+ *
+ * 和上面的 usage-check 是两件事，别混：
+ *   usage-check —— 拿站点账单去核**我们的估算**准不准（诊断用）
+ *   这个        —— 把账单本身当**权威数据源**存下来（比价、单价、台账校验都用它）
+ *
+ * POST /api/ledger/sync            全部站点
+ * POST /api/ledger/sync/:providerId 单个站点
+ */
+route('POST', /^\/api\/ledger\/sync$/, async (ctx) => {
+  const days = Number(ctx.body?.days)
+  const result = await syncAllLedgers({
+    days: Number.isFinite(days) ? Math.min(Math.max(days, 0), 30) : BACKFILL_DAYS,
+    force: Boolean(ctx.body?.force),
+    // 治折后价残留：要真改台账价格，必须显式请求（前端给一个单独的按钮）
+    healPrices: Boolean(ctx.body?.healPrices),
+  })
+  // 结果必须放独立键：state 里已经有 providers（站点列表），
+  // 直接 {...result, ...state} 会让站点列表把同步结果整个盖掉，
+  // 前端读 res.providers 拿到的就是站点对象（没有 ok/error 字段）——
+  // 实测表现是「已同步 0 个站点，6 个失败：undefined」
+  return { ...(await buildState({ light: true })), ledgerResult: result }
+})
+
+route('POST', /^\/api\/ledger\/sync\/([\w-]+)$/, async (ctx) => {
+  const db = await store.readDb()
+  const provider = db.providers.find((p) => p.id === ctx.params[0])
+  if (!provider) throw new HttpError(404, '站点不存在')
+  const adminToken = await inv.ensureAdminToken(provider.id)
+  if (!adminToken) {
+    throw new HttpError(400, '需要先在站点卡片上点「令牌」，填一个站点后台的登录令牌')
+  }
+  const days = Number(ctx.body?.days)
+  const result = await syncProviderLedger(provider, {
+    adminToken,
+    days: Number.isFinite(days) ? Math.min(Math.max(days, 0), 30) : BACKFILL_DAYS,
+    force: Boolean(ctx.body?.force),
+    healPrices: Boolean(ctx.body?.healPrices),
+  })
+  return { ...(await buildState({ light: true })), ledgerResult: result }
+})
+
+/** 只读账单视图（前端轮询/展开明细时用，不带整份 state） */
+route('GET', /^\/api\/ledger$/, async (ctx) => {
+  const db = await store.readDbCached()
+  const days = Number(ctx.query.get('days'))
+  return buildLedgerView(db, { days: Number.isFinite(days) ? Math.min(Math.max(days, 1), 30) : 7 })
+})
+
+/**
  * 扣费核对：拉站方记录的用量/消费，和「我们按当前价格估算的消费」对比。
  * 差异大说明倍率有水分、或者计费口径不一致。
  */
@@ -3254,6 +3364,98 @@ route('POST', /^\/api\/probes\/run$/, async (ctx) => {
     throw new HttpError(400, '没有可探测的目标：需要该站至少一个 Key，并已同步模型列表')
   }
   return { ...(await buildState()), probeResults: results }
+})
+
+// ── 价格校准探针（2026-11-12）────────────────────────────────────
+//
+// 只做一件事：验证「站点页面标价」与「站点实际记账」是否一致。
+// 与质量探针（/api/probes/run）分工不同，成本也差一个量级（约 ¥0.0001/供给）。
+//
+// **铁律：绝不自动触发。** 没有定时器、没有启动钩子、不在 drift 判定里自动调用。
+// 站点可能导进来几百个模型，自动跑一次就是几百次上游请求——钱不是问题
+// （几百次约几毛），限流和封号风险才是。用户明确要求手动控制。
+route('POST', /^\/api\/price-calibrate\/preview$/, async (ctx) => {
+  const db = await store.readDbCached()
+  const offers = (db.offers || []).filter((o) => !o.delistedAt)
+  const targets = pcProbe.pickCalibrationTargets(offers, {
+    providerIds: ctx.body.providerIds,
+    modelKeys: ctx.body.modelKeys,
+    onlyDrifted: ctx.body.onlyDrifted,
+    ignoredIds: db.settings?.ignoredModels || [],
+  })
+  return {
+    cost: pc.estimateCalibrationCost(targets),
+    targets: targets.map((o) => ({
+      offerId: o.id,
+      providerId: o.providerId,
+      providerName: (db.providers || []).find((p) => p.id === o.providerId)?.name || null,
+      group: o.group || '',
+      upstreamName: o.upstreamName,
+    })),
+  }
+})
+
+route('POST', /^\/api\/price-calibrate\/run$/, async (ctx) => {
+  const db = await store.readDb()
+  // settleMs 允许界面调小（测试或用户不想等），默认由执行器控制
+  const result = await pc.calibratePrices(db, {
+    providerIds: ctx.body.providerIds,
+    modelKeys: ctx.body.modelKeys,
+    onlyDrifted: ctx.body.onlyDrifted,
+    offerIds: ctx.body.offerIds,
+    settleMs: Number.isFinite(Number(ctx.body.settleMs)) ? Number(ctx.body.settleMs) : undefined,
+  })
+  return result
+})
+
+// 校准请求发完后，账单要过几秒才更新。前端拿到 run 的结果后调这个判定。
+route('POST', /^\/api\/price-calibrate\/judge$/, async (ctx) => {
+  const db = await store.readDb()
+  const providerId = ctx.body.providerId || null
+  const rows = []
+  for (const [pid, days] of Object.entries(db.ledger || {})) {
+    if (providerId && pid !== providerId) continue
+    const list = Object.values(days || {}).sort((a, b) => String(b.day).localeCompare(String(a.day)))
+    for (const r of list[0]?.rows || []) rows.push(r)
+  }
+  const fx = Number(fxLib.ensureFx(db.settings || {}).rates?.CNY) || null
+  const results = pc.judgeCalibrationResults(ctx.body.results || [], rows, fx)
+  return { results, at: new Date().toISOString() }
+})
+
+// 数据比价：单独一个接口，不塞进 /api/state。
+//
+// 全站口径有 99 个模型、约 165KB，而 /api/state 已经接近 1MB 且 15 秒轮询一次——
+// 塞进去等于每 15 秒重算并传输一份没人看的全量表。按需拉，切到这一页才请求。
+//
+// scope 两个口径都从 core/price-board.js#offersForScope 取，和决策页/网关
+// 共用同一份在役判定，不在这里另写一遍过滤。
+route('GET', /^\/api\/price-board$/, async (ctx) => {
+  const db = await store.readDbCached()
+  const benchmarks = await bench.readBenchmarks()
+  const scope = normalizePriceBoardScope(ctx.query.get('scope'))
+  const offers = offersForScope(db, scope)
+  const scoreMap = scoresFor(db)
+  const ledgerIndex = buildLedgerIndex(db)
+  const boards = buildPriceBoard(offers, db.settings, benchmarks, scoreMap, {
+    providers: db.providers,
+    aliases: db.settings?.modelAliases || {},
+    ledgerIndex,
+  })
+  return {
+    scope,
+    scopes: [
+      { id: 'all', label: '全站' },
+      { id: 'routed', label: '只统计参与智能决策的' },
+    ],
+    summary: priceBoardSummary(boards),
+    boards,
+    // 未定价供给：算不出价格的（站点没给价 + 基准价表也没这个模型）。
+    // 必须下发——否则用户看到比价表「少了几个模型」却不知道为什么。
+    unpriced: boards.unpriced || [],
+    unpricedCount: (boards.unpriced || []).length,
+    offerCount: offers.length,
+  }
 })
 
 // 探针花费：单独一个接口，不塞进 /api/state。界面每半小时拉一次，而 /api/state

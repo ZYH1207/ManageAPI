@@ -789,5 +789,17 @@ export function explain(candidates) {
     // 不然用户看到一条看着健康的站却没被选，会以为评分出错
     pendingRecovery: c.pendingRecovery ? { kind: c.pendingRecovery.kind, since: c.pendingRecovery.since } : null,
     statusReason: c.statusReason ?? null,
+    // ---- 账单实测价（2026-11-12）----
+    // explain() 是逐字段白名单，新增字段不在这里列出来就到不了前端。
+    // priceSource 决定界面上显示「实测」还是「估算」——不给它，
+    // 用户就无法分辨这个价格是站点真实扣费还是估算值。
+    priceSource: c.priceSource ?? null,
+    verifyDiffPct: c.verifyDiffPct ?? null,
+    effIn: c.effIn ?? null,
+    effOut: c.effOut ?? null,
+    paidPerMtok: c.paidPerMtok ?? null,
+    ledgerTokens: c.ledgerTokens ?? null,
+    ledgerDays: c.ledgerDays ?? null,
+    ledgerThin: c.ledgerThin ?? null,
   }))
 }
