@@ -1,5 +1,43 @@
 # 变更记录
 
+## 未发布
+
+### 新增
+
+**网关支持 Anthropic Messages（`/v1/messages`）**
+
+Claude Code / Anthropic SDK 现在可以直接指向网关，不用再退回 Chat 兼容模式。
+
+- 入口翻译：`system` 顶层参数 → `messages[0].role=system`；`content` 块数组 →
+  Chat content（纯文本压成字符串，混图片才用分段数组）；`tool_use` 块 → 消息上的
+  `tool_calls`；`tool_result` 块 → `role=tool` 消息并保证紧跟在 assistant 之后；
+  `tools[].input_schema` → `function.parameters`；`tool_choice` 的
+  `auto/any/tool/none` → `auto/required/{type:function}/none`。
+- 出口翻译：流式按 Anthropic 的合法事件顺序产出
+  `message_start → content_block_start → content_block_delta → content_block_stop →
+  message_delta → message_stop`（工具调用走 `tool_use` 块 + `input_json_delta`）；
+  非流式产出 `content` 块数组 + `stop_reason` + usage 三件套。
+- 鉴权同时接受 `Authorization: Bearer` 与 `x-api-key`（Claude Code 的原生写法），
+  也接受 `?key=` / `?api_key=`。
+- `/v1/messages/count_tokens` 在本地按字符启发式估算，不打上游、不花钱。
+- 错误一律回 Anthropic 信封（`{type:'error',error:{type,message}}`），
+  包括鉴权失败、参数不合法、上游全挂——Anthropic SDK 认不出 OpenAI 信封。
+
+**为什么只在这一层翻译**：路由、评分、计费、空回合守卫、工具调用本地重建全部只认
+Chat 形状，中间一步没改。所以 Anthropic 客户端同样享受换站、空回合补问、
+工具调用本地重建（上游把工具标记漏进正文时网关自己拼回来）。
+
+**已知边界**：`thinking.budget_tokens` 不往上游传（Chat 没有对应字段），
+`thinking` 参数只用来打开「思考块回传」；`document`（PDF）块会被丢弃。
+
+### 测试
+
+- 新增 `.test/check-anthropic-gateway.mjs`（64 项断言）：覆盖非流式、流式事件顺序、
+  请求方向翻译（用 mock 记下上游真正收到的 body 断言）、工具调用（非流式 + 两路交错的
+  流式并行调用 + 块生命周期合法性）、`x-api-key` 鉴权、错误信封、`count_tokens`、
+  上游全挂、空回合补问（客户端只看到一个 `message_start`），以及
+  `/v1/chat/completions` 未被改坏的回归。
+
 ## 0.3.0
 
 > 2026-11-02。主线是「把界面上看不明白的地方变透明」+ 对标 Magpie 的路由组。

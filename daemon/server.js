@@ -36,6 +36,9 @@ import {
   truncatedFrameError,
   validateGatewayRequest,
 } from '../core/wire.js'
+// Anthropic Messages 适配：客户端说 Anthropic，上游基本只会 Chat，出入口各翻一次。
+// 只在这一层翻译，路由 / 评分 / 计费 / 空回合守卫全部照旧吃 Chat 形状
+import { anthropicToChat, attachAnthropicSink } from '../core/anthropic-wire.js'
 import { detailRows, detailRow, sumBuckets, facetOptions } from '../core/usage-detail.js'
 import {
   selectCandidates,
@@ -4754,15 +4757,33 @@ function authorizeGateway(req, db) {
   const gateway = db.settings.gateway
   if (!Array.isArray(gateway?.keys)) return { ok: false, status: 503, message: '网关尚未初始化' }
   if (!gateway.enabled) return { ok: false, status: 503, message: '网关已在设置中关闭' }
+  // 网关 Key 的三种带法：
+  //   Authorization: Bearer <key>   —— OpenAI 系客户端、ANTHROPIC_AUTH_TOKEN
+  //   x-api-key: <key>              —— Anthropic 官方 SDK / Claude Code 的原生写法
+  //   ?key= / ?api_key=             —— 少数只认 query 的老客户端（Gemini 一脉）
+  // 以前只认 Bearer，Claude Code 直连过来会被判成「没带 Key」，而提示里写着
+  // 「请在 Authorization 头里写 Bearer」，等于把人往错误方向引。
   const header = String(req.headers.authorization || '')
-  const token = header.replace(/^Bearer\s+/i, '').trim()
+  const bearer = header.replace(/^Bearer\s+/i, '').trim()
+  let token = bearer
+  if (!token) token = String(req.headers['x-api-key'] || '').trim()
+  if (!token) {
+    try {
+      const query = new URL(req.url, 'http://127.0.0.1').searchParams
+      token = String(query.get('key') || query.get('api_key') || '').trim()
+    } catch {
+      token = ''
+    }
+  }
   // 这些错误都是「客户端 → 网关」这一段的问题，和上游中转站无关。
   // 一定把段位说出来：否则用户看到「API Key 无效」会去中转站那边找，白费半天。
   if (!token) {
     return {
       ok: false,
       status: 401,
-      message: '[客户端→网关] 没带 Key：请在 Authorization 头里写 Bearer <网关 Key>。网关 Key 在 面板 → 网关 里，和中转站的 Key 不是同一个。',
+      message: '[客户端→网关] 没带 Key：请在 Authorization 头里写 Bearer <网关 Key>，' +
+        'Anthropic 系客户端（Claude Code / Anthropic SDK）也可以写在 x-api-key 头里。' +
+        '网关 Key 在 面板 → 网关 里，和中转站的 Key 不是同一个。',
     }
   }
   const keyRecord = gateway.keys.find((k) => k.key === token)
@@ -5660,7 +5681,35 @@ async function handleFaultSignals({
 }
 
 async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = false, protocol = 'chat') {
-  const body = await readBody(req, { maxBytes: MAX_GATEWAY_BODY })
+  // Anthropic 入口：客户端发来的是 /v1/messages 的形状（system 顶层、content 块数组、
+  // tool_use/tool_result），而路由、评分、计费、空回合守卫、工具调用本地重建全都只认
+  // Chat 形状。所以在这里**一次**翻成 Chat，之后整条链路与 /v1/chat/completions 完全一致。
+  //
+  // 出口方向由 attachAnthropicSink 接管（就地替换 writeHead/write/end），
+  // 见 core/anthropic-wire.js 头注释：写响应的位置有十几处，逐处加 if 必然漏一处。
+  const isAnthropic = protocol === 'anthropic'
+  let anthropicSink = null
+  if (isAnthropic) {
+    // 先把出口装上，再翻译请求：这样连「请求本身不合法」的 400 也是 Anthropic 信封，
+    // 客户端（Anthropic SDK）才认得出 error.type，而不是拿一个 OpenAI 形状的报错
+    anthropicSink = attachAnthropicSink(res)
+  }
+  let body = await readBody(req, { maxBytes: MAX_GATEWAY_BODY })
+  if (isAnthropic) {
+    const wantsThinking = Boolean(body?.thinking)
+    try {
+      body = anthropicToChat(body)
+    } catch (error) {
+      return openaiError(res, 400, error.message || '请求体不符合 Anthropic Messages 协议')
+    }
+    // 模型名要等解析完才有；inputTokensHint 只用于流式 message_start 里的
+    // input_tokens 初值（真值在 message_delta 里由 usage 覆盖）
+    anthropicSink.configure({
+      model: body.model,
+      inputTokensHint: estimateRequestTokens(body),
+      emitThinking: wantsThinking,
+    })
+  }
   // 客户端关闭连接时立刻取消上游请求：否则上游会继续生成，白烧额度还占着连接。
   // res 随请求销毁，监听器跟着回收，不需要手动摘。
   const clientAbort = new AbortController()
@@ -6639,6 +6688,13 @@ async function handleProxy(req, res, url) {
   const isFreeEntry = pathname === FREE_BASE_PATH || pathname.startsWith(`${FREE_BASE_PATH}/`)
   if (isFreeEntry) pathname = pathname.slice(FREE_BASE_PATH.length) || '/'
 
+  // Anthropic 入口的出口翻译必须**在鉴权之前**装上：鉴权失败、路径不存在这些
+  // 都发生在 handleChatCompletions 之外，装晚了客户端（Anthropic SDK）拿到的
+  // 就是一个 OpenAI 形状的报错，它认不出 error.type，只会显示「unknown error」。
+  // attachAnthropicSink 是幂等的，handleChatCompletions 里再调一次只是取回同一个控制器。
+  const isAnthropicPath = pathname === '/v1/messages' || pathname.startsWith('/v1/messages/')
+  if (isAnthropicPath) attachAnthropicSink(res)
+
   // 网关热路径用带缓存的读：db.json 已到 1MB，每请求解析一遍要 15ms 左右。
   // 注意：这里返回的对象是共享的，下游只读不改（写操作一律走 mutate）。
   let db = await store.readDbCached()
@@ -6714,17 +6770,36 @@ async function handleProxy(req, res, url) {
     })
   }
 
-  // 两种协议的路径都在这里落地。协议只影响「往上游打哪个路径」和
-  // 「怎么解析回来的东西」，路由、评分、计费、免费池这一整套完全不看协议
+  // 三种协议的路径都在这里落地。协议只影响「往上游打哪个路径」和
+  // 「怎么解析回来的东西」，路由、评分、计费、免费池这一整套完全不看协议。
+  // anthropic 额外多一步出入口翻译（见 core/anthropic-wire.js）。
   const protocol = protocolForPath(pathname)
   if (protocol) {
     return handleChatCompletions(req, res, db, auth.keyRecord, isFreeEntry, protocol)
   }
 
+  // Claude Code / Anthropic SDK 会先打 /v1/messages/count_tokens 估上下文长度。
+  // 这不是推理请求，本地按同一套字符启发式估算就够（core/quality-signals.js），
+  // 打上游反而白烧一次调用、还可能被站点的限流算进去。
+  if (pathname === '/v1/messages/count_tokens') {
+    const raw = await readBody(req, { maxBytes: MAX_GATEWAY_BODY })
+    let chat = null
+    try {
+      // count_tokens 本来就不带 max_tokens（它只数输入），不能按 Messages 的必填规则拒
+      chat = anthropicToChat(raw, { requireMaxTokens: false })
+    } catch (error) {
+      return json(res, 400, {
+        type: 'error',
+        error: { type: 'invalid_request_error', message: error.message || '请求体不符合 Anthropic Messages 协议' },
+      })
+    }
+    return json(res, 200, { input_tokens: estimateRequestTokens(chat) })
+  }
+
   return openaiError(
     res,
     404,
-    `暂不支持 ${pathname}，目前只代理 /v1/chat/completions、/v1/responses 与 /v1/models`,
+    `暂不支持 ${pathname}，目前只代理 /v1/chat/completions、/v1/responses、/v1/messages 与 /v1/models`,
   )
 }
 

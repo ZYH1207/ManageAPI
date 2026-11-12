@@ -698,9 +698,15 @@ daemon 只绑 `127.0.0.1`，面板不对外网开放，也不做账号鉴权。*
 ## 已知限制
 
 - **余额多半读不到。** one-api 的 `/api/user/self` 要「用户访问令牌」而不是 `sk-` key；不少站直接关了这类接口；Sub2API 的账户接口在 `/api/v1/*` 下、只认登录态。解决办法：在站点卡片上点「令牌」，把浏览器里抓到的登录令牌填进去（一个后台账号填一次，整站通用）。读不到就手动填，工具不会猜一个数字。
-- **代理 `/v1/chat/completions`、`/v1/responses` 和 `/v1/models`**。embeddings、images、`/v1/messages`（Claude 协议）没做。
+- **代理 `/v1/chat/completions`、`/v1/responses`、`/v1/messages`（Claude 协议）和 `/v1/models`**。embeddings、images 没做。
   **`/v1/responses` 是原样透传**：路径和请求体都发给上游，响应也原样回给客户端，只有三件事在网关侧处理——usage 字段改名（`input_tokens`/`output_tokens` → `prompt_tokens`/`completion_tokens`，供计费统计）、失败识别（`error` 事件与 `response.failed` 都算失败）、以及协议能力归因。
   两个协议共用同一套路由和评分，**按协议降级是自动的**：不支持 `/responses` 的站会返回 403/404，被归为 `protocol-unsupported`（不计入站点故障、不触发冷却，因为同一家站走 chat 可能完全正常），网关自动换到支持该协议的候选站。
+- **`/v1/messages` 是翻译适配，不是透传。** 绝大多数中转站只提供 `/v1/chat/completions`，而 Claude Code / Anthropic SDK 只会说 `/v1/messages`，所以网关在**出入口各翻一次**：
+  入口把 `system` 顶层参数、`content` 块数组、`tool_use`/`tool_result`、`tools[].input_schema`、`tool_choice{any|tool}` 翻成 Chat 形状；
+  出口把 `choices[].delta` 的流式增量翻成 `message_start → content_block_start → *_delta → content_block_stop → message_delta → message_stop` 事件序列，非流式则翻成 `content` 块数组 + `stop_reason`。
+  翻译只发生在这一层，**路由、评分、计费、空回合守卫、工具调用本地重建全部照旧**（它们只认 Chat 形状），所以 Anthropic 客户端同样享受换站、空回合补问、工具调用本地重建。
+  鉴权同时接受 `Authorization: Bearer` 与 `x-api-key`（Claude Code 的原生写法）；`/v1/messages/count_tokens` 在本地按字符启发式估算，不打上游。
+  已知边界：`thinking` 请求参数只用来打开「思考块回传」（上游有 `reasoning_content` 就转成 `thinking` 块），`thinking.budget_tokens` 不往上游传；`document`（PDF）块会被丢弃。
 - **用量依赖上游返回 `usage`。** 少数站即使要求了也不返回，这类请求记 0 token，但请求数仍计入。
 - **按次计费的供给不参与「最便宜」比价**。单位可选 `/M`（每百万 token）、`/1k`、`/次`（输入价即每次请求的价格）；按次与按 token 量纲不同，无法折算比较——按次行在比价表里显示「¥X/次」、排组尾、价差不计，监控「今日花费」按 请求数 × 单价 估算。
   **计费形式由模型广场自动识别**：广场的 `billing_mode` 是 `per_request` / `image` 时，导入价格会直接落成「按次」，单价 = `per_request_price` × 分组倍率（生图分组用 `image_rate_multiplier`）——和站点自己页面的算法一致。以前完全没读这个字段，「按次计费」分组里的模型会被当成 ¥X/百万 token 参与比价，量纲错了结论必错。站点没开广场（或走「可用渠道」读价）时拿不到计费形式，仍按 token 处理，可以手动把单位改成 `/次`。

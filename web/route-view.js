@@ -405,6 +405,7 @@ export function routePaint() {
           <p>${deps.t('还没有请求进来')}</p>
           <p class="sub">${deps.t('客户端一调网关，这里就会实时点亮它走的线路。')}</p>
           <p class="sub" style="margin-top:14px">${deps.t('网关地址')}：<code>http://127.0.0.1:${gw.port || 4319}/v1</code></p>
+          <p class="sub">${deps.t('支持 /v1/chat/completions、/v1/responses、/v1/messages（Claude Code 直连）')}</p>
         </div>
       </div>`}
 

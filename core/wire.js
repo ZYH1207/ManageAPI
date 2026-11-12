@@ -48,10 +48,18 @@ export function dataLineKind(payloadText) {
   }
 }
 
-/** 客户端请求路径 → 协议名。返回 null 表示这个路径不归网关代理 */
+/**
+ * 客户端请求路径 → 协议名。返回 null 表示这个路径不归网关代理。
+ *
+ * 注意 anthropic 这一条和另外两条不是一类东西：Chat / Responses 是「客户端说什么、
+ * 上游也说什么」，网关只换路径；Anthropic 是「客户端只会说 Anthropic、中转站基本
+ * 只会 Chat」，所以它在出入口各翻译一次（见 core/anthropic-wire.js）。
+ * 路由、评分、计费、空回合守卫仍然只认 Chat 形状，完全不受影响。
+ */
 export function protocolForPath(pathname) {
   if (pathname === '/v1/responses') return 'responses'
   if (pathname === '/v1/chat/completions') return 'chat'
+  if (pathname === '/v1/messages') return 'anthropic'
   return null
 }
 
@@ -67,7 +75,14 @@ export function truncatedFrameError(payloadText) {
   return `上游的流在帧中间断掉（残留半截 SSE 帧）：${head}`
 }
 
-/** 协议名 → 上游要打的路径 */
+/**
+ * 协议名 → 上游要打的路径。
+ *
+ * anthropic 落回 /chat/completions 是有意的：中转站几乎都只有这一条路，
+ * 客户端要的 /messages 由 core/anthropic-wire.js 在出入口翻译成 Chat。
+ * 真遇到只提供原生 /messages 的站，它会在 chat 上失败并归到
+ * protocol-unsupported（见 core/failure.js），那时才值得加「原生 anthropic 上游」分支。
+ */
 export function upstreamPath(protocol) {
   return protocol === 'responses' ? '/responses' : '/chat/completions'
 }

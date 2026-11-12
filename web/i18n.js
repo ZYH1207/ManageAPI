@@ -536,6 +536,8 @@ const EN = {
 
   // ---- 网关
   '网关地址': 'Gateway URL',
+  '支持 /v1/chat/completions、/v1/responses、/v1/messages（Claude Code 直连）':
+    'Supports /v1/chat/completions, /v1/responses and /v1/messages (Claude Code direct)',
   '关闭网关': 'Turn off gateway',
   '开启网关': 'Turn on gateway',
   '局域网访问': 'LAN access',

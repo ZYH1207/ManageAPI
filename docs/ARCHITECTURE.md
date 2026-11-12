@@ -203,9 +203,34 @@ core/fallback-ladder.js  (232 行)
 
 ```
 core/wire.js (523 行)      发请求、读流、把正文/工具调用递给客户端
+core/anthropic-wire.js     /v1/messages 的出入口翻译（见下面「第 0 步」）
 core/usage.js / usage-ledger.js  用量记账
 core/offer-stats.js        供给统计（喂给评分）
 ```
+
+### 第 0 步（仅 /v1/messages）：出入口翻译
+
+Claude Code / Anthropic SDK 只会说 Anthropic Messages，而中转站基本只会 Chat。
+所以这条路径在**上面 8 步的两端各加一层翻译**，中间一步不少：
+
+```
+客户端 Anthropic 形状
+   │  anthropicToChat()        system 顶层 / content 块 / tool_use·tool_result /
+   ▼                           tools[].input_schema / tool_choice
+Chat 形状 ──▶ 1~8 步原样执行（路由 / 评分 / 计费 / 守卫 完全不知道有这一层）
+   │  attachAnthropicSink()   流式：data 帧 → event 帧；非流式：choices → content 块
+   ▼
+客户端 Anthropic 形状
+```
+
+为什么翻译只能在这两端：中间那 8 步全部按 Chat 形状写死（`choices[].delta`、
+`finish_reason`、`prompt_tokens`）。要在中间兼容第三种形状，等于把判定逻辑
+写两遍——这个项目已经因为「同一概念两处各写一份」出过多次口径漂移。
+
+出口用「就地替换 `res.writeHead/write/end`」而不是包一个假 res：写响应的位置有
+十几处（流式 push、终端块补发、工具重建、非流式 end、错误收尾），逐处加 if
+必然漏一处，漏掉那处就直接给客户端一坨 Chat 形状的垃圾。就地替换保住的是同一个
+对象，`res.on('close')`、`once(res,'drain')` 这些原生用法照旧，回压信号也照旧传回网关。
 
 ---
 
