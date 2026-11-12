@@ -4951,3 +4951,9 @@ body.prov-dragging .drop-zone { display: flex; }
   .pb-lines-table th:nth-child(5), .pb-lines-table td:nth-child(5) { display: none; }
   .pb-l-group { max-width: 120px; }
 }
+
+/* ---- 比价页「含缓存」列（2026-11-12）----------------------------------
+   和 pb-l-io 同宽级，但多一行徽章，所以给一点上边距让数字与邻列对齐。 */
+.pb-l-cache { white-space: nowrap; font-variant-numeric: tabular-nums; }
+.pb-l-cache .pb-l-delta { font-size: 11px; color: var(--ok, #2a7); margin-left: 4px; }
+.pb-l-cache .cell-subline { margin-top: 2px; font-size: 11px; }

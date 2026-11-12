@@ -1079,6 +1079,32 @@ export function applySitePricing(offer, { exact, rate, sitePrice, hasBench, grou
     // 站点明确没给某一项时清掉旧值，避免沿用一个已经不成立的价
     offer.cacheReadPrice = scaleTo(sitePrice.cacheReadPrice)
     offer.cacheWritePrice = scaleTo(sitePrice.cacheWritePrice)
+
+    // ── 缓存价来源标记（2026-11-12）────────────────────────────
+    // 「没有缓存价」有两种完全不同的含义，混在一起会让用户误判：
+    //
+    //   'explicit-zero'  站点明确报 0 → 真·免费缓存，比价里该按 0 算
+    //   'site-reported'  站点报了非 0 值 → 正常
+    //   'site-silent'    站点接口通了，但这条记录没这个字段 → 站点没公布
+    //   'no-source'      站点压根没有价格接口（rapid/秋 的 /api/pricing 全 404）
+    //                    → 只能靠账单校准或手填，不能当成「无缓存优惠」
+    //
+    // 关键区别在最后两个：'site-silent'/'no-source' 不能推定为「没有缓存折扣」，
+    // 那会让该供给在含缓存口径下被系统性高估。界面必须能把它们区分开。
+    const raw = sitePrice.cacheReadPrice
+    if (raw === null || raw === undefined || !Number.isFinite(Number(raw))) {
+      offer.cacheReadSource = 'site-silent'
+    } else if (Number(raw) === 0) {
+      offer.cacheReadSource = 'explicit-zero'
+    } else {
+      offer.cacheReadSource = 'site-reported'
+    }
+  } else if (!offer.cacheReadSource) {
+    // 没有 sitePrice（站点无价格接口）：保持既有值，但打上来源标记
+    // 已有值 → 说明是之前导入/手填的；没有值 → 'no-source'
+    offer.cacheReadSource = offer.cacheReadPrice === null || offer.cacheReadPrice === undefined
+      ? 'no-source'
+      : offer.cacheReadSource || 'site-reported'
   }
 
   // ---- 按次计费：站点在模型广场里声明了 billing_mode=per_request / image。

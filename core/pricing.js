@@ -254,17 +254,31 @@ export function offerCost(offer, settings = {}, benchmarks = {}) {
   // 缓存读价：命中缓存的部分按它计费，通常远低于输入价。站点没给就退回输入价
   // （保守，不假装有折扣），但要把「是不是真的给了」标出来，界面上能区分。
   // 币种换算与主价同一条规则（只有 R.Dollar 乘汇率）
-  const cacheReadRaw = offer.cacheReadPrice
-  const cacheReadCny =
-    cacheReadRaw === null || cacheReadRaw === undefined || !Number.isFinite(Number(cacheReadRaw))
+  //
+  // ★ 2026-11-12 修：这里原来漏了**分组倍率**。
+  //   in/out 走 resolveOfferPrice，那里已经把 ratio 算进去了；
+  //   而缓存价是直读 offer.cacheReadPrice（这是站点的**原价**口径，与
+  //   offer.inPrice 同级），漏乘 ratio 会让缓存价高估 (1/ratio) 倍。
+  //   实测：offer ratio=0.5、cacheReadPrice=0.2 时，这里返回 0.2，
+  //   正确值应为 0.1 —— 高估 2 倍，进而让 usageRowCost 的花费估算偏高。
+  //   修为：与 in/out 同口径，乘 resolved 里用的同一个倍率因子。
+  //
+  //   倍率因子直接取 offer.ratio：ratio 模式才有倍率，manual 模式（直接填了
+  //   inPrice）没有 ratio，因子为 1。
+  //   不能从 resolved 反推——实测 resolveOfferPrice 返回的 inPrice 已经是
+  //   **折后价**（2 × 0.5 = 1），拿它和 inUsdPerMtok 相除恒为 1，等于没修。
+  const priceFactor =
+    String(offer.pricingMode || '') === 'ratio'
+      && offer.ratio !== null && offer.ratio !== undefined && Number.isFinite(Number(offer.ratio))
+      ? Number(offer.ratio)
+      : 1
+  const scaleCache = (raw) =>
+    raw === null || raw === undefined || !Number.isFinite(Number(raw))
       ? null
-      : Number(cacheReadRaw) * mult * siteRate
+      : Number(raw) * priceFactor * mult * siteRate
+  const cacheReadCny = scaleCache(offer.cacheReadPrice)
   // 缓存写价同理：站点按它收「写入缓存」的钱（通常 1.25× 输入价）
-  const cacheWriteRaw = offer.cacheWritePrice
-  const cacheWriteCny =
-    cacheWriteRaw === null || cacheWriteRaw === undefined || !Number.isFinite(Number(cacheWriteRaw))
-      ? null
-      : Number(cacheWriteRaw) * mult * siteRate
+  const cacheWriteCny = scaleCache(offer.cacheWritePrice)
 
   return {
     inUsdPerMtok,

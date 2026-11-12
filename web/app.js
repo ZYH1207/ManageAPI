@@ -5420,6 +5420,44 @@ function priceBoardFilteredBoards(boards) {
 }
 
 /** 展开后的「全部线路」表：站 / 分组 / 价格 / 输入 / 输出 / 实测 */
+/**
+ * 含缓存价这一列的渲染，以及「缓存价从哪来」的标记。
+ *
+ * 四种来源必须分开显示——前两种是确定的，后两种是「不知道」，混在一起
+ * 会让用户以为「这家缓存贵」，实际只是站点没公布或压根没有价格接口。
+ *
+ *   site-reported  站点报了缓存单价        → 正常显示
+ *   explicit-zero  站点明确报 0（真免费）    → 显示实际估算值，标「无缓存费」
+ *   site-silent    站点接口通了但没这字段    → 显示挂牌价，标「未公布」
+ *   no-source      站点没有价格接口         → 显示挂牌价，标「无接口」
+ */
+const cacheCellHtml = (line) => {
+  const basis = line.cachePriceBasis
+  const est = line.priceWithCache
+  const plain = line.blendedCnyPerMtok
+  if (est === null || est === undefined) return `<span style="color:var(--faint)">—</span>`
+  const pct = plain > 0 ? Math.round((1 - est / plain) * 100) : null
+  const badge = (() => {
+    if (basis === 'explicit-zero') {
+      return `<span class="badge ok" title="${esc(t('站点明确无缓存费：命中缓存的 token 不收费'))}">${t('无缓存费')}</span>`
+    }
+    if (basis === 'site-silent') {
+      return `<span class="badge" style="opacity:.6" title="${esc(t('站点价格接口没有缓存单价字段。这里按输入价算——不是「缓存贵」，是「不知道」'))}">${t('未公布')}</span>`
+    }
+    if (basis === 'no-source') {
+      return `<span class="badge" style="opacity:.6" title="${esc(t('该站没有价格接口（实测 rapid / 秋 的 /api/pricing 全 404）。缓存价只能靠账单校准或手填'))}">${t('无接口')}</span>`
+    }
+    if (basis === 'site-reported') {
+      return `<span class="badge ok" style="opacity:.75" title="${esc(t('站点公布了缓存单价，这一列是按 95% 命中的估算'))}">${t('已公布')}</span>`
+    }
+    return ''
+  })()
+  const delta = pct !== null && Math.abs(pct) >= 2
+    ? `<span class="pb-l-delta">${pct > 0 ? `-${pct}%` : `+${-pct}%`}</span>`
+    : ''
+  return `${priceText(est)}${delta}<div class="cell-subline">${badge}</div>`
+}
+
 function priceBoardLinesHtml(board) {
   const lines = board.allLines || []
   if (lines.length === 0) return ''
@@ -5442,6 +5480,7 @@ function priceBoardLinesHtml(board) {
           delta === null ? '' : `<span class="pb-l-delta">${esc(delta)}</span>`
         }</td>
         <td class="pb-l-io">${priceText(line.inCnyPerMtok)} / ${priceText(line.outCnyPerMtok)}</td>
+        <td class="pb-l-cache">${cacheCellHtml(line)}</td>
         <td class="pb-l-ev">${priceBoardEvidenceHtml(line.evidence)}</td>
       </tr>`
     })
@@ -5454,6 +5493,7 @@ function priceBoardLinesHtml(board) {
         <th>${t('分组')}</th>
         <th class="pb-l-price">${t('混合价')}</th>
         <th class="pb-l-io">${t('输入 / 输出')}</th>
+        <th class="pb-l-cache" title="${esc(t('按 95% 缓存命中估算的混合价；只做参考，不参与排序'))}">${t('含缓存')}</th>
         <th class="pb-l-ev">${t('实测')}</th>
       </tr></thead>
       <tbody>${rows}</tbody>

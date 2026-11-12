@@ -465,6 +465,54 @@ console.log('\n[J2] 价格口径：一律站点标价（2026-11-12 定稿）')
 }
 
 
+console.log('\n[J5] 含缓存估算价：区分「明确无缓存」与「没找到」')
+{
+  const mk = (cacheReadPrice, cacheReadSource, hit) => {
+    const offer = {
+      id: 'o1', providerId: 'p1', upstreamName: 'm1', group: 'g', modelKey: 'm1',
+      pricingMode: 'ratio', ratio: 0.5, credentialId: 'c1',
+      inPrice: 2, outPrice: 8, cacheReadPrice, cacheReadSource,
+    }
+    const settings = { blendInputWeight: 0.25, blendCacheHitRate: hit, fx: { rates: { CNY: 6.6878 } } }
+    const benchmarks = { m1: { in: 2, out: 8, currency: 'CNY' } }
+    return pb.buildPriceBoard([offer], settings, benchmarks, new Map(),
+      { providers: [{ id: 'p1', name: 'P' }] })[0].cheapest
+  }
+  // 标价：in 2×0.5=1, out 8×0.5=4 → 挂牌 1×0.25+4×0.75 = 3.25
+  const plain = mk(null, 'no-source', 0)
+  ok(plain.rankPrice === 3.25, `挂牌价 3.25（实际 ${plain.rankPrice}）`)
+  // 刻意设计：用户没设命中率时按 0.95 展示参考值（不改排序）。
+  // 0 会让这一列恒等于挂牌价、没有信息量，所以不采用「0 = 关闭展示」。
+  ok(plain.priceWithCache !== null, 'hitRate=0 时仍展示 0.95 参考值')
+  ok(plain.rankPrice === 3.25, '但挂牌价（排序口径）不受影响')
+
+  // 站点明确报 0 → 缓存真免费
+  const zero = mk(0, 'explicit-zero', 0.95)
+  ok(zero.cachePriceBasis === 'explicit-zero', '来源标记 explicit-zero')
+  // 输入段：(1×0.05 + 0×0.95)=0.05；0.05×0.25+4×0.75=3.0125
+  ok(Math.abs(zero.priceWithCache - 3.0125) < 1e-9, `明确无缓存 → 估算 ${zero.priceWithCache}`)
+  ok(zero.priceWithCache < zero.rankPrice, '明确无缓存时估算价低于挂牌价')
+
+  // 站点报了真实缓存价 0.2
+  const rep = mk(0.2, 'site-reported', 0.95)
+  ok(rep.cachePriceBasis === 'site-reported', '来源标记 site-reported')
+  // 折后缓存价 0.2×0.5=0.1；输入段 1×0.05+0.1×0.95=0.145；0.145×0.25+4×0.75=3.03625
+  ok(Math.abs(rep.priceWithCache - 3.03625) < 1e-6, `真实缓存价 → 估算 ${rep.priceWithCache}`)
+
+  // 站点没公布（silent）→ 按输入价算，不能假装有折扣
+  const silent = mk(null, 'site-silent', 0.95)
+  ok(silent.cachePriceBasis === 'site-silent', '来源标记 site-silent')
+  ok(Math.abs(silent.priceWithCache - silent.rankPrice) < 1e-9, '未公布时估算价 = 挂牌价（不假装有折扣）')
+  ok(String(silent.cachePriceNote).includes('未公布'), '提示写明「站点未公布缓存价」')
+
+  const nosrc = mk(null, 'no-source', 0.95)
+  ok(nosrc.cachePriceBasis === 'no-source', '来源标记 no-source')
+  ok(String(nosrc.cachePriceNote).includes('没有价格接口'), '提示写明「该站没有价格接口」')
+
+  // 关键：含缓存价不参与排序
+  ok(plain.rankPrice === 3.25 && zero.rankPrice === 3.25, '含缓存价不改变 rankPrice（排序口径不变）')
+}
+
 // ------------------------------------------------------------ 真实库冒烟
 console.log('[K] 真实库冒烟（只读，不写任何东西）')
 {

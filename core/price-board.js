@@ -53,6 +53,7 @@ import { offerCost, officialCost } from './pricing.js'
 import { routeableOffers, modelIdentityKey } from './inventory.js'
 import { ledgerForOffer } from './ledger-index.js'
 import { ensureFx } from './fx.js'
+import { backfillCacheReadSource } from './cache-price-backfill.js'
 
 /**
  * 本模块的两种统计口径。
@@ -297,6 +298,61 @@ function officialInCny(bench, settings) {
 }
 
 /**
+ * 含缓存的估算价：按用户设定的缓存命中率，把缓存单价折进去。
+ *
+ * ── 为什么单独一个字段，不改 rankPrice ────────────────────────────
+ *
+ * `rankPrice`（纯挂牌价）是**站点属性**：两家标价多少，直接可比。
+ * 而含缓存的价混进了「你的命中率」这个**用量属性**——它随客户端、任务类型变，
+ * 不是这条供给的固有属性。拿它做排序，等于把用法习惯算成价格差异。
+ *
+ * 所以它是**并排展示的第二列**：让用户看到「缓存价能把挂牌价压到多少」，
+ * 但排序仍按挂牌价。等用户确信命中率稳定，再自己去设置里把
+ * blendCacheHitRate 打开让排序也吃它。
+ *
+ * ── 为什么没缓存价时要区分来源 ──────────────────────────────────
+ *
+ * 实测 158 条供给没填缓存价，但含义完全不同：
+ *   'explicit-zero' 站点明确报 0     → 缓存真免费，按 0 算（估算价会大幅下降）
+ *   'site-silent'   站点接口通了但没这字段 → 不知道，**按输入价算**（不假装有折扣）
+ *   'no-source'     站点根本没有价格接口   → 同上，且界面要标「未公布」
+ *
+ * 不区分就会把「站点没公布」误导成「这家缓存贵」。
+ *
+ * @returns {{price:number|null, basis:string, note:string|null}}
+ */
+function priceWithCache(line, cost, offer, hitRate) {
+  const h = Number(hitRate)
+  if (!Number.isFinite(h) || h <= 0) {
+    return { price: null, basis: 'off', note: null }
+  }
+  const rate = Math.min(Math.max(h, 0), 1)
+  const inCny = line.effIn
+  const outCny = line.effOut
+  if (inCny === null || outCny === null) {
+    return { price: null, basis: 'no-price', note: null }
+  }
+  const src = offer?.cacheReadSource || (cost.cacheReadCnyPerMtok === null ? 'no-source' : 'site-reported')
+  // 站点明确报 0 → 缓存读真免费；其余缺值情况一律退回输入价（不假装有折扣）
+  let cacheRead = cost.cacheReadCnyPerMtok
+  if (src === 'explicit-zero') cacheRead = 0
+  if (cacheRead === null || cacheRead === undefined) cacheRead = inCny
+  const w = 0.25
+  // 输入拆成命中/未命中两段；输出不受缓存影响
+  const blendedIn = inCny * (1 - rate) + cacheRead * rate
+  return {
+    price: blendedIn * w + outCny * (1 - w),
+    // 'site-reported' 有真实缓存价；其余三种是「不知道」的不同原因
+    basis: src,
+    note:
+      src === 'explicit-zero' ? '站点明确无缓存费'
+        : src === 'site-silent' ? '站点未公布缓存价，按输入价算'
+          : src === 'no-source' ? '该站没有价格接口，缓存价未知'
+            : null,
+  }
+}
+
+/**
  * 折扣比：这条线是原厂价的几分之几。
  *
  * **分子分母必须同口径——都不含缓存。**
@@ -322,6 +378,20 @@ export function buildPriceBoard(offers, settings, benchmarks, scoreMap, ctx = {}
   const ledgerIndex = ctx.ledgerIndex || null
   // 汇率（唯一真源 fx 模块）：用于「币种疑似标错」的自动判定
   const fxRate = Number(ensureFx(settings || {}).rates?.CNY) || null
+  // 存量供给没有 cacheReadSource（2026-11-12 前导入的），这里按已有数据回填，
+  // 让界面能把「明确免费 / 未公布 / 无接口」分开显示。只改内存，不落盘。
+  backfillCacheReadSource(offers, ctx.providers)
+  // 含缓存估算用的命中率：**只影响展示那一列，不影响排序**。
+  // 用户没设（blendCacheHitRate=0）时按 0.95 展示——实测全局缓存读占输入 94.9%，
+  // 这是给用户看「缓存价能压到多少」的参考值，不是替他做决定。
+  // 用户设了就按他的，没设（0/缺失）才用 0.95 作**展示**参考值。
+  // 注意区分「用户明确要 0」与「没设过」：前者是想关掉缓存口径，
+  // 后者是默认参考。但当前 UI 只有「0 = 关闭」这一种表达，且 0 会让
+  // 含缓存列恒等于挂牌价（没有信息量），所以这里统一按 0.95 展示，
+  // 并在界面注明「这是参考值，不改排序」。
+  const rawHit = Number(settings?.blendCacheHitRate)
+  const hitProvided = Number.isFinite(rawHit) && rawHit > 0
+  const estimatedHitRate = hitProvided ? Math.min(rawHit, 1) : 0.95
 
   // 未定价供给：算不出价格 = 这个模型不会出现在比价表里。
   // 静默丢掉是危险的——用户会以为「我买的模型都在这」，实际少了一堆。
@@ -358,8 +428,10 @@ export function buildPriceBoard(offers, settings, benchmarks, scoreMap, ctx = {}
     const rawName = offer.modelKey || offer.upstreamName
     const key = modelIdentityKey(rawName, aliases) || rawName
     const price = resolveLinePrice(cost, ledger, settings?.blendInputWeight, fxRate)
+    // 含缓存估算价：并排展示的第二列，不参与排序（理由见 priceWithCache 注释）
+    const withCache = priceWithCache(price, cost, offer, estimatedHitRate)
     if (!byModel.has(key)) byModel.set(key, [])
-    byModel.get(key).push({ offer, cost, ledger, price })
+    byModel.get(key).push({ offer, cost, ledger, price, withCache })
   }
 
   const boards = []
@@ -404,6 +476,14 @@ export function buildPriceBoard(offers, settings, benchmarks, scoreMap, ctx = {}
         thin: best.price?.thin ?? false,
         // 实付：只展示「我花了多少」，不参与排序（含缓存效应）
         paidPerMtok: best.price?.paidPerMtok ?? null,
+        // ---- 含缓存估算价（2026-11-12）----
+        // 按 estimatedHitRate 把缓存单价折进去的估算值。**不参与排序**，
+        // 只和 rankPrice 并排展示，让用户看到「缓存价能压到多少」。
+        priceWithCache: best.withCache?.price ?? null,
+        // 缓存价来源：site-reported / explicit-zero / site-silent / no-source
+        // 后两种是「不知道」，不能读成「这家没有缓存优惠」
+        cachePriceBasis: best.withCache?.basis ?? null,
+        cachePriceNote: best.withCache?.note ?? null,
         // 账单证据量
         ledgerTokens: best.price?.ledger?.tokens ?? null,
         ledgerDays: best.price?.ledger?.days ?? null,
@@ -516,6 +596,9 @@ export function buildPriceBoard(offers, settings, benchmarks, scoreMap, ctx = {}
             sortPrice: r.price?.sortPrice ?? null,
             thin: r.price?.thin ?? false,
             paidPerMtok: r.price?.paidPerMtok ?? null,
+            priceWithCache: r.withCache?.price ?? null,
+            cachePriceBasis: r.withCache?.basis ?? null,
+            cachePriceNote: r.withCache?.note ?? null,
             ledgerTokens: r.price?.ledger?.tokens ?? null,
             ledgerDays: r.price?.ledger?.days ?? null,
             ledgerThin: r.price?.ledger?.thin ?? null,
