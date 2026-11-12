@@ -123,6 +123,7 @@ import {
   buildPriceCompare,
 } from '../core/price-board.js'
 import { buildLedgerIndex, ledgerForOffer } from '../core/ledger-index.js'
+import { trackActive, listActive } from '../core/active-requests.js'
 import * as pc from './price-calibrator.js'
 import * as pcProbe from '../core/price-probe.js'
 import * as platforms from '../core/platforms/index.js'
@@ -4218,6 +4219,15 @@ function usageRangeParams(ctx) {
  *   ?days=30                          最近 30 天（含今天）
  *   ?from=2026-10-01&to=2026-10-20    自定义起止（本地日期，两端都含）
  */
+/**
+ * 活跃请求（内存态）：此刻网关正在处理的请求，不落盘、不含请求正文与 Key。
+ * 与 /api/usage/detail（已完成请求的历史账）互补，插件面板两边都读。
+ */
+route('GET', /^\/api\/active$/, async () => {
+  const rows = listActive()
+  return { rows, count: rows.length, at: new Date().toISOString() }
+})
+
 route('GET', /^\/api\/usage$/, async (ctx) => {
   const days = Math.min(Math.max(Number(ctx.query.get('days')) || 30, 1), 365)
   const { from, to } = usageRangeParams(ctx)
@@ -6398,6 +6408,20 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
     decisionMode: routeTarget?.decisionMode || db.settings.decisionMode,
     pinnedOfferId,
   })
+  // 活跃请求面板：决策出来了就能告诉界面「这一单准备派给谁」。
+  // 之后每次重试由调用方继续 update；请求结束由 res.on('close') 自动摘除。
+  const firstTry = decision.chain?.[0] || null
+  if (res.__maTrack) {
+    res.__maTrack.update({
+      phase: 'dispatching',
+      providerId: firstTry?.offer?.providerId ?? null,
+      providerName: firstTry?.provider?.name ?? null,
+      group: firstTry?.offer?.group ?? null,
+      model,
+      // body 此刻已解析完，stream 标志取真实值（注册时还没读 body，只能是 null）
+      stream: body?.stream === true,
+    })
+  }
   if (decision.chain.length === 0) {
     // 报错文案在 core/router.js：决策页要能显示同一句话，两处各写一遍必然漂移
     const failure = admissionFailure(candidates, {
@@ -7174,6 +7198,14 @@ async function handleProxy(req, res, url) {
   // anthropic 额外多一步出入口翻译（见 core/anthropic-wire.js）。
   const protocol = protocolForPath(pathname)
   if (protocol) {
+    // 活跃请求追踪：在这里注册一处，靠 res.on('close') 自动摘除，
+    // 覆盖 handleChatCompletions 里所有 return 分支（那函数有十几个出口）。
+    // 请求正文此时还没读，model 先留空，决策出来后由内部 update 补上。
+    res.__maTrack = trackActive({
+      protocol,
+      keyName: auth?.keyRecord?.name ?? null,
+      phase: 'routing',
+    }, res)
     return handleChatCompletions(req, res, db, auth.keyRecord, isFreeEntry, protocol)
   }
 
