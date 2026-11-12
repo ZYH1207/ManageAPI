@@ -16,6 +16,7 @@ import { createAutoRouteProber } from './autoprobe.js'
 import { createDriftWatcher } from './drift-watcher.js'
 import { createLanHost, resolveLanAddress } from './lan.js'
 import { collectProviderSnapshots } from './monitor-runner.js'
+import { syncAllLedgers } from './ledger-runner.js'
 import { runDetourRechecks } from './detour-runner.js'
 import { spawn } from 'node:child_process'
 import { setReportPort } from '../core/fault-reporter.js'
@@ -267,6 +268,10 @@ startProbeScheduler({
   recheckDetours: runDetourRechecks,
   autoProbe: autoRouteProber,
   driftWatcher,
+  // 站点账单同步：到期判断与「跑完记时间戳」都在调度器里（见 scheduler.js
+  // 的账板块），这里只注入「怎么拉」。时间戳不能交给这一层写——
+  // 少写一次就变成每轮都跑，实测每 120ms 重跑一轮
+  syncLedger: async ({ logger }) => syncAllLedgers({ logger }),
   logger: console,
 })
 

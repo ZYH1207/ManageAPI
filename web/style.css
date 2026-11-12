@@ -4822,3 +4822,138 @@ body.prov-dragging .drop-zone { display: flex; }
   .simple-count { text-align: left; }
 }
 
+
+/* ---- 站点原始账单（用量页底部那块）--------------------------------------
+   和上面的网关用量表是两个口径：那边数的是网关记到的 token，这边数的是站点
+   认的钱。视觉上必须能一眼分开，否则又会把「挂牌 blended」和「真实实付」
+   混成一个数看。 */
+.ledger-model {
+  margin: 16px 0 8px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--fg);
+  font-variant-numeric: tabular-nums;
+}
+/* 真实实付最低的那一行：只加左侧色条 + 淡底，不整行高亮（整行高亮会和
+   「当前正在用」那种强语义状态撞车） */
+.table-wrap tr.is-best > td:first-child {
+  box-shadow: inset 3px 0 0 var(--ok, #2a7);
+  font-weight: 600;
+}
+.table-wrap tr.is-best { background: color-mix(in srgb, var(--ok, #2a7) 6%, transparent); }
+/* 读不到账单的站点行：整行压灰，说明它没参与真实比价 */
+.table-wrap tr.muted > td { color: var(--faint); }
+
+/* ---------------------------------------------------------- 数据比价（priceboard）
+   密度设计：折叠态一行一个模型，但压到 ~34px 高，一屏能看 20+ 个；
+   厂牌卡把同厂模型聚在一起，一眼能扫「OpenAI 有哪些、Anthropic 有哪些」。
+   展开才出线路表——106 个模型全展开是没法看的。 */
+.pb-scope { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; flex-wrap: wrap; }
+.pb-scope-label { font-size: 12px; color: var(--faint); }
+.pb-scope .viewswitch-seg { padding: 2px 11px; }
+.pb-summary { font-size: 12px; color: var(--muted); margin-bottom: 10px; }
+.pb-vendors { display: flex; flex-direction: column; gap: 8px; }
+
+/* 筛选条：一排厂牌标签，多选。空选 = 全部 */
+.pb-filter {
+  display: flex; align-items: flex-start; gap: 8px;
+  padding: 8px 10px; margin-bottom: 10px;
+  border: 1px solid var(--border); border-radius: 10px; background: var(--surface-2);
+}
+.pb-filter-chips { display: flex; flex-wrap: wrap; gap: 5px; flex: 1; min-width: 0; }
+.pb-chip {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 2px 9px; border-radius: 999px;
+  border: 1px solid var(--border); background: var(--surface);
+  font-family: inherit; font-size: 11.5px; color: var(--muted);
+  cursor: pointer; white-space: nowrap; line-height: 1.7;
+  transition: background .12s, border-color .12s, color .12s;
+}
+.pb-chip:hover { border-color: var(--accent-mid); color: var(--text); }
+/* 选中态：实心强调色，和未选中的灰边框一眼能分开 */
+.pb-chip.on { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 500; }
+.pb-chip.on .pb-chip-count { color: rgba(255,255,255,.85); }
+.pb-chip-count { font-size: 10px; color: var(--faint); font-variant-numeric: tabular-nums; }
+.pb-filter-clear { flex: none; }
+
+/* 厂牌分节（不是平铺：每家一节，节头一行） */
+.pb-vendor { border: 1px solid var(--border); border-radius: 10px; background: var(--surface); overflow: hidden; }
+.pb-vendor + .pb-vendor { margin-top: 8px; }
+.pb-vendor-head {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 12px; background: var(--surface-2);
+}
+.pb-vendor-chip { font-size: 11px; }
+.pb-vendor-count { font-size: 11px; color: var(--faint); font-variant-numeric: tabular-nums; }
+.pb-vendor-body { display: flex; flex-direction: column; }
+
+/* 折叠态：一行一个模型，紧凑排布 */
+.pb-row { border-top: 1px solid var(--divider); }
+.pb-row:first-child { border-top: none; }
+.pb-row.open { background: var(--accent-soft); }
+.pb-row-head {
+  display: grid;
+  /* 模型名 / 站·分组 / 价格 / 领先 / 实测 / 线数 / 箭头 */
+  grid-template-columns: minmax(140px, 1.5fr) minmax(130px, 1.3fr) 76px 62px 74px 54px 14px;
+  gap: 10px; align-items: center;
+  width: 100%; padding: 6px 12px;
+  border: none; background: none; font-family: inherit; text-align: left; cursor: pointer;
+  font-size: 12px; line-height: 1.5;
+}
+.pb-row-head:hover { background: var(--hover); }
+.pb-row.open .pb-row-head:hover { background: var(--accent-soft); }
+
+.pb-name { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pb-where { display: flex; align-items: baseline; gap: 5px; min-width: 0; color: var(--muted); }
+.pb-where-group { font-size: 10.5px; color: var(--faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pb-price { font-variant-numeric: tabular-nums; font-weight: 600; text-align: right; }
+.pb-lead-cell { text-align: right; }
+.pb-lead { font-size: 11.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.pb-lead b { font-weight: 600; }
+.pb-lead.big { color: var(--success); }
+.pb-lead.big b { color: var(--success); }
+.pb-lead.small { color: var(--faint); }
+.pb-lead.none { color: var(--faint); font-size: 11px; }
+.pb-ev-cell { text-align: right; }
+.pb-evidence { font-size: 10.5px; padding: 0 6px; border-radius: 999px; border: 1px solid var(--border); color: var(--muted); white-space: nowrap; }
+.pb-evidence.none { color: var(--faint); border-style: dashed; }
+.pb-evidence.has { color: var(--accent); border-color: var(--accent-mid); background: var(--accent-soft); }
+.pb-linecount { font-size: 10.5px; color: var(--faint); text-align: right; font-variant-numeric: tabular-nums; }
+.pb-caret { font-size: 10px; color: var(--faint); text-align: center; }
+
+/* 展开态：全部线路表 */
+.pb-lines { padding: 0 12px 10px; }
+.pb-lines-table { width: 100%; border-collapse: collapse; font-size: 11.5px; }
+.pb-lines-table th {
+  font-size: 10px; font-weight: 500; color: var(--faint); text-align: left;
+  padding: 3px 6px; border-bottom: 1px solid var(--divider);
+}
+.pb-lines-table td { padding: 3px 6px; border-bottom: 1px dashed var(--divider); vertical-align: middle; }
+.pb-lines-table tr:last-child td { border-bottom: none; }
+.pb-l-rank { width: 20px; color: var(--faint); font-variant-numeric: tabular-nums; text-align: right; }
+.pb-l-site { width: 68px; }
+.pb-l-group { color: var(--muted); max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pb-l-price { width: 96px; text-align: right; font-variant-numeric: tabular-nums; font-weight: 500; }
+.pb-l-delta { margin-left: 5px; font-size: 10px; font-weight: 400; color: var(--faint); }
+.pb-l-io { width: 118px; text-align: right; font-variant-numeric: tabular-nums; color: var(--faint); font-size: 10.5px; }
+.pb-l-ev { width: 74px; text-align: right; }
+.pb-lines-table tr.pb-line-best td { color: var(--text); }
+.pb-lines-table tr.pb-line-best .pb-l-price { font-weight: 600; color: var(--accent); }
+
+.pb-foot { margin-top: 12px; font-size: 11px; line-height: 1.7; color: var(--faint); }
+
+/* 窄屏：折叠态压成两行——模型名+价格一行，站·领先+实测一行 */
+@media (max-width: 980px) {
+  .pb-row-head { grid-template-columns: minmax(0, 1.4fr) 76px 62px 14px; row-gap: 2px; }
+  .pb-where { grid-column: 1 / -1; grid-row: 2; font-size: 11px; }
+  .pb-ev-cell { grid-row: 2; grid-column: 2; }
+  .pb-linecount { display: none; }
+  .pb-lines-table th:nth-child(5), .pb-lines-table td:nth-child(5) { display: none; }
+  .pb-l-group { max-width: 120px; }
+}
+
+/* ---- 比价页「含缓存」列（2026-11-12）----------------------------------
+   和 pb-l-io 同宽级，但多一行徽章，所以给一点上边距让数字与邻列对齐。 */
+.pb-l-cache { white-space: nowrap; font-variant-numeric: tabular-nums; }
+.pb-l-cache .pb-l-delta { font-size: 11px; color: var(--ok, #2a7); margin-left: 4px; }
+.pb-l-cache .cell-subline { margin-top: 2px; font-size: 11px; }

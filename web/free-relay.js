@@ -29,6 +29,21 @@ export const VENDOR_LABEL = {
   qwen: '通义千问',
   kimi: 'Moonshot',
   moonshot: 'Moonshot',
+  // 以下按 2026-11 实测数据补：这些前缀在库里真实出现过，但原表没有，
+  // 结果每个都单独占一张卡（mimo / hy3 / hy4 / k3 / seed / step / longcat）。
+  // 归到公司而不是系列名——用户问的是「哪家的模型便宜」，不是「哪个系列」。
+  k3: 'Moonshot',
+  hy: '腾讯混元',
+  hy3: '腾讯混元',
+  hy4: '腾讯混元',
+  mimo: '小米 MiMo',
+  seed: '字节 Seed',
+  step: '阶跃星辰',
+  longcat: '美团 LongCat',
+  muse: 'Muse',
+  neohorse: 'NeoHorse',
+  space: 'Space',
+  senseaudio: '商汤 SenseAudio',
   doubao: '豆包',
   hunyuan: '腾讯混元',
   ernie: '文心一言',
@@ -74,6 +89,39 @@ export function vendorChipClass(modelName) {
   if (!stem) return ''
   if (CN_PREFIXES.has(stem)) return 'vchip-cn'
   return OVERSEAS_CHIP[stem] || ''
+}
+
+/**
+ * 模型名 → 厂商**归一键**（用于分组，不是用于显示）。
+ *
+ * 和 vendorOf 的差别只有一处，但很关键：**归一到「同一家公司」而不是「同一段前缀」**。
+ *
+ * 实测踩到的两个坑（数据比价页 106 个模型）：
+ *   1. `gpt-6.1-sol` 与 `codex-*` 都属于 OpenAI，但前缀不同 → 分成两张卡，
+ *      用户看到两个「OpenAI」。
+ *   2. `qwen3.8-max` 按分隔符切出来是 `qwen3`，没进表 → 卡片标题显示成 `qwen3`，
+ *      和另一张「通义千问」并存。
+ *
+ * 所以这里复用 vendorChipClass 的两步匹配思路：先整段比对，带数字时取纯字母前缀
+ * 再比对一次，最后才回落到「按前缀当键」。两条路径共用同一张表，不会各自漂移。
+ */
+export function vendorKeyOf(name) {
+  const first = String(name || '').toLowerCase().split(/[-_./:]/)[0]
+  if (!first) return 'other'
+  // 第一步：整段命中（gpt / claude / o3 / k3 …）
+  if (VENDOR_LABEL[first]) return VENDOR_LABEL[first]
+  // 第二步：带版本号的段取纯字母前缀（qwen3.8 → qwen、glm5 → glm、gpt5 → gpt）
+  if (/[0-9]/.test(first)) {
+    const stem = first.match(/^[a-z]+/)?.[0]
+    if (stem && VENDOR_LABEL[stem]) return VENDOR_LABEL[stem]
+  }
+  // 没进表：用它自己当前缀键，至少同前缀的还能聚在一起（显示时是原始名字）
+  return first
+}
+
+/** 归一键 → 展示名。键本身就是展示名（VENDOR_LABEL 的值），回落原样 */
+export function vendorKeyLabel(key) {
+  return key === 'other' ? '其它' : key
 }
 
 export function vendorOf(name) {

@@ -83,6 +83,15 @@ export function resolveOfferPrice(offer, benchmarks = {}) {
     // 不做任何币种换算 —— 换算只发生在 officialCost（官方有效成本）那一处。
     const boxIn = finiteOrNull(offer.inPrice)
     const boxOut = finiteOrNull(offer.outPrice)
+    // 注意：这里**不做「折后价残留」兜底**。试过一版「inPrice 严格小于基准价
+    // 就判为折后价、改用基准价」，实测误伤 56 条里的大多数——站点自己的真实
+    // 原价经常就比基准价低（rapid 官key 组 deepseek-v4-pro 报 4.5/13.5，
+    // 基准价是 9/27，那 4.5 是真价不是折后价）。基准价是「官方参考」，
+    // 不是「站点必须等于它」，拿它当上限去纠正台账属于口径越界。
+    //
+    // 折后价残留只能在**同步时**判（inventory.js#applySitePricing 的 healTo
+    // 有站点公布的原价可比），或者用站点账单反推（core/site-ledger.js）。
+    // 读价层没有这两样信息，硬判必然误伤。
     const fromBox = boxIn !== null || boxOut !== null
     const baseIn = fromBox ? boxIn : finiteOrNull(bench?.in)
     const baseOut = fromBox ? boxOut : finiteOrNull(bench?.out)
@@ -194,6 +203,40 @@ export function offerCost(offer, settings = {}, benchmarks = {}) {
   else if (inUsdPerMtok !== null) blendedUsdPerMtok = inUsdPerMtok
   else if (outUsdPerMtok !== null) blendedUsdPerMtok = outUsdPerMtok
 
+  // ---- 含缓存的综合价（2026-11-12 新增）
+  //
+  // 上面那个 blendedUsdPerMtok 只算「输入×w + 输出×(1-w)」，**完全不看缓存读价**。
+  // 而真实用量里缓存命中占 88~96%（站点账单实测），所以这个口径会系统性地
+  // 偏向「缓存读价贵、名义输入价低」的模型——实测秋的 GPT-6.1-sol 就是这样
+  // 在比价里排到了 DeepSeek 前面，而站点账单显示它实际贵 1.6 倍。
+  //
+  // 这里不动 blendedUsdPerMtok 的含义（它是「纯 token 挂牌价」，很多地方在用来
+  // 排序和显示，改语义会让既有结论集体跳变），而是**新增**一个把缓存算进去的
+  // 口径：假设输入里有 `settings.blendCacheHitRate` 这一比例命中缓存，
+  // 那部分按缓存读价计费。默认 0（= 不改变现有行为），用户可在设置里打开。
+  //
+  // 为什么要一个比例而不是直接按真实命中率算：命中率是**用量属性**，不是
+  // 供给属性——同一个站被不同客户端打，命中率能差好几倍。拿一个全站平均
+  // 命中率去算单条供给的真实成本，等于把别人的用量习惯算到你头上。
+  // 所以这里只提供一个可调的估算口径，真实数据以站点账单（core/site-ledger.js）
+  // 为准——那个是站点自己记的账，不用估。
+  const rawHitRate = Number(settings.blendCacheHitRate)
+  const hitRate = Number.isFinite(rawHitRate) ? Math.min(Math.max(rawHitRate, 0), 1) : 0
+  const cacheReadUsd = toUsd(offer.cacheReadPrice)
+  // 缓存读价没公布时退回输入价（保守：不假装有折扣），与 cacheReadCny 的回落一致
+  const cacheReadEff = cacheReadUsd === null ? inUsdPerMtok : cacheReadUsd
+  let blendedWithCacheUsdPerMtok = null
+  if (inUsdPerMtok !== null && outUsdPerMtok !== null) {
+    // 输入部分拆成「命中缓存」与「未命中」两段，命中段按缓存读价
+    const inputBlended = inUsdPerMtok * (1 - hitRate) + cacheReadEff * hitRate
+    blendedWithCacheUsdPerMtok =
+      Math.round((inputBlended * weight + outUsdPerMtok * (1 - weight)) * 1e9) / 1e9
+  } else if (inUsdPerMtok !== null) {
+    blendedWithCacheUsdPerMtok = Math.round((inUsdPerMtok * (1 - hitRate) + cacheReadEff * hitRate) * 1e9) / 1e9
+  } else if (outUsdPerMtok !== null) {
+    blendedWithCacheUsdPerMtok = outUsdPerMtok
+  }
+
   // 峰谷：只算空闲时段的展示价，排序仍用高峰价，避免选站结果随时间跳变
   const offPeakInUsd = toUsd(resolved.offPeakInPrice)
   const offPeakOutUsd = toUsd(resolved.offPeakOutPrice)
@@ -211,17 +254,31 @@ export function offerCost(offer, settings = {}, benchmarks = {}) {
   // 缓存读价：命中缓存的部分按它计费，通常远低于输入价。站点没给就退回输入价
   // （保守，不假装有折扣），但要把「是不是真的给了」标出来，界面上能区分。
   // 币种换算与主价同一条规则（只有 R.Dollar 乘汇率）
-  const cacheReadRaw = offer.cacheReadPrice
-  const cacheReadCny =
-    cacheReadRaw === null || cacheReadRaw === undefined || !Number.isFinite(Number(cacheReadRaw))
+  //
+  // ★ 2026-11-12 修：这里原来漏了**分组倍率**。
+  //   in/out 走 resolveOfferPrice，那里已经把 ratio 算进去了；
+  //   而缓存价是直读 offer.cacheReadPrice（这是站点的**原价**口径，与
+  //   offer.inPrice 同级），漏乘 ratio 会让缓存价高估 (1/ratio) 倍。
+  //   实测：offer ratio=0.5、cacheReadPrice=0.2 时，这里返回 0.2，
+  //   正确值应为 0.1 —— 高估 2 倍，进而让 usageRowCost 的花费估算偏高。
+  //   修为：与 in/out 同口径，乘 resolved 里用的同一个倍率因子。
+  //
+  //   倍率因子直接取 offer.ratio：ratio 模式才有倍率，manual 模式（直接填了
+  //   inPrice）没有 ratio，因子为 1。
+  //   不能从 resolved 反推——实测 resolveOfferPrice 返回的 inPrice 已经是
+  //   **折后价**（2 × 0.5 = 1），拿它和 inUsdPerMtok 相除恒为 1，等于没修。
+  const priceFactor =
+    String(offer.pricingMode || '') === 'ratio'
+      && offer.ratio !== null && offer.ratio !== undefined && Number.isFinite(Number(offer.ratio))
+      ? Number(offer.ratio)
+      : 1
+  const scaleCache = (raw) =>
+    raw === null || raw === undefined || !Number.isFinite(Number(raw))
       ? null
-      : Number(cacheReadRaw) * mult * siteRate
+      : Number(raw) * priceFactor * mult * siteRate
+  const cacheReadCny = scaleCache(offer.cacheReadPrice)
   // 缓存写价同理：站点按它收「写入缓存」的钱（通常 1.25× 输入价）
-  const cacheWriteRaw = offer.cacheWritePrice
-  const cacheWriteCny =
-    cacheWriteRaw === null || cacheWriteRaw === undefined || !Number.isFinite(Number(cacheWriteRaw))
-      ? null
-      : Number(cacheWriteRaw) * mult * siteRate
+  const cacheWriteCny = scaleCache(offer.cacheWritePrice)
 
   return {
     inUsdPerMtok,
@@ -239,6 +296,12 @@ export function offerCost(offer, settings = {}, benchmarks = {}) {
     inCnyPerMtok: toCny(inUsdPerMtok),
     outCnyPerMtok: toCny(outUsdPerMtok),
     blendedCnyPerMtok: toCny(blendedUsdPerMtok),
+    // 含缓存的综合价（settings.blendCacheHitRate > 0 时才有意义）。
+    // 不参与现有排序——它是给「按真实成本比」那一列和站点账单对照用的。
+    // 默认 hitRate=0 时它恒等于 blendedUsdPerMtok，调用方可以无脑读
+    blendedWithCacheUsdPerMtok,
+    blendedWithCacheCnyPerMtok: toCny(blendedWithCacheUsdPerMtok),
+    cacheHitRate: hitRate,
     offPeakBlendedCnyPerMtok: toCny(offPeakBlendedUsdPerMtok),
     hasOffPeak,
     complete,
@@ -401,6 +464,11 @@ export function rankByModel(offers, settings = {}, benchmarks = {}, isTrusted = 
         inCnyPerMtok: r.cost.inCnyPerMtok,
         outCnyPerMtok: r.cost.outCnyPerMtok,
         blendedCnyPerMtok: r.cost.blendedCnyPerMtok,
+        // 含缓存的综合价：blendCacheHitRate=0 时恒等于上面那个；
+        // 打开后是「假设输入有这么多比例命中缓存」的估算价，与站点账单口径更近
+        blendedWithCacheUsdPerMtok: r.cost.blendedWithCacheUsdPerMtok,
+        blendedWithCacheCnyPerMtok: r.cost.blendedWithCacheCnyPerMtok,
+        cacheReadCnyPerMtok: r.cost.cacheReadCnyPerMtok,
         offPeakBlendedCnyPerMtok: r.cost.offPeakBlendedCnyPerMtok,
         hasOffPeak: r.cost.hasOffPeak,
         complete: r.cost.complete,
