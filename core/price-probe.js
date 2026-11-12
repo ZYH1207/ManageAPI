@@ -182,3 +182,107 @@ export function pickCalibrationTargets(offers, {
   }
   return out
 }
+
+/**
+ * 把校准结果转成「基准价表要怎么改」的计划。**零写入**，纯函数。
+ *
+ * ── 只修有问题的（用户明确要求）────────────────────────────────
+ *
+ * 只有 `mismatch` 和 `currency` 两种 verdict 进计划：
+ *   - `ok`      本来就对，覆盖它等于用一次带噪测量替换好数据
+ *   - `unknown` 没证据，瞎改就是猜
+ *   - `error`   请求失败，跟价格无关
+ *
+ * ── 为什么不能直接用 upstreamName 当键 ──────────────────────────
+ *
+ * 台账供给的价格来自 `offerCost`，它按 `offer.benchmarkKey` 查基准价表。
+ * 如果 `benchmarkKey` 和 `upstreamName` 不同（别名、版本后缀、站上写法差异），
+ * 改 `upstreamName` 那条**对这条供给毫无影响**——用户会以为修好了其实没修。
+ * 所以优先用 `benchmarkKey`，没有才回落 `modelKey` / `upstreamName`。
+ *
+ * ── 输出价也一起修 ────────────────────────────────────────────
+ *
+ * 之前只比对输入价，输出价（通常是输入的 4~5 倍）完全没人管。
+ * 账单里有 `baseOut`，乘回倍率就是折后输出价，一并给出建议值。
+ *
+ * @param {Array} results 校准+判定后的结果（含 verdict / listPrice / backIn / backOut）
+ * @param {object} benchmarks 当前基准价表
+ * @param {object} db 数据库（用来找供给的 benchmarkKey 与倍率）
+ * @param {number} fxRate 当前汇率，用于币种判定
+ * @returns {Array} 修复计划
+ */
+export function planBenchmarkFixes(results, benchmarks, db, fxRate = null) {
+  const offers = db?.offers || []
+  const byId = new Map(offers.map((o) => [o.id, o]))
+  const out = []
+
+  for (const r of results || []) {
+    const verdict = r.verdict
+    if (verdict !== 'mismatch' && verdict !== 'currency') continue
+
+    const offer = byId.get(r.offerId)
+    // 键的优先级：供给自己查表用的那个键 > 模型名
+    const modelKey = offer?.benchmarkKey || offer?.modelKey || r.upstreamName
+    if (!modelKey) continue
+
+    const prev = benchmarks?.[modelKey] || null
+    // r.backIn / r.backOut 已由 judgeCalibrationResults 乘过倍率（见那边注释），
+    // 这里是**折后价**，可直接写进基准价表（基准价乘倍率才是标价，不能重复乘）
+    const backInRaw = r.backIn === null || r.backIn === undefined ? null : Number(r.backIn)
+    const backOutRaw = r.backOut === null || r.backOut === undefined ? null : Number(r.backOut)
+    const nextIn = backInRaw === null ? null : Math.round(backInRaw * 1e6) / 1e6
+    const nextOut = backOutRaw === null ? null : Math.round(backOutRaw * 1e6) / 1e6
+
+    if (verdict === 'currency') {
+      // 币种误标：不改数值，改币种。方向由比值定——
+      // 账单比标价大 fx 倍 → 标价本该是 RUSD（少乘了汇率）
+      // 账单比标价小 fx 倍 → 标价本该是 USD（多乘了汇率）
+      const ratio = nextIn !== null && r.listPrice > 0 ? nextIn / r.listPrice : null
+      const fx = Number(fxRate) > 0 ? Number(fxRate) : null
+      let nextCurrency = null
+      if (ratio !== null && fx !== null) {
+        const nearUp = Math.abs(ratio - fx) / fx <= 0.15
+        const nearDown = Math.abs(ratio - 1 / fx) / (1 / fx) <= 0.15
+        if (nearUp) nextCurrency = 'RUSD'
+        else if (nearDown) nextCurrency = 'USD'
+      }
+      if (!nextCurrency) continue
+      out.push({
+        modelKey,
+        kind: 'currency',
+        prevCurrency: prev?.currency || null,
+        nextCurrency,
+        // 币种切换不改数字
+        nextIn: null,
+        nextOut: null,
+        providerName: r.providerName || null,
+        upstreamName: r.upstreamName || null,
+        note: `币种 ${prev?.currency || '?'} → ${nextCurrency}`,
+      })
+      continue
+    }
+
+    // mismatch：改数值。至少要有输入价，否则不敢动
+    if (nextIn === null) continue
+    // 二次校验：如果改完跟原值几乎一样，就没必要写（避免无意义 diff）
+    const inUnchanged = prev && prev.in !== null && prev.in !== undefined
+      && Math.abs(Number(prev.in) - nextIn) / Math.max(Number(prev.in), 1e-9) < 0.005
+    const outUnchanged = !nextOut || !prev || prev.out === null || prev.out === undefined
+      || Math.abs(Number(prev.out) - nextOut) / Math.max(Number(prev.out), 1e-9) < 0.005
+    if (inUnchanged && outUnchanged) continue
+
+    out.push({
+      modelKey,
+      kind: 'price',
+      prevIn: prev?.in ?? null,
+      prevOut: prev?.out ?? null,
+      nextIn,
+      nextOut,
+      nextCurrency: null,
+      providerName: r.providerName || null,
+      upstreamName: r.upstreamName || null,
+      note: `输入 ${prev?.in ?? '—'} → ${nextIn}${nextOut !== null ? `；输出 ${prev?.out ?? '—'} → ${nextOut}` : ''}`,
+    })
+  }
+  return out
+}

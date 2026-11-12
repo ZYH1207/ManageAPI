@@ -7235,6 +7235,10 @@ let benchShowAll = false
  * 用户明确要求手动控制，所以「预览」这一步是硬门槛，未预览时「开始校准」是禁用的。
  */
 let calibPreview = null
+/** 上一轮校准的判定结果，供「一键修复」复用（不重新发请求） */
+let calibJudged = []
+/** 待写入的修复计划（预览后才有） */
+let calibPendingFixes = []
 
 function calibTargetsPayload() {
   const pid = $('#calib-provider')?.value || ''
@@ -7288,6 +7292,75 @@ async function calibPreviewRun() {
   }
 }
 
+/**
+ * 一键修复：两阶段，先看计划再写入。
+ *
+ * 为什么强制两段：这是**写基准价表**的操作，一旦写错会连带影响全部比价与派活。
+ * 所以第一段只调 fix-preview（零写入）把 diff 摆出来，用户确认后才 apply。
+ *
+ * 后端已经保证「只修有问题的」（verdict 为 mismatch / currency），
+ * 这里不额外过滤——过滤规则只该有一份，写在后端 planBenchmarkFixes 里。
+ */
+async function calibFixPreview() {
+  if (!calibJudged.length) return
+  const btn = $('#btn-calib-fix')
+  if (btn) btn.disabled = true
+  try {
+    const res = await api('POST', '/api/price-calibrate/fix-preview', { results: calibJudged })
+    const fixes = res.fixes || []
+    if (!fixes.length) {
+      renderCalibReport(`<div class="hint">${t('没有需要修复的条目（一致的不会动）')}</div>`)
+      return
+    }
+    const rows = fixes.map((f) => `
+      <tr>
+        <td class="mono">${esc(f.modelKey)}</td>
+        <td>${f.kind === 'currency'
+          ? `<span class="badge danger">${t('币种')}</span>`
+          : `<span class="badge danger">${t('价格')}</span>`}</td>
+        <td class="num">${f.kind === 'currency'
+          ? `${esc(f.prevCurrency || '—')} → <b>${esc(f.nextCurrency)}</b>`
+          : `${f.prevIn ?? '—'} → <b>${f.nextIn}</b>`}</td>
+        <td class="num">${f.kind === 'currency' ? '—' : `${f.prevOut ?? '—'} → <b>${f.nextOut ?? '—'}</b>`}</td>
+        <td class="mono">${esc(f.providerName || '')}</td>
+      </tr>`).join('')
+    renderCalibReport(`
+      <div class="hint" style="margin-bottom:8px">
+        ${t('将修改 <b>{n}</b> 条基准价。一致的条目不会动。确认无误后点「确认写入」。', { n: fixes.length })}
+      </div>
+      <table class="table-wrap"><thead><tr>
+        <th>${t('模型')}</th><th>${t('类型')}</th><th>${t('输入价')}</th><th>${t('输出价')}</th><th>${t('来源站')}</th>
+      </tr></thead><tbody>${rows}</tbody></table>
+      <div style="margin-top:10px">
+        <button id="btn-calib-fix-apply" class="ghost danger">${t('确认写入这 {n} 条', { n: fixes.length })}</button>
+      </div>
+    `)
+    calibPendingFixes = fixes
+  } catch (error) {
+    renderCalibReport(`<div class="banner danger">${esc(error.message || String(error))}</div>`)
+  } finally {
+    if (btn) btn.disabled = false
+  }
+}
+
+async function calibFixApply() {
+  const btn = $('#btn-calib-fix-apply')
+  if (btn) { btn.disabled = true; btn.textContent = t('写入中…') }
+  try {
+    const res = await api('POST', '/api/price-calibrate/fix-apply', {
+      results: calibJudged,
+      confirm: true,
+    })
+    renderCalibReport(`<div class="banner ok">${t('已写入 {n} 条基准价。', { n: res.applied || 0 })}</div>`)
+    calibPendingFixes = []
+    await refresh()
+  } catch (error) {
+    renderCalibReport(`<div class="banner danger">${esc(error.message || String(error))}</div>`)
+  } finally {
+    if (btn) { btn.disabled = false }
+  }
+}
+
 async function calibRun() {
   if (!calibPreview || !(calibPreview.cost?.count > 0)) return
   const btn = $('#btn-calib-run')
@@ -7318,6 +7391,8 @@ async function calibRun() {
       </tr>`).join('')
     const bad = judged.filter((r) => r.verdict === 'mismatch' || r.verdict === 'currency').length
     const synced = Object.entries(run.ledgerSynced || {}).filter(([, v]) => v.ok).length
+    // 记住这一轮判定结果，「一键修复」要用它算出计划（不重新校准）
+    calibJudged = judged
     renderCalibReport(`
       <div class="hint" style="margin-bottom:8px">
         ${t('校准完成：{ok}/{n} 成功，账单同步 {s} 个站点，{bad} 个有问题。花费约 ¥{cost}。', {
@@ -7325,6 +7400,10 @@ async function calibRun() {
           cost: Number(run.cost?.estimateCny ?? 0).toFixed(4),
         })}
       </div>
+      ${bad > 0 ? `<div style="margin-bottom:8px">
+        <button id="btn-calib-fix" class="ghost">${t('修复这 {n} 个问题（先看计划）', { n: bad })}</button>
+        <span class="hint" style="margin-left:8px">${t('只改有问题的，一致的不动')}</span>
+      </div>` : ''}
       ${rows ? `<table class="table-wrap"><thead><tr>
         <th>${t('站点')}</th><th>${t('分组')}</th><th>${t('模型')}</th>
         <th>${t('标价')}</th><th>${t('偏差')}</th><th>${t('结论')}</th><th></th>
@@ -11991,6 +12070,14 @@ document.addEventListener('click', async (event) => {
   }
   if (event.target.id === 'btn-calib-run') {
     await calibRun()
+    return
+  }
+  if (event.target.id === 'btn-calib-fix') {
+    await calibFixPreview()
+    return
+  }
+  if (event.target.id === 'btn-calib-fix-apply') {
+    await calibFixApply()
     return
   }
   // 用校准结果覆盖标价：只改基准价表里那一条的 in 值，不碰倍率、不碰其他字段

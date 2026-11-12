@@ -11,7 +11,8 @@ import { fileURLToPath } from 'node:url'
 const here = dirname(fileURLToPath(import.meta.url))
 const pp = await import(join(here, '..', 'core', 'price-probe.js'))
 const { judgeCalibration, pickCalibrationTargets, buildCalibrationPrompt,
-        backComputePrice, MIN_CALIBRATION_TOKENS, CALIBRATION_TOLERANCE } = pp
+        backComputePrice, planBenchmarkFixes, MIN_CALIBRATION_TOKENS,
+        CALIBRATION_TOLERANCE } = pp
 
 let pass = 0, fail = 0
 const ok = (c, l) => { if (c) { pass++; console.log('  ✓ ' + l) } else { fail++; console.log('  ✗ ' + l) } }
@@ -97,6 +98,72 @@ console.log('\n[D] 账单反推价')
   ok(Math.abs(r.backIn - 0.2) < 1e-9, `反推输入价 = 4×0.05 = 0.2（实际 ${r.backIn}）`)
   ok(Math.abs(r.backOut - 0.4) < 1e-9, '反推输出价 = 8×0.05 = 0.4')
   ok(backComputePrice(null, {}, 0.1) === null, '缺参数返回 null，不瞎算')
+}
+
+console.log('\n[E] 修复计划：只修有问题的')
+{
+  const FX = 6.6878
+  const db = {
+    offers: [
+      { id: 'o1', benchmarkKey: 'gpt-6.1-sol', modelKey: 'gpt-6.1-sol', upstreamName: 'gpt-6.1-sol', ratio: 0.05 },
+      { id: 'o2', benchmarkKey: 'claude-opus-5-5', modelKey: 'claude-opus-5-5', upstreamName: 'claude-opus-5-5', ratio: 0.05 },
+      { id: 'o3', benchmarkKey: 'deepseek-v4.1-flash', modelKey: 'ds', upstreamName: 'deepseek-v4.1-flash', ratio: 0.1 },
+    ],
+  }
+  const benchmarks = {
+    'gpt-6.1-sol': { in: 0.2, out: 1.0, currency: 'USD', offPeakIn: 0.1, offPeakOut: 0.5, display: 'GPT 6.1' },
+    'claude-opus-5-5': { in: 0.2, out: 1.0, currency: 'USD' },
+    'deepseek-v4.1-flash': { in: 0.1, out: 0.4, currency: 'USD' },
+  }
+  const results = [
+    // ok：不能出现在计划里
+    { offerId: 'o1', verdict: 'ok', listPrice: 0.2, backIn: 0.2, backOut: 1.0 },
+    // mismatch：要改
+    { offerId: 'o2', verdict: 'mismatch', listPrice: 0.2, backIn: 0.26, backOut: 1.3 },
+    // currency：账单比标价大 fx 倍 → 应标 RUSD
+    { offerId: 'o3', verdict: 'currency', listPrice: 0.1, backIn: 0.1 * FX, backOut: 0.4 * FX },
+  ]
+  const plan = planBenchmarkFixes(results, benchmarks, db, FX)
+  ok(plan.length === 2, `只产出 2 条修复（ok 那条被跳过），实际 ${plan.length}`)
+  ok(!plan.some((f) => f.modelKey === 'gpt-6.1-sol'), 'ok 的 gpt-6.1-sol 不在计划里')
+
+  const price = plan.find((f) => f.modelKey === 'claude-opus-5-5')
+  ok(price && price.kind === 'price', 'mismatch → kind=price')
+  ok(price.nextIn === 0.26, `输入价建议 0.26（实际 ${price.nextIn}）`)
+  ok(price.nextOut === 1.3, '输出价也一起给（之前只比 in）')
+
+  const cur = plan.find((f) => f.modelKey === 'deepseek-v4.1-flash')
+  ok(cur && cur.kind === 'currency', 'currency 单独一类')
+  ok(cur.nextCurrency === 'RUSD', '账单大 fx 倍 → 改为 RUSD')
+  ok(cur.nextIn === null, '币种修复不动数值（改数字没用）')
+
+  // 用 benchmarkKey 而不是 upstreamName
+  ok(plan.every((f) => f.modelKey !== 'ds'), '键用 benchmarkKey，不用 modelKey 别名')
+}
+
+console.log('\n[F] 币种反向判定')
+{
+  const FX = 6.6878
+  const db = { offers: [{ id: 'o1', benchmarkKey: 'm1', upstreamName: 'm1', ratio: 0.05 }] }
+  const benchmarks = { m1: { in: 1.34, out: 6.7, currency: 'RUSD' } }
+  // 标价 1.34（RUSD 乘过汇率），账单反推 0.2 → 说明本该是 USD 不乘汇率
+  const plan = planBenchmarkFixes(
+    [{ offerId: 'o1', verdict: 'currency', listPrice: 1.34, backIn: 0.2, backOut: 1.0 }],
+    benchmarks, db, FX,
+  )
+  ok(plan.length === 1 && plan[0].nextCurrency === 'USD', '账单小 fx 倍 → 改回 USD')
+}
+
+console.log('\n[G] 无意义修复被过滤')
+{
+  const db = { offers: [{ id: 'o1', benchmarkKey: 'm1', upstreamName: 'm1', ratio: 1 }] }
+  const benchmarks = { m1: { in: 0.2, out: 1.0, currency: 'USD' } }
+  // 建议值和原值差 0.1%，不该产生修复
+  const plan = planBenchmarkFixes(
+    [{ offerId: 'o1', verdict: 'mismatch', listPrice: 0.2, backIn: 0.2002, backOut: 1.0 }],
+    benchmarks, db, 6.6878,
+  )
+  ok(plan.length === 0, '差异 <0.5% 不产生修复（避免无意义写入）')
 }
 
 console.log(`\n通过 ${pass}，失败 ${fail}`)

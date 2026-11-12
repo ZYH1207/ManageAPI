@@ -3423,6 +3423,57 @@ route('POST', /^\/api\/price-calibrate\/judge$/, async (ctx) => {
   return { results, at: new Date().toISOString() }
 })
 
+// 批量修复校准发现的问题（2026-11-12）。
+//
+// **只修有问题的**：verdict 为 mismatch / currency 的才动，ok / unknown 一律不碰。
+// 这是用户明确要求的——「一致」的条目本来就对，覆盖它等于用一次带噪测量
+// 去替换一个好数据，反而更糟。
+//
+// 两阶段设计（预览 → 应用），因为这是**写操作**：
+//   1. preview：算出每条要改成什么，返回 diff 清单，零写入
+//   2. apply：带 confirm=true 才真写
+//
+// 写的时候有个坑必须处理：`bench.setBenchmark` 是**整条覆盖**（见 core/benchmark.js:89），
+// 没传的字段会被清空。所以必须先读出原条目的 offPeakIn/offPeakOut/display 再合并，
+// 否则修一次价会顺手把峰谷价抹掉。
+route('POST', /^\/api\/price-calibrate\/fix-preview$/, async (ctx) => {
+  const db = await store.readDbCached()
+  const benchmarks = await bench.readBenchmarks()
+  const fx = Number(fxLib.ensureFx(db.settings || {}).rates?.CNY) || null
+  const results = ctx.body.results || []
+  const fixes = pcProbe.planBenchmarkFixes(results, benchmarks, db, fx)
+  return { fixes, count: fixes.length }
+})
+
+route('POST', /^\/api\/price-calibrate\/fix-apply$/, async (ctx) => {
+  const db = await store.readDb()
+  const benchmarks = await bench.readBenchmarks()
+  const fx = Number(fxLib.ensureFx(db.settings || {}).rates?.CNY) || null
+  const results = ctx.body.results || []
+  const fixes = pcProbe.planBenchmarkFixes(results, benchmarks, db, fx)
+  // 零写入预览：不带 confirm 就只返回计划
+  if (ctx.body.confirm !== true) return { applied: 0, fixes, dryRun: true }
+
+  const applied = []
+  for (const f of fixes) {
+    if (!f.modelKey) continue
+    const prev = benchmarks[f.modelKey] || {}
+    // 整条覆盖：把原条目其余字段原样带上，别让改价顺手抹掉峰谷价与来源
+    const next = {
+      display: prev.display || f.modelKey,
+      in: f.nextIn !== null && f.nextIn !== undefined ? f.nextIn : prev.in,
+      out: f.nextOut !== null && f.nextOut !== undefined ? f.nextOut : prev.out,
+      offPeakIn: prev.offPeakIn ?? null,
+      offPeakOut: prev.offPeakOut ?? null,
+      currency: f.nextCurrency || prev.currency || 'USD',
+      source: 'calibration',
+    }
+    await bench.setBenchmark(f.modelKey, next)
+    applied.push({ modelKey: f.modelKey, ...next })
+  }
+  return { applied: applied.length, fixes, state: await buildState({ light: true }) }
+})
+
 // 数据比价：单独一个接口，不塞进 /api/state。
 //
 // 全站口径有 99 个模型、约 165KB，而 /api/state 已经接近 1MB 且 15 秒轮询一次——
