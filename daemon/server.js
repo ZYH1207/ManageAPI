@@ -120,6 +120,7 @@ import {
   buildPriceBoard,
   priceBoardSummary,
   normalizePriceBoardScope,
+  buildPriceCompare,
 } from '../core/price-board.js'
 import { buildLedgerIndex, ledgerForOffer } from '../core/ledger-index.js'
 import * as pc from './price-calibrator.js'
@@ -3548,6 +3549,33 @@ route('GET', /^\/api\/price-board$/, async (ctx) => {
     aliases: db.settings?.modelAliases || {},
     ledgerIndex,
   })
+  // 「手动对比」可选项。三类对象，价格口径全部在后端算好：
+  //   model   每个模型在全部站点里的最低价（取 boards 已算好的 rankPrice）
+  //   site    每个站的所有模型最低价汇总（用于「模型 vs 某站」）
+  //   official 基准价表的原厂有效成本（officialCost 已含汇率，前端不再碰汇率）
+  // 前端只做展示与筛选，绝不自己乘 6.69 —— 汇率口径只留 officialCost 一处。
+  const compareOptions = {
+    models: boards.map((b) => ({
+      key: b.modelKey,
+      label: b.display || b.modelKey,
+      price: b.cheapest?.rankPrice ?? null,
+    })).filter((x) => x.price !== null),
+    sites: (db.providers || []).map((p) => ({ id: p.id, label: p.name })),
+    officials: Object.entries(benchmarks || {}).map(([key, e]) => {
+      const oc = pricing.officialCost(e, db.settings)
+      return {
+        key,
+        label: e.display || key,
+        currency: e.currency || 'USD',
+        price: oc && oc.blendedCnyPerMtok !== null ? oc.blendedCnyPerMtok : null,
+      }
+    }).filter((x) => x.price !== null),
+  }
+  // 手动对比：前端把选中的 token 传回来，后端用同一套口径算好返回。
+  // 前端不做任何价格计算，避免汇率/倍率口径散落两处。
+  const cmpTokens = (ctx.query.get('compare') || '').split(',').filter(Boolean)
+  const cmpBase = ctx.query.get('compareBase') || null
+  const compare = buildPriceCompare(compareOptions, boards, { base: cmpBase, tokens: cmpTokens })
   return {
     scope,
     scopes: [
@@ -3556,6 +3584,8 @@ route('GET', /^\/api\/price-board$/, async (ctx) => {
     ],
     summary: priceBoardSummary(boards),
     boards,
+    compareOptions,
+    compare,
     // 未定价供给：算不出价格的（站点没给价 + 基准价表也没这个模型）。
     // 必须下发——否则用户看到比价表「少了几个模型」却不知道为什么。
     unpriced: boards.unpriced || [],

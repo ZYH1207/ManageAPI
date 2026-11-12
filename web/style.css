@@ -4957,3 +4957,22 @@ body.prov-dragging .drop-zone { display: flex; }
 .pb-l-cache { white-space: nowrap; font-variant-numeric: tabular-nums; }
 .pb-l-cache .pb-l-delta { font-size: 11px; color: var(--ok, #2a7); margin-left: 4px; }
 .pb-l-cache .cell-subline { margin-top: 2px; font-size: 11px; }
+
+/* ---- 比价页：手动价格对比（2026-11-12）-------------------------------
+   纯价格表，刻意不画证据数/线路数/含缓存列——用户明确说「只看价格」。 */
+.pb-compare { margin-bottom: 12px; }
+.pb-compare-toggle {
+  display: flex; align-items: center; gap: 8px;
+  background: none; border: 0; padding: 0; cursor: pointer;
+  font-size: 13px; font-weight: 600; color: var(--fg);
+}
+.pb-compare-body { margin-top: 10px; }
+.pb-compare-base, .pb-compare-add, .pb-compare-chips {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 8px;
+}
+.pb-compare-chips .badge { cursor: pointer; }
+.pb-compare-table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+.pb-compare-table th, .pb-compare-table td { padding: 6px 10px; border-bottom: 1px solid var(--border); text-align: left; }
+.pb-compare-table th.num, .pb-compare-table td.num { text-align: right; }
+.pb-compare-table tr.pb-cmp-base { background: color-mix(in srgb, var(--ok, #2a7) 7%, transparent); font-weight: 600; }
+.pb-cmp-delta { color: var(--muted); font-size: 12px; }

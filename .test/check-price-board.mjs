@@ -513,6 +513,50 @@ console.log('\n[J5] 含缓存估算价：区分「明确无缓存」与「没找
   ok(plain.rankPrice === 3.25 && zero.rankPrice === 3.25, '含缓存价不改变 rankPrice（排序口径不变）')
 }
 
+console.log('\n[J6] 手动价格对比：三种对象都支持')
+{
+  const boards = [
+    { modelKey: 'm1', display: '模型一', cheapest: { rankPrice: 0.36 },
+      sites: [{ providerId: 'p1', rankPrice: 0.36 }, { providerId: 'p2', rankPrice: 0.50 }] },
+    { modelKey: 'm2', display: '模型二', cheapest: { rankPrice: 0.80 },
+      sites: [{ providerId: 'p1', rankPrice: 0.80 }] },
+    { modelKey: 'm3', display: '模型三', cheapest: { rankPrice: 0.20 },
+      sites: [{ providerId: 'p2', rankPrice: 0.20 }] },
+  ]
+  const opts = {
+    models: [{ key: 'm1', label: '模型一', price: 0.36 }, { key: 'm2', label: '模型二', price: 0.80 }, { key: 'm3', label: '模型三', price: 0.20 }],
+    sites: [{ id: 'p1', label: '甲站' }, { id: 'p2', label: '乙站' }],
+    officials: [{ key: 'm1', label: '模型一', currency: 'RUSD', price: 53.5 }],
+  }
+  const r = pb.buildPriceCompare(opts, boards, {
+    base: 'm1',
+    tokens: ['model:m2', 'site:p1', 'site:p2', 'official:m1', 'model:不存在'],
+  })
+  ok(r.base.price === 0.36, '基准 = m1 的最低价 0.36')
+  ok(r.rows.length === 5, '基准 + 4 个有效对象 = 5 行（不存在的那条被丢掉）')
+
+  const model2 = r.rows.find((x) => x.kind === 'model' && x.label === '模型二')
+  ok(model2 && model2.price === 0.80, '模型对象：取该模型全站最低价 0.80')
+
+  const site1 = r.rows.find((x) => x.kind === 'site' && x.label === '甲站')
+  // 甲站在 boards 里的 rankPrice = [0.36, 0.80] → 中位数 0.58
+  ok(site1 && Math.abs(site1.price - 0.58) < 1e-9, `站点对象：中位数 0.58（实际 ${site1?.price}）`)
+
+  const site2 = r.rows.find((x) => x.kind === 'site' && x.label === '乙站')
+  // 乙站 [0.50, 0.20] → 0.35
+  ok(site2 && Math.abs(site2.price - 0.35) < 1e-9, '站点对象：两个模型时取中间两数均值')
+
+  const off = r.rows.find((x) => x.kind === 'official')
+  ok(off && off.price === 53.5, '官方价对象：直接取已换算的 53.5（前端不碰汇率）')
+  ok(off && off.currency === 'RUSD', '官方价保留币种标注')
+
+  // 空 token / 未知类型不能炸
+  const empty = pb.buildPriceCompare(opts, boards, { base: 'm1', tokens: [] })
+  ok(empty.rows.length === 1, '没选对象时只有基准一行')
+  const bogus = pb.buildPriceCompare(opts, boards, { base: 'm1', tokens: ['weird:xx', ''] })
+  ok(bogus.rows.length === 1, '未知类型静默忽略，不抛异常')
+}
+
 // ------------------------------------------------------------ 真实库冒烟
 console.log('[K] 真实库冒烟（只读，不写任何东西）')
 {

@@ -5320,6 +5320,21 @@ const PRICE_BOARD_SCOPE_KEY = 'manageapi.priceBoardScope'
 let priceBoardScope = localStorage.getItem(PRICE_BOARD_SCOPE_KEY) === 'routed' ? 'routed' : 'all'
 /** 后端按需拉回来的数据。不塞进 state：全站口径 99 个模型约 165KB。 */
 let priceBoardData = null
+/**
+ * 手动价格对比（2026-11-12）。
+ *
+ * 用户要的三种对比对象，统一成「一个对象 = 一个价格数字」：
+ *   model:<key>    另一个模型（取它在全站的最低价）
+ *   site:<id>      某个站点（该站所有模型最低价里的中位数，代表这个站的整体价位）
+ *   official:<key> 基准价表的原厂有效成本（officialCost 已含汇率）
+ *
+ * base 是「当前模型」，从折叠行点「设为基准」进来；没设就默认第一个模型。
+ * 纯价格对比，不含证据数/线路数/含缓存列——用户明确说「只看价格」。
+ */
+let pbCompareBase = null        // modelKey
+const pbComparePicked = new Set()   // 'model:xxx' | 'site:xxx' | 'official:xxx'
+let pbCompareOpen = false
+
 let priceBoardLoading = null
 let priceBoardError = null
 /** 展开过明细的模型（记 modelKey），轮询重绘后保持展开 */
@@ -5333,6 +5348,14 @@ const priceBoardExpanded = new Set()
  */
 const priceBoardVendorPicked = new Set()
 
+/** 对比项变化后重新拉一次（后端算好 compare.rows），拉完重绘 */
+async function reloadPriceCompare() {
+  priceBoardData = null
+  await loadPriceBoard({ force: true })
+  renderPriceBoard()
+  translateDom($('#view-priceboard') || document.body)
+}
+
 async function loadPriceBoard({ force = false } = {}) {
   if (!force && priceBoardData && priceBoardData.scope === priceBoardScope) return priceBoardData
   if (priceBoardLoading) return priceBoardLoading
@@ -5340,7 +5363,13 @@ async function loadPriceBoard({ force = false } = {}) {
   const wanted = priceBoardScope
   priceBoardLoading = (async () => {
     try {
-      const res = await api('GET', `/api/price-board?scope=${encodeURIComponent(wanted)}`)
+      // 手动对比的选中项随请求带上，后端用同一套口径算好 compare.rows 返回。
+      // 前端不自己算价格，避免汇率/倍率口径散落两处。
+      const cmpQ = pbComparePicked.size > 0
+        ? `&compare=${encodeURIComponent([...pbComparePicked].join(','))}`
+        : ''
+      const baseQ = pbCompareBase ? `&compareBase=${encodeURIComponent(pbCompareBase)}` : ''
+      const res = await api('GET', `/api/price-board?scope=${encodeURIComponent(wanted)}${cmpQ}${baseQ}`)
       // 请求期间用户可能又切了口径：只认最后想要的那一份，否则界面会闪回旧口径
       if (wanted === priceBoardScope) priceBoardData = res
       return res
@@ -5521,6 +5550,94 @@ function priceBoardLinesHtml(board) {
   </div>`
 }
 
+/**
+ * 手动价格对比：把「基准模型」和任意多个对象并排放成一张纯价格表。
+ *
+ * 价格数字全部来自后端 compareOptions / boards，前端不做任何换算——
+ * 尤其官方价，汇率只在 officialCost 一处，前端再乘一次就会错 6.69 倍。
+ *
+ * 站点对象的价格 = 该站所有模型最低价的**中位数**。为什么不用最低价：
+ * 一个站有便宜的国产模型不代表它整体便宜，中位数更能代表「这个站的价位」。
+ * （这是产品判断，不是数学结论，注释写清楚免得后来的人以为算错了。）
+ */
+/**
+ * 手动价格对比面板（纯展示）。
+ *
+ * 价格对比的计算**全部在后端** buildPriceCompare / compareOptions 完成，
+ * 前端只负责渲染与收集 token。理由：汇率只在 officialCost 一处，倍率只在
+ * offerCost 一处，前端再算一遍必然出现「两处口径」的老问题。
+ */
+function priceBoardCompareHtml(data, boards) {
+  const opts = data.compareOptions || { models: [], sites: [], officials: [] }
+  const baseKey = pbCompareBase || boards[0]?.modelKey || null
+  const base = boards.find((b) => b.modelKey === baseKey)
+  const basePrice = base?.cheapest?.rankPrice ?? null
+
+  // 已选对象只用来画 chip；价格表用后端返回的 data.compare.rows
+  const resolveLabel = (token) => {
+    const i = token.indexOf(':')
+    if (i < 0) return token
+    const kind = token.slice(0, i), key = token.slice(i + 1)
+    if (kind === 'model') return (opts.models || []).find((x) => x.key === key)?.label || key
+    if (kind === 'site') return (opts.sites || []).find((x) => x.id === key)?.label || key
+    if (kind === 'official') return (opts.officials || []).find((x) => x.key === key)?.label || key
+    return token
+  }
+
+  const cmpRows = (data.compare?.rows || []).map((r) => {
+    let delta = ''
+    const bp = data.compare?.base?.price
+    if (r.kind !== 'base' && bp > 0) {
+      const ratio = r.price / bp
+      delta = ratio >= 3 ? t('贵 {n} 倍', { n: Math.round(ratio) })
+        : ratio > 1 ? t('贵 {p}%', { p: Math.round((ratio - 1) * 100) })
+          : ratio < 1 ? t('便宜 {p}%', { p: Math.round((1 - ratio) * 100) })
+            : t('持平')
+    }
+    const label = r.kind === 'official' && r.currency
+      ? t('{name}（原厂 {c}）', { name: r.label, c: r.currency })
+      : r.label
+    return `<tr class="${r.kind === 'base' ? 'pb-cmp-base' : ''}">
+      <td>${esc(label)}</td>
+      <td class="num">${priceText(r.price)}</td>
+      <td class="pb-cmp-delta">${esc(delta)}</td>
+    </tr>`
+  }).join('')
+
+  const optionList = (kind, items, valueKey, labelKey) =>
+    items.map((it) => `<option value="${esc(kind + ':' + it[valueKey])}">${esc(it[labelKey])}</option>`).join('')
+
+  return `<div class="card pb-compare">
+    <button class="pb-compare-toggle" data-act="toggle-price-board-compare">
+      ${t('手动价格对比')} <span class="pb-caret">${pbCompareOpen ? '▾' : '▸'}</span>
+      ${pbComparePicked.size > 0 ? `<span class="badge">${t('已选 {n} 个', { n: pbComparePicked.size })}</span>` : ''}
+    </button>
+    ${pbCompareOpen ? `<div class="pb-compare-body">
+      <div class="pb-compare-base">
+        <span class="hint">${t('基准模型')}</span>
+        <select id="pb-compare-base-sel" style="max-width:220px">
+          ${boards.map((b) => `<option value="${esc(b.modelKey)}" ${b.modelKey === baseKey ? 'selected' : ''}>${esc(b.display || b.modelKey)}</option>`).join('')}
+        </select>
+        <span class="hint">${basePrice !== null ? priceText(basePrice) : '—'}</span>
+      </div>
+      <div class="pb-compare-add">
+        <select id="pb-compare-model-sel" style="max-width:190px"><option value="">${t('选模型…')}</option>${optionList('model', opts.models, 'key', 'label')}</select>
+        <select id="pb-compare-site-sel" style="max-width:150px"><option value="">${t('选站点…')}</option>${optionList('site', opts.sites, 'id', 'label')}</select>
+        <select id="pb-compare-official-sel" style="max-width:190px"><option value="">${t('选官方价…')}</option>${optionList('official', opts.officials, 'key', 'label')}</select>
+        <button class="ghost tiny" data-act="price-board-compare-add">${t('加入对比')}</button>
+      </div>
+      ${pbComparePicked.size > 0 ? `<div class="pb-compare-chips">${[...pbComparePicked].map((tok) =>
+        `<button class="badge" data-act="price-board-compare-remove" data-token="${esc(tok)}" title="${esc(t('点一下移除'))}">${esc(resolveLabel(tok))} ×</button>`
+      ).join('')}</div>` : ''}
+      ${cmpRows ? `<table class="pb-compare-table"><thead><tr>
+        <th>${t('对象')}</th><th>${t('混合价')}</th><th>${t('相对基准')}</th>
+      </tr></thead><tbody>${cmpRows}</tbody></table>` : `<p class="hint">${t('从上面选模型、站点或官方价加入对比。')}</p>`}
+      ${pbComparePicked.size > 0 ? `<button class="ghost tiny" data-act="price-board-compare-clear">${t('清空对比')}</button>` : ''}
+    </div>` : ''}
+  </div>`
+}
+
+
 function renderPriceBoard() {
   const view = $('#view-priceboard')
   if (!view) return
@@ -5639,6 +5756,7 @@ function renderPriceBoard() {
   view.innerHTML = `
     ${scopeSwitch}
     <div class="pb-summary">${esc(summary?.text || '')}${picked.size > 0 ? ` · ${t('已筛 {n} 家', { n: picked.size })}` : ''}</div>
+    ${priceBoardCompareHtml(priceBoardData, boards)}
     ${filterBar}
     <div class="pb-vendors">${sections}${emptyFiltered}</div>
     <div class="pb-foot">
@@ -10355,6 +10473,36 @@ document.addEventListener('click', async (event) => {
     return
   }
 
+  // ---- 手动价格对比 ----
+  if (action === 'toggle-price-board-compare') {
+    pbCompareOpen = !pbCompareOpen
+    renderPriceBoard()
+    translateDom($('#view-priceboard') || document.body)
+    return
+  }
+
+  if (action === 'price-board-compare-add') {
+    // 三个下拉各取一个值：哪个变了就加哪个（一次可同时加多个）
+    for (const id of ['#pb-compare-model-sel', '#pb-compare-site-sel', '#pb-compare-official-sel']) {
+      const sel = $(id)
+      if (sel && sel.value) pbComparePicked.add(sel.value)
+    }
+    void reloadPriceCompare()
+    return
+  }
+
+  if (action === 'price-board-compare-remove') {
+    pbComparePicked.delete(actionButton.dataset.token)
+    void reloadPriceCompare()
+    return
+  }
+
+  if (action === 'price-board-compare-clear') {
+    pbComparePicked.clear()
+    void reloadPriceCompare()
+    return
+  }
+
   if (action === 'set-price-board-scope') {
     const next = actionButton.dataset.scope === 'routed' ? 'routed' : 'all'
     if (next === priceBoardScope) return
@@ -11577,6 +11725,13 @@ document.addEventListener('click', (event) => {
 })
 
 document.addEventListener('change', async (event) => {
+  // 手动价格对比：基准模型切换。只改内存状态并原地重绘，不重新拉后端数据。
+  if (event.target.id === 'pb-compare-base-sel') {
+    pbCompareBase = event.target.value
+    void reloadPriceCompare()
+    return
+  }
+
   // 组成员：下拉选择添加
   const rgAdd = event.target.closest?.('[data-act="rg-add"]')
   if (rgAdd) {

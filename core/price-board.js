@@ -654,3 +654,72 @@ export function priceBoardSummary(boards) {
         : `${comparable} 个模型有跨站可比，${single} 个只有一家供货`,
   }
 }
+
+/**
+ * 手动价格对比：把「基准模型」与任意多个对象解析成一行价格。
+ *
+ * 三种对象（用户 2026-11-12 明确要求「都做」）：
+ *   model:<key>    另一个模型，取它在全站的最低价
+ *   site:<id>      某个站点，取该站所有模型最低价的中位数（代表站点整体价位）
+ *   official:<key> 基准价表的原厂有效成本（换算已由 officialCost 完成）
+ *
+ * 口径铁律：**前端不碰汇率**。所有价格都从后端已算好的数字里取，
+ * 尤其官方价——再乘一次 6.69 就会重复换算。
+ *
+ * 站点取中位数而不是最低价：一个站有便宜国产模型不代表整体便宜，
+ * 中位数更能回答「这个站的价位」。这是产品判断，不是数学结论。
+ *
+ * @param {object} compareOptions 后端构造的可选项清单
+ * @param {Array} boards buildPriceBoard 的输出
+ * @param {{base:string|null, tokens:string[]}} selection
+ * @returns {{base:object|null, rows:Array}}
+ */
+export function buildPriceCompare(compareOptions, boards, selection = {}) {
+  const opts = compareOptions || { models: [], sites: [], officials: [] }
+  const baseKey = selection.base || boards?.[0]?.modelKey || null
+  const baseBoard = (boards || []).find((b) => b.modelKey === baseKey)
+  const basePrice = baseBoard?.cheapest?.rankPrice ?? null
+
+  const sitePriceOf = (siteId) => {
+    const prices = (boards || [])
+      .flatMap((b) => (b.sites || [])
+        .filter((s) => s.providerId === siteId)
+        .map((s) => s.rankPrice))
+      .filter((p) => p !== null && p !== undefined)
+      .sort((a, b) => a - b)
+    if (prices.length === 0) return null
+    const mid = Math.floor(prices.length / 2)
+    return prices.length % 2 ? prices[mid] : (prices[mid - 1] + prices[mid]) / 2
+  }
+
+  const resolve = (token) => {
+    if (typeof token !== 'string') return null
+    const i = token.indexOf(':')
+    if (i < 0) return null
+    const kind = token.slice(0, i)
+    const key = token.slice(i + 1)
+    if (kind === 'model') {
+      const m = (opts.models || []).find((x) => x.key === key)
+      return m ? { label: m.label, price: m.price, kind: 'model' } : null
+    }
+    if (kind === 'site') {
+      const st = (opts.sites || []).find((x) => x.id === key)
+      return st ? { label: st.label, price: sitePriceOf(key), kind: 'site' } : null
+    }
+    if (kind === 'official') {
+      const o = (opts.officials || []).find((x) => x.key === key)
+      return o ? { label: o.label, price: o.price, kind: 'official', currency: o.currency } : null
+    }
+    return null
+  }
+
+  const rows = []
+  if (baseBoard && basePrice !== null) {
+    rows.push({ label: baseBoard.display || baseBoard.modelKey, price: basePrice, kind: 'base' })
+  }
+  for (const token of selection.tokens || []) {
+    const r = resolve(token)
+    if (r && r.price !== null) rows.push(r)
+  }
+  return { base: baseBoard ? { label: baseBoard.display || baseBoard.modelKey, price: basePrice } : null, rows }
+}
