@@ -1077,9 +1077,48 @@ async function buildState({ light = false } = {}) {
         key: k.key,
         enabled: k.enabled,
         monthlyTokenLimit: k.monthlyTokenLimit ?? null,
+        modelAccess: k.modelAccess || null,
         note: k.note || '',
         createdAt: k.createdAt,
       })),
+      modelOptions: (() => {
+        const providers = new Map(db.providers.map((p) => [p.id, p.name]))
+        const sites = new Map()
+        for (const decision of decisions) {
+          for (const candidate of decision.candidates || []) {
+            if (!candidate.providerId) continue
+            let site = sites.get(candidate.providerId)
+            if (!site) {
+              site = {
+                id: candidate.providerId,
+                name: providers.get(candidate.providerId) || candidate.providerName || candidate.providerId,
+                groups: new Map(),
+              }
+              sites.set(candidate.providerId, site)
+            }
+            const groupName = candidate.group || '未分组'
+            let group = site.groups.get(groupName)
+            if (!group) {
+              group = { name: groupName, models: new Map() }
+              site.groups.set(groupName, group)
+            }
+            group.models.set(decision.modelKey, {
+              id: decision.modelKey,
+              name: decision.display || decision.modelKey,
+            })
+          }
+        }
+        return {
+          sites: [...sites.values()]
+            .map((site) => ({
+              ...site,
+              groups: [...site.groups.values()]
+                .map((group) => ({ ...group, models: [...group.models.values()].sort((a, b) => a.name.localeCompare(b.name)) }))
+                .sort((a, b) => a.name.localeCompare(b.name)),
+            }))
+            .sort((a, b) => a.name.localeCompare(b.name)),
+        }
+      })(),
     },
     usage,
     // 局域网访问面板：开关在 settings.lanPanel，实际绑没绑在 daemon 侧（lanHook）
@@ -6252,6 +6291,20 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
   // 默认两边互不回落（免费用不了就明确报错，别偷偷扣钱），
   // 只有 settings.allowPaidFallback 显式打开时才允许「免费不够用 → 付费顶上」。
   const split = splitOffers(inv.routeableOffers(db), benchmarks)
+  if (keyRecord?.modelAccess?.enabled) {
+    const allowedOffers = isFree
+      ? []
+      : inv.gatewayOffersForKey(
+          split.paid,
+          keyRecord.modelAccess,
+          pricing.rankByModel(split.paid, db.settings, benchmarks).ranked.map((group) => group.modelKey),
+          db.settings.modelAliases,
+        )
+    const allowedModels = new Set(listPublicModels({ offers: allowedOffers, scores, settings: db.settings }).map((m) => m.id))
+    if (!allowedModels.has(inv.modelIdentityKey(rawModel, db.settings.modelAliases))) {
+      return openaiError(res, 403, `Key「${keyRecord.name}」未开放模型 ${rawModel}`, 'model_not_allowed')
+    }
+  }
 
   // ------------------------------------------------------------ 客户端拨开关
   //
@@ -7237,7 +7290,9 @@ async function handleProxy(req, res, url) {
     })
 
     if (isFreeEntry) {
-      const models = listPublicModels({ offers: split.free, scores, settings: db.settings })
+      const models = auth.keyRecord.modelAccess?.enabled
+        ? []
+        : listPublicModels({ offers: split.free, scores, settings: db.settings })
       return json(res, 200, {
         object: 'list',
         data: models.map((m) => shape(m, 'manage-api-free')),
@@ -7255,8 +7310,17 @@ async function handleProxy(req, res, url) {
     // 2026-10-30 起 AutoThink 暂时从清单里拿掉（AUTO_ROUTE_CLIENT_SWITCH）：
     // 接管会在模型间反复切，模型的 KV 缓存绑在模型+分组上，每切一次上下文就要
     // 重算一遍，缓存命中率暴跌。开关与判定一行未删，改那个常量就能回来。
-    const paidModels = listPublicModels({ offers: split.paid, scores, settings: db.settings })
-    const freeModels = listPublicModels({ offers: split.free, scores, settings: db.settings })
+    const decisionModelIds = pricing.rankByModel(split.paid, db.settings, benchmarks).ranked.map((group) => group.modelKey)
+    const paidOffers = inv.gatewayOffersForKey(
+      split.paid,
+      auth.keyRecord.modelAccess,
+      decisionModelIds,
+      db.settings.modelAliases,
+    )
+    const paidModels = listPublicModels({ offers: paidOffers, scores, settings: db.settings })
+    const freeModels = auth.keyRecord.modelAccess?.enabled
+      ? []
+      : listPublicModels({ offers: split.free, scores, settings: db.settings })
     const record = normalizeAutoRoute(db.settings.autoRoute)
     // AutoThink 背后的规模：接管中直接报现役那条，没接管时报全场合计，
     // 客户端下拉里就能看出这个虚拟模型背后有多少家能接
@@ -7265,7 +7329,7 @@ async function handleProxy(req, res, url) {
       : null
     const providers = current ? current.providers : paidModels.reduce((n, m) => n + m.providers, 0)
     const healthy = current ? current.healthy : paidModels.reduce((n, m) => n + m.healthy, 0)
-    const virtualSwitch = AUTO_ROUTE_CLIENT_SWITCH
+    const virtualSwitch = AUTO_ROUTE_CLIENT_SWITCH && !auth.keyRecord.modelAccess?.enabled
       ? [
           {
             id: AUTO_THINK_MODEL,

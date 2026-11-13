@@ -378,6 +378,26 @@ input:focus, select:focus {
 .gs-panel.gs-panel-wide { width: min(660px, calc(100vw - 40px)); }
 /* 详细用量：逐请求的多列明细，沿用同一套弹窗语言但放得更宽；列多时横向滚动 */
 .ud-panel { width: min(1120px, calc(100vw - 40px)); max-height: min(760px, calc(100vh - 60px)); }
+.gw-model-panel { width: min(760px, calc(100vw - 32px)); max-height: min(820px, calc(100vh - 40px)); display: flex; flex-direction: column; }
+.gw-model-panel .modal-body { min-height: 0; }
+.gw-model-toolbar { display: flex; justify-content: space-between; align-items: center; gap: 12px; color: var(--text); }
+.gw-model-toolbar strong { white-space: nowrap; font-size: 13px; }
+.gw-model-enable { display: flex; align-items: center; gap: 8px; color: var(--text); }
+.gw-model-enable input { margin: 0; }
+.gw-model-tree { max-height: 58vh; overflow: auto; margin-top: 12px; border: 1px solid var(--border); border-radius: 6px; padding: 4px 10px; }
+.gw-model-node { min-width: 0; }
+.gw-model-site + .gw-model-site { border-top: 1px solid var(--divider); }
+.gw-model-row { display: flex; align-items: center; gap: 6px; min-height: 34px; min-width: 0; }
+.gw-model-expand { flex: none; width: 24px; height: 26px; padding: 0; border: 0; background: transparent; color: var(--muted); font-size: 17px; line-height: 1; }
+.gw-model-expand:hover { background: var(--hover); }
+.gw-model-count { flex: none; color: var(--faint); font-size: 11px; font-variant-numeric: tabular-nums; }
+.gw-model-children { margin-left: 24px; padding-left: 10px; border-left: 1px solid var(--border); }
+.gw-model-option { display: flex; align-items: flex-start; gap: 7px; padding: 5px 0; line-height: 1.4; cursor: pointer; overflow-wrap: anywhere; min-width: 0; flex: 1; margin: 0; color: var(--text); }
+.gw-model-option span { min-width: 0; overflow-wrap: anywhere; }
+.gw-model-leaf { font-size: 12px; }
+.gw-model-group + .gw-model-group { border-top: 1px solid var(--divider); }
+.gw-model-option input { width: auto; flex: none; margin-top: 2px; }
+.modal-foot { display: flex; justify-content: flex-end; gap: 8px; padding: 10px 22px 16px; border-top: 1px solid var(--border); }
 .ud-seg { margin-bottom: 12px; }
 /* 十来个汇总数字挤在一行会看不清，缩一点字号多排两列 */
 .ud-stats { grid-template-columns: repeat(auto-fit, minmax(116px, 1fr)); gap: 8px; margin-bottom: 10px; }

@@ -6370,6 +6370,8 @@ function renderGateway() {
     // 两个口径不同就不装作相同，超过 100% 时进度条变红
     const limit = record.monthlyTokenLimit || 0
     const pctUsed = limit > 0 ? Math.min(100, Math.round((total / limit) * 100)) : 0
+    const access = record.modelAccess
+    const accessCount = gatewayAccessModelIds(access || {}, state.gateway.modelOptions?.sites || []).size
     return `
       <tr data-gwkey="${esc(record.id)}">
         <td>
@@ -6387,6 +6389,7 @@ function renderGateway() {
           </button>
         </td>
         <td class="num">
+          <button class="ghost" data-act="edit-gwkey-models" title="${esc(t('设置此 Key 可见的模型'))}">${icon('filter')}${access?.enabled ? t('{n} 个模型', { n: accessCount }) : t('全部模型')}</button>
           <button class="ghost" data-act="copy-gwkey">复制</button>
           <button class="ghost" data-act="rotate-gwkey">轮换</button>
           <button class="ghost danger" data-act="del-gwkey">删除</button>
@@ -6534,6 +6537,146 @@ function renderGateway() {
 
   view.innerHTML = `${createdBanner}${entryCard}${lanCard}${keyBlock}${logBlock}`
   if (!view.hidden) void loadGatewayLog()
+}
+
+function gatewayAccessModelIds(access, sites) {
+  const selected = new Set(access.models || [])
+  const providers = new Set(access.providerIds || [])
+  const groups = new Set((access.groups || []).map((group) => JSON.stringify([group.providerId, group.name])))
+  for (const site of sites) {
+    for (const group of site.groups || []) {
+      if (providers.has(site.id) || groups.has(JSON.stringify([site.id, group.name]))) {
+        for (const model of group.models || []) selected.add(model.id)
+      }
+    }
+  }
+  return selected
+}
+
+function openGatewayModelAccess(id) {
+  const record = state.gateway?.keys?.find((k) => k.id === id)
+  if (!record) return
+  const options = state.gateway.modelOptions || { sites: [] }
+  const sites = options.sites || []
+  const access = record.modelAccess || { enabled: false, models: [] }
+  const modelIdsOf = (groups) => [...new Set(groups.flatMap((group) => (group.models || []).map((model) => model.id)))]
+  const availableModels = new Set(sites.flatMap((site) => modelIdsOf(site.groups || [])))
+  const selectedModels = new Set([...gatewayAccessModelIds(access, sites)].filter((modelId) => availableModels.has(modelId)))
+  const treeHtml = sites.map((site) => {
+    const siteGroups = site.groups || []
+    const groupHtml = siteGroups.map((group) => {
+      const groupKey = JSON.stringify([site.id, group.name])
+      const modelHtml = (group.models || []).map((model) => `
+        <label class="gw-model-option gw-model-leaf">
+          <input type="checkbox" name="models" value="${esc(model.id)}" data-gw-model-kind="model" data-model-id="${esc(model.id)}">
+          <span>${esc(model.name)}</span>
+        </label>`).join('') || `<div class="hint">${t('暂无可选项')}</div>`
+      return `
+        <div class="gw-model-node gw-model-group">
+          <div class="gw-model-row">
+            <button type="button" class="gw-model-expand" data-gw-toggle-group="${esc(groupKey)}" aria-expanded="false" title="${esc(t('展开分组'))}">›</button>
+            <label class="gw-model-option">
+              <input type="checkbox" data-gw-model-kind="group" data-site-id="${esc(site.id)}" data-group-name="${esc(group.name)}">
+              <span>${esc(group.name)}</span>
+            </label>
+            <span class="gw-model-count" data-gw-count-group="${esc(groupKey)}"></span>
+          </div>
+          <div class="gw-model-children" data-gw-children-group="${esc(groupKey)}" hidden>${modelHtml}</div>
+        </div>`
+    }).join('') || `<div class="hint">${t('暂无可选项')}</div>`
+    return `
+      <div class="gw-model-node gw-model-site">
+        <div class="gw-model-row">
+          <button type="button" class="gw-model-expand" data-gw-toggle-site="${esc(site.id)}" aria-expanded="false" title="${esc(t('展开站点'))}">›</button>
+          <label class="gw-model-option">
+            <input type="checkbox" data-gw-model-kind="site" data-site-id="${esc(site.id)}">
+            <span>${esc(site.name)}</span>
+          </label>
+          <span class="gw-model-count" data-gw-count-site="${esc(site.id)}"></span>
+        </div>
+        <div class="gw-model-children" data-gw-children-site="${esc(site.id)}" hidden>${groupHtml}</div>
+      </div>`
+  }).join('') || `<div class="hint">${t('暂无可选项')}</div>`
+  const wrap = document.createElement('div')
+  wrap.className = 'modal'
+  wrap.id = 'gateway-model-access-modal'
+  wrap.innerHTML = `
+    <div class="modal-backdrop" data-act="close-gw-model-access"></div>
+    <form class="modal-panel gw-model-panel" data-form="gateway-model-access" data-key-id="${esc(id)}" role="dialog" aria-modal="true">
+      <div class="modal-head"><h3>${esc(record.name)} · ${t('模型')}</h3><button type="button" class="ghost" data-act="close-gw-model-access">${t('关闭')}</button></div>
+      <div class="modal-body">
+        <div class="gw-model-toolbar">
+          <label class="gw-model-enable"><input type="checkbox" name="enabled"${access.enabled ? ' checked' : ''}>${t('启用自选模型')}</label>
+          <strong><span data-gw-selected-count>${selectedModels.size}</span> ${t('个模型')}</strong>
+        </div>
+        <p class="hint">${t('关闭时保持原有模型列表；选中的站点或分组会勾选其下全部模型。只列出智能决策中的未忽略模型。')}</p>
+        <div class="gw-model-tree">${treeHtml}</div>
+      </div>
+      <div class="modal-foot"><button type="button" class="ghost" data-act="close-gw-model-access">${t('取消')}</button><button type="submit" class="primary">${t('保存模型')}</button></div>
+    </form>`
+  document.body.appendChild(wrap)
+  const selectedCount = wrap.querySelector('[data-gw-selected-count]')
+  const syncTree = () => {
+    for (const input of wrap.querySelectorAll('[data-gw-model-kind="model"]')) {
+      input.checked = selectedModels.has(input.dataset.modelId)
+    }
+    const updateCheckbox = (input, ids) => {
+      const count = ids.reduce((sum, modelId) => sum + Number(selectedModels.has(modelId)), 0)
+      input.checked = ids.length > 0 && count === ids.length
+      input.indeterminate = count > 0 && count < ids.length
+      return { count, total: ids.length }
+    }
+    for (const input of wrap.querySelectorAll('[data-gw-model-kind="group"]')) {
+      const site = sites.find((item) => item.id === input.dataset.siteId)
+      const group = site?.groups.find((item) => item.name === input.dataset.groupName)
+      const counts = updateCheckbox(input, modelIdsOf(group ? [group] : []))
+      input.closest('.gw-model-group').querySelector('.gw-model-count').textContent = `${counts.count}/${counts.total}`
+    }
+    for (const input of wrap.querySelectorAll('[data-gw-model-kind="site"]')) {
+      const site = sites.find((item) => item.id === input.dataset.siteId)
+      const counts = updateCheckbox(input, modelIdsOf(site?.groups || []))
+      input.closest('.gw-model-site').querySelector('.gw-model-count').textContent = `${counts.count}/${counts.total}`
+    }
+    selectedCount.textContent = String(selectedModels.size)
+  }
+  syncTree()
+  wrap.addEventListener('click', (event) => {
+    if (event.target.closest('[data-act="close-gw-model-access"]')) {
+      wrap.remove()
+      return
+    }
+    const siteToggle = event.target.closest('[data-gw-toggle-site]')
+    const groupToggle = event.target.closest('[data-gw-toggle-group]')
+    const toggle = siteToggle || groupToggle
+    if (!toggle) return
+    const isSite = Boolean(siteToggle)
+    const node = toggle.closest(isSite ? '.gw-model-site' : '.gw-model-group')
+    const children = node?.querySelector(':scope > .gw-model-children')
+    if (!children) return
+    children.hidden = !children.hidden
+    toggle.setAttribute('aria-expanded', String(!children.hidden))
+    toggle.textContent = children.hidden ? '›' : '⌄'
+  })
+  wrap.addEventListener('change', (event) => {
+    const input = event.target.closest('[data-gw-model-kind]')
+    if (!input) return
+    const kind = input.dataset.gwModelKind
+    let ids = []
+    if (kind === 'model') ids = [input.dataset.modelId]
+    else if (kind === 'site') {
+      const site = sites.find((item) => item.id === input.dataset.siteId)
+      ids = modelIdsOf(site?.groups || [])
+    } else {
+      const site = sites.find((item) => item.id === input.dataset.siteId)
+      const group = site?.groups.find((item) => item.name === input.dataset.groupName)
+      ids = modelIdsOf(group ? [group] : [])
+    }
+    for (const modelId of ids) {
+      if (input.checked) selectedModels.add(modelId)
+      else selectedModels.delete(modelId)
+    }
+    syncTree()
+  })
 }
 
 // --------------------------------------------------------------- 用量视图
@@ -11092,6 +11235,16 @@ document.addEventListener('click', async (event) => {
     return
   }
 
+  if (action === 'edit-gwkey-models') {
+    openGatewayModelAccess(actionButton.closest('[data-gwkey]').dataset.gwkey)
+    return
+  }
+
+  if (action === 'close-gw-model-access') {
+    $('#gateway-model-access-modal')?.remove()
+    return
+  }
+
   if (action === 'copy-new-gwkey') {
     if (lastCreatedGatewayKey) {
       await copyWithFeedback(lastCreatedGatewayKey.key, '已复制新 Key', '网关 Key')
@@ -11296,6 +11449,30 @@ document.addEventListener('submit', async (event) => {
     } catch (error) {
       toast(error.message, true)
       if (submitBtn) submitBtn.disabled = false
+    }
+    return
+  }
+
+  const modelAccessForm = event.target.closest('[data-form="gateway-model-access"]')
+  if (modelAccessForm) {
+    event.preventDefault()
+    const submit = modelAccessForm.querySelector('[type="submit"]')
+    if (submit?.disabled) return
+    if (submit) submit.disabled = true
+    const values = new FormData(modelAccessForm)
+    try {
+      state = await api('PATCH', `/api/gateway/keys/${modelAccessForm.dataset.keyId}`, {
+        modelAccess: {
+          enabled: values.has('enabled'),
+          models: [...new Set(values.getAll('models'))],
+        },
+      })
+      $('#gateway-model-access-modal')?.remove()
+      render()
+      toast('Key 模型已保存')
+    } catch (error) {
+      toast(error.message, true)
+      if (submit) submit.disabled = false
     }
     return
   }

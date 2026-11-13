@@ -1097,8 +1097,41 @@ export async function updateGatewayKey(id, patch) {
     if (patch.monthlyTokenLimit !== undefined) {
       record.monthlyTokenLimit = normalizeTokenLimit(patch.monthlyTokenLimit)
     }
+    if (patch.modelAccess !== undefined) {
+      record.modelAccess = normalizeGatewayModelAccess(patch.modelAccess)
+    }
     return record
   })
+}
+
+/** null 表示兼容旧行为；启用后只开放明确保存的模型身份键。 */
+export function normalizeGatewayModelAccess(value) {
+  if (value === null) return null
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('模型范围格式无效')
+  }
+  const strings = (input, label) => {
+    if (!Array.isArray(input)) throw new Error(`${label}必须是数组`)
+    if (input.length > 2000) throw new Error(`${label}最多选择 2000 项`)
+    return [...new Set(input.map((item) => String(item).trim()).filter(Boolean))]
+  }
+  return {
+    enabled: value.enabled === true,
+    models: strings(value.models || [], '模型'),
+  }
+}
+
+/**
+ * 单把网关 Key 的供给范围。modelIds 是智能决策中的模型身份键集合；
+ * routeableOffers 已先排除全局忽略、暂停站和下线供给。
+ */
+export function gatewayOffersForKey(offers, access, modelIds, aliases = null) {
+  if (!access?.enabled) return offers || []
+  const eligible = new Set(modelIds || [])
+  const offerModelId = (offer) => modelIdentityKey(offer.modelKey || offer.upstreamName, aliases)
+  const decisionOffers = (offers || []).filter((offer) => eligible.has(offerModelId(offer)))
+  const models = new Set(access.models || [])
+  return decisionOffers.filter((offer) => models.has(offerModelId(offer)))
 }
 
 export async function deleteGatewayKey(id) {
