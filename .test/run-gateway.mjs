@@ -59,6 +59,17 @@ for (const station of stations) {
 await api('POST', '/api/benchmarks/import', {
   providerId: state.providers.find((p) => p.name === '正常A').id,
 })
+state = await api('GET', '/api/state')
+const decisionModelIds = new Set((state.decisions || []).map((decision) => decision.modelKey))
+const listedModelIds = new Set((state.gateway.modelOptions?.sites || []).flatMap((site) =>
+  (site.groups || []).flatMap((group) => (group.models || []).map((model) => model.id)),
+))
+if (!listedModelIds.has('test-model-a') || !listedModelIds.has('test-model-b')) {
+  throw new Error(`站点 → 分组 → 模型树缺少决策模型：${JSON.stringify([...listedModelIds])}`)
+}
+if ([...listedModelIds].some((modelId) => !decisionModelIds.has(modelId))) {
+  throw new Error('模型树出现智能决策清单之外的模型')
+}
 
 const auth = { Authorization: `Bearer ${gatewayKey}` }
 
@@ -110,6 +121,37 @@ console.log('\n=== 5. 不存在的模型 ===')
     body: JSON.stringify({ model: 'no-such-model', messages: [] }),
   })
   console.log('状态', res.status, (await res.text()).slice(0, 160))
+}
+
+console.log('\n=== 5b. 单 Key 自选模型范围 ===')
+{
+  const created = await api('POST', '/api/gateway/keys', { name: '模型范围测试' })
+  const scoped = created.gateway.keys.find((key) => key.name === '模型范围测试')
+  if (!scoped) throw new Error('自选范围测试 Key 未创建')
+  const fullIds = (await (await fetch(`${BASE}/v1/models`, { headers: auth })).json()).data.map((m) => m.id)
+  if (!fullIds.includes('test-model-a') || !fullIds.includes('test-model-b')) {
+    throw new Error(`默认 Key 未维持完整清单：${JSON.stringify(fullIds)}`)
+  }
+  await api('PATCH', `/api/gateway/keys/${scoped.id}`, {
+    modelAccess: { enabled: true, models: ['test-model-a'] },
+  })
+  const scopedAuth = { Authorization: `Bearer ${scoped.key}` }
+  const visible = (await (await fetch(`${BASE}/v1/models`, { headers: scopedAuth })).json()).data.map((m) => m.id)
+  if (visible.join(',') !== 'test-model-a') throw new Error(`单 Key 清单范围错误：${JSON.stringify(visible)}`)
+  const denied = await fetch(`${BASE}/v1/chat/completions`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...scopedAuth },
+    body: JSON.stringify({ model: 'test-model-b', messages: [{ role: 'user', content: 'hi' }] }),
+  })
+  if (denied.status !== 403) throw new Error(`隐藏模型请求应被拒绝，实际 ${denied.status}`)
+  const allowed = await fetch(`${BASE}/v1/chat/completions`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...scopedAuth },
+    body: JSON.stringify({ model: 'test-model-a', messages: [{ role: 'user', content: 'hi' }] }),
+  })
+  if (!allowed.ok) throw new Error(`范围内模型应正常请求，实际 ${allowed.status} ${await allowed.text()}`)
+  await api('DELETE', `/api/gateway/keys/${scoped.id}`)
+  console.log('默认清单保留；自选 Key 只列 test-model-a，并拒绝请求 test-model-b')
 }
 
 console.log('\n=== 6. 路由决策日志 ===')
