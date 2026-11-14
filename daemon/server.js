@@ -4004,6 +4004,99 @@ route('POST', /^\/api\/usage\/reset$/, async () => {
   return buildState()
 })
 
+// ---------------------------------------------------------------- DSH 用量回写（C 棒，只增不改）
+//
+// 向后兼容新增：插件 Host 把 DSH `llm/stream` 观测到的用量送进来，让 ManageAPI
+// 的「今日用量」覆盖没走本网关的渠道。既有 109 条路由、usage/reset 口径、
+// ignoredModels 全局语义一律不动。
+//
+// 单写者：只调 core/usage.js#recordUsage（写 usage.json，进程内串行），不碰 db.json，
+// 不与插件 Host 并发写同一份数据文件；插件侧也不直接 import core/store。
+//
+// 去重兜底：走本网关的请求，网关已在 handleChatCompletions 里 recordUsage 记过一次；
+// 朋友 Host 侧 lib/ingest.js 会跳过 provider === 'manage-api' / 'manage-api/*'，
+// daemon 侧再判一次，任一侧改动都不会造成同一笔账记两遍。
+
+/** 交给下一棒的入参白名单（与朋友 lib/ingest.js 的 payload 一一对应）。 */
+export const INGEST_USAGE_KEYS = Object.freeze([
+  'provider', 'model', 'inputTokens', 'outputTokens', 'cachedTokens',
+  'cacheCreationTokens', 'latencyMs', 'ttftMs', 'ok', 'ts',
+])
+
+/** 网关已记一次的判据（daemon 侧独立兜底，与朋友 Host 侧同口径）。 */
+export function isGatewayRecordedProvider(provider) {
+  const name = String(provider ?? '').trim()
+  return name === 'manage-api' || name.startsWith('manage-api/')
+}
+
+/** 只接受明确字段；返回可直接交给 recordUsage 的 entry，错误抛 HttpError(400)。 */
+export function normalizeIngestUsagePayload(body) {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    throw new HttpError(400, 'ingest payload 必须是 JSON 对象')
+  }
+  for (const key of Object.keys(body)) {
+    if (!INGEST_USAGE_KEYS.includes(key)) throw new HttpError(400, `ingest 不接受字段：${key}`)
+  }
+  const provider = typeof body.provider === 'string' ? body.provider.trim() : ''
+  const model = typeof body.model === 'string' ? body.model.trim() : ''
+  if (!provider || provider.length > 128) throw new HttpError(400, 'ingest 缺少合法的 provider')
+  if (!model || model.length > 256) throw new HttpError(400, 'ingest 缺少合法的 model')
+
+  const number = (value, field) => {
+    if (value === undefined || value === null || value === '') return undefined
+    const n = Number(value)
+    if (!Number.isFinite(n) || n < 0 || n > 1e12) throw new HttpError(400, `ingest ${field} 必须是非负有限数`)
+    return Math.round(n)
+  }
+  const inputTokens = number(body.inputTokens, 'inputTokens')
+  const outputTokens = number(body.outputTokens, 'outputTokens')
+  // 没有输入/输出 token 的调用不构成一笔账：明确拒绝，不静默伪成功。
+  if (!inputTokens && !outputTokens) throw new HttpError(400, 'ingest 缺少 inputTokens / outputTokens')
+
+  let ts = undefined
+  if (body.ts !== undefined && body.ts !== null && body.ts !== '') {
+    if (typeof body.ts !== 'string' || !Number.isFinite(Date.parse(body.ts))) {
+      throw new HttpError(400, 'ingest ts 必须是 ISO 时间字符串')
+    }
+    ts = new Date(body.ts).toISOString()
+  }
+  if (body.ok !== undefined && typeof body.ok !== 'boolean') throw new HttpError(400, 'ingest ok 必须是布尔值')
+
+  return {
+    provider,
+    model,
+    entry: {
+      keyId: '-',                       // DSH 调用不经网关 Key 鉴权
+      providerId: `dsh:${provider}`,    // 不与 ManageAPI 站点 id 冲突，用量页按站点能分辨
+      group: 'dsh',
+      model,
+      inputTokens,
+      outputTokens,
+      cachedTokens: number(body.cachedTokens, 'cachedTokens'),
+      cacheCreationTokens: number(body.cacheCreationTokens, 'cacheCreationTokens'),
+      latencyMs: number(body.latencyMs, 'latencyMs'),
+      ttftMs: number(body.ttftMs, 'ttftMs'),
+      ok: body.ok === false ? false : true,
+      ts,
+    },
+  }
+}
+
+route('POST', /^\/api\/ingest\/usage$/, async (ctx) => {
+  const { provider, entry } = normalizeIngestUsagePayload(ctx.body)
+  if (isGatewayRecordedProvider(provider)) {
+    // 网关已经记过这一单：不写盘，明确回 recorded:false，别让调用方以为失败。
+    return {
+      ok: true,
+      recorded: false,
+      reason: 'gateway-already-recorded',
+      source: 'dsh-ingest',
+    }
+  }
+  await recordUsage(entry)
+  return { ok: true, recorded: true, source: 'dsh-ingest' }
+})
+
 route('PATCH', /^\/api\/gateway$/, async (ctx) => {
   if (ctx.body.enabled !== undefined) await inv.setGatewayEnabled(ctx.body.enabled)
   return buildState()
