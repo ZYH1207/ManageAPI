@@ -1,0 +1,17 @@
+# 包级 bundle patch（不是 profile 级 cordis.patch.yml；profile 层本棒不碰）。
+# name 用包名：Loader 经 exports["."] -> ./index.js 解析到 Host 入口。
+# 本机 DSH 对匹配行的 config 是「整块替换」而非字段合并，所以下面把 B 棒
+# 全部默认字段写全；后续任何覆盖都必须整块重写，不能只写单个字段。
+- insert:
+    - id: local-dsh-manage-api
+      name: '@local/dsh-manage-api'
+      config:
+        # 默认全关：只装载骨架，不 spawn、不 connect、不占用 4319、不碰真实数据目录。
+        autoStart: false
+        attachExisting: false
+        port: 4319
+        runtimeDir: ''
+        dataDir: ''
+        waitMs: 10000
+        # 默认空：Key 由 profile 覆盖本行或环境变量提供，绝不写进会打包的源码。
+        apiKey: ''

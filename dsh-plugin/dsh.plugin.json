@@ -1,0 +1,11 @@
+{
+  "name": "@local/dsh-manage-api",
+  "description": "ManageAPI gateway models for DSH",
+  "version": "0.1.0",
+  "entry": {
+    "name": "local-dsh-manage-api",
+    "inject": [
+      "llm"
+    ]
+  }
+}
