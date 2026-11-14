@@ -1,0 +1,125 @@
+{
+  "meta": {
+    "title": "ManageAPI",
+    "description": "在 DSH 面板中管理本地 ManageAPI 多站点模型路由守护进程：跨站比价、降智探针、用量与站点状态。"
+  },
+  "tabs": {
+    "overview": "概览",
+    "monitor": "监控",
+    "route": "路由",
+    "decision": "决策",
+    "probes": "探针",
+    "protocol": "协议",
+    "gateway": "网关",
+    "usage": "用量",
+    "benchmark": "基准价",
+    "diagnosis": "诊断"
+  },
+  "shell": {
+    "refresh": "刷新",
+    "autoRefresh": "自动",
+    "daemonOnline": "守护进程在线",
+    "daemonOffline": "守护进程离线",
+    "loading": "加载中…",
+    "empty": "暂无数据",
+    "stateSource": "数据源",
+    "lastUpdated": "更新于",
+    "liteMode": "轻量（轮询）",
+    "theme": "主题",
+    "language": "语言"
+  },
+  "status": {
+    "ok": "正常",
+    "error": "错误",
+    "paused": "已暂停",
+    "untrusted": "不可信",
+    "stale": "已过期"
+  },
+  "overview": {
+    "providers": "站点",
+    "offers": "供给",
+    "cheapest": "最低价模型",
+    "gatewayOn": "网关已开启",
+    "gatewayOff": "网关已关闭",
+    "usageRequests": "请求数（30天）",
+    "headline": "结论",
+    "champion": "全场冠军",
+    "noData": "尚无状态数据。"
+  },
+  "monitor": {
+    "title": "站点健康",
+    "balance": "余额",
+    "quota": "额度",
+    "alerts": "告警",
+    "collect": "同步余额账单",
+    "markRead": "告警标已读"
+  },
+  "route": {
+    "title": "路由健康",
+    "calibration": "标定",
+    "balances": "站点余额",
+    "speedPrior": "速度先验"
+  },
+  "decision": {
+    "title": "决策排序",
+    "model": "模型",
+    "price": "价格",
+    "uptime": "可用率",
+    "score": "评分"
+  },
+  "probes": {
+    "title": "探针结果",
+    "model": "模型",
+    "ttft": "首字",
+    "quality": "质量",
+    "samples": "样本"
+  },
+  "protocol": {
+    "title": "按模型流量",
+    "requests": "请求数",
+    "tokens": "Token"
+  },
+  "gateway": {
+    "title": "网关",
+    "enabled": "网关开关",
+    "keys": "密钥",
+    "keysUnavailable": "插件内不提供网关密钥管理（不在写白名单内；state 中明文密钥已被剥离）。"
+  },
+  "usage": {
+    "title": "用量（30天）",
+    "byModel": "按模型",
+    "requests": "请求数",
+    "cost": "花费"
+  },
+  "benchmark": {
+    "title": "参考价",
+    "key": "键",
+    "price": "价格",
+    "writesUnavailable": "插件内不提供基准价编辑/导入（不在写白名单内）。"
+  },
+  "diagnosis": {
+    "title": "诊断",
+    "drift": "漂移监视器",
+    "probePatrol": "探针巡检",
+    "noDrift": "暂无漂移快照。"
+  },
+  "settings": {
+    "ignoredModels": "忽略模型",
+    "ignoredHint": "这是守护进程全局的 ignoredModels 名单——会影响路由、网页面板与网关。朋友插件的「面板独立名单」不受支持。"
+  },
+  "unavailable": {
+    "title": "本插件不支持",
+    "benchmarkWrites": "基准价写操作不在白名单内。",
+    "gatewayKeys": "网关密钥管理不在白名单内。",
+    "panelIgnoredModels": "不支持面板独立忽略名单；只有守护进程全局名单。",
+    "dshFreeModels": "用户基线守护进程不存在该设置项。",
+    "daemonLifecycle": "守护进程生命周期由 Host 插件处理，不走写通道。"
+  },
+  "actions": {
+    "save": "保存",
+    "cancel": "取消",
+    "delete": "删除",
+    "retry": "重试",
+    "close": "关闭"
+  }
+}

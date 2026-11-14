@@ -1,0 +1,125 @@
+{
+  "meta": {
+    "title": "ManageAPI",
+    "description": "Manage the local ManageAPI multi-station model routing daemon from the DSH panel."
+  },
+  "tabs": {
+    "overview": "Overview",
+    "monitor": "Monitor",
+    "route": "Routing",
+    "decision": "Decision",
+    "probes": "Probes",
+    "protocol": "Protocol",
+    "gateway": "Gateway",
+    "usage": "Usage",
+    "benchmark": "Benchmarks",
+    "diagnosis": "Diagnosis"
+  },
+  "shell": {
+    "refresh": "Refresh",
+    "autoRefresh": "Auto refresh",
+    "daemonOnline": "daemon online",
+    "daemonOffline": "daemon offline",
+    "loading": "Loading…",
+    "empty": "No data",
+    "stateSource": "Source",
+    "lastUpdated": "Updated",
+    "liteMode": "Lite (polling)",
+    "theme": "Theme",
+    "language": "Language"
+  },
+  "status": {
+    "ok": "OK",
+    "error": "Error",
+    "paused": "Paused",
+    "untrusted": "Untrusted",
+    "stale": "Stale"
+  },
+  "overview": {
+    "providers": "Stations",
+    "offers": "Offers",
+    "cheapest": "Cheapest model",
+    "gatewayOn": "Gateway on",
+    "gatewayOff": "Gateway off",
+    "usageRequests": "Requests (30d)",
+    "headline": "Headline",
+    "champion": "Champion",
+    "noData": "No state yet."
+  },
+  "monitor": {
+    "title": "Station health",
+    "balance": "Balance",
+    "quota": "Quota",
+    "alerts": "Alerts",
+    "collect": "Sync balances",
+    "markRead": "Mark alerts read"
+  },
+  "route": {
+    "title": "Routing health",
+    "calibration": "Calibration",
+    "balances": "Station balances",
+    "speedPrior": "Speed prior"
+  },
+  "decision": {
+    "title": "Ranked decisions",
+    "model": "Model",
+    "price": "Price",
+    "uptime": "Uptime",
+    "score": "Score"
+  },
+  "probes": {
+    "title": "Probe results",
+    "model": "Model",
+    "ttft": "TTFT",
+    "quality": "Quality",
+    "samples": "Samples"
+  },
+  "protocol": {
+    "title": "Traffic by model",
+    "requests": "Requests",
+    "tokens": "Tokens"
+  },
+  "gateway": {
+    "title": "Gateway",
+    "enabled": "Gateway enabled",
+    "keys": "Keys",
+    "keysUnavailable": "Gateway key management is unavailable in the plugin (not on the write allowlist; secret keys are stripped from state)."
+  },
+  "usage": {
+    "title": "Usage (30d)",
+    "byModel": "By model",
+    "requests": "Requests",
+    "cost": "Cost"
+  },
+  "benchmark": {
+    "title": "Reference prices",
+    "key": "Key",
+    "price": "Price",
+    "writesUnavailable": "Benchmark edits/imports are unavailable in the plugin (not on the write allowlist)."
+  },
+  "diagnosis": {
+    "title": "Diagnosis",
+    "drift": "Drift watcher",
+    "probePatrol": "Probe patrol",
+    "noDrift": "No drift snapshot."
+  },
+  "settings": {
+    "ignoredModels": "Ignored models",
+    "ignoredHint": "This is the daemon-wide ignoredModels list — it affects routing, the web panel and the gateway. The friend plugin's per-panel list is not supported."
+  },
+  "unavailable": {
+    "title": "Not available in this plugin",
+    "benchmarkWrites": "Benchmark write operations are not allowlisted.",
+    "gatewayKeys": "Gateway key management is not allowlisted.",
+    "panelIgnoredModels": "Per-panel ignored list is not supported; only the daemon-wide list exists.",
+    "dshFreeModels": "This setting does not exist in the user baseline daemon.",
+    "daemonLifecycle": "Daemon lifecycle is handled by the Host plugin, not via the write channel."
+  },
+  "actions": {
+    "save": "Save",
+    "cancel": "Cancel",
+    "delete": "Delete",
+    "retry": "Retry",
+    "close": "Close"
+  }
+}

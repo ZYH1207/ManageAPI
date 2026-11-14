@@ -1,0 +1,33 @@
+{
+  "name": "@local/dsh-manage-api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "在 DSH 面板中管理本地 ManageAPI 多站点模型路由守护进程：跨站比价、降智探针、用量与站点状态。",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": []
+    }
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "dsh.plugin.json",
+    "lib",
+    "package.json"
+  ],
+  "engines": {
+    "node": ">=20"
+  }
+}
