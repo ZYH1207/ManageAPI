@@ -17,6 +17,7 @@
 
 import { classifyFailure, cooldownUntil, preflightLayerOf } from './failure.js'
 import { REAL_QUALITY_MIN_SAMPLES, REAL_QUALITY_BAD_RATE } from './quality-signals.js'
+import { afterReset } from './evidence-reset.js'
 
 const DEFAULT_WINDOW = 20
 const DEFAULT_MAX_AGE_MS = 6 * 3600 * 1000
@@ -208,6 +209,10 @@ export function scoreOffers(probes, traffic = {}, options = {}) {
   const maxAgeMs = options.maxAgeMs ?? DEFAULT_MAX_AGE_MS
   const trafficMaxAgeMs = options.trafficMaxAgeMs ?? DEFAULT_TRAFFIC_MAX_AGE_MS
   const now = options.now ?? Date.now()
+  // 用户点过「重新累积」的供给：界线之前的探针证据不再参与评分。
+  // 记录本身一条没删（在 db.evidenceReset 里只存一个时间戳），
+  // 所以这一步是可逆的——删掉标记，旧证据全部回来。
+  const resetAtOf = options.evidenceReset || {}
   // 真实首字的来源（db.offerStats 的逐小时桶）。**刻意与探针首字分开**：
   // 探针只发 45 token 的小请求，量到的 2 秒和你 25 万上下文真实跑的 9 秒不是一回事，
   // 混在一起平均会让人以为这个站很快（真实踩过）。这里只取「最近 N 小时的加权均值」，
@@ -217,6 +222,9 @@ export function scoreOffers(probes, traffic = {}, options = {}) {
   const byOffer = new Map()
   for (const record of probes) {
     if (!record.offerId) continue
+    // 被「重新累积」作废的记录（见 core/evidence-reset.js）：出口断网期间产生的
+    // 网络类失败，不该再算这条供给的账。标记留在记录上，删掉标记就恢复。
+    if (record.voidedBy) continue
     if (!byOffer.has(record.offerId)) byOffer.set(record.offerId, [])
     byOffer.get(record.offerId).push(record)
   }
@@ -228,9 +236,17 @@ export function scoreOffers(probes, traffic = {}, options = {}) {
 
   const scores = new Map()
   for (const [offerId, records] of byOffer) {
+    const reset = resetAtOf[offerId]
     // 只算有效期内的探针：一次失败不该在 20 小时后还在拖累可用率
-    const fresh = records.filter((r) => now - new Date(r.ts).getTime() <= maxAgeMs)
-    const recent = (fresh.length > 0 ? fresh : records).slice(-window)
+    // 重置界线之前的探针同样不算——那是用户明确要求「从现在重新累积」的时刻
+    const fresh = records.filter(
+      (r) => now - new Date(r.ts).getTime() <= maxAgeMs && afterReset(reset, r.ts),
+    )
+    // 兜底「全过期时拿旧记录撑场面」在用户点过重置之后必须失效：
+    // 否则界线之后一条新证据都还没有时，recent 会退回到重置前的整批记录，
+    // 界面显示「重置了但还是红的」——恰好是这个功能要解决的那个毛病。
+    const fallbackRecords = reset?.at ? [] : records
+    const recent = (fresh.length > 0 ? fresh : fallbackRecords).slice(-window)
     const probeSamples = recent.length
     // 可用率只认「新鲜」的探针：记录全部过期时不能拿旧数据充当现况证据，
     // 那条供给的可用率只由窗口内的真实流量说话（没有流量就是 null）

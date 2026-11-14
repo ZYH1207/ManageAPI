@@ -302,6 +302,8 @@ export function createDriftWatcher({ runProbes, onProbesRan = null, logger = con
     const pick = pickAutoRoute(db, {
       scores: scoreOffers(db.probes, db.traffic, {
         maxAgeMs: (Number(db.settings.scoreMaxAgeHours) || 6) * 3600 * 1000,
+        // 与 scoresFor 同一口径（见 daemon/server.js#scoresFor）
+        evidenceReset: db.evidenceReset || {},
       }),
       benchmarks,
       driftDemoted: demoted,

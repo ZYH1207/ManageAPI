@@ -15,6 +15,7 @@
 
 import { detectAnomalies } from './anomaly.js'
 import { clientAbortsOf, servedRequestsOf } from './offer-stats.js'
+import { judgeEgress, worstEgressLayer, egressLayerText } from './egress.js'
 
 /** 五层归因的标签与顺序（severity 排序用） */
 export const LAYERS = {
@@ -301,6 +302,94 @@ export function checkLocalDefects({ offerStats = {}, offerById = null } = {}) {
 }
 
 /**
+ * 规则⑤：出口自检——「这些失败到底是站点还是我这条链路」。
+ *
+ * 为什么它必须是一条**独立**规则，而不是并进上面任何一条：
+ * 上面所有规则读的都是「站点侧的账」（谁失败了、失败率多少）。它们能给的建议
+ * 永远只有「降权/停用/换站」——方向就错了。2026-11-14 现场就是如此：出口断了
+ * 六分钟，316 次失败全记成站点故障，13 条供给进冷却，诊断页给出的建议是
+ * 「先停用那家」——照着做会把唯一能用的站也停掉。
+ *
+ * 这条规则带的是**对照证据**（与上游无关的公网地址在同一时刻通不通），
+ * 所以它能说出「不是站的问题，是你出海的那条路断了」，并且能指出断在哪一层。
+ *
+ * @param {{egress?: object|null, nowMs?: number}} args
+ *        egress —— db.egress（{ latest, history }），由 daemon 定时写入
+ */
+export function checkEgress({ egress = null, nowMs = Date.now() } = {}) {
+  const latest = egress?.latest || null
+  if (!latest) return []
+  const verdict = judgeEgress(latest)
+  const layer = worstEgressLayer(latest)
+  const targets = Array.isArray(latest.targets) ? latest.targets : []
+  const reachable = targets.filter((t) => t?.ok).length
+  const at = Date.parse(latest.at || '')
+  const ageMin = Number.isFinite(at) ? Math.round((nowMs - at) / 60000) : null
+  const ageText = ageMin === null ? '' : ageMin <= 1 ? '刚刚' : `${ageMin} 分钟前`
+
+  if (verdict === 'ok') {
+    // 通的时候不产出结论——诊断页只在有事时说话，否则每天一条「一切正常」没人看
+    return []
+  }
+
+  const failedList = targets
+    .filter((t) => t && !t.ok)
+    .map((t) => `${t.label}（${egressLayerText(t.layer)}）`)
+    .join('；')
+
+  if (verdict === 'down') {
+    return [
+      {
+        id: 'egress-down',
+        layer: 'network',
+        severity: 'danger',
+        title: `出口不通：${egressLayerText(layer)}（${reachable}/${targets.length} 个对照地址可用，${ageText}）`,
+        detail:
+          '同一时刻，与你的上游完全无关的公网地址也连不上——所以现在所有站一起失败，' +
+          '不是那些站都坏了，是你这条出海链路断了。这类失败已经/应当不计入站点可用率；' +
+          '照着「站点故障」去降权、停用、换站都不会让它变好。' +
+          (failedList ? `失败明细：${failedList}。` : ''),
+        evidence: { verdict, layer, reachable, total: targets.length, at: latest.at },
+        action: `先修出口：检查代理/加速器是否连上、DNS 是否正常；确认恢复后再看站点。断在 ${egressLayerText(layer)} 时，换节点或改 DNS 通常比换站有效`,
+      },
+    ]
+  }
+
+  // partial：只有部分对照通。分两种处置，别混成一句「网络不稳」
+  const google = targets.find((t) => t.id === 'google')
+  const directOk = targets.filter((t) => t.id !== 'google').every((t) => t?.ok)
+  if (google && !google.ok && directOk) {
+    return [
+      {
+        id: 'egress-proxy-down',
+        layer: 'network',
+        severity: 'danger',
+        title: `代理通路不通：直连正常，走代理的对照地址连不上（${ageText}）`,
+        detail:
+          '国内直连正常、需要走代理的地址不通——上游站点都在代理后面，所以它们会一起失败。' +
+          '这仍然不是站点的问题。' +
+          (failedList ? `失败明细：${failedList}。` : ''),
+        evidence: { verdict, layer: google.layer || null, at: latest.at },
+        action: '检查代理/加速器的节点是否掉线或规则是否把它自己排除了；重连节点之后再验证',
+      },
+    ]
+  }
+  return [
+    {
+      id: 'egress-partial',
+      layer: 'network',
+      severity: 'warn',
+      title: `出口部分可用：${reachable}/${targets.length} 个对照地址通（${ageText}）`,
+      detail:
+        '一部分对照能连、一部分不能，更像是分流规则/代理规则只放行了部分目标，而不是整条链路断了。' +
+        (failedList ? `失败明细：${failedList}。` : ''),
+      evidence: { verdict, layer, reachable, total: targets.length, at: latest.at },
+      action: '看代理的分流规则：失败的那几个目标是不是没进规则；改完重跑一次出口自检',
+    },
+  ]
+}
+
+/**
  * 规则④：未归类的陌生错误——自动判诊的入口提示。
  * outage 指纹计数高但没有诊断结论的，提示用户「这条还没看懂，值得点开看」。
  * 将来做「用 key 去 ping」时，就是把这里的 pending 指纹排队跑判别实验、写回 lastDiagnosis。
@@ -414,6 +503,7 @@ export function diagnose({
   offerById = null,
   offerMeta = new Map(),
   scores = {},
+  egress = null,
   nowMs = Date.now(),
 } = {}) {
   // 人话名从哪来：显式给了 offerById 就用它，否则退回到 offerMeta
@@ -423,6 +513,9 @@ export function diagnose({
 
   // 错误诊断：账本里已有的失败信号 → 结论
   const errorFindings = [
+    // 出口自检排在最前：它一旦命中，下面所有「站点失败率上升」的结论都可能是
+    // 它的派生症状。放在第一位是为了让用户先看到「不是站的事」。
+    ...checkEgress({ egress, nowMs }),
     ...checkBalanceDrain({ errorbook, providers, monitorBalance }),
     ...checkConcurrency({ offerStats }),
     ...checkStreamBreaks({ offerStats, offerById: labelSource }),

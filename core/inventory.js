@@ -1810,7 +1810,9 @@ export async function setPinnedOffer(modelKey, offerId) {
 }
 // ----------------------------------------------------------- 真实流量计数
 
-const TRAFFIC_WINDOW_MS = 3600 * 1000
+// 导出给 core/evidence-reset.js 用（预览清单要说清「这份计数还在不在窗口内」）。
+// 两处各写一个数字迟早漂移，漂移后的症状是「预览说要清、清完评分没变」。
+export const TRAFFIC_WINDOW_MS = 3600 * 1000
 
 /**
  * 计费核对样本：每 N 次成功请求抽一条，记「本地估算 token vs 上游上报 prompt_tokens」。

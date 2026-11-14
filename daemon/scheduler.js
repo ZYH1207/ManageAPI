@@ -28,6 +28,8 @@ import { pauseStatus } from '../core/schedule.js'
 import { scoreOffers } from '../core/score.js'
 import { normalizeAutoRoute } from '../core/auto-route.js'
 import { admissionOfScore } from '../core/router.js'
+import { probeEgress } from '../core/egress.js'
+import { NETWORK_FAILURE } from '../core/failure.js'
 
 const MAX_PER_TICK = 10
 const CHECK_INTERVAL_MS = 60000
@@ -42,6 +44,17 @@ const RECOVERY_INTERVAL_MIN = 10
  * 也不会把慢站（翻 5 页要 5 秒）压得太频繁。
  */
 const LEDGER_INTERVAL_DEFAULT = 10
+/**
+ * 出口自检的自动补跑间隔。
+ *
+ * 只在「检测到跨站网络失败」时才跑——不是定时轮询。判据与跨站同簇防护
+ * 用的是同一个正则（core/failure.js#NETWORK_FAILURE），这样「哪些失败算网络类」
+ * 不会出现两套口径。
+ *
+ * 10 分钟的理由：网络抖动通常几秒到几十秒，补跑一次就能拿到对照证据；
+ * 但真断网时每 tick 都跑会白白增加代理日志。10 分钟内已经有一轮自检就不再跑。
+ */
+const EGRESS_AUTO_PROBE_COOLDOWN_MS = 10 * 60_000
 
 export function startProbeScheduler({
   runProbes,
@@ -67,6 +80,8 @@ export function startProbeScheduler({
   let rechecking = false
   // 账单同步正在跑：翻页慢站一轮要几秒到十几秒，不加锁会被下一分钟的 tick 重入
   let ledgerSyncing = false
+  // 出口自检正在跑：三个对照目标并发，通常 < 2 秒，但断网时可能卡满超时
+  let egressProbing = false
   // 暂停状态只在「翻转」时打一条日志：每分钟刷一条会把日志淹掉
   let pausedLogged = false
 
@@ -79,6 +94,47 @@ export function startProbeScheduler({
     } catch (error) {
       logger.warn?.(`[定时探测] 读取数据失败：${error.message}`)
       return
+    }
+
+    // ------------------------------------------------------------ 出口自检补跑
+    //
+    // 只在「最近确实有网络类失败」时补跑，不是定时轮询：没有失败就没有对照需求，
+    // 每分钟发三个请求只是白增代理日志。
+    //
+    // 触发判据刻意复用 NETWORK_FAILURE（与跨站同簇防护同一个正则）。2026-11-14
+    // 的教训就是这一层用了两套口径：一个认得 EHOSTUNREACH、一个不认，于是断网时
+    // 防护瞎了、自检也没被触发，用户在「站点全红」和「其实是我断网」之间耗了半小时。
+    if (!egressProbing) {
+      const lastAt = Date.parse(db.egress?.latest?.at || '')
+      const stale = !Number.isFinite(lastAt) || Date.now() - lastAt >= EGRESS_AUTO_PROBE_COOLDOWN_MS
+      if (stale) {
+        const since = Date.now() - 10 * 60_000
+        const recentFailed = (db.routing || []).some(
+          (r) =>
+            Date.parse(r.ts || '') >= since &&
+            (r.failures || []).some((f) => NETWORK_FAILURE.test(String(f?.error || ''))),
+        )
+        if (recentFailed) {
+          egressProbing = true
+          try {
+            const record = await probeEgress()
+            await store.mutate((d) => {
+              if (!d.egress || typeof d.egress !== 'object') d.egress = { latest: null, history: [] }
+              d.egress.latest = record
+              const history = Array.isArray(d.egress.history) ? d.egress.history : []
+              history.push(record)
+              d.egress.history = history.slice(-50)
+              return d
+            })
+            const ok = record.targets.filter((t) => t.ok).length
+            logger.info?.(`[出口自检] 有网络类失败，补跑一轮：${ok}/${record.targets.length} 个对照地址通`)
+          } catch (error) {
+            logger.warn?.(`[出口自检] 失败：${error.message}`)
+          } finally {
+            egressProbing = false
+          }
+        }
+      }
     }
 
     // --------------------------------------------------------------- 汇率
@@ -239,6 +295,9 @@ export function startProbeScheduler({
 
     const scores = scoreOffers(db.probes, db.traffic, {
       maxAgeMs: (Number(db.settings.scoreMaxAgeHours) || 6) * 3600 * 1000,
+      // 与 scoresFor 同一口径：重置界线之前的探针不参与评分。少传这一项，
+      // 「重置了但调度器还按旧账判它健康/冷却」——两处口径漂移这个项目踩过太多次
+      evidenceReset: db.evidenceReset || {},
     })
     const now = Date.now()
     const due = probeable

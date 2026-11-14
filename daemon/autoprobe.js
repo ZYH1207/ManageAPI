@@ -78,6 +78,8 @@ export function patrolTargets(db, record = normalizeAutoRoute(db.settings?.autoR
   const settings = db.settings || {}
   const scores = scoreOffers(db.probes, db.traffic, {
     maxAgeMs: (Number(settings.scoreMaxAgeHours) || 6) * 3600 * 1000,
+    // 与 scoresFor 同一口径（见 daemon/server.js#scoresFor）
+    evidenceReset: db.evidenceReset || {},
   })
   const mode = normalizeDecisionMode(settings.decisionMode)
   const currentModel = record?.modelKey || null

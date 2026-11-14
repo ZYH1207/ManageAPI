@@ -197,6 +197,8 @@ import {
   FAULT_WINDOW_MS,
 } from '../core/fault-signal.js'
 import * as diag from '../core/diagnosis.js'
+import { probeEgress, judgeEgress, worstEgressLayer, attributeFailures } from '../core/egress.js'
+import { previewReset, resetNegativeEvidence } from '../core/evidence-reset.js'
 import { runCheckup } from './checkup-runner.js'
 import {
   assessRequestImpact,
@@ -333,6 +335,9 @@ function scoresFor(db) {
     // 真实首字来源：与探针首字分开算（探针 45 token vs 真实 25 万上下文，
     // 混平均会让人以为站很快）。见 core/score.js#realTtftOf
     offerStats: db.offerStats,
+    // 用户点过「重新累积」的供给：界线之前的探针证据不再参与评分。
+    // 记录一条没删（只存时间戳），删掉标记就能全部恢复。
+    evidenceReset: db.evidenceReset || {},
   })
 }
 
@@ -1068,6 +1073,24 @@ async function buildState({ light = false } = {}) {
     ledger: buildLedgerView(db, { days: 7 }),
     siteRanking,
     scores,
+    // 出口自检：决策页顶部的状态条与「这批失败是谁的」结论都读这一份。
+    // 只给最新一轮 + 结论，不把 50 轮历史塞进每次 15 秒轮询的响应里。
+    egress: (() => {
+      const latest = db.egress?.latest || null
+      if (!latest) return null
+      const since = Date.now() - 10 * 60_000
+      const failures = (db.routing || [])
+        .filter((r) => Date.parse(r.ts || '') >= since)
+        .flatMap((r) => (r.failures || []).map((f) => ({ ...f, ts: r.ts })))
+      return {
+        latest,
+        verdict: judgeEgress(latest),
+        layer: worstEgressLayer(latest),
+        attribution: attributeFailures({ record: latest, failures }),
+        // 用户点过「重新累积」的供给：界面要能标出来「这条的账是从 X 点重新算的」
+        evidenceReset: db.evidenceReset || {},
+      }
+    })(),
     probeTotal: db.probes.length,
     gateway: {
       enabled: Boolean(db.settings.gateway?.enabled),
@@ -4555,6 +4578,9 @@ route('GET', /^\/api\/diagnosis$/, async () => {
     monitorBalance: db.monitor?.balance || [],
     offerMeta,
     scores: Object.fromEntries([...scoreMap].map(([id, s]) => [id, { status: s.status, routable: s.routable }])),
+    // 出口自检：诊断引擎据此产出 layer='network' 的结论，
+    // 也就是「这批失败不是站点的账」。没有这一项，诊断页就只能按站点故障建议
+    egress: db.egress || null,
   })
 })
 
@@ -4781,6 +4807,111 @@ route('DELETE', /^\/api\/faults\/([\w-]+)$/, async (ctx) => {
 route('DELETE', /^\/api\/diagnostics\/events$/, async () => {
   const removed = await inv.clearEmptyEventsLog()
   return { ok: true, removed }
+})
+
+// ------------------------------------------------------------ 出口自检与重新累积
+
+/**
+ * 出口自检：跑一轮「和上游无关的对照探测」，把结果落进 db.egress。
+ *
+ * 刻意不做成自动每 N 分钟跑：它要发真实网络请求（虽然零 token），
+ * 而用户在用代理时多跑一次就可能多一条代理日志。触发时机只有两个——
+ * 用户手动点，以及调度器在「检测到跨站网络失败」时按冷却间隔自补一轮（见 scheduler）。
+ */
+route('POST', /^\/api\/egress\/probe$/, async () => {
+  const record = await probeEgress()
+  await store.mutate((db) => {
+    if (!db.egress || typeof db.egress !== 'object') db.egress = { latest: null, history: [] }
+    db.egress.latest = record
+    const history = Array.isArray(db.egress.history) ? db.egress.history : []
+    history.push(record)
+    // 只留最近 50 轮：它是归因证据，不是监控时序库
+    db.egress.history = history.slice(-50)
+    return db
+  })
+  return { egress: record, verdict: judgeEgress(record), layer: worstEgressLayer(record) }
+})
+
+/**
+ * 当前出口结论 + 与最近失败的对账。
+ * 前端状态条和诊断页都读这一份，避免两处各算一遍。
+ */
+route('GET', /^\/api\/egress$/, async () => {
+  const db = await store.readDbCached()
+  const latest = db.egress?.latest || null
+  const verdict = judgeEgress(latest)
+  // 用「最近 10 分钟内的真实失败」当对账对象：更早的失败和当前出口状态无关
+  const since = Date.now() - 10 * 60_000
+  const failures = (db.routing || [])
+    .filter((r) => Date.parse(r.ts || '') >= since)
+    .flatMap((r) => (r.failures || []).map((f) => ({ ...f, ts: r.ts })))
+  return {
+    latest,
+    history: (db.egress?.history || []).slice(-20).reverse(),
+    verdict,
+    layer: worstEgressLayer(latest),
+    attribution: attributeFailures({ record: latest, failures }),
+    recentFailures: failures.length,
+    targets: latest?.targets || [],
+  }
+})
+
+/**
+ * 重新累积：清掉负面证据。
+ *
+ * dryRun 默认 true —— 动评分就是动派活，先看清单。
+ * 前端第一次点只拿预览，确认后才真正落盘。这样误点一次不会改变派活。
+ */
+route('POST', /^\/api\/evidence\/reset$/, async (ctx) => {
+  const offerIds = Array.isArray(ctx.body.offerIds) ? ctx.body.offerIds.filter((x) => typeof x === 'string') : []
+  const dryRun = ctx.body.dryRun !== false
+  const reason = typeof ctx.body.reason === 'string' && ctx.body.reason ? ctx.body.reason.slice(0, 120) : 'manual'
+  // 默认不动探针证据：见 core/evidence-reset.js 文件头第 1 条
+  const includeProbes = ctx.body.includeProbes === true
+
+  if (dryRun) {
+    const db = await store.readDbCached()
+    return { dryRun: true, ...previewReset(db, { offerIds }) }
+  }
+
+  const result = await store.mutate((db) => {
+    const meta = new Map()
+    const providerName = new Map((db.providers || []).map((p) => [p.id, p.name]))
+    for (const o of db.offers || []) {
+      meta.set(o.id, `${providerName.get(o.providerId) || '?'} · ${o.modelKey || o.upstreamName || '?'}`)
+    }
+    const out = resetNegativeEvidence(db, { offerIds, reason, includeProbes })
+    // 把「清的是谁」一起记进历史，方便日后回看「那次重置到底清了哪几条」
+    if (!Array.isArray(db.evidenceResetLog)) db.evidenceResetLog = []
+    db.evidenceResetLog.push({
+      at: out.at,
+      reason,
+      offers: out.offers,
+      labels: out.offers.map((id) => meta.get(id) || id),
+      cleared: out.cleared,
+    })
+    if (db.evidenceResetLog.length > 50) db.evidenceResetLog = db.evidenceResetLog.slice(-50)
+    return out
+  })
+  return { dryRun: false, ...result, state: await buildState() }
+})
+
+/** 撤销一次重置（把界线删掉，旧证据全部回来）：这是它「可回滚」的实现 */
+route('DELETE', /^\/api\/evidence\/reset$/, async (ctx) => {
+  const offerIds = Array.isArray(ctx.body.offerIds) ? ctx.body.offerIds.filter((x) => typeof x === 'string') : []
+  const removed = await store.mutate((db) => {
+    if (!db.evidenceReset || typeof db.evidenceReset !== 'object') return []
+    const ids = offerIds.length > 0 ? offerIds : Object.keys(db.evidenceReset)
+    const gone = []
+    for (const id of ids) {
+      if (db.evidenceReset[id]) {
+        delete db.evidenceReset[id]
+        gone.push(id)
+      }
+    }
+    return gone
+  })
+  return { ok: true, restored: removed, state: await buildState() }
 })
 
 /** 手动解除一条改道（不想等 20 分钟自动复检时用） */

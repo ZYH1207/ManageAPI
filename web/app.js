@@ -4132,6 +4132,46 @@ function renderRoute() {
   return
 }
 
+/**
+ * 出口状态条：智能决策页最上面那一条。
+ *
+ * 为什么放在这里而不是诊断页：用户「全都访问不了」的时候第一眼看的就是这一页，
+ * 而这一页满屏红标**长得就像「这些站都坏了」**。真正的原因常常是出口断了。
+ * 不把对照证据放在同一屏，人就只能猜——2026-11-14 就是这么耗掉半小时的。
+ *
+ * 没有自检记录时**不显示**（而不是显示「未知」）：新装用户第一眼应该看到站点表，
+ * 而不是一条他看不懂的灰条。
+ */
+function egressBannerHtml() {
+  const info = state.egress
+  const latest = info?.latest
+  if (!latest) return ''
+  const verdict = info.verdict || 'unknown'
+  const targets = latest.targets || []
+  const reachable = targets.filter((t) => t?.ok).length
+  const at = Date.parse(latest.at || '')
+  const ageMin = Number.isFinite(at) ? Math.round((Date.now() - at) / 60000) : null
+  const ageText = ageMin === null ? '' : ageMin <= 1 ? t('刚刚') : t('{n} 分钟前', { n: ageMin })
+  // 结论过期就不能再拿它当「现在」的证据：断网期间的自检说「不通」，
+  // 但网络可能早就好了；反过来更危险——两小时前的「通」不能证明刚才的失败不是出口问题。
+  const stale = ageMin !== null && ageMin > 5
+  const cls = verdict === 'ok' ? 'calm' : verdict === 'partial' ? 'warn' : 'danger'
+  const text =
+    verdict === 'ok'
+      ? t('出口正常：{ok}/{total} 个对照地址通', { ok: reachable, total: targets.length })
+      : verdict === 'partial'
+        ? t('出口部分可用：{ok}/{total} 个对照地址通', { ok: reachable, total: targets.length })
+        : t('出口不通：{ok}/{total} 个对照地址通', { ok: reachable, total: targets.length })
+  const detail = info.attribution?.detail || ''
+  return `
+    <div class="notice ${cls}" style="margin-bottom:10px">
+      <span class="name">${esc(text)}</span>
+      <span class="grow"></span>
+      <span class="desc">${esc(ageText)}${stale ? t(' · 结论已过期，建议重测') : ''}</span>
+      ${detail ? `<div class="desc" style="flex-basis:100%;margin-top:4px">${esc(detail)}</div>` : ''}
+    </div>`
+}
+
 function renderDecision() {
   const view = $('#view-decision')
   const decisions = state.decisions || []
@@ -4448,6 +4488,7 @@ function renderDecision() {
 
   view.innerHTML = `
     ${viewSwitchHtml()}
+    ${egressBannerHtml()}
     ${simple ? simpleShell(mode, visibleDecisions, decisions, hiddenCandidates, blocks, mergedHint, ignoredCount, mergeGroupCount) : `
     ${modeCard(mode)}
     ${lockFailoverCard()}
@@ -4470,6 +4511,8 @@ function renderDecision() {
         <span class="switch-text"><b>${t('只显示可使用')}</b></span>
       </label>
       <span class="grow"></span>
+      <button class="ghost with-icon" data-act="egress-probe" title="${t('跑一轮出口自检：拿三个和上游无关的公网地址试 DNS/TCP/TLS。几百毫秒、零 token、不打上游。用来判断「站点全红」到底是我断网还是站坏了。')}">${icon('refresh')}${t('测出口')}</button>
+      <button class="ghost with-icon" data-act="evidence-reset" title="${t('把这一页所有负面的标签重新开始累积：失败率、冷却、故障信号、临时改道一起清零。探针记录与历史账不动。会先给你看清单再落盘。')}">${icon('refresh')}${t('重新累积')}</button>
       <button class="ghost with-icon" data-act="refresh-state" title="${t('重新拉取评分、状态与当前选')}">${icon('refresh')}${t('刷新')}</button>
       <button class="ghost" data-act="decision-reset" title="${t('清空搜索、恢复默认列显示并展开全部模型')}">${t('重置')}</button>
       ${colMenuHtml('decision', DECISION_COLS)}
@@ -10844,6 +10887,67 @@ document.addEventListener('click', async (event) => {
   if (action === 'refresh-state') {
     await refreshState()
     toast(t('已刷新'))
+    return
+  }
+
+  // 「测出口」：跑一轮对照探测。几百毫秒、零 token、不打上游，
+  // 所以不需要二次确认——它就是一次测量，不改变任何东西。
+  if (action === 'egress-probe') {
+    await withBusy(actionButton, async () => {
+      try {
+        const result = await api('POST', '/api/egress/probe', {})
+        await refreshState()
+        const ok = (result.egress?.targets || []).filter((t) => t.ok).length
+        const total = (result.egress?.targets || []).length
+        toast(
+          result.verdict === 'ok'
+            ? t('出口正常：{ok}/{total} 个对照地址通', { ok, total })
+            : t('出口有问题：只有 {ok}/{total} 个对照地址通', { ok, total }),
+          result.verdict !== 'ok',
+        )
+      } catch (error) {
+        toast(error.message, true)
+      }
+    })
+    return
+  }
+
+  // 「重新累积」：先把清单摊开给人看，确认后才落盘。
+  // 不直接 confirm 一句「确定吗」——用户看不出会清掉哪些、留下哪些，
+  // 而这里动的是派活依据。所以第一次只拿 dryRun，列出来，再问。
+  if (action === 'evidence-reset') {
+    await withBusy(actionButton, async () => {
+      try {
+        const preview = await api('POST', '/api/evidence/reset', { dryRun: true })
+        if (!preview.affected) {
+          toast(t('当前没有需要清的负面状态：失败率、冷却、故障信号都是干净的'))
+          return
+        }
+        const lines = preview.rows.slice(0, 8).map((r) => {
+          const bits = []
+          if (r.traffic?.fail) bits.push(t('失败 {n} 次', { n: r.traffic.fail }))
+          if (r.traffic?.kinds?.length) bits.push(r.traffic.kinds.join('/'))
+          if (r.networkProbes) bits.push(t('网络类探针 {n} 条', { n: r.networkProbes }))
+          if (r.signals) bits.push(t('故障信号 {n}', { n: r.signals }))
+          if (r.reports) bits.push(t('故障上报 {n}', { n: r.reports }))
+          if (r.detour) bits.push(t('临时改道'))
+          return `· ${offerDisplayLabel(r.offerId)}：${bits.join('、')}`
+        })
+        const more = preview.affected > lines.length ? `\n…${t('还有 {n} 条', { n: preview.affected - lines.length })}` : ''
+        const message = [
+          t('会把下面 {n} 条供给的负面状态清零，让它们从此刻重新累积：', { n: preview.affected }),
+          '',
+          ...lines,
+        ].join('\n') + more + '\n\n' + t('清掉：失败率计数、冷却、生效中的故障信号、故障上报、临时改道、网络类探针失败（断网期间的）。\n不动：指纹/截断/计费证据、HTTP 5xx 记录、小时桶、错误账本、决策日志。\n\n确定吗？')
+        if (!confirm(message)) return
+        const result = await api('POST', '/api/evidence/reset', { dryRun: false, reason: 'decision-page' })
+        state = result.state || state
+        render()
+        toast(t('已重新累积 {n} 条供给', { n: result.cleared?.traffic || 0 }))
+      } catch (error) {
+        toast(error.message, true)
+      }
+    })
     return
   }
 

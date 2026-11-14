@@ -190,6 +190,10 @@ export function emptyDb() {
     failover: { reports: [] },
     // 监控时序数据（余额快照 / 倍率变动 / 公告 / 告警）
     monitor: defaultMonitor(),
+    // 出口自检记录（core/egress.js）：latest 是最近一轮，history 留最近 N 轮。
+    // 它回答「刚才那些失败是站点还是我这条链路」，是诊断页唯一的对照证据。
+    // 与站点账完全分离：不碰任何供给的评分，只作归因证据与界面状态条。
+    egress: { latest: null, history: [] },
     // 站点原始走账清单：providerId → 'YYYY-MM-DD' → { day, at, rows[], 汇总 }。
     // 「实际花了多少钱」的权威来源——站点自己按分项记账（连缓存读价都单列），
     // 比网关侧用 token 估算准得多（缺 usage、cached_tokens 不稳、缓存价根本没算）。
