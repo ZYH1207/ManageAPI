@@ -40,6 +40,11 @@ console.log('[1] 「超时」必须被认成网络类失败')
     'socket hang up',
     'fetch failed',
     'Client network socket disconnected before secure TLS connection was established',
+    // 2026-11-14 事故：本机唯一的失败形式恰好是这两个，旧正则一条都认不出，
+    // 于是「网络类失败数=0」→ 同簇防护一次都没触发 → 316 次失败全记成站点故障。
+    '连接失败（EHOSTUNREACH）：https://rapidapi.cc/v1/chat/completions',
+    '连接失败（ENETUNREACH）：https://zdxjl.com/v1/chat/completions',
+    '预检未过（tcp）：TCP 连接失败：connect EHOSTUNREACH 192.210.152.46:8080',
   ]) {
     ok(NETWORK_FAILURE.test(text), `认得出：${text.slice(0, 44)}`)
   }

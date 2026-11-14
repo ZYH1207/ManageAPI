@@ -214,9 +214,21 @@ const CONNECTION_ERROR = /\b(ECONNREFUSED|ENOTFOUND|EAI_AGAIN|EHOSTUNREACH|ENETU
  *   `连接失败（ECONNRESET）：https://...`
  * 旧正则只列了英文 `timeout`，中文那批一条都认不出来。实测本机 54 条失败：
  * 旧正则命中 24 条（44%），加上「超时」后 47 条（87%）。
+ *
+ * **EHOSTUNREACH / ENETUNREACH 必须单独列出**（2026-11-14 事故）。
+ * 它们不属于 `ECONN*` 家族，旧正则一条都匹配不到。而本机唯一的失败形式恰好是
+ * 它们——20:31 重启后代理 TUN 还没连上节点，六家毫无关联的站同一秒
+ * `连接失败（EHOSTUNREACH）`，共 316 次：
+ *
+ *   网络类失败数 = 0  →  「≥3 条跨站」的前置条件不成立
+ *                     →  跨站同簇防护一次都没触发
+ *                     →  316 次全记成站点故障，13 条供给 failRate=1 进冷却
+ *
+ * 也就是说：网络越彻底地断，这层防护越瞎。判定必须和 `CONNECTION_ERROR`
+ * （本文件里判「我方缺陷」用的那个）覆盖面一致，否则两个口径必然漂移。
  */
 export const NETWORK_FAILURE =
-  /timeout|超时|aborted|fetch failed|ECONN|ENOTFOUND|EAI_AGAIN|EPIPE|socket|网络/i
+  /timeout|超时|aborted|fetch failed|ECONN|EHOSTUNREACH|ENETUNREACH|EHOSTDOWN|ENETDOWN|ENOTFOUND|EAI_AGAIN|EPIPE|socket|握手|解析失败|网络/i
 
 /** 本机地址：只有连本机失败才算我方问题 */
 const LOOPBACK = /(?:127\.0\.0\.1|localhost|\[::1\]|::1|0\.0\.0\.0)/i
