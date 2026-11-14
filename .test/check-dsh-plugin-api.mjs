@@ -88,32 +88,51 @@ try {
   })
 
   // ── 1. server.js 只增不改 / 109 条既有路由仍在 / 新增恰好 1 条 ──────────
+  //
+  // 基线锚点不能用 HEAD：HEAD 会随每次提交往前挪，一旦本改动被提交，
+  // 「改动前」就变成了「改动后」，这组断言必然假红（2026-11-14 实际踩过）。
+  // 改为锚定「引入 ingest 路由那个提交的父提交」——它是固定历史，永不错位；
+  // 找不到该提交时退回 HEAD，并用显式断言说明基线来源。
+  const INGEST_ANCHOR = '4151b0d72d77e3bdb3eceef847ef6e12c6643059'
+  const anchorRef = (() => {
+    try {
+      git('cat-file', '-e', INGEST_ANCHOR)
+      return `${INGEST_ANCHOR}^`
+    } catch {
+      return 'HEAD'
+    }
+  })()
   const currentSrc = await readFile(SERVER, 'utf8')
-  const baselineSrc = git('show', 'HEAD:daemon/server.js')
+  const baselineSrc = git('show', `${anchorRef}:daemon/server.js`)
   const currentRows = parseRouteRows(currentSrc)
   const baselineRows = parseRouteRows(baselineSrc)
 
-  await ok('server.js：基线 109 条 route、当前 110 条，新增恰好 1 条', async () => {
-    assert.equal(baselineRows.length, 109, 'git HEAD 基线应为 109 条')
-    assert.equal(currentRows.length, 110, '当前应为 109 + 1')
+  await ok('server.js：锚点 109 条 route 一条不丢，ingest 恰好新增 1 条', async () => {
+    // 不写死「当前必须是 110 条」：主线上还有别的功能合进来（实测 120 条），
+    // 绝对条数只在「本分支恰好只差这一处」时成立，换个树就假红。
+    // 真正要守的不变量是：锚点里每一条既有路由都还在，且 ingest 只多出一条。
+    assert.equal(baselineRows.length, 109, `锚点 ${anchorRef} 应为 109 条`)
     const currentLines = routeLines(currentSrc)
     const missing = routeLines(baselineSrc).filter((l) => !currentLines.includes(l))
     assert.deepEqual(missing, [], `既有路由不得丢失/改动：${missing.join(' | ')}`)
-    const added = currentLines.filter((l) => !routeLines(baselineSrc).includes(l))
-    assert.equal(added.length, 1, `新增只能 1 条，实得 ${added.length}`)
-    assert.match(added[0], /^route\('POST',\s*\/\^\\\/api\\\/ingest\\\/usage\$\//, added[0])
+    const ingestLines = currentLines.filter((l) => /ingest/.test(l))
+    assert.equal(ingestLines.length, 1, `ingest 只能注册 1 条，实得 ${ingestLines.length}`)
+    assert.match(ingestLines[0], /^route\('POST',\s*\/\^\\\/api\\\/ingest\\\/usage\$\//, ingestLines[0])
   })
 
-  await ok('server.js：git diff 只有 + 行（无任何既有代码删改）', async () => {
-    const diff = git('diff', '--', 'daemon/server.js')
-    const removed = diff.split('\n').filter((l) => l.startsWith('-') && !l.startsWith('--- '))
+  // 下面三组断言的对象是「引入 ingest 那次改动本身」，不是工作区当前 diff。
+  // 用锚点提交自身的 patch（git show），这样在任何树里都是同一份固定历史；
+  // 用 git diff 的话，主线上会混进别人合并的 800 行，断言跟着漂。
+  const anchorPatch = git('show', INGEST_ANCHOR, '--', 'daemon/server.js')
+
+  await ok('server.js：ingest 那次改动只有 + 行（无任何既有代码删改）', async () => {
+    const removed = anchorPatch.split('\n').filter((l) => l.startsWith('-') && !l.startsWith('--- '))
     assert.deepEqual(removed, [], `发现删除/修改行：${removed.join(' | ')}`)
-    assert.equal((diff.match(/^\+/gm) || []).length, 94, '93 行插入 + 文件头') // ++++ 不算
+    assert.equal((anchorPatch.match(/^\+/gm) || []).length, 94, '93 行插入 + 文件头') // ++++ 不算
   })
 
   await ok('server.js：新增内容未引入 panel / panelIgnoredModels 字段或 panel=1', async () => {
-    const diff = git('diff', '--', 'daemon/server.js')
-    const added = diff.split('\n').filter((l) => l.startsWith('+') && !l.startsWith('+++ ')).join('\n')
+    const added = anchorPatch.split('\n').filter((l) => l.startsWith('+') && !l.startsWith('+++ ')).join('\n')
     assert.doesNotMatch(added, /panelIgnoredModels/)
     assert.doesNotMatch(added, /panel\s*=\s*1/)
     assert.doesNotMatch(added, /dshFreeModels|applyDshSettings/)

@@ -66,13 +66,10 @@ git worktree add "../manage-api-<任务名>" -b feat/<任务名> release-0.2.1
 - 生产实例由 launchd 托管（`com.sakura.manage-api`），端口 4319，开机自启，
   数据即 `~/.manage-api`；每日备份到
   `/Users/sakura/个人收藏/Agent Storage/ManageAPI/manage-api-backups/`（由 launchd 的
-  `MANAGE_API_BACKUP_DIR` 指定），默认保留 30 份。**4319 留给日常真实实例，不要拿它做验收。**
-- 验收预览用仓库外的 `preview.mjs`（见「交付流程」），每个任务独立端口和独立数据副本。
+  `MANAGE_API_BACKUP_DIR` 指定），默认保留 30 份。**4319 留给真实实例；验收一律用 `preview.mjs`**（见「交付流程」），它在仓库外、每个任务独立端口和独立数据副本。
 - 单实例锁 `~/.manage-api/daemon.lock`：同一数据目录只允许一个 daemon，
   进程崩了下次启动会自动清理。跑测试一律用 `mktemp -d` 另开数据目录。
-- 默认端口 4319，被占用会自动往后找。
-- **DB 有版本迁移**（`core/store.js` 的 `migrate`，当前 v4）。改数据结构要同时
-  写迁移，且必须幂等——用户可能从任意老版本跨级升上来。
+- 端口被占用会自动往后找。DB 有版本迁移（`core/store.js` 的 `migrate`，当前 v4）：改数据结构要同时写迁移，且必须幂等——用户可能从任意老版本跨级升上来。
 
 ## 已知本来就失败的测试
 
@@ -101,14 +98,7 @@ node .test/seed-demo.mjs        # 建演示站，run-groups/run-weight 依赖它
 node .test/run-groups.mjs
 ```
 
-几个坑：
-
-- `run-e2e` / `run-gateway` **自己建站**，和 `seed-demo` 建同名站会冲突。
-  每个场景用独立数据目录，别混跑。
-- `run-gateway` 要 5103 是 `MODE=fail`，而 `seed-demo` 要它是 `truncated`。
-- 网关决策日志是**攒批写盘（2000ms）**的，断言日志前至少等 2500ms。
-- 路径：bash 的 `/tmp` 与 node 眼里的 `/tmp` 不是同一个地方。跨语言传路径
-  一律用 `mktemp -d` 或 `$TEMP`，别手写 `/tmp/xxx`。
+几个坑：`run-e2e` / `run-gateway` **自己建站**，与 `seed-demo` 同名会冲突，每个场景用独立数据目录别混跑；`run-gateway` 要 5103 是 `MODE=fail` 而 `seed-demo` 要它是 `truncated`；网关决策日志**攒批写盘（2000ms）**，断言前至少等 2500ms；bash 的 `/tmp` 与 node 的 `/tmp` 不是同一处，跨语言传路径一律用 `mktemp -d` 或 `$TEMP`。
 
 ## 交付流程（先看效果，后提交）
 
@@ -126,10 +116,7 @@ node .test/run-groups.mjs
    它给这个任务分配独立端口（4500–4599）、复制一份真实数据（`db.json` + `master.key`
    成对复制，真实库不动）、默认关掉定时采集和探针，并登记到看板。
    同名重跑 = 重启（改了 `core/*` / `daemon/*` 必须重跑）。
-3. **一次把验收信息写全**：看板 `http://127.0.0.1:4300/`（点任务名直接开）、
-   该任务的端口网址、点哪里、应该看到什么、什么样算不对；并明确要求 **Ctrl+F5 强刷**
-   （旧 `app.js` 会被缓存）。发链接前自检：`/api/health` 通，且 `--marker` 那行没有红字
-   （红字表示实例里跑的不是你这版代码）。
+3. **一次把验收信息写全**：看板 `http://127.0.0.1:4300/`（点任务名直接开）、该任务端口网址、点哪里、应看到什么、什么算不对；要求 **Ctrl+F5 强刷**（旧 `app.js` 会缓存）。发链接前自检：`/api/health` 通，且 `--marker` 行无红字（红字＝实例里跑的不是你这版代码）。
 4. **等对方试用**：这期间不要提交、不要动主树、不要切分支——
    对方眼前跑的就是工作区，代码一变行为就变。
 5. **对方说「可以」之后才提交**（本地 commit）；对方说「push」才按上面的
