@@ -1592,6 +1592,22 @@ html[data-lang='en'] .doc[data-lang-block='en'] { display: block; }
 .switch-text { display: flex; flex-direction: column; gap: 3px; line-height: 1.55; }
 .switch-text b { font-size: 13px; font-weight: 500; color: var(--text); }
 .switch-text span { font-size: 12px; color: var(--muted); }
+/* 决策页顶栏：「决策侧重」在左、搜索在右。
+   三档是离散枚举（价格 / 性价比 / 质量），用站点页已有样式的分段控件表达，
+   不引入滑块（会暗示连续值）、也不做浮层（会盖住下面的说明和表格）。
+   说明文字放在控件正上方，跟按钮左对齐；窄屏时整组自然换行。 */
+.mode-inline { display: inline-flex; flex-direction: column; align-items: flex-start; gap: 6px; white-space: nowrap; }
+.mode-inline-label { font-size: 13px; font-weight: 500; color: var(--muted); }
+.toolbar-right { margin-left: auto; display: inline-flex; align-items: center; gap: 12px; }
+/* 决策侧重：三档按钮比站点页的分段控件更宽一点，便于点中；
+   选中档位用绿色实底（跟「健康 / 通过」同一套语义色），未选中保持中性灰。 */
+.mode-inline .seg button { min-width: 76px; padding: 6px 18px; font-size: 13px; }
+.mode-inline .seg button.active {
+  background: var(--success); color: #fff; font-weight: 500;
+  box-shadow: 0 1px 2px rgba(15, 157, 107, 0.30);
+}
+.mode-inline .seg button.active:hover { background: var(--success); color: #fff; }
+[data-theme='dark'] .mode-inline .seg button.active { color: #06231b; }
 
 /* ------------------------------------------------- 免费页：分段控件里的计数 */
 .seg-count {

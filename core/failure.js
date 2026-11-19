@@ -32,6 +32,9 @@ export const FAILURE_SCOPE = {
   quota: 'account',
   'model-missing': 'provider',
   'rate-limit': 'transient',
+  // 客户端自己按了 ESC / 关了页面：这一单没跑完，但不是任何一方出错。
+  // 按 request 处理（这一单不成立），绝不冷却、绝不算站点故障。
+  'client-abort': 'request',
 }
 
 /** 已知 kind 的影响范围；未知 kind 视为 provider 级（保守：跳过这家其余供给）。 */
@@ -80,11 +83,24 @@ const RULES = [
     scope: 'transient',
     test: /\b429\b|rate[_\s-]?limit|too[_\s-]?many[_\s-]?requests|请求过于频繁|限流/i,
   },
+  {
+    // 客户端主动断开：浏览器按 ESC、切走页面、Ctrl+C、fetch abort。
+    // 本地会把上游 fetch abort 掉，读流于是抛 AbortError（文本形如
+    // "This operation was aborted"），push() 也会抛「客户端已断开」。
+    // 以前这两句落进默认规则 → countsAsOutage=true → 记成站方断流，
+    // 拉低可用率、把排查引向站方，而真正该记的是「这一单被用户取消了」。
+    // 必须排在最后：先让真正的错误类型（429/401/额度…）优先归因。
+    // 也必须在文本出现「超时」时让位——AbortSignal.timeout() 的报错是
+    // "The operation was aborted due to timeout"，那是站卡死，必须继续算故障。
+    kind: 'client-abort',
+    scope: 'request',
+    test: /^(?![\s\S]*(?:timeout|timed out|超时))[\s\S]*(?:客户端已断开|client[_\s-]?abort|aborted by the (?:client|caller)|user aborted|operation was aborted)/i,
+  },
 ]
 
 /**
  * @param {string} message 上游错误文本（探针的 error 字段或网关的失败原因）
- * @returns {{kind: 'quota'|'budget'|'model-missing'|'rate-limit'|'auth'|null, countsAsOutage: boolean}}
+ * @returns {{kind: 'quota'|'budget'|'model-missing'|'rate-limit'|'auth'|'client-abort'|null, countsAsOutage: boolean}}
  */
 export function classifyFailure(message) {
   const text = String(message || '')

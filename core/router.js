@@ -3,7 +3,11 @@
  *
  * 决策规则（刻意做成可解释的两步，而不是加权打分）：
  *   1. 硬约束：只留评分健康（healthy）的供给；首字超限的排除
- *   2. 排序：按「有效成本 = 名义价格 ÷ 质量」升序
+ *   2. 排序：按用户选的「决策侧重」升序（settings.decisionMode，见 decision-mode.js）：
+ *        价格档比名义单价、性价比档比有效成本、质量档先比质量再比价格
+ *
+ * 排序偏好只决定「谁能排前面」，不参与第 1 步的准入；两个开关各管一件事，
+ * 混成一个滑块用户就说不清自己改的是哪条规则。
  *
  * 但用户可以在探针页打开「放行可疑供给」：打开后探针判定不可信/过期的照样参与排序，
  * 由「价格 ÷ 质量」自己去权衡——质量差一半，成本就翻倍，贵不到哪里去才轮得到它。
@@ -15,6 +19,7 @@
 import { offerCost } from './pricing.js'
 import { isRoutable, effectiveCost, THRESHOLDS } from './score.js'
 import { normalizeModelKey } from './inventory.js'
+import { normalizeDecisionMode, compareByMode, sortValueOf } from './decision-mode.js'
 
 const INFINITY_COST = Number.POSITIVE_INFINITY
 
@@ -34,6 +39,8 @@ export function selectCandidates({ offers, providers, credentials, scores, bench
   const maxTtftMs = Number(settings?.maxTtftMs) || 0
   // 用户开关：探针说可疑的也让它正常参与排序（首字上限仍然独立生效）
   const allowUntrusted = Boolean(settings?.allowUntrusted)
+  // 排序偏好（价格 / 性价比 / 质量）：只改排序键，不改上面两条准入判定
+  const decisionMode = normalizeDecisionMode(settings?.decisionMode)
   const matched = offers.filter(
     (offer) =>
       offer.modelKey === key ||
@@ -88,6 +95,8 @@ export function selectCandidates({ offers, providers, credentials, scores, bench
       provider,
       credential,
       price,
+      // 美元口径的名义单价：排序用这个（CNY 值只是展示口径，见上）
+      priceUsd,
       quality,
       // probeOk 是探针的原始判定；routable 是「这一单会不会考虑它」
       probeOk: isRoutable(score),
@@ -96,6 +105,10 @@ export function selectCandidates({ offers, providers, credentials, scores, bench
       // effective 是展示口径（人民币）；排序用 effectiveUsd，见上
       effective: effectiveCost(price, quality),
       effectiveUsd: effectiveCost(priceUsd, quality),
+      // 当前档位下这一条拿什么键参与排序（界面「排序键」列直接显示它，
+      // 否则用户看到的数字和排名顺序对不上，会以为排序坏了）
+      decisionMode,
+      sortValue: sortValueOf({ priceUsd, quality, effectiveUsd: effectiveCost(priceUsd, quality) }, decisionMode),
       status: score?.status || 'unknown',
       // 证据量与置信度：1 个样本的「健康」和 10 个样本的「健康」确定性差很多，
       // 界面必须能看出来，否则用户会以为 healthy 等于「已验证可靠」
@@ -123,10 +136,10 @@ export function selectCandidates({ offers, providers, credentials, scores, bench
         const ib = manualIndex.has(b.offer.id) ? manualIndex.get(b.offer.id) : Number.MAX_SAFE_INTEGER
         if (ia !== ib) return ia - ib
       }
-      // 有效成本排序按美元口径；兜底的展示价（CNY）与美元只差同一汇率标量，等价
-      const ea = a.effectiveUsd ?? INFINITY_COST
-      const eb = b.effectiveUsd ?? INFINITY_COST
-      if (ea !== eb) return ea - eb
+      // 排序键随「决策侧重」变：价格档比名义单价、性价比档比有效成本、
+      // 质量档先比质量再比价格。缺值在 orderKey 里统一按 Infinity 处理。
+      const byMode = compareByMode(a, b, decisionMode)
+      if (byMode !== 0) return byMode
       return (a.price ?? INFINITY_COST) - (b.price ?? INFINITY_COST)
     })
 }
@@ -160,8 +173,13 @@ export function explain(candidates) {
     upstreamName: c.offer.upstreamName,
     group: c.offer.group || '',
     price: c.price,
+    priceUsd: c.priceUsd,
     quality: c.quality,
     effective: c.effective,
+    // 当前档位与它真正用来排序的值：决策页「排序键」列直接显示这个值，
+    // 否则用户切到价格档后看到「有效成本」一列的数字和排名对不上
+    decisionMode: c.decisionMode,
+    sortValue: c.sortValue,
     routable: c.routable,
     probeOk: c.probeOk,
     tooSlow: Boolean(c.tooSlow),

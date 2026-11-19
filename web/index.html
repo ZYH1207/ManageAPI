@@ -1050,6 +1050,20 @@
             <button type="submit" class="primary">登录</button>
           </div>
         </form>
+        <form id="form-session-import" class="grid" style="margin-top:14px;padding-top:14px;border-top:1px dashed var(--border)">
+          <p class="hint" style="margin:0 0 8px">
+            站点开了人机验证（验证码 / Turnstile / 2FA）账号密码连不上？这一步在浏览器里自己过：
+            正常登录站点后台 → F12 → Network → 找登录请求 → 把响应 JSON 整体贴进来。
+            有 refresh_token 就能一直自动续期；本工具不做验证码绕过。
+          </p>
+          <label>登录响应（JSON，或直接贴 access token）
+            <textarea name="session" rows="4" style="font-family:ui-monospace,monospace;font-size:12px" placeholder='{"data":{"access_token":"...","refresh_token":"...","expires_in":7200}}'></textarea>
+          </label>
+          <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:4px">
+            <button type="button" class="ghost" data-act="close-login">取消</button>
+            <button type="submit" class="primary">导入登录响应</button>
+          </div>
+        </form>
       </div>
     </div>
   </div>

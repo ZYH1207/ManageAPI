@@ -192,6 +192,16 @@ export async function updateProvider(id, patch) {
       provider.quotaRemaining = patch.quotaRemaining === null ? null : Number(patch.quotaRemaining)
       provider.quotaUpdatedAt = nowIso()
     }
+    // 登录态簿记：new-api 的管理接口要 New-Api-User，令牌有寿命时要能展示/判断续期
+    if (patch.adminUserId !== undefined) {
+      provider.adminUserId = patch.adminUserId === null || patch.adminUserId === '' ? null : String(patch.adminUserId)
+    }
+    if (patch.adminTokenExpiresAt !== undefined) {
+      provider.adminTokenExpiresAt = patch.adminTokenExpiresAt || null
+    }
+    if (patch.tokenRenewedAt !== undefined) provider.tokenRenewedAt = patch.tokenRenewedAt || null
+    if (patch.tokenRenewMethod !== undefined) provider.tokenRenewMethod = patch.tokenRenewMethod || null
+    if (patch.tokenRenewError !== undefined) provider.tokenRenewError = patch.tokenRenewError || null
     if (patch.currency !== undefined) provider.currency = patch.currency
     // 站点价目表的币种：和「钱包币种」是两件事（见 core/currency.js）。
     // 改它不会动已有供给的价格，只决定之后自动落价写什么币种
@@ -200,6 +210,35 @@ export async function updateProvider(id, patch) {
       provider.priceCurrency = empty ? null : normalizeCurrency(patch.priceCurrency)
       // 用户显式设过 = 他比数据更清楚，自动推断不再覆盖（见 core/currency-reconcile.js）
       provider.priceCurrencySource = empty ? null : 'custom'
+    }
+    // 站点自述信息（/api/status、Sub2API 公共设置）：只做展示与参考，不参与计价。
+    // 「完整同步」顺手抄下来，省得用户再手填站名、版本、客服链接
+    if (patch.siteName !== undefined) provider.siteName = patch.siteName || null
+    if (patch.siteVersion !== undefined) provider.siteVersion = patch.siteVersion || null
+    if (patch.quotaPerUnit !== undefined) {
+      provider.siteQuotaPerUnit =
+        patch.quotaPerUnit === null || patch.quotaPerUnit === '' ? null : Number(patch.quotaPerUnit)
+    }
+    if (patch.chatLink !== undefined) provider.chatLink = patch.chatLink || null
+    if (patch.topUpLink !== undefined) provider.topUpLink = patch.topUpLink || null
+    if (patch.displayInCurrency !== undefined) {
+      provider.displayInCurrency = patch.displayInCurrency || null
+    }
+    // 站点自己公布的价目表来源（channels / plaza / pricing）与最近一次全量同步时间
+    if (patch.priceSource !== undefined) provider.priceSource = patch.priceSource || null
+    if (patch.lastFullSyncAt !== undefined) provider.lastFullSyncAt = patch.lastFullSyncAt || null
+    // 分组价目表：站点公布的全部分组与倍率（不只是我们买的那几个）。
+    // 只存档，是「识别分组」与「补齐缺失倍率」的来源，不改任何已有价格口径
+    if (patch.siteGroups !== undefined) {
+      const list = Array.isArray(patch.siteGroups) ? patch.siteGroups : []
+      provider.siteGroups = list
+        .map((g) => ({
+          name: String(g?.name || '').trim(),
+          rate: Number.isFinite(Number(g?.rate)) ? Number(g.rate) : null,
+          source: g?.source || null,
+        }))
+        .filter((g) => g.name)
+      provider.siteGroupsAt = nowIso()
     }
     if (patch.sortOrder !== undefined) {
       const n = Number(patch.sortOrder)
@@ -330,6 +369,14 @@ export async function updateCredential(id, patch) {
       }
     }
     if (patch.expiresAt !== undefined) credential.expiresAt = patch.expiresAt
+    // 后台令牌列表里这把 Key 的名字与它自带的分组倍率（Sub2API 的 rate_multiplier）。
+    // 令牌名常是「我的套餐」这类人话，比我们自己起的 label 更适合当显示名；
+    // 倍率只作参考——真落价时仍以价格表/分组倍率为准
+    if (patch.tokenName !== undefined) credential.tokenName = patch.tokenName || null
+    if (patch.tokenRate !== undefined) {
+      credential.tokenRate =
+        patch.tokenRate === null || patch.tokenRate === '' ? null : Number(patch.tokenRate)
+    }
     return credential
   })
 }
@@ -1172,6 +1219,11 @@ export async function loginWithCredentials(providerId, { user, password, confirm
     p.adminTokenSource = 'login'
     p.loginCred = encrypted
     p.refreshTokenEnc = refreshEnc
+    p.adminUserId = result.userId || p.adminUserId || null
+    p.adminTokenExpiresAt = result.expiresAt || null
+    p.tokenRenewedAt = nowIso()
+    p.tokenRenewMethod = 'login'
+    p.tokenRenewError = null
     // 双端点试探的结果就是系别证据（unknown 站也能借此归位）
     if (result.kind) {
       p.kind = result.kind
@@ -1187,47 +1239,112 @@ export async function loginWithCredentials(providerId, { user, password, confirm
 }
 
 /**
- * 401 时的自动续期：用已存的登录凭据重新登录、写回 adminToken。
- * 冷却内直接返回「不可用」（调用方按普通 401 处理，不硬刚站点风控）；
+ * 刷新令牌是旋转式的（用一次就换新），所以同站并发 401 必须共享同一次续期：
+ * 否则第二个请求会拿着刚被作废的 refresh_token 去打站点，把会话彻底搞死。
+ */
+const renewals = new Map()
+
+/**
+ * 401 时的自动续期。两条路，按「不打扰用户」排序：
+ *   1. Sub2API 的 refresh_token 静默刷新（不需要密码，也不碰验证码）
+ *   2. 账号密码重登（只对密码登录存的凭据有效）
+ * 冷却内直接返回「不可用」（按普通 401 处理，不硬刚站点风控）；
  * 手动令牌（adminTokenSource='manual'）不自动覆盖——用户手动填的
  * 说明他知道自己有什么，自动换掉反而丢信息。
  *
- * @returns {{ok:boolean, token?:string, reason?:string}}
+ * @returns {Promise<{ok:boolean, token?:string, method?:string, reason?:string}>}
  */
-export async function autoRelogin(providerId) {
+export function autoRelogin(providerId) {
+  if (renewals.has(providerId)) return renewals.get(providerId)
+  const pending = renewProviderSession(providerId).finally(() => renewals.delete(providerId))
+  renewals.set(providerId, pending)
+  return pending
+}
+
+async function renewProviderSession(providerId) {
   const db = await readDb()
   const provider = db.providers.find((p) => p.id === providerId)
-  if (!provider?.loginCred) return { ok: false, reason: '没有登录凭据' }
+  if (!provider) return { ok: false, reason: '站点不存在' }
   if (provider.adminTokenSource === 'manual') {
     return { ok: false, reason: '手动令牌不做自动覆盖' }
+  }
+  // 导入型会话只有 refresh_token，没有密码；刷新不成就只能请用户重新导入
+  const imported = provider.adminTokenSource === 'session'
+  const canRefresh = provider.kind === 'sub2api' && Boolean(provider.refreshTokenEnc)
+  if (!provider.loginCred && !canRefresh) {
+    return { ok: false, reason: imported ? '这个站的会话没有刷新令牌，请重新登录并导入登录响应' : '没有登录凭据' }
   }
   if (!reloginAllowed(providerId)) {
     return { ok: false, reason: '自动重登冷却中（10 分钟内已尝试过）' }
   }
   markRelogin(providerId)
   try {
-    const plain = JSON.parse(await decryptSecret(provider.loginCred))
-    const result = await providers.loginProvider({
-      baseUrl: apiBaseOf(provider),
-      kind: provider.kind === 'relay' ? undefined : provider.kind,
-      user: plain.user,
-      password: plain.password,
-    })
+    let result = null
+    let method = 'login'
+    if (canRefresh) {
+      try {
+        result = await providers.refreshProviderToken({
+          baseUrl: apiBaseOf(provider),
+          refreshToken: await decryptSecret(provider.refreshTokenEnc),
+        })
+        method = 'refresh'
+      } catch (error) {
+        // 只有站方明确拒绝（4xx）才判定刷新凭据失效；超时/5xx 是站点抽风，不逼迫用户重登
+        const denied = [400, 401, 403, 404, 405].includes(error.status)
+        if (imported) {
+          throw new Error(
+            denied
+              ? '站点的刷新会话已失效，请在浏览器重新登录后导入新的登录响应'
+              : `刷新会话暂时失败（${String(error.message || error).slice(0, 120)}），稍后会重试`,
+          )
+        }
+        if (!denied || !provider.loginCred) throw error
+      }
+    }
+    if (!result) {
+      if (imported) throw new Error('这个会话无法刷新，请重新登录后导入登录响应')
+      const plain = JSON.parse(await decryptSecret(provider.loginCred))
+      result = await providers.loginProvider({
+        baseUrl: apiBaseOf(provider),
+        kind: provider.kind === 'relay' ? undefined : provider.kind,
+        user: plain.user,
+        password: plain.password,
+      })
+    }
     const tokenEnc = await encryptSecret(result.token)
     const refreshEnc = result.refreshToken ? await encryptSecret(result.refreshToken) : null
-    await mutate((db) => {
+    const saved = await mutate((db) => {
       const p = db.providers.find((x) => x.id === providerId)
-      if (!p) return
+      // 网络请求期间用户换了令牌或账号，就不覆盖他的新选择
+      if (
+        !p ||
+        ['baseUrl', 'kind', 'adminToken', 'adminTokenSource', 'refreshTokenEnc', 'loginCred', 'adminUserId']
+          .some((key) => JSON.stringify(p[key]) !== JSON.stringify(provider[key]))
+      ) {
+        return false
+      }
       p.adminToken = tokenEnc
       p.adminTokenTail = String(result.token).slice(-6)
-      p.adminTokenSource = 'login'
       if (refreshEnc) p.refreshTokenEnc = refreshEnc
+      p.adminUserId = result.userId || p.adminUserId || null
+      p.adminTokenExpiresAt = result.expiresAt || null
+      p.tokenRenewedAt = nowIso()
+      p.tokenRenewMethod = method
+      p.tokenRenewError = null
       p.tokenStatus = 'ok'
       p.tokenStatusAt = nowIso()
       p.tokenStatusMessage = null
       p.updatedAt = nowIso()
+      return true
     })
-    return { ok: true, token: result.token }
+    if (!saved) return { ok: false, reason: '令牌已被更换，本次续期没有覆盖' }
+    // 短寿命令牌不能被固定 10 分钟冷却锁死：成功后的保护窗口取剩余寿命的一半
+    const remaining = Date.parse(result.expiresAt) - Date.now()
+    if (Number.isFinite(remaining) && remaining > 0) {
+      const readyAt = Date.now() + Math.min(remaining / 2, RELOGIN_COOLDOWN_MS)
+      reloginAt.set(providerId, readyAt - RELOGIN_COOLDOWN_MS)
+    }
+    return { ok: true, token: result.token, method }
   } catch (error) {
     const message = error.message || String(error)
     // 只有「凭据/鉴权本身有问题」才把令牌标成失效；网络超时、loginCred 解密失败、
@@ -1241,10 +1358,136 @@ export async function autoRelogin(providerId) {
           p.tokenStatus = 'invalid'
           p.tokenStatusAt = nowIso()
           p.tokenStatusMessage = message
+          p.tokenRenewError = message
           p.updatedAt = nowIso()
         }
       })
     }
     return { ok: false, reason: message }
+  }
+}
+
+/**
+ * 解析「从浏览器里拿到的登录响应」。
+ *
+ * 站点开了人机验证时，账号密码直连这条路是封死的（也不该去破解验证码）。
+ * 用户能在浏览器里自己过验证码，那就把浏览器拿到的 access_token / refresh_token
+ * 交给我们：之后靠 refresh 静默续期，不用反复登录。
+ *
+ * 接受的对象形态很多（sub2api 的 {data:{access_token,refresh_token}}、new-api 的
+ * {data:{token}}、直接贴 access_token 字符串），所以这里全部宽松识别，只在
+ * 「一个令牌都找不到」时报错。
+ */
+export function parseProviderSession(input) {
+  let raw = input
+  if (typeof raw === 'string') {
+    const text = raw.trim()
+    if (!text) throw new Error('登录响应是空的')
+    // 允许直接贴裸令牌（有的站只在控制台给一串 access_token）
+    if (!text.startsWith('{') && !text.startsWith('"')) {
+      return { token: text.replace(/^Bearer\s+/i, ''), refreshToken: null, expiresAt: null }
+    }
+    try {
+      raw = JSON.parse(text)
+    } catch {
+      throw new Error('这段内容不是 JSON，也不是一个令牌：请贴站点登录接口返回的完整响应')
+    }
+  }
+  if (!raw || typeof raw !== 'object') throw new Error('登录响应格式不认识')
+  const layers = [raw, raw.data, raw.result, raw.session, raw.token]
+  const pick = (keys) => {
+    for (const layer of layers) {
+      if (!layer || typeof layer !== 'object') continue
+      for (const key of keys) {
+        const value = layer[key]
+        if (typeof value === 'string' && value.trim()) return value.trim()
+      }
+    }
+    return null
+  }
+  const token = pick(['access_token', 'accessToken', 'token'])
+  if (!token) throw new Error('登录响应里没有 access_token / token')
+  const refreshToken = pick(['refresh_token', 'refreshToken'])
+  // 有效期：优先绝对值字段，其次 expires_in（秒）
+  const forLayer = (keys) => {
+    for (const layer of layers) {
+      if (!layer || typeof layer !== 'object') continue
+      for (const key of keys) if (layer[key] !== undefined && layer[key] !== null && layer[key] !== '') return layer[key]
+    }
+    return null
+  }
+  const absolute = forLayer(['access_expires_at', 'expires_at', 'expiresAt'])
+  const expiresIn = Number(forLayer(['expires_in', 'expiresIn']))
+  let expiresAt = null
+  if (absolute !== null) {
+    const n = Number(absolute)
+    const ms = Number.isFinite(n) ? (n < 1e12 ? n * 1000 : n) : Date.parse(String(absolute))
+    if (Number.isFinite(ms) && ms > 0) expiresAt = new Date(ms).toISOString()
+  } else if (Number.isFinite(expiresIn) && expiresIn > 0) {
+    expiresAt = new Date(Date.now() + expiresIn * 1000).toISOString()
+  }
+  return { token: token.replace(/^Bearer\s+/i, ''), refreshToken, expiresAt }
+}
+
+/**
+ * 导入浏览器里拿到的登录响应：先用它真打一次站点接口验证，再写回 adminToken。
+ *
+ * 为什么不直接存：用户可能贴的是过期令牌、粘错站点的响应、或者只截了一半。
+ * 一次 /api/user/self（或 sub2api 的 /user/profile）就能证明「这枚令牌有权限」，
+ * 顺带拿到 new-api 必需的 userId。
+ */
+export async function importProviderSession(providerId, input) {
+  if (renewals.has(providerId)) throw new Error('此站正在更新令牌，请稍后再试')
+  const pending = importAndSaveSession(providerId, input).finally(() => renewals.delete(providerId))
+  renewals.set(providerId, pending)
+  return pending
+}
+
+async function importAndSaveSession(providerId, input) {
+  const provider = (await readDb()).providers.find((p) => p.id === providerId)
+  if (!provider) throw new Error(`站点不存在：${providerId}`)
+  const session = parseProviderSession(input)
+  const verified = await providers.fetchSessionProfile({
+    baseUrl: apiBaseOf(provider),
+    token: session.token,
+    userId: provider.adminUserId,
+    kind: ['sub2api', 'one-api', 'new-api'].includes(provider.kind) ? provider.kind : undefined,
+  })
+  const tokenEnc = await encryptSecret(session.token)
+  const refreshEnc = session.refreshToken ? await encryptSecret(session.refreshToken) : null
+  await mutate((db) => {
+    const p = db.providers.find((item) => item.id === providerId)
+    const same =
+      p &&
+      ['baseUrl', 'kind', 'adminToken', 'adminTokenSource', 'refreshTokenEnc', 'loginCred', 'adminUserId'].every(
+        (key) => JSON.stringify(p[key]) === JSON.stringify(provider[key]),
+      )
+    if (!same) throw new Error('校验期间站点地址或凭据已改变，本次导入没有覆盖，请重新导入')
+    p.adminToken = tokenEnc
+    p.adminTokenTail = session.token.slice(-6)
+    p.adminTokenSource = 'session'
+    p.refreshTokenEnc = refreshEnc
+    p.loginCred = null
+    p.adminTokenExpiresAt = session.expiresAt
+    p.adminUserId = verified.userId || p.adminUserId || null
+    if (verified.kind) {
+      p.kind = verified.kind
+      p.kindSource = 'auto'
+    }
+    p.tokenRenewedAt = nowIso()
+    p.tokenRenewMethod = 'session-import'
+    p.tokenRenewError = null
+    p.tokenStatus = 'ok'
+    p.tokenStatusAt = nowIso()
+    p.tokenStatusMessage = null
+    p.updatedAt = nowIso()
+  })
+  clearReloginCooldown(providerId)
+  return {
+    ok: true,
+    kind: verified.kind,
+    renewable: Boolean(refreshEnc),
+    expiresAt: session.expiresAt,
+    userId: verified.userId,
   }
 }

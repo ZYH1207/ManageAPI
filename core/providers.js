@@ -16,7 +16,7 @@ function describeHttpError(status, bodyText) {
   return `请求失败（HTTP ${status}）${snippet ? `：${snippet}` : ''}`
 }
 
-async function requestJson(url, { apiKey, timeoutMs = 15000, headers = {}, method = 'GET', body } = {}) {
+async function requestJson(url, { apiKey, userId, timeoutMs = 15000, headers = {}, method = 'GET', body } = {}) {
   let response
   try {
     response = await fetch(url, {
@@ -25,6 +25,8 @@ async function requestJson(url, { apiKey, timeoutMs = 15000, headers = {}, metho
         Accept: 'application/json',
         ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
         ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+        // new-api 的管理接口要求带上登录用户 id，否则拿 access_token 也一律 401
+        ...(userId ? { 'New-Api-User': String(userId) } : {}),
         ...headers,
       },
       body: body === undefined ? undefined : String(body),
@@ -661,6 +663,168 @@ export function matchTokenBySecret(items, secret) {
   return byTail.length === 1 ? byTail[0] : null
 }
 
+/** 从一堆候选里取第一个可用的文本 / 数字，全空返回 null。 */
+function pickText(...values) {
+  for (const value of values) {
+    if (typeof value === 'string' && value.trim()) return value.trim()
+    if (typeof value === 'number' && Number.isFinite(value)) return value
+  }
+  return null
+}
+
+function pickNumber(...values) {
+  for (const value of values) {
+    const num = typeof value === 'number' ? value : Number.parseFloat(String(value ?? ''))
+    if (Number.isFinite(num)) return num
+  }
+  return null
+}
+
+/**
+ * 读站点自述信息：名称、版本、计费单位、客服/充值链接、计价币种。
+ *
+ * 这些字段站点本来就在 /api/status 里公开（`detectProviderKind` 早就打到了这个接口，
+ * 但只取 kind/evidence，其余全丢），用户建完站还得自己抄一遍站名和版本。
+ * 全字段尽力而为，取不到就是 null——信息采集不阻断主流程，也不抛错。
+ *
+ * @returns {Promise<{siteName:string|null, version:string|null, quotaPerUnit:number|null,
+ *   chatLink:string|null, topUpLink:string|null, displayInCurrency:string|null,
+ *   startTime:number|null, kind:string, evidence:string, raw:object|null}>}
+ */
+export async function fetchSiteIdentity({ baseUrl, adminToken = '', timeoutMs = TIMEOUTS.detectKind } = {}) {
+  const identity = {
+    siteName: null,
+    version: null,
+    quotaPerUnit: null,
+    chatLink: null,
+    topUpLink: null,
+    displayInCurrency: null,
+    startTime: null,
+    kind: 'unknown',
+    evidence: '',
+    raw: null,
+  }
+  for (const origin of originCandidates(baseUrl)) {
+    try {
+      const payload = await requestJson(`${origin}/api/status`, { timeoutMs, apiKey: adminToken })
+      const data = payload?.data ?? payload
+      if (!data || typeof data !== 'object') continue
+      identity.siteName = pickText(data.system_name, data.site_name, data.name)
+      identity.version = pickText(data.version)
+      identity.quotaPerUnit = pickNumber(data.quota_per_unit)
+      identity.chatLink = pickText(data.chat_link)
+      identity.topUpLink = pickText(data.top_up_link, data.topup_link)
+      identity.displayInCurrency = pickText(data.display_in_currency)
+      identity.startTime = pickNumber(data.start_time)
+      identity.kind = identity.version ? 'new-api' : 'one-api'
+      identity.evidence = `/api/status${identity.version ? ` v${identity.version}` : ''}`
+      identity.raw = data
+      return identity
+    } catch {
+      /* 下一个 origin */
+    }
+  }
+  // Sub2API：公共设置里同样有站名/币种/计费单位
+  for (const origin of originCandidates(baseUrl)) {
+    try {
+      const payload = await requestJson(`${origin}/api/v1/settings/public`, {
+        timeoutMs,
+        apiKey: adminToken,
+      })
+      const data = payload?.data ?? payload
+      if (!data || typeof data !== 'object') continue
+      identity.siteName = pickText(data.site_name, data.siteName, data.name, data.title)
+      identity.version = pickText(data.version)
+      identity.quotaPerUnit = pickNumber(data.quota_per_unit, data.quotaPerUnit)
+      identity.chatLink = pickText(data.chat_link, data.support_url, data.supportUrl)
+      identity.displayInCurrency = pickText(data.currency, data.display_in_currency)
+      identity.kind = 'sub2api'
+      identity.evidence = '/api/v1/settings/public'
+      identity.raw = data
+      return identity
+    } catch {
+      /* 下一个 origin */
+    }
+  }
+  return identity
+}
+
+/**
+ * 读站点价目表（`/api/pricing`）。这是 one-api / new-api 唯一公开计价公式的地方：
+ * `model_ratio` + `completion_ratio` 决定模型单价、`group_ratio` 决定分组倍率。
+ *
+ * `channels`（要登录）与 `广场` 覆盖不到的分组，只能从这里拿——以前完全不读这个
+ * 接口，所以 one-api 站只能让用户手填倍率。
+ *
+ * 注意：这里只「存档」，不改价格口径。单价仍走 channels/plaza（它们已是每 Mtok 定价），
+ * 这份表的意义是「站点自己怎么算的」+ 补齐缺失的分组倍率。
+ *
+ * @returns {Promise<{ok:boolean, groups:Array<{name,rate}>, models:Array<{name,ratio}>,
+ *   prices:Array<{name,price}>, completionRatio:number|null, source:string|null, raw:object|null}>}
+ */
+export async function fetchRatioTable({ baseUrl, adminToken = '', timeoutMs = TIMEOUTS.detectKind } = {}) {
+  const empty = {
+    ok: false,
+    groups: [],
+    models: [],
+    prices: [],
+    completionRatio: null,
+    source: null,
+    raw: null,
+  }
+  for (const origin of originCandidates(baseUrl)) {
+    try {
+      const payload = await requestJson(`${origin}/api/pricing`, { timeoutMs, apiKey: adminToken })
+      const data = payload?.data ?? payload
+      if (!data || typeof data !== 'object') continue
+      const groupRatio = data.group_ratio || data.groupRatio || {}
+      const modelRatio = data.model_ratio || data.modelRatio || {}
+      const modelPrice = data.model_price || data.modelPrice || {}
+      const groups = Object.entries(groupRatio)
+        .map(([name, rate]) => ({ name: String(name), rate: pickNumber(rate) }))
+        .filter((g) => g.name && g.rate !== null)
+      const models = Object.entries(modelRatio)
+        .map(([name, ratio]) => ({ name: String(name), ratio: pickNumber(ratio) }))
+        .filter((m) => m.name)
+      const prices = Object.entries(modelPrice)
+        .map(([name, price]) => ({ name: String(name), price: pickNumber(price) }))
+        .filter((m) => m.name)
+      if (groups.length === 0 && models.length === 0 && prices.length === 0) continue
+      return {
+        ok: true,
+        groups,
+        models,
+        prices,
+        completionRatio: pickNumber(data.completion_ratio, data.completionRatio),
+        source: 'pricing',
+        raw: data,
+      }
+    } catch {
+      /* 下一个 origin */
+    }
+  }
+  // Sub2API 没有 /api/pricing：分组倍率挂在 groups/available 的 rate_multiplier 上
+  for (const origin of originCandidates(baseUrl)) {
+    try {
+      const payload = await requestJson(`${origin}/api/v1/groups/available`, {
+        timeoutMs,
+        apiKey: adminToken,
+      })
+      const list = Array.isArray(payload) ? payload : payload?.data || payload?.groups || []
+      const groups = (Array.isArray(list) ? list : [])
+        .map((g) => ({
+          name: String(g?.name || g?.group || g?.id || ''),
+          rate: pickNumber(g?.rate_multiplier, g?.rateMultiplier, g?.rate),
+        }))
+        .filter((g) => g.name && g.rate !== null)
+      if (groups.length > 0) return { ...empty, ok: true, groups, source: 'sub2api' }
+    } catch {
+      /* 下一个 origin */
+    }
+  }
+  return empty
+}
+
 /**
  * 统一的价格来源：优先「可用渠道」，回落「模型广场」。
  *
@@ -751,6 +915,77 @@ export async function fetchProviderPricing({ baseUrl, adminToken }) {
 const LOGIN_HINTS = /captcha|turnstile|验证码|2fa|totp/i
 
 /**
+ * 令牌到期时间：只展示站方声明的有效期，没声明就是 null（不假装永久有效）。
+ * sub2api 给 expires_in（秒），new-api 新版给 access_expires_at（秒或毫秒时间戳）。
+ */
+export function tokenExpiresAt(data, now = Date.now()) {
+  const absolute = data?.access_expires_at ?? data?.expires_at
+  if (absolute != null && absolute !== '') {
+    const n = Number(absolute)
+    const ms = Number.isFinite(n) ? (n < 1e12 ? n * 1000 : n) : Date.parse(absolute)
+    if (Number.isFinite(ms) && ms > 0 && ms <= 8.64e15) return new Date(ms).toISOString()
+  }
+  const seconds = Number(data?.expires_in)
+  if (Number.isFinite(seconds) && seconds > 0 && now + seconds * 1000 <= 8.64e15) {
+    return new Date(now + seconds * 1000).toISOString()
+  }
+  return null
+}
+
+/**
+ * Sub2API 的旋转式刷新令牌接口。刷新成功后旧的 refresh_token 立即作废，
+ * 所以同一站的并发续期必须串行（inventory 里用 renewals Map 保证）。
+ *
+ * 失败时把 HTTP 状态留在 error.status 上：编排层靠它区分「刷新凭据真的失效」
+ * （400/401/403/404/405，可以提示重新导入）与「站点暂时抽风」（超时/5xx，不该逼迫用户重登）。
+ */
+export async function refreshProviderToken({ baseUrl, refreshToken, timeoutMs = TIMEOUTS.login }) {
+  if (!refreshToken) throw new Error('没有可用的刷新令牌')
+  const origin = originOf(baseUrl, { stripApiPrefix: true }) || originOf(baseUrl)
+  const payload = await requestJson(`${origin}/api/v1/auth/refresh`, {
+    method: 'POST',
+    timeoutMs,
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ refresh_token: refreshToken }),
+  })
+  const d = payload?.data ?? payload
+  if (!d?.access_token) throw new Error('站点刷新响应里没有 access_token，请重新登录并导入登录响应')
+  return {
+    token: d.access_token,
+    refreshToken: d.refresh_token || null,
+    expiresAt: tokenExpiresAt(d),
+    kind: 'sub2api',
+  }
+}
+
+/**
+ * 用「有没有权限读自己的账号信息」来验证一枚导入的令牌，顺便拿到 userId 与站系别。
+ * 这一步是会话导入的关键：用户粘贴的东西可能过期、可能粘错，必须先打一次真接口。
+ */
+export async function fetchSessionProfile({ baseUrl, token, userId, kind, timeoutMs = TIMEOUTS.balance }) {
+  const origin = originOf(baseUrl, { stripApiPrefix: true }) || originOf(baseUrl)
+  const attempts =
+    kind === 'sub2api'
+      ? [{ kind: 'sub2api', path: '/api/v1/user/profile' }]
+      : kind === 'one-api' || kind === 'new-api'
+        ? [{ kind, path: '/api/user/self' }]
+        : [{ kind: 'sub2api', path: '/api/v1/user/profile' }, { kind: 'new-api', path: '/api/user/self' }]
+  const errors = []
+  for (const attempt of attempts) {
+    try {
+      const payload = await requestJson(`${origin}${attempt.path}`, { apiKey: token, userId, timeoutMs })
+      if (payload && payload.success === false) throw new Error(payload.message || '被站点拒绝')
+      const d = payload?.data ?? payload
+      const uid = d?.id ?? d?.user_id ?? d?.user?.id ?? userId ?? null
+      return { ok: true, kind: attempt.kind, userId: uid === null || uid === undefined ? null : String(uid) }
+    } catch (error) {
+      errors.push(`${attempt.kind}: ${String(error.message || error).slice(0, 100)}`)
+    }
+  }
+  throw new Error(`这枚令牌没有权限（${errors.join('；')}）。多半已经过期，请重新登录后导入新的登录响应。`)
+}
+
+/**
  * 账号密码登录。kind 已知走对应端点，unknown 按 sub2api → one-api 顺序都试。
  * @returns {Promise<{token:string, refreshToken:string|null, kind:string}>}
  */
@@ -781,7 +1016,12 @@ export async function loginProvider({ baseUrl, kind, user, password, timeoutMs =
         if (!token) throw new Error(`登录响应里没有 access_token：${JSON.stringify(d).slice(0, 120)}`)
         return {
           token,
+          userId: (() => {
+            const raw = d?.user_id ?? d?.user?.id ?? d?.id
+            return raw === null || raw === undefined ? null : String(raw)
+          })(),
           refreshToken: d?.refresh_token || null,
+          expiresAt: tokenExpiresAt(d),
           kind: 'sub2api',
         }
       }
@@ -797,20 +1037,27 @@ export async function loginProvider({ baseUrl, kind, user, password, timeoutMs =
         throw new Error(payload.message || '登录被拒绝')
       }
       const d = payload?.data ?? payload
-      const token = d?.token
-      if (!token) throw new Error(`登录响应里没有 token：${JSON.stringify(d).slice(0, 120)}`)
+      // new-api ≥ v1.0.0-rc 把字段改名为 access_token（配 access_expires_at），老版才是 token
+      const token = d?.access_token || d?.accessToken || d?.token
+      if (!token) throw new Error(`登录响应里没有 token/access_token：${JSON.stringify(d).slice(0, 120)}`)
+      const uid = d?.id ?? d?.user_id ?? d?.user?.id ?? null
       return {
         token,
+        userId: uid === null || uid === undefined ? null : String(uid),
         refreshToken: null,
-        kind: 'new-api',
+        expiresAt: tokenExpiresAt(d),
+        kind: kind === 'one-api' ? 'one-api' : 'new-api',
       }
     } catch (error) {
       const msg = String(error?.message || error)
       // 验证码/2FA 是硬边界：站点要求人机验证时立即明确报错，不换端点重试
       if (LOGIN_HINTS.test(msg)) {
-        throw new Error(
-          `该站登录需要人机验证（${msg.slice(0, 120)}）。请手动在站点后台生成「令牌」填入，本工具不做验证码绕过。`,
+        const challenge = new Error(
+          `该站登录需要人机验证（${msg.slice(0, 120)}）。请在浏览器里正常登录这个站点，` +
+            '再把登录响应（access_token / refresh_token）导入进来；本工具不做验证码绕过。',
         )
+        challenge.code = 'BROWSER_LOGIN_REQUIRED'
+        throw challenge
       }
       errors.push(`${flavor}: ${msg.slice(0, 120)}`)
     }

@@ -40,6 +40,12 @@ console.log('[1] 错误文本分类')
     ['The operation was aborted due to timeout', null, true],
     ['fetch failed', null, true],
     ['上游 120 秒无响应（首字超时）', null, true],
+    // 客户端自己取消（ESC / 关页面）：不算站点故障，也不算这一单可用
+    ['This operation was aborted', 'client-abort', false],
+    ['客户端已断开', 'client-abort', false],
+    ['The user aborted a request.', 'client-abort', false],
+    // 但同一句里带「超时」就是站卡死，绝不能归到客户端
+    ['The operation was aborted due to timeout', null, true],
   ]
   for (const [text, kind, counts] of cases) {
     const r = classifyFailure(text)

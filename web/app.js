@@ -95,6 +95,32 @@ function loginLightDot(p) {
   return dot('yellow', t('已填站点令牌（非登录态）：功能可用，但不会自动续期'))
 }
 
+/** 卡片上的登录态续期说明：令牌从哪来、什么时候过期、能不能自动续 */
+function renewalLine(p) {
+  if (!p.hasAdminToken) {
+    return `<span class="hint" style="margin:0">${t('还没有站点令牌：余额、公告、分组识别暂时用不了')}</span>`
+  }
+  const mode =
+    p.renewable === 'refresh'
+      ? t('自动续期：刷新令牌（不打扰你）')
+      : p.renewable === 'login'
+        ? t('自动续期：账号密码')
+        : t('不会自动续期（手动令牌）')
+  let expires = ''
+  if (p.adminTokenExpiresAt) {
+    const ms = Date.parse(p.adminTokenExpiresAt) - Date.now()
+    if (Number.isFinite(ms)) {
+      const days = Math.floor(ms / 86400000)
+      const hours = Math.max(0, Math.floor(ms / 3600000))
+      expires = ms <= 0 ? t('令牌已过期') : days >= 1 ? `令牌 ${days} 天后过期` : `令牌 ${hours} 小时后过期`
+    }
+  }
+  const renewBtn = p.renewable
+    ? `<button class="ghost tiny" data-act="renew-token" data-provider="${esc(p.id)}" title="${t('立刻刷新一次令牌')}">${t('立即续期')}</button>`
+    : ''
+  return `<span class="hint" style="margin:0">${mode}${expires ? ` · ${esc(expires)}` : ''}${p.tokenRenewError ? ` · <span style="color:var(--warn)">${esc(String(p.tokenRenewError).slice(0, 80))}</span>` : ''}</span>${renewBtn}`
+}
+
 /** 余额状态徽章：档位全站统一——≤0 红（真没钱了）、低于阈值黄（该充值）、
  *  阈值关闭（0）不亮警告。此前站点页黄、监控页红，同一状态两种解读 */
 function balanceBadge(balance, threshold) {
@@ -826,6 +852,133 @@ async function applyPickedGroup(button) {
  * 这才是能抓虚报的地方——站点虚报 prompt_tokens 时，我们的 usage 会跟着虚报，
  * 拿它和站点账单比永远一致；只有本地按请求体重新数一遍才有对照价值。
  */
+// 「完整同步」最近一次的报告：切页/重渲染后还能看到刚才同步到了什么
+const syncReports = new Map()
+
+// 跑一次完整同步。按钮、登录成功、加完 Key 都走这里，
+// 免得三处各写一遍、迟早有一处忘了刷新 state。
+async function runFullSync(providerId, { btn = null, open = false } = {}) {
+  const run = async () => {
+    const result = await api('POST', `/api/providers/${providerId}/full-sync`, {})
+    syncReports.set(providerId, result.fullSync)
+    state = result
+    render()
+    if (open) {
+      const next = document.querySelector(`.prov-card[data-provider="${providerId}"]`)
+      if (next) openProvPanel(next, 'sync')
+    }
+    const r = result.fullSync
+    const bits = [`${r.models.fetched} 个模型`, `${r.changes.offersPriced} 条落价`]
+    if (r.keys.imported) bits.push(`导入 ${r.keys.imported} 把 Key`)
+    if (r.balance?.ok) bits.push(`余额 ${r.balance.remaining} ${r.balance.currency || ''}`)
+    toast(
+      `同步完成：${bits.join(' · ')}${r.errors.length ? `（${r.errors.length} 项没读到）` : ''}`,
+      r.errors.length > 0,
+    )
+    return r
+  }
+  try {
+    return btn ? await withBusy(btn, run) : await run()
+  } catch (error) {
+    toast(`同步失败：${error.message}`, true)
+    return null
+  }
+}
+
+function renderSyncReport(p) {
+  const report = syncReports.get(p.id)
+  const row = (label, value) =>
+    `<div class="keyrow" style="border:none;padding:2px 0;gap:8px"><span style="color:var(--muted);font-size:12px;min-width:88px">${t(label)}</span><span>${value}</span></div>`
+  const rows = []
+
+  if (report) {
+    const identity = report.identity
+    if (identity) {
+      rows.push(
+        row('站点', `${esc(identity.siteName || '未命名')}${identity.version ? ` · v${esc(String(identity.version))}` : ''}${identity.kind ? ` · ${esc(identity.kind)}` : ''}`),
+      )
+    }
+    if (report.pricing) {
+      rows.push(
+        row(
+          '价目表',
+          `${esc(report.pricing.source || '—')} · ${report.pricing.groups} 个分组 · ${report.pricing.models} 条模型倍率`,
+        ),
+      )
+    }
+    rows.push(
+      row(
+        '令牌',
+        `${report.keys.existing} 把已存在 · 对上 ${report.keys.matched} 把${report.keys.imported ? ` · 新导入 ${report.keys.imported} 把` : ''}`,
+      ),
+    )
+    if (report.keys.importedKeys.length) {
+      rows.push(
+        row(
+          '新导入',
+          report.keys.importedKeys
+            .map((k) => `sk-••••${esc(k.tail)}${k.name ? `（${esc(k.name)}）` : ''}`)
+            .join('、'),
+        ),
+      )
+    }
+    rows.push(
+      row(
+        '模型',
+        `拉到 ${report.models.fetched} 个 · 新增 ${report.models.added}${report.models.pruned ? ` · 下架 ${report.models.pruned}` : ''}`,
+      ),
+    )
+    rows.push(
+      row(
+        '价格',
+        `${report.changes.offersPriced} 条已按分组落价${report.changes.offersUnpriced ? ` · ${report.changes.offersUnpriced} 条缺基准价，需要手填` : ''} · 认出 ${report.changes.groups} 个分组`,
+      ),
+    )
+    if (report.balance) {
+      rows.push(
+        row(
+          '余额',
+          report.balance.ok
+            ? `${report.balance.remaining} ${esc(report.balance.currency || '')}${report.balance.via ? `（${esc(report.balance.via)}）` : ''}`
+            : `<span style="color:var(--muted)">读不到：${esc(report.balance.reason || '')}</span>`,
+        ),
+      )
+    }
+    if (report.notes.length) rows.push(row('提示', report.notes.map((n) => esc(n)).join('；')))
+    if (report.errors.length) {
+      rows.push(
+        row('没读到的', `<span style="color:var(--warn)">${report.errors.map((e) => esc(e)).join('；')}</span>`),
+      )
+    }
+    rows.push(row('用时', `${(report.elapsedMs / 1000).toFixed(1)} 秒`))
+  } else {
+    if (p.siteName || p.siteVersion) {
+      rows.push(row('站点', `${esc(p.siteName || '未命名')}${p.siteVersion ? ` · v${esc(String(p.siteVersion))}` : ''}`))
+    }
+    if (p.siteGroups?.length) {
+      rows.push(row('分组', `站点公布 ${p.siteGroups.length} 个${p.priceSource ? ` · 来源 ${esc(p.priceSource)}` : ''}`))
+    }
+    rows.push(
+      row(
+        '上次同步',
+        p.lastFullSyncAt ? esc(fmtDateTime(p.lastFullSyncAt)) : '<span style="color:var(--muted)">还没跑过完整同步</span>',
+      ),
+    )
+  }
+
+  return `<div class="keylist" style="border-top:1px solid var(--border);padding-top:10px">
+    <div class="keyrow" style="border:none;padding-bottom:2px">
+      <span style="color:var(--muted);font-size:12px">${t('同步详情')}</span>
+      <span class="grow"></span>
+      <button class="ghost tiny" data-act="prov-sync-all">${icon('refresh')}${t('再同步一次')}</button>
+    </div>
+    ${rows.join('')}
+    <div class="hint" style="margin:6px 0 0">
+      ${t('一键同步会读站点的自述信息、价目表与后台令牌列表，补录还没导入的 Key，同步模型并按分组落价，最后读余额。每一步独立容错，没读到的会列在上面。')}
+    </div>
+  </div>`
+}
+
 function renderUsageCheck(providerId) {
   const check = usageCheckResults[providerId]
   if (!check) return ''
@@ -1096,6 +1249,7 @@ function providersHtml({ withForm = true, panel = '', actions = '' } = {}) {
             <b>${esc(p.name)}</b>
             ${siteLinkOf(p) ? `<a class="icon-btn prov-open" href="${esc(siteLinkOf(p))}" target="_blank" rel="noreferrer" title="${t('打开站点后台')}">${icon('external')}</a>` : ''}
             ${kindText ? `<span class="badge ${kindMeta.cls}" title="${esc(p.kindSource === 'manual' ? t('系别由用户手动设置') : t('系别由添加站点/登录时自动探测得出'))}">${esc(kindText)}</span>` : ''}
+            ${p.siteVersion ? `<span class="badge" title="${esc(t('站点自述的版本（完整同步时读到）'))}">${esc(p.siteVersion)}</span>` : ''}
             ${
               freeNames.length
                 ? `<span class="badge prov-free" title="${esc(t('免费模型：{list}', { list: freeNames.join('、') }))}">${icon('gift')}${t('免费 {n}', { n: freeNames.length })}</span>`
@@ -1149,6 +1303,7 @@ function providersHtml({ withForm = true, panel = '', actions = '' } = {}) {
               : '<span class="badge">未填</span>'}</b>
             <button class="ghost tiny" data-act="set-admin-token" data-provider="${esc(p.id)}" title="${esc(p.adminTokenTail ? `${t('令牌尾号')} …${p.adminTokenTail}` : t('未填站点令牌'))}">${p.hasAdminToken ? '更换' : '填写'}</button>
           </div>
+          <div class="prov-renew" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:4px">${renewalLine(p)}</div>
         </div>
 
         <div class="prov-groups">
@@ -1172,7 +1327,8 @@ function providersHtml({ withForm = true, panel = '', actions = '' } = {}) {
 
         <div class="prov-actions">
           <button data-act="open-login" title="用站点后台的账号密码登录，自动获取并续期令牌——令牌过期不再需要手动换">${icon('key')}账号登录</button>
-          <button data-act="prov-sync-all" title="同步模型 + 读余额 + 识别分组，一次跑完">${icon('refresh')}一键同步</button>
+          <button data-act="prov-sync-all" title="读取站点信息与价目表、补录后台还没导入的 Key、同步模型、按分组落价、读余额——一次跑完">${icon('refresh')}完整同步</button>
+          <button data-act="prov-panel" data-panel="sync">${icon('layers')}同步详情</button>
           <button data-act="prov-panel" data-panel="keys">${icon('key')}密钥</button>
           <button data-act="prov-panel" data-panel="rates">${icon('columns')}分组倍率</button>
           <button data-act="open-group-picker" title="从站点读分组，选你买的那个，倍率自动填到下面所有模型">${icon('columns')}导入倍率</button>
@@ -1196,8 +1352,9 @@ function providersHtml({ withForm = true, panel = '', actions = '' } = {}) {
             const keyOffers = offers.filter((o) => o.credentialId === k.id)
             return `
             <div class="keyrow" data-credential="${esc(k.id)}">
-              <span>${esc(k.label)}</span>
+              <span>${esc(k.label)}${k.tokenName && k.tokenName !== k.label ? ` <span class="tail" title="${t('后台令牌列表里的名字')}">${esc(k.tokenName)}</span>` : ''}</span>
               <span class="tail">sk-••••${esc(k.tail || '????')}</span>
+              ${typeof k.tokenRate === 'number' ? `<span class="badge" title="${t('站点后台给这把 Key 配的倍率')}">×${k.tokenRate}</span>` : ''}
               <button class="ghost tiny group-chip ${groupChipOf(p.id, k.group)}" data-act="open-group-picker" title="${k.group ? '这把 Key 属于这个分组，点这里换' : '还没选分组，点这里选（会顺便把倍率填好）'}">
                 ${k.group ? `分组 · ${esc(k.group)}` : '选分组'}
               </button>
@@ -1235,6 +1392,7 @@ function providersHtml({ withForm = true, panel = '', actions = '' } = {}) {
           ${groupRows}
         </div>` : ''}
         <div data-pane="usage">${renderUsageCheck(p.id)}</div>
+        <div data-pane="sync">${renderSyncReport(p)}</div>
         <div data-pane="settings">
           <form class="keylist" data-form="provider-endpoints" style="border-top:1px solid var(--border);padding-top:10px">
             <div class="keyrow" style="border:none;padding-bottom:2px">
@@ -1403,6 +1561,10 @@ function bindAddProviderForm() {
       closeAddProvider()
       render()
       toast('站点已添加')
+      // 站名、版本、公开的分组倍率不用令牌就能读：建完站顺手拿回来，
+      // 用户下一步填 Key 时站点卡上已经有站名和系别了
+      const created = state.providers.find((p) => p.name === String(data.name || '').trim())
+      if (created) await runFullSync(created.id, { open: false })
     } catch (error) {
       toast(error.message, true)
     }
@@ -1419,6 +1581,12 @@ function openLoginModal(providerId) {
   form.dataset.provider = providerId
   form.elements.user.value = ''
   form.elements.password.value = ''
+  // 人机验证站的备用入口：导入浏览器里拿到的登录响应
+  const importForm = $('#form-session-import')
+  if (importForm) {
+    importForm.dataset.provider = providerId
+    importForm.elements.session.value = ''
+  }
   modal.hidden = false
   translateDom(modal)
   setTimeout(() => form.elements.user?.focus(), 60)
@@ -1510,7 +1678,7 @@ function openProvPanel(button, pane) {
   }
   body.innerHTML = ''
   body.appendChild(fragment)
-  const paneTitle = { keys: '密钥', rates: '分组倍率', usage: '用量核对', settings: '编辑' }[pane] || '详情'
+  const paneTitle = { keys: '密钥', rates: '分组倍率', usage: '用量核对', settings: '编辑', sync: '同步详情' }[pane] || '详情'
   if (title) title.textContent = `${name} · ${paneTitle}`
   modal.hidden = false
   translateDom(modal)
@@ -1784,14 +1952,13 @@ function renderPricing() {
               <td>${esc(providerName(offer.providerId))}</td>
               <td class="mono">${esc(offer.upstreamName)}${offer.group ? ` <span class="badge ${groupChipOf(offer.providerId, offer.group)}">${esc(offer.group)}</span>` : ''}</td>
               <td class="num" style="color:var(--faint)">${benchText}</td>
-              <td class="num"><input type="number" step="0.001" placeholder="—" value="${offer.inPrice ?? ''}" data-field="inPrice" ${offer.priceUnit === 'per_call' ? 'title="按次计费：这里填每次请求的价格"' : ''} /></td>
-              <td class="num"><input type="number" step="0.001" placeholder="—" value="${offer.priceUnit === 'per_call' ? '' : offer.outPrice ?? ''}" data-field="outPrice" ${offer.priceUnit === 'per_call' ? 'disabled title="按次计费不区分输入/输出"' : ''} /></td>
+              <td class="num"><input type="number" step="0.001" placeholder="—" value="${offer.inPrice ?? ''}" data-field="inPrice" /></td>
+              <td class="num"><input type="number" step="0.001" placeholder="—" value="${offer.outPrice ?? ''}" data-field="outPrice" /></td>
               <td class="num"><input class="ratio" type="number" step="0.01" placeholder="倍率" value="${offer.ratio ?? ''}" data-field="ratio" /></td>
               <td>
-                <select data-field="priceUnit" style="width:64px" title="计价单位：按次 = 输入价填每次请求的价格">
-                  <option value="per_mtok" ${offer.priceUnit !== 'per_1k' && offer.priceUnit !== 'per_call' ? 'selected' : ''}>/M</option>
+                <select data-field="priceUnit" style="width:64px" title="计价单位：每百万 token 或每千 token">
+                  <option value="per_mtok" ${offer.priceUnit !== 'per_1k' ? 'selected' : ''}>/M</option>
                   <option value="per_1k" ${offer.priceUnit === 'per_1k' ? 'selected' : ''}>/1k</option>
-                  <option value="per_call" ${offer.priceUnit === 'per_call' ? 'selected' : ''}>/次</option>
                 </select>
                 <select data-field="currency" style="width:64px">
                   <option value="USD" ${offer.currency === 'USD' ? 'selected' : ''}>USD</option>
@@ -1843,48 +2010,29 @@ function renderPricing() {
         row.cacheHitRate === null || row.cacheHitRate === undefined
           ? '—'
           : `${Math.round(row.cacheHitRate * 100)}%`
-      // 模式只看 offer.pricingMode，不能拿 row.ratio 推断：
-      // 切成「倍率」但还没填倍率时 ratio 是 null，会被误判成手动
-      const mode = row.pricingMode === 'ratio' ? 'ratio' : 'manual'
+      // 已定价的供给在本页只读：输入/输出价由 core/pricing.js 算好
+      // （按倍率的行 = 基准价 × 倍率，手填价的行 = 站点申报的单价），
+      // 展示币种跟随顶栏的全局币种开关，行内不再有下拉和输入框。
       const perCall = Boolean(row.perCall)
-      // 综合成本列：按次行显示「/次」，按 token 行显示「/百万 token」
+      const inText = perCall ? '—' : priceText(row.inCnyPerMtok)
+      const outText = perCall ? '—' : priceText(row.outCnyPerMtok)
+      // 倍率是站点/分组配置下来的固定值，这里只展示不给改
+      const ratioText = row.ratio === null || row.ratio === undefined ? '—' : `${row.ratio}`
+      // 综合成本列：/百万 token 口径（按次行暂时不参与比价，显示「—」）
       const costCell = perCall
-        ? row.callPriceCny === null
-          ? '—'
-          : `<div>¥${money(row.callPriceCny)}<span class="sub">/次</span></div>`
+        ? '—'
         : `${row.blendedCnyPerMtok === null ? '—' : priceText(row.blendedCnyPerMtok)}${
             row.hasOffPeak && row.offPeakBlendedCnyPerMtok !== null ? `<div class="sub">空闲 ${priceText(row.offPeakBlendedCnyPerMtok)}</div>` : ''
           }`
-      // 计费单位是站点声明、识别出来的（模型广场 billing_mode），不是每行手选的
-      // 配置项——所以只读展示。真要手动改（比如站点没开广场识别不到），去「站点」页
-      const unitBadge = `<span class="badge unit-badge" title="${t('计费单位：由站点声明的计费形式识别而来；手动修改请到「站点」页的模型行')}">${
-        perCall ? t('/次') : row.priceUnit === 'per_1k' ? t('/1k') : t('/M')
-      }</span>`
-      const modeCell = `
-        <div class="seg-mini">
-          <button class="${mode === 'ratio' ? 'is-on' : ''}" data-act="offer-mode" data-mode="ratio" title="按分组倍率折算">倍率</button>
-          <button class="${mode === 'manual' ? 'is-on' : ''}" data-act="offer-mode" data-mode="manual" title="直接填单价">价格</button>
-        </div>`
       return `
       <tr class="${row.isCheapest ? 'cheapest' : ''}" data-offer="${esc(row.offerId)}">
         <td>${esc(providerName(row.providerId))}</td>
-        <td class="mono">${esc(row.upstreamName)}${badge}${perCall ? ' <span class="badge">按次</span>' : ''}</td>
+        <td class="mono">${esc(row.upstreamName)}${badge}</td>
         <td class="num sub-cell">${cacheCell}</td>
         <td><span class="group-chip-cell">${row.group ? `<span class="badge ${groupChipOf(row.providerId, row.group)}" title="${esc(row.group)}">${esc(row.group)}</span>` : `<span style="color:var(--faint)" title="${t('该行的 Key 没有分组')}">${t('默认')}</span>`}<button class="ghost tiny" data-act="dup-offer" title="同一个模型在另一档套餐里也有时，复制一条单独跟踪（分组归属跟随 Key，行内不可直接改）">＋</button></span></td>
-        <td>${modeCell}</td>
-        <td class="num"><input type="number" step="0.001" placeholder="—" value="${row.inPrice ?? ''}" data-field="inPrice" ${mode === 'ratio' ? 'disabled title="当前按倍率算，切到「价格」才能填"' : perCall ? 'title="按次计费：这里填每次请求的价格"' : ''} /></td>
-        <td class="num"><input type="number" step="0.001" placeholder="—" value="${perCall ? '' : row.outPrice ?? ''}" data-field="outPrice" ${mode === 'ratio' || perCall ? 'disabled title="按次计费不区分输入/输出"' : ''} /></td>
-        <td>
-          <div class="unit-cell">
-            <select data-field="currency" style="width:70px">
-              <option value="USD" ${row.currency === 'USD' ? 'selected' : ''}>USD</option>
-              <option value="CNY" ${row.currency === 'CNY' ? 'selected' : ''}>CNY</option>
-            </select>
-            ${unitBadge}
-          </div>
-        </td>
-        <td class="num"><input class="ratio" type="number" step="0.01" placeholder="倍率" value="${row.ratio ?? ''}" data-field="ratio" ${mode === 'manual' ? 'disabled title="当前按手填单价算，切到「倍率」才能填"' : ''} /></td>
-        <td class="num">${row.ttftMs ? `${row.ttftMs}ms` : '—'}</td>
+        <td class="num">${inText}</td>
+        <td class="num">${outText}</td>
+        <td class="num" title="倍率来自站点/分组配置，比价页只读；要改请到「站点」页">${ratioText}</td>
         <td class="num">${costCell}</td>
         <td class="num">${row.isCheapest ? '<span class="badge ok">最便宜</span>' : row.deltaPct === null ? '—' : `+${row.deltaPct}%`}</td>
       </tr>`
@@ -1902,10 +2050,9 @@ function renderPricing() {
         <table class="pricing-table">
           <thead><tr>
             <th>站点</th><th>上游模型名</th><th class="num">缓存</th><th>分组</th>
-            <th>模式</th>
             <th class="num">输入价</th><th class="num">输出价</th>
-            <th>币种 / 单位</th><th class="num">倍率</th>
-            <th class="num">首字</th><th class="num">${t('综合成本')}<div class="sub">${t('{sym}/M · 按次行 /次', { sym: priceSym() })}</div></th><th class="num">价差</th>
+            <th class="num">倍率</th>
+            <th class="num">${t('综合成本')}<div class="sub">${t('{sym}/M', { sym: priceSym() })}</div></th><th class="num">价差</th>
           </tr></thead>
           <tbody>${rows}</tbody>
         </table>`}
@@ -1921,7 +2068,7 @@ function renderPricing() {
         ${icon('eye-off')}${t('忽略模型')}${ignoredCount ? ` ${ignoredCount}` : ''}
       </button>
     </div>
-    <p class="hint">${t('价格直接改，失焦即保存。「{sym}/百万 token」是综合成本：输入按 25%、输出按 75% 加权。人民币标价的站按「基准价」页里的汇率折算成美元比较。', { sym: priceSym() })}</p>
+    <p class="hint">已定价的供给是只读的：输入/输出价 = 基准价 × 倍率（手填价的行显示站点申报的单价），倍率固定不可改，币种跟随右上角开关。要改价去「站点」页，还没定价的在下面的表格里填。</p>
     ${ignoredCount ? `<p class="hint">已忽略 ${ignoredCount} 个模型：它们不出现在比价、智能决策、探针和网关里。<button class="ghost tiny" data-act="ignored-models">管理</button></p>` : ''}
     ${groups}${unpricedBlock}`
 }
@@ -2206,6 +2353,22 @@ function renderDecision() {
     (decision) => !filterText || decision.modelKey.toLowerCase().includes(filterText),
   )
 
+  // 决策侧重：档位表来自 /api/state 的 decisionModes（与后端同一份），
+  // 表里「排序键」列必须显示当前档真正用来排序的那个值，否则用户切档后
+  // 会看到数字和名次对不上，以为排序坏了
+  const modes = Array.isArray(state.decisionModes) ? state.decisionModes : []
+  const decisionMode = state.decisionMode || state.settings?.decisionMode || 'value'
+  const modeIndex = Math.max(
+    0,
+    modes.findIndex((mode) => mode.key === decisionMode),
+  )
+  const modeMeta = modes[modeIndex] || { label: '性价比', hint: '', desc: '' }
+  const sortCell = (candidate) => {
+    if (decisionMode === 'quality') return candidate.quality === null ? '—' : candidate.quality.toFixed(2)
+    if (decisionMode === 'price') return candidate.price === null ? '—' : priceText(candidate.price)
+    return candidate.effective === null ? '—' : priceText(candidate.effective)
+  }
+
   const blocks = visibleDecisions.map((decision) => {
     const panelKey = `decision:${decision.modelKey}`
     const isCollapsed = collapsedPanels.has(panelKey)
@@ -2231,7 +2394,7 @@ function renderDecision() {
               ? `<div class="sub">${candidate.samples} ${t('样本')}</div>`
               : ''
           }</td>
-          <td class="num">${candidate.effective === null ? '—' : priceText(candidate.effective)}</td>
+          <td class="num">${sortCell(candidate)}</td>
           <td class="num">${candidate.ttftMs === null ? '—' : `${candidate.ttftMs}ms`}</td>
           <td><span class="badge ${badge.cls}">${badge.label}</span>${candidate.statusReason ? `<div class="sub">${esc(candidate.statusReason)}</div>` : ''}</td>
         </tr>`
@@ -2250,7 +2413,7 @@ function renderDecision() {
           <thead><tr>
             <th style="width:66px"></th><th class="num">#</th><th>站点</th><th>分组</th>
             <th class="num">价格</th><th class="num">质量</th>
-            <th class="num">有效成本</th><th class="num">首字</th><th>状态</th>
+            <th class="num">排序键<div class="sub">${esc(modeMeta.label)}</div></th><th class="num">首字</th><th>状态</th>
           </tr></thead>
           <tbody>${rows}</tbody>
         </table>`}
@@ -2260,6 +2423,23 @@ function renderDecision() {
   // 「放行可疑供给」放在这一页：它直接决定下面这张表里谁能被选，
   // 放在探针页时要跨页才能改，改完还得回来看效果
   const allowUntrusted = Boolean(state.settings.allowUntrusted)
+  // 决策侧重：三档离散选项，用分段控件而不是滑块——滑块让人以为它是连续值，
+  // 实际只有三个口径；点一下就到位的按钮也不会有「拖到哪格算哪档」的歧义。
+  // 只改排序不改准入：能不能参选由下面的「放行可疑供给」独立控制。
+  const modeControl = modes.length
+    ? `
+      <div class="mode-inline" title="${esc(modeMeta.desc)}">
+        <span class="mode-inline-label">${t('决策侧重')}</span>
+        <div class="seg">
+          ${modes
+            .map(
+              (mode) =>
+                `<button data-act="set-mode" data-mode="${esc(mode.key)}" class="${mode.key === decisionMode ? 'active' : ''}">${esc(mode.label)}</button>`,
+            )
+            .join('')}
+        </div>
+      </div>`
+    : ''
   const untrustedSwitch = `
     <div class="switch-row" style="margin-bottom:12px">
       <label class="switch">
@@ -2267,7 +2447,7 @@ function renderDecision() {
         <span class="switch-track"><span class="switch-knob"></span></span>
         <span class="switch-text">
           <b>放行可疑供给</b>
-          <span>探针判定可疑（指纹不符 / 输出截断 / 用量虚报 / 评分过期）的站，也按有效成本正常参与选站</span>
+          <span>探针判定可疑（指纹不符 / 输出截断 / 用量虚报 / 评分过期）的站，也按当前排序键正常参与选站</span>
         </span>
       </label>
       ${
@@ -2275,7 +2455,7 @@ function renderDecision() {
           ? `<div class="alert" style="margin-top:10px;background:var(--warn-soft);border-color:var(--warn-border)">
                <div>
                  <div class="name">已放行：可疑的站会正常参与选站</div>
-                 <div class="desc">它们仍然按「价格 ÷ 质量」排序——质量差一半，成本就翻倍，只有便宜到足够多才会被选中。首字上限仍然独立生效。如果你更在意输出是否可信，把这个开关关掉。</div>
+                 <div class="desc">它们按当前「决策侧重」排序——质量档下会先比质量；价格档下它们可能排到最前面。首字上限仍然独立生效。如果你更在意输出是否可信，把这个开关关掉。</div>
                </div>
              </div>`
           : ''
@@ -2284,11 +2464,14 @@ function renderDecision() {
 
   view.innerHTML = `
     <div class="toolbar">
-      <input id="decision-search" class="search" type="search" placeholder="搜索模型名…" value="${esc(filters.decision)}" />
-      <span class="hint" style="margin:0">${visibleDecisions.length} / ${decisions.length} 个模型</span>
+      ${modeControl}
+      <div class="toolbar-right">
+        <input id="decision-search" class="search" type="search" placeholder="搜索模型名…" value="${esc(filters.decision)}" />
+        <span class="hint" style="margin:0">${visibleDecisions.length} / ${decisions.length} 个模型</span>
+      </div>
     </div>
     ${untrustedSwitch}
-    <p class="hint">默认按「有效成本 = 价格 ÷ 质量」排序，用 ↑↓ 手动调整「可用」那几条的先后——不可信的站不会因为你拖它而排到前面。</p>
+    <p class="hint">按上方「决策侧重」排序（${esc(modeMeta.label)}：${esc(modeMeta.desc)}），用 ↑↓ 手动调整「可用」那几条的先后——不可信的站不会因为你拖它而排到前面，排序偏好也改不了准入。</p>
     <p class="hint">${t('注意：<b>同一个模型在不同站的状态是各自独立的</b>（A 站健康、B 站掉包很正常），所以这里按「站 × 模型」逐条评估，状态下方会写明具体原因。')}</p>
     ${blocks}`
 }
@@ -4537,36 +4720,13 @@ document.addEventListener('click', async (event) => {
     return
   }
 
-  // 一键同步：同步模型 → 读余额 →（有令牌时）识别分组，串着跑完再刷新
+  // 一键完整同步：站名/价目表/令牌列表/模型/分组倍率/余额一次拿全，
+  // 后台有而本地没导入的 Key 也会顺手补录（见 POST /full-sync）
   if (event.target.closest('[data-act="prov-sync-all"]')) {
     const btn = event.target.closest('[data-act="prov-sync-all"]')
-    const card = btn.closest('.prov-card')
-    const providerId = card?.dataset.provider
-    const hasToken = card?.dataset.hasToken === '1'
+    const providerId = btn.closest('.prov-card')?.dataset.provider
     if (!providerId) return
-    const failed = []
-    await withBusy(btn, async () => {
-      try {
-        await api('POST', `/api/providers/${providerId}/sync`, {})
-      } catch (error) {
-        failed.push(`同步：${error.message}`)
-      }
-      try {
-        await api('POST', `/api/providers/${providerId}/balance`, {})
-      } catch (error) {
-        failed.push(`余额：${error.message}`)
-      }
-      if (hasToken) {
-        try {
-          await api('POST', `/api/providers/${providerId}/detect-groups`, {})
-        } catch (error) {
-          failed.push(`分组：${error.message}`)
-        }
-      }
-      state = await api('GET', '/api/state')
-      render()
-    })
-    toast(failed.length ? `部分完成：${failed.join('；')}` : '已同步', failed.length > 0)
+    await runFullSync(providerId, { btn, open: true })
     return
   }
 
@@ -4641,18 +4801,6 @@ document.addEventListener('click', async (event) => {
     return
   }
 
-  if (action === 'offer-mode') {
-    const offerId = actionButton.closest('[data-offer]').dataset.offer
-    const mode = actionButton.dataset.mode === 'ratio' ? 'ratio' : 'manual'
-    await withBusy(actionButton, async () => {
-      // PATCH 的返回值就是完整 state，直接用它重绘
-      state = await api('PATCH', `/api/offers/${offerId}`, { pricingMode: mode })
-      render()
-      toast(mode === 'ratio' ? '已切成「按倍率」：价格 = 基准价 × 倍率' : '已切成「按价格」：直接填输入/输出单价')
-    })
-    return
-  }
-
   if (action === 'dup-offer') {
     const offerId = actionButton.closest('[data-offer]').dataset.offer
     const name = prompt('新分组名（例如：Pro 号池 / 特价池 / 企业通道）')
@@ -4684,6 +4832,21 @@ document.addEventListener('click', async (event) => {
     try {
       state = await api('PUT', `/api/decisions/${encodeURIComponent(modelKey)}/order`, { order: ids })
       render()
+    } catch (error) {
+      toast(error.message, true)
+    }
+    return
+  }
+
+  if (action === 'set-mode') {
+    const picked = (Array.isArray(state.decisionModes) ? state.decisionModes : []).find(
+      (mode) => mode.key === actionButton.dataset.mode,
+    )
+    if (!picked || picked.key === state.decisionMode) return
+    try {
+      state = await api('PATCH', '/api/settings', { decisionMode: picked.key })
+      render()
+      toast(`决策侧重已切到「${picked.label}」`)
     } catch (error) {
       toast(error.message, true)
     }
@@ -4728,6 +4891,23 @@ document.addEventListener('click', async (event) => {
 
   if (action === 'close-login') {
     closeLoginModal()
+    return
+  }
+
+  // 手动触发一次续期：与 401 自动续期走同一条后端路径（刷新令牌优先，其次账号密码）
+  if (action === 'renew-token') {
+    const providerId = actionButton.closest('[data-provider]')?.dataset.provider
+    if (!providerId) return
+    await withBusy(actionButton, async () => {
+      try {
+        state = await api('POST', `/api/providers/${providerId}/renew`)
+        render()
+        const method = state.renew?.method === 'refresh' ? '刷新令牌' : '账号密码'
+        toast(`令牌已续期（${method}）`)
+      } catch (error) {
+        toast(error.message, true)
+      }
+    })
     return
   }
 
@@ -5033,6 +5213,46 @@ document.addEventListener('submit', async (event) => {
       const kindLabel = ID_PROVIDER_KIND[kind]?.label || (kind === 'unknown' ? '未知系别' : String(kind || '未知系别'))
       const via = state.loginResult?.via === 'sub2api' ? 'Sub2API' : 'OneAPI/NewAPI'
       toast(`登录成功 · 识别为 ${kindLabel}（${via} 协议），令牌已自动获取并开始续期`)
+      // 登录成功后立刻跑一次完整同步：后台的令牌列表、分组倍率、余额都在这一刻可读，
+      // 让用户少点三次按钮（失败也不影响登录结果，报告会落在「同步详情」里）
+      await runFullSync(providerId)
+    } catch (error) {
+      toast(error.message, true)
+      // 站点要人机验证：把「导入登录响应」那一栏亮出来，用户不用自己找
+      if (error.data?.needSessionImport) {
+        const importForm = document.getElementById('form-session-import')
+        importForm?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+        importForm?.elements.session?.focus()
+      }
+      if (submitBtn) submitBtn.disabled = false
+    }
+    return
+  }
+
+  const sessionForm = event.target.closest('#form-session-import')
+  if (sessionForm) {
+    event.preventDefault()
+    const submitBtn = sessionForm.querySelector('button[type="submit"]')
+    if (submitBtn?.disabled) return
+    if (submitBtn) submitBtn.disabled = true
+    const providerId = sessionForm.dataset.provider
+    const text = String(new FormData(sessionForm).get('session') || '').trim()
+    if (!text) {
+      toast('先把站点登录接口返回的内容贴进来', true)
+      if (submitBtn) submitBtn.disabled = false
+      return
+    }
+    try {
+      state = await api('POST', `/api/providers/${providerId}/session-import`, { session: text })
+      const info = state.sessionImport || {}
+      closeLoginModal()
+      render()
+      toast(
+        info.renewable
+          ? `登录态已导入（${info.kind || '已识别'}），之后靠刷新令牌自动续期`
+          : '登录态已导入，但站点没给刷新令牌——过期后需要重新导入一次',
+      )
+      await runFullSync(providerId)
     } catch (error) {
       toast(error.message, true)
       if (submitBtn) submitBtn.disabled = false
@@ -5137,6 +5357,8 @@ const form = event.target.closest('[data-form="add-key"]')
     render()
     if (inModal) reopenProvPanel(form, 'keys')
     toast('Key 已加密保存')
+    // 新 Key 一进来就把它的模型拉下来、分组与倍率对上——用户不用再点「完整同步」
+    await runFullSync(providerId)
   } catch (error) {
     toast(error.message, true)
     if (keySubmitBtn) keySubmitBtn.disabled = false

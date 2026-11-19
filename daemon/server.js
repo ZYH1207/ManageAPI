@@ -13,7 +13,11 @@ import * as fxLib from '../core/fx.js'
 import * as inv from '../core/inventory.js'
 // 币种口径的唯一真源：站点价目表的币种由站点声明，不在这里猜
 import { declaredPriceCurrency, normalizeCurrency } from '../core/currency.js'
-import { planCurrencyReconcile, reconcileCurrencies } from '../core/currency-reconcile.js'
+import {
+  planCurrencyReconcile,
+  applyCurrencyReconcile,
+  reconcileCurrencies,
+} from '../core/currency-reconcile.js'
 import * as pricing from '../core/pricing.js'
 import * as bench from '../core/benchmark.js'
 import * as providers from '../core/providers.js'
@@ -21,6 +25,8 @@ import { scoreOffers, isRoutable, longTermScores } from '../core/score.js'
 import { classifyFailure } from '../core/failure.js'
 import { checkRealResponse, estimateRequestTokens } from '../core/quality-signals.js'
 import { selectCandidates, listPublicModels, explain } from '../core/router.js'
+// 决策侧重（排序偏好）的档位表：前端渲染滑块也读这一份，避免两边各写一套
+import { DECISION_MODES, normalizeDecisionMode } from '../core/decision-mode.js'
 import { splitOffers, resolvePool, FREE_PREFIX, FREE_BASE_PATH } from '../core/free.js'
 import { rankFreePool } from '../core/rank-free.js'
 import * as platforms from '../core/platforms/index.js'
@@ -223,12 +229,37 @@ function buildProviderViews(db, freeOffers) {
       priceCurrencyDeclared: declaredPriceCurrency(p),
       priceCurrencySource: p.priceCurrencySource || null,
       quotaUpdatedAt: p.quotaUpdatedAt ?? null,
+      // 登录态：令牌从哪来、什么时候过期、401 时能靠什么续
+      adminTokenSource: p.adminTokenSource ?? null,
+      adminUserId: p.adminUserId ?? null,
+      adminTokenExpiresAt: p.adminTokenExpiresAt ?? null,
+      tokenRenewedAt: p.tokenRenewedAt ?? null,
+      tokenRenewMethod: p.tokenRenewMethod ?? null,
+      tokenRenewError: p.tokenRenewError ?? null,
+      // 'refresh'（sub2api 刷新令牌）/ 'login'（账号密码）/ null（不可自动续期）
+      renewable: renewModeOf(p),
       // 免费池里这个站有哪几个模型（卡片上标「免费 N」）
       freeModels: freeOffers
         .filter((o) => o.providerId === p.id)
         .map((o) => o.upstreamName || o.modelKey || '')
         .filter(Boolean),
     }))
+    // 密文也不该下发给浏览器：界面只需要「有没有」和尾号
+    .map((view) => {
+      delete view.adminToken
+      delete view.loginCred
+      delete view.refreshTokenEnc
+      return view
+    })
+}
+
+/** 这个站的令牌能不能自动续、靠什么续。界面与「立即续期」按钮共用这一个口径。 */
+function renewModeOf(p) {
+  if (!p) return null
+  if (!['login', 'session'].includes(p.adminTokenSource)) return null
+  if (p.kind === 'sub2api' && p.refreshTokenEnc) return 'refresh'
+  if (p.adminTokenSource === 'login' && p.loginCred) return 'login'
+  return null
 }
 
 /** 全量模型索引（含被忽略的）与覆盖站点数：忽略模型弹窗要用，不能从过滤后的 offers 推。 */
@@ -425,6 +456,10 @@ async function buildState({ light = false, panel = false } = {}) {
   const result = {
     settings: db.settings,
     dataDir: store.dataDir(),
+    // 决策侧重的档位表：滑块的分段标签、说明文字都以这份为准，
+    // 前端不另抄一份，否则改档位要改两处、迟早对不上
+    decisionModes: DECISION_MODES,
+    decisionMode: normalizeDecisionMode(db.settings.decisionMode),
     // 站点卡的「免费 N」徽章与免费池同口径（都不过滤忽略模型），
     // 否则徽章说 2 个、点进去只有 1 个，用户会以为丢数据
     providers: buildProviderViews(db, freeOffersAll),
@@ -435,6 +470,10 @@ async function buildState({ light = false, panel = false } = {}) {
       group: c.group || '',
       tail: c.tail,
       expiresAt: c.expiresAt,
+      // 后台令牌列表里的名字与倍率：完整同步读回来后给站点卡「密钥」栏展示，
+      // 免得用户对着 sk-xxx 猜哪把是哪个套餐
+      tokenName: c.tokenName || '',
+      tokenRate: typeof c.tokenRate === 'number' ? c.tokenRate : null,
     })),
     offers: liveOffers,
     modelIndex: buildModelIndex(db.offers),
@@ -596,6 +635,15 @@ function applyDisplaySettings(db, body) {
   if (body.allowUntrusted !== undefined) {
     db.settings.allowUntrusted = Boolean(body.allowUntrusted)
   }
+  if (body.decisionMode !== undefined) {
+    // 只接受写明的档位：拼错 / 手改接口传脏值时报错，而不是静默回落到默认档——
+    // 静默回落会让用户以为自己改了偏好、实际还是旧顺序。
+    const v = String(body.decisionMode).trim().toLowerCase()
+    if (!DECISION_MODES.some((mode) => mode.key === v)) {
+      throw new HttpError(400, `决策侧重只能是 ${DECISION_MODES.map((mode) => mode.key).join(' / ')}`)
+    }
+    db.settings.decisionMode = v
+  }
   if (body.freeCrossPane !== undefined) {
     const v = String(body.freeCrossPane)
     if (!['platform', 'relay', 'remaining'].includes(v)) {
@@ -711,8 +759,42 @@ route('POST', /^\/api\/providers\/([\w-]+)\/login$/, async (ctx) => {
     if (error?.needConfirm) {
       throw new HttpError(409, error.message, { needConfirm: true, evidence: error.evidence || null })
     }
+    // 站点要人机验证：不是失败，而是「换条路」——让用户把浏览器里的登录响应导入进来
+    if (error?.code === 'BROWSER_LOGIN_REQUIRED') {
+      throw new HttpError(409, error.message, { needSessionImport: true })
+    }
     throw error
   }
+})
+
+/**
+ * 导入登录响应：站点开了人机验证时，用户自己在浏览器里过验证码，
+ * 把登录接口返回的 access_token / refresh_token 贴进来。
+ * 本工具只接管令牌与后续续期，不做任何验证码绕过。
+ */
+route('POST', /^\/api\/providers\/([\w-]+)\/session-import$/, async (ctx) => {
+  const body = ctx.body || {}
+  const input = body.session ?? body // 允许直接贴文本，也允许 {session:{...}}
+  if (input === undefined || input === null || input === '') {
+    throw new HttpError(400, '请把站点登录接口返回的内容贴进来（access_token / refresh_token）')
+  }
+  const result = await inv.importProviderSession(ctx.params[0], input)
+  invalidatePricing(ctx.params[0])
+  collectProviderSnapshots({ providerId: ctx.params[0] }).catch((error) => {
+    console.error('[导入登录态后采集] 失败：', error)
+  })
+  return { ...(await buildState()), sessionImport: result }
+})
+
+/** 手动触发一次续期（站点卡上的「立即续期」），走与 401 自动续期完全相同的路径。 */
+route('POST', /^\/api\/providers\/([\w-]+)\/renew$/, async (ctx) => {
+  const result = await inv.autoRelogin(ctx.params[0])
+  if (!result.ok) throw new HttpError(400, result.reason || '续期失败')
+  invalidatePricing(ctx.params[0])
+  collectProviderSnapshots({ providerId: ctx.params[0] }).catch((error) => {
+    console.error('[续期后采集] 失败：', error)
+  })
+  return { ...(await buildState()), renew: { ok: true, method: result.method || 'login' } }
 })
 
 /** 新增站点：建库后自动探测一次系别（失败不阻断保存）。 */
@@ -907,6 +989,348 @@ route('POST', /^\/api\/providers\/([\w-]+)\/sync$/, async (ctx) => {
       failures,
     },
   }
+})
+
+// ------------------------------------------------------------ 完整同步
+//
+// 一个站点从「点登录 / 填令牌」到「价格能用于选站」要跨好几步：
+//   站点自述 → 后台令牌列表 → 同步模型 → 认分组 → 落倍率 → 读余额 → 对齐币种
+// 这些以前散在卡片上的几个按钮里，用户得逐个点、还得知道先点哪个；漏一步价格就是旧的。
+// 这里串成一个接口，并把「上游本来就会返回、我们以前丢掉」的东西一并存下来：
+//   · /api/status 的站名 / 版本 / 计费单位 / 客服链接      → provider.siteName 等
+//   · /api/pricing 的分组倍率                              → provider.siteGroups（补缺失分组）
+//   · 后台令牌列表的 name / rate / 我们还没导入的 Key      → credential.tokenName/tokenRate + 自动导入
+//   · 余额（含 via）                                       → provider.quotaRemaining + 监控曲线
+// 每个阶段独立容错：某一步读不到只进报告，不影响其它步骤；真正写坏数据的地方为零——
+// 价格仍只经由 inv.applySitePricing（经 applyPricingRow）落，币种仍走同一个 reconcile。
+route('POST', /^\/api\/providers\/([\w-]+)\/full-sync$/, async (ctx) => {
+  const startedAt = Date.now()
+  const db = await store.readDb()
+  const provider = db.providers.find((p) => p.id === ctx.params[0])
+  if (!provider) throw new HttpError(404, '站点不存在')
+
+  const adminToken = await inv.revealAdminToken(provider.id)
+  const baseUrl = inv.apiBaseOf(provider) || provider.siteUrl || ''
+  const report = {
+    providerId: provider.id,
+    startedAt: new Date(startedAt).toISOString(),
+    identity: null,
+    pricing: null,
+    keys: { existing: 0, matched: 0, imported: 0, importedKeys: [] },
+    models: { fetched: 0, added: 0, pruned: 0, perKey: [] },
+    balance: null,
+    changes: { offersPriced: 0, offersUnpriced: 0, groups: 0 },
+    errors: [],
+    notes: [],
+    elapsedMs: 0,
+  }
+
+  // ---- 1. 站点自述：不要令牌也能读到大半
+  let identity = null
+  try {
+    identity = await providers.fetchSiteIdentity({ baseUrl, adminToken })
+  } catch (error) {
+    report.errors.push(`站点信息：${error.message || error}`)
+  }
+  if (identity && (identity.siteName || identity.version || identity.quotaPerUnit)) {
+    report.identity = {
+      siteName: identity.siteName,
+      version: identity.version,
+      quotaPerUnit: identity.quotaPerUnit,
+      chatLink: identity.chatLink,
+      topUpLink: identity.topUpLink,
+      displayInCurrency: identity.displayInCurrency,
+      kind: identity.kind,
+      evidence: identity.evidence,
+    }
+    await inv.updateProvider(provider.id, {
+      siteName: identity.siteName,
+      siteVersion: identity.version,
+      quotaPerUnit: identity.quotaPerUnit,
+      chatLink: identity.chatLink,
+      topUpLink: identity.topUpLink,
+      displayInCurrency: identity.displayInCurrency,
+    })
+    // 系别：用户手选过的不覆盖；探测到的与库里不同就顺手纠正
+    if (identity.kind !== 'unknown' && provider.kindSource !== 'manual' && provider.kind !== identity.kind) {
+      await inv.updateProvider(provider.id, { kind: identity.kind, kindSource: 'auto' })
+      report.notes.push(`系别识别为 ${identity.kind}（${identity.evidence}）`)
+    }
+  }
+
+  // ---- 2. 站点价目表：/api/pricing 是 one-api/new-api 唯一公开计价公式的地方
+  let ratioTable = null
+  try {
+    ratioTable = await providers.fetchRatioTable({ baseUrl, adminToken })
+  } catch (error) {
+    report.errors.push(`价目表：${error.message || error}`)
+  }
+  if (ratioTable?.ok) {
+    report.pricing = {
+      source: ratioTable.source,
+      groups: ratioTable.groups.length,
+      models: ratioTable.models.length,
+      completionRatio: ratioTable.completionRatio,
+    }
+    if (ratioTable.groups.length > 0) {
+      // 只存档：这是我们「买不起的分组」也能看到的公开信息，用于识别与补倍率
+      await inv.updateProvider(provider.id, {
+        siteGroups: ratioTable.groups.map((g) => ({
+          name: g.name,
+          rate: g.rate,
+          source: ratioTable.source,
+        })),
+      })
+    }
+  }
+
+  // ---- 3. 后台令牌列表：导入缺的 Key、补令牌名与倍率、补空分组
+  let items = []
+  if (adminToken) {
+    try {
+      const fetched = await providers.fetchTokenList({
+        baseUrl,
+        adminToken,
+        timeoutMs: TOKEN_LIST_TIMEOUT_MS,
+      })
+      items = fetched.items || []
+      await inv.setTokenStatus(provider.id, { ok: true })
+    } catch (error) {
+      // 401/403 才是令牌的锅，网络/结构问题不标红
+      if (/HTTP (401|403)/.test(String(error?.message || ''))) {
+        await inv.setTokenStatus(provider.id, { ok: false, message: error.message })
+      }
+      report.errors.push(`令牌列表：${error.message || error}`)
+    }
+  } else {
+    report.notes.push('没有后台令牌，跳过令牌列表与未导入 Key 的补录')
+  }
+
+  const existing = db.credentials.filter((c) => c.providerId === provider.id)
+  report.keys.existing = existing.length
+  const secretOf = new Map()
+  for (const credential of existing) {
+    secretOf.set(credential.id, await inv.revealSecret(credential.id))
+  }
+
+  for (const item of items) {
+    if (!item?.key) continue
+    const owner = [...secretOf.entries()].find(([, secret]) =>
+      providers.matchTokenBySecret([item], secret),
+    )
+    if (owner) {
+      const credentialId = owner[0]
+      const credential = existing.find((c) => c.id === credentialId)
+      const patch = { tokenName: item.name || null, tokenRate: item.rate ?? null }
+      // 分组只补「还没定」的：手选的商务事实不覆盖，留空才写自动识别结果
+      if (item.group && !credential?.group) {
+        patch.group = item.group
+        patch.groupSource = 'auto'
+      }
+      await inv.updateCredential(credentialId, patch)
+      report.keys.matched += 1
+      continue
+    }
+    // 后台有、我们没导入的 Key：直接补进来（用户登录后本来就拥有它）。
+    // 这是「填令牌之后能拿到的信息」里最容易被漏掉的一项。
+    // 令牌列表给的是裸 key（new-api/sub2api 都去掉 sk- 前缀存），实际调用要带 sk-，
+    // 所以补录时按站点惯例还原成用户手填的形态
+    const tail = String(item.key).slice(-4)
+    const secret = /^sk-/i.test(item.key) ? item.key : `sk-${item.key}`
+    const created = await inv.createCredential({
+      providerId: provider.id,
+      label: item.name || `后台令牌 ${tail}`,
+      secret,
+      group: item.group || '',
+      expiresAt: item.expiresAt || null,
+    })
+    if (item.name || typeof item.rate === 'number') {
+      await inv.updateCredential(created.id, {
+        tokenName: item.name || null,
+        tokenRate: item.rate ?? null,
+      })
+    }
+    secretOf.set(created.id, secret)
+    report.keys.imported += 1
+    report.keys.importedKeys.push({ tail, name: item.name || '', group: item.group || '' })
+  }
+
+  // ---- 4. 同步模型：每把 Key 用自己的分组，避免不同套餐的模型挂错组
+  const credentials = (await store.readDb()).credentials.filter((c) => c.providerId === provider.id)
+  const syncTimeoutMs = Math.min(
+    Number(db.settings.probeTimeoutMs) || SYNC_TIMEOUT_DEFAULT_MS,
+    SYNC_TIMEOUT_MAX_MS,
+  )
+  const fetchedModels = await Promise.all(
+    credentials.map(async (credential) => {
+      const apiKey = await inv.revealSecret(credential.id)
+      if (!apiKey) return { credential, error: 'Key 解密失败，可能是 master.key 被替换过' }
+      try {
+        const result = await providers.listModels({
+          baseUrl: inv.apiBaseOf(provider),
+          apiKey,
+          timeoutMs: syncTimeoutMs,
+        })
+        return { credential, models: result.models }
+      } catch (error) {
+        return { credential, error: error.message || String(error) }
+      }
+    }),
+  )
+  for (const row of fetchedModels) {
+    if (row.error) {
+      report.errors.push(`模型列表（${row.credential.label}）：${row.error}`)
+      continue
+    }
+    const saved = await inv.syncOffers(
+      provider.id,
+      row.credential.id,
+      row.models,
+      row.credential.group || '',
+    )
+    // 拉到模型才敢标下架：空响应多半是站点抽风
+    const pruned =
+      row.models.length > 0
+        ? await inv.markDelisted(
+            provider.id,
+            row.credential.id,
+            row.models,
+            row.credential.group || '',
+          )
+        : { delisted: 0, revived: 0 }
+    report.models.fetched += row.models.length
+    report.models.added += saved.added
+    report.models.pruned += pruned.delisted
+    report.models.perKey.push({
+      credentialId: row.credential.id,
+      label: row.credential.label,
+      group: row.credential.group || '',
+      count: row.models.length,
+      added: saved.added,
+      pruned: pruned.delisted,
+    })
+  }
+
+  // ---- 5. 认分组 + 落价：价格表优先，缺的分组用 /api/pricing 的 group_ratio 补
+  let pricing = { groups: [], source: null }
+  let match = () => null
+  let byGroupModel = new Map()
+  let benchTable = {}
+  try {
+    const loaded = await loadProviderPricing(provider.id, { fresh: true })
+    pricing = loaded.pricing
+    match = loaded.match
+    byGroupModel = loaded.byGroupModel
+    benchTable = loaded.benchTable
+  } catch (error) {
+    // 站上没有 channels/广场接口时这是常态：/api/pricing 已经给了分组倍率，
+    // 缺的只是「每个模型的单价」，不该在报告里当成失败吓用户一跳
+    const where = ratioTable?.ok ? report.notes : report.errors
+    where.push(`价格表：${error.message || error}`)
+    benchTable = await bench.readBenchmarks()
+  }
+  const rateOfGroup = new Map(pricing.groups.map((g) => [inv.normalizeGroup(g.name), g.rate]))
+  for (const group of ratioTable?.groups || []) {
+    const key = inv.normalizeGroup(group.name)
+    if (!rateOfGroup.has(key)) rateOfGroup.set(key, group.rate)
+  }
+
+  const rows = []
+  for (const credential of credentials) {
+    const secret = await inv.revealSecret(credential.id)
+    const hit = providers.matchTokenBySecret(items, secret)
+    const group = credential.group || (hit?.group ? String(hit.group) : '')
+    const rate =
+      typeof hit?.rate === 'number' ? hit.rate : (rateOfGroup.get(inv.normalizeGroup(group)) ?? null)
+    rows.push({
+      credentialId: credential.id,
+      label: credential.label,
+      group,
+      rate,
+      matched: Boolean(group),
+      pinned: credential.groupSource === 'manual',
+      updated: 0,
+      unpriced: 0,
+    })
+  }
+
+  await store.mutate((d) => {
+    for (const row of rows) {
+      if (!row.matched) continue
+      // 手选过分组的 Key：分组归属与倍率都不动（用户买的那一档是商务事实）
+      if (row.pinned) continue
+      for (const offer of d.offers) {
+        if (offer.providerId !== provider.id) continue
+        if (offer.credentialId !== row.credentialId) continue
+        const applied = applyPricingRow(offer, {
+          match,
+          group: row.group,
+          rate: row.rate,
+          byGroupModel,
+          benchTable,
+          currency: declaredPriceCurrency(provider),
+          requireHit: false,
+        })
+        if (applied.via === 'skip') row.unpriced += 1
+        else row.updated += 1
+      }
+    }
+    applyCurrencyReconcile(d, planCurrencyReconcile(d, benchTable, fxOfSettings(d)))
+  })
+  report.changes.offersPriced = rows.reduce((n, r) => n + r.updated, 0)
+  report.changes.offersUnpriced = rows.reduce((n, r) => n + r.unpriced, 0)
+  report.changes.groups = rows.filter((r) => r.matched).length
+
+  // ---- 6. 余额：所有 Key 都试，令牌 401 时自动重登一次
+  try {
+    const apiKeys = (await Promise.all(credentials.map((c) => inv.revealSecret(c.id)))).filter(Boolean)
+    let balance = await providers.tryBalanceWithKeys({
+      baseUrl: inv.apiBaseOf(provider),
+      apiKeys,
+      adminToken,
+      kind: provider.kind,
+    })
+    if (!balance.ok && /HTTP (401|403)/.test(String(balance.reason || ''))) {
+      const relogin = await inv.autoRelogin(provider.id)
+      if (relogin.ok) {
+        balance = await providers.tryBalanceWithKeys({
+          baseUrl: inv.apiBaseOf(provider),
+          apiKeys,
+          adminToken: relogin.token,
+          kind: provider.kind,
+        })
+      }
+    }
+    report.balance = {
+      ok: Boolean(balance.ok),
+      remaining: balance.remaining ?? null,
+      currency: balance.currency ?? null,
+      via: balance.via ?? null,
+      reason: balance.ok ? null : balance.reason || null,
+    }
+    if (balance.ok) {
+      await inv.updateProvider(provider.id, {
+        quotaRemaining: balance.remaining,
+        currency: balance.currency,
+      })
+      await store.mutate((current) =>
+        applySnapshot(current, {
+          providerId: provider.id,
+          at: new Date().toISOString(),
+          balance,
+        }),
+      )
+    }
+  } catch (error) {
+    report.errors.push(`余额：${error.message || error}`)
+  }
+
+  await inv.updateProvider(provider.id, {
+    lastFullSyncAt: new Date().toISOString(),
+    priceSource: pricing?.source || ratioTable?.source || null,
+  })
+  report.elapsedMs = Date.now() - startedAt
+  return { ...(await buildState()), fullSync: report }
 })
 
 route('POST', /^\/api\/providers\/([\w-]+)\/group-ratio$/, async (ctx) => {
@@ -2233,6 +2657,10 @@ async function forwardToUpstream({ candidate, body, res, attemptIndex, pool = 'p
   // 只有连续 STREAM_IDLE_MS 没收到任何东西才当上游卡死。
   let timer = null
   let idleTimedOut = false
+  // 客户端先走（浏览器按 ESC、关页面、Ctrl+C）时本地会 abort 上游 fetch，
+  // 读流随之抛 AbortError。这个错误必须和「站方断流」分开：以前它落进默认归因，
+  // countsAsOutage=true，一次 ESC 就被记成站点断流，拉低可用率还把排查引向站方。
+  let clientGone = false
   const armTimer = (ms) => {
     if (timer) clearTimeout(timer)
     timer = setTimeout(() => {
@@ -2245,6 +2673,7 @@ async function forwardToUpstream({ candidate, body, res, attemptIndex, pool = 'p
 
   // 客户端先走了就别再喂上游：否则对面继续生成，白烧额度还占着连接
   const onClientGone = () => {
+    clientGone = true
     if (!controller.signal.aborted) controller.abort()
   }
   if (clientSignal) {
@@ -2272,6 +2701,10 @@ async function forwardToUpstream({ candidate, body, res, attemptIndex, pool = 'p
     })
   } catch (error) {
     cleanup()
+    // 客户端自己走了：abort 是我们主动发的，不能记成「连接失败」算到站头上
+    if (clientGone || clientSignal?.aborted) {
+      return { committed: false, clientAborted: true, error: '客户端已断开' }
+    }
     // 空闲超时和客户端断开都是 AbortError，但成因完全不同：前者是站卡死（要记账），
     // 后者不是站的错（上层按 clientSignal 排除）。错误文本必须能区分，否则
     // 路由日志里只剩一句 This operation was aborted，排查时看不出所以然
@@ -2302,10 +2735,19 @@ async function forwardToUpstream({ candidate, body, res, attemptIndex, pool = 'p
       payload = await upstreamRes.json()
     } catch {
       cleanup()
+      // 客户端在读完响应前就走了：这不是「上游返回坏 JSON」
+      if (clientGone || clientSignal?.aborted) {
+        return { committed: false, clientAborted: true, error: '客户端已断开' }
+      }
       return { committed: false, error: '上游返回的不是 JSON' }
     }
     cleanup()
     if (payload?.error) return { committed: false, error: payload.error.message || '上游返回 error 字段' }
+    // 响应已经拿到了，只是客户端先走了：token 照样计费、照样记用量，
+    // 但不写已经死掉的 socket，也不把它算成站点的成功样本
+    if (clientGone || clientSignal?.aborted) {
+      return { committed: true, clientAborted: true, usage: payload.usage || null, ttftMs: null }
+    }
     res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', ...headers })
     res.end(JSON.stringify(payload))
     // 真实响应的质量信号（空回答 / 计费虚报），只记录不在这里判定
@@ -2461,6 +2903,12 @@ async function forwardToUpstream({ candidate, body, res, attemptIndex, pool = 'p
   } catch (error) {
     await reader.cancel().catch(() => {})
     cleanup()
+    // 客户端取消（ESC）会让 reader.read() 抛 AbortError，push() 也会抛「客户端已断开」。
+    // 这既不是站方断流也不是网关故障：已写出的部分内容保留，但绝不记成站点失败。
+    if (clientGone || clientSignal?.aborted) {
+      if (!res.writableEnded) res.end()
+      return { committed, usage, ttftMs, clientAborted: true }
+    }
     const reason = idleTimedOut ? `上游流中断（${STREAM_IDLE_MS / 1000} 秒无数据）` : error.message
     if (!committed) return { committed: false, error: `流中断：${reason}` }
     if (!res.writableEnded) res.end()
@@ -2614,6 +3062,9 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
       })
       if (result.committed) {
         const latencyMs = Date.now() - started
+        // 客户端取消（ESC / 关页面）：上游确实被我们 abort 了，但这不是站的失败样本。
+        // 记成 client-aborted —— 既不拉低可用率，也不把「被取消」伪装成成功。
+        const clientAborted = Boolean(result.clientAborted)
         queueRouting({
           model,
           pool,
@@ -2625,7 +3076,7 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
           upstreamModel: candidate.offer.upstreamName,
           chosenGroup: candidate.offer.group || '',
           attempts: index + 1,
-          outcome: result.streamError ? 'stream-broken' : 'ok',
+          outcome: clientAborted ? 'client-aborted' : result.streamError ? 'stream-broken' : 'ok',
           latencyMs,
           ttftMs: result.ttftMs ?? null,
           usage: result.usage || null,
@@ -2648,12 +3099,13 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
             0,
           latencyMs,
           ttftMs: result.ttftMs,
-          ok: !result.streamError,
+          // 被用户取消的请求不记错误：token 已经产生（要计花费），但不是站点失败
+          ok: clientAborted || !result.streamError,
         })
         bufferTraffic(
           candidate.offer.id,
-          !result.streamError,
-          result.streamError,
+          !clientAborted && !result.streamError,
+          clientAborted ? '客户端已断开' : result.streamError,
           // 只有成功响应才谈得上「空回答/计费虚报」；断流已经算失败了
           result.streamError || !result.realCheck
             ? null
@@ -2686,7 +3138,7 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
         return
       }
       // 客户端断开导致的失败不是站的错，不进失败名单、不计流量
-      if (clientAbort.signal.aborted) return
+      if (result.clientAborted || clientAbort.signal.aborted) return
       failures.push({
         providerName: candidate.provider.name,
         offerId: candidate.offer.id,

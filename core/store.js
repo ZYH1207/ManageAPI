@@ -54,6 +54,10 @@ export function emptyDb() {
       // 放行可疑供给：默认 false，探针判定不可信/过期的会被排到后面。
       // 打开后它们按有效成本正常参与竞争——风险由用户自己承担。
       allowUntrusted: false,
+      // 决策侧重（排序偏好）：'price' 名义单价 | 'value' 性价比（有效成本）| 'quality' 质量。
+      // 只改「谁排前面」，不改准入——准入仍由 allowUntrusted 与 maxTtftMs 决定。
+      // 默认 value，等于此前唯一的行为，老库升级后排序结果不变。
+      decisionMode: 'value',
       // 免费池跨栏偏好：同一个模型同时出现在中转站与平台时怎么选。
       //   'platform'  平台优先（更怕假货）
       //   'relay'     中转站优先（更怕断供）
