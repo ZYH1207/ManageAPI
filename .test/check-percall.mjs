@@ -173,12 +173,19 @@ console.log('[6] 站点原价优先：倍率模式不能拿我们的基准价代
   // 错误：2 × 0.1 = 0.20（用基准价，少算 33%）
   const sp = { name: 'm', inPrice: 3, outPrice: 9, cacheReadPrice: 0.1, billingMode: 'token', currency: 'CNY' }
   const offer = { modelKey: 'm', pricingMode: 'ratio', ratio: 0.1, currency: 'CNY' }
-  const via = applySitePricing(offer, { exact: sp, rate: 0.1, sitePrice: sp, hasBench: true })
+  const via = applySitePricing(offer, { exact: sp, rate: 0.1, sitePrice: sp, hasBench: true, currency: 'CNY' })
   ok(via === 'site-base', `有站点原价时落绝对价（${via}）`)
   ok(Math.abs(offer.inPrice - 0.3) < 1e-9, `inPrice = 站点原价 3 × 0.1 = ${offer.inPrice}`)
   ok(Math.abs(offer.outPrice - 0.9) < 1e-9, `outPrice = 9 × 0.1 = ${offer.outPrice}`)
   ok(offer.siteBaseIn === 3, '记下站点原价，供改倍率时重算')
-  ok(offer.currency === 'CNY', '币种跟随站点声明')
+  // 币种是「站点价目表口径」，由调用方传（declaredPriceCurrency(provider)）：
+  // 站点显式声明过才传；没声明就传 null，让 applySitePricing 沿用这条供给原值
+  ok(offer.currency === 'CNY' && offer.currencySource === 'site', '币种跟随站点声明')
+
+  // 没传币种时沿用原值：存量库里人民币标价的站不能被静默翻成美元（反之亦然）
+  const noCur = { modelKey: 'm', pricingMode: 'manual', currency: 'CNY' }
+  applySitePricing(noCur, { exact: null, rate: null, sitePrice: { inPrice: 1, outPrice: 2 }, hasBench: false })
+  ok(noCur.currency === 'CNY', `没传币种时沿用原值（${noCur.currency}）`)
 
   // 站点没给原价时仍走倍率模式（改倍率能一键重算全组）
   const ratioOnly = { modelKey: 'm', pricingMode: 'ratio', ratio: null, currency: 'CNY' }

@@ -7,6 +7,11 @@ import { createAppServer, flushGatewayBuffers } from './server.js'
 import { dataDir } from '../core/store.js'
 import { ensureGatewayKeys } from '../core/inventory.js'
 import { acquireInstanceLock } from './instance-lock.js'
+import * as store from '../core/store.js'
+import * as bench from '../core/benchmark.js'
+import * as fxLib from '../core/fx.js'
+import * as pricing from '../core/pricing.js'
+import { planCurrencyReconcile, applyCurrencyReconcile } from '../core/currency-reconcile.js'
 import { backupKeep, backupNow, backupRoot, startBackupScheduler } from '../core/backup.js'
 import { startProbeScheduler } from './scheduler.js'
 import { runProbes } from './probe-runner.js'
@@ -51,6 +56,24 @@ try {
   if (startupBackup?.path) console.log(`  启动备份 ${startupBackup.path}`)
 } catch (error) {
   console.error('[backup] 启动备份失败：', error)
+}
+
+// 币种自动对齐：站点显式声明 > 「倍率 × 基准价」的数据证据 > 沿用原值。
+// 放在启动备份之后——万一判错，启动快照里还是上一版；放在 ensureGatewayKeys
+// 之前，只读现有数据、不碰空库补键的逻辑。失败不阻塞启动。
+try {
+  const benchmarks = await bench.readBenchmarks()
+  const db = await store.readDb()
+  const fx = Number(fxLib.ensureFx(db.settings || {}).rates.CNY) || pricing.DISPLAY_FX_DEFAULT
+  const plan = planCurrencyReconcile(db, benchmarks, fx)
+  if (plan.offers.length > 0) {
+    const result = await store.mutate((d) => applyCurrencyReconcile(d, plan))
+    console.log(
+      `  币种自动对齐：站点 ${result.providersChanged} 个，供给 ${result.offersChanged} 条改币种、${result.offersRelabeled} 条补标记`,
+    )
+  }
+} catch (error) {
+  console.error('[currency] 币种自动对齐失败：', error)
 }
 
 const gateway = await ensureGatewayKeys()

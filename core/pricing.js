@@ -9,6 +9,8 @@
  */
 
 import { ensureFx } from './fx.js'
+// 币种只有一个真源（currency.js 零 import，不会成环）
+import { normalizeCurrency } from './currency.js'
 
 const UNIT_MULTIPLIER = {
   per_mtok: 1,
@@ -42,7 +44,8 @@ export function resolveOfferPrice(offer, benchmarks = {}) {
       // 峰谷：基准价里有空闲价就一起换算，仅供展示，不参与排序
       offPeakInPrice: scale(base.offPeakIn),
       offPeakOutPrice: scale(base.offPeakOut),
-      currency: base.currency === 'CNY' ? 'CNY' : 'USD',
+      // 倍率口径的币种 = 基准价的币种：价格是由基准价乘出来的，不是站点报价
+      currency: normalizeCurrency(base.currency),
       source: 'ratio',
     }
   }
@@ -51,7 +54,9 @@ export function resolveOfferPrice(offer, benchmarks = {}) {
     outPrice: offer.outPrice === null || offer.outPrice === undefined || offer.outPrice === '' ? null : Number(offer.outPrice),
     offPeakInPrice: null,
     offPeakOutPrice: null,
-    currency: offer.currency === 'CNY' ? 'CNY' : 'USD',
+    // 手填价的币种：落价时由 inventory 按站点价目表写好（core/currency.js），
+    // 这里只做归一化——缺字段/脏值一律当美元
+    currency: normalizeCurrency(offer.currency),
     source: 'manual',
   }
 }

@@ -1257,6 +1257,19 @@ function providersHtml({ withForm = true, panel = '', actions = '' } = {}) {
                 style="flex:1" title="${t('程序真正请求的地址，一般形如 https://站点域名/v1')}" />
             </label>
             <label class="keyrow" style="border:none;gap:8px">
+              <span style="min-width:76px">${t('报价币种')}</span>
+              <select name="priceCurrency" style="width:110px"
+                title="${t('这个站的价目表用什么钱标价。默认「自动」：按「供给价格 ÷ 倍率 = 基准价」的关系反推，反推不出来就不改。只有在自动判错时才需要手选')}">
+                <option value="" ${p.priceCurrencyDeclared ? '' : 'selected'}>${t('自动判定')}</option>
+                <option value="USD" ${p.priceCurrencyDeclared === 'USD' ? 'selected' : ''}>USD $</option>
+                <option value="CNY" ${p.priceCurrencyDeclared === 'CNY' ? 'selected' : ''}>CNY ¥</option>
+              </select>
+              ${p.priceCurrencySource === 'auto' && p.priceCurrency
+                ? `<span class="hint" style="margin:0">${t('已判定')} ${p.priceCurrency === 'CNY' ? 'CNY ¥' : 'USD $'}</span>`
+                : ''}
+              <span class="grow"></span>
+            </label>
+            <label class="keyrow" style="border:none;gap:8px">
               <span style="min-width:76px">${t('备注')}</span>
               <input name="note" value="${esc(p.note || '')}" placeholder="${t('可选')}" style="flex:1" />
             </label>
@@ -4852,7 +4865,6 @@ document.addEventListener('click', async (event) => {
           ratio: null,
           inPrice: 0,
           outPrice: 0,
-          currency: 'CNY',
         })
         state = result
         render()
@@ -5051,7 +5063,7 @@ document.addEventListener('submit', async (event) => {
     return
   }
 
-// 编辑站点信息：名称 / 网站地址 / API 端点 / 备注
+// 编辑站点信息：名称 / 网站地址 / API 端点 / 报价币种 / 备注
 const endpointForm = event.target.closest('[data-form="provider-endpoints"]')
 if (endpointForm) {
   event.preventDefault()
@@ -5067,12 +5079,18 @@ if (endpointForm) {
   if (submitBtn?.disabled) return
   if (submitBtn) submitBtn.disabled = true
   try {
-    state = await api('PATCH', `/api/providers/${providerId}`, {
+    // 币种默认是「自动判定」：只有用户真的把下拉改掉才写，否则每次保存都会把
+    // 数据推断出来的结果顶成手选，之后再也不会自动纠正
+    const before = (state.providers || []).find((p) => p.id === providerId)
+    const wanted = String(data.priceCurrency || '').trim()
+    const patch = {
       name,
       siteUrl: String(data.siteUrl || '').trim(),
       baseUrl: String(data.baseUrl || '').trim(),
       note: String(data.note || '').trim(),
-    })
+    }
+    if (wanted !== (before?.priceCurrencyDeclared || '')) patch.priceCurrency = wanted || null
+    state = await api('PATCH', `/api/providers/${providerId}`, patch)
     render()
     reopenProvPanel(endpointForm, 'settings')
     toast('站点信息已保存')

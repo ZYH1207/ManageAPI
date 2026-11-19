@@ -11,6 +11,9 @@ import { fileURLToPath } from 'node:url'
 import * as store from '../core/store.js'
 import * as fxLib from '../core/fx.js'
 import * as inv from '../core/inventory.js'
+// 币种口径的唯一真源：站点价目表的币种由站点声明，不在这里猜
+import { declaredPriceCurrency, normalizeCurrency } from '../core/currency.js'
+import { planCurrencyReconcile, reconcileCurrencies } from '../core/currency-reconcile.js'
 import * as pricing from '../core/pricing.js'
 import * as bench from '../core/benchmark.js'
 import * as providers from '../core/providers.js'
@@ -213,6 +216,12 @@ function buildProviderViews(db, freeOffers) {
       tokenStatusAt: p.tokenStatusAt ?? null,
       quotaRemaining: typeof p.quotaRemaining === 'number' ? p.quotaRemaining : null,
       currency: p.currency || 'CNY',
+      // 生效中的价目表币种（可能是用户声明，也可能是启动时按数据推断的；见 core/currency-reconcile.js）。
+      // 和钱包币种 currency 是两件事
+      priceCurrency: p.priceCurrency || null,
+      // 只有用户显式设过才有值；null 表示「还没定，靠自动推断」
+      priceCurrencyDeclared: declaredPriceCurrency(p),
+      priceCurrencySource: p.priceCurrencySource || null,
       quotaUpdatedAt: p.quotaUpdatedAt ?? null,
       // 免费池里这个站有哪几个模型（卡片上标「免费 N」）
       freeModels: freeOffers
@@ -1078,7 +1087,7 @@ route('GET', /^\/api\/providers\/([\w-]+)\/groups$/, async (ctx) => {
  * requireHit=true 时匹配不到返回 { unmatched }（apply-group 的语义）；
  * detect-groups 用 false——它没匹配到也要先把分组记下来。
  */
-function applyPricingRow(offer, { match, group, rate, byGroupModel, benchTable, requireHit = true }) {
+function applyPricingRow(offer, { match, group, rate, byGroupModel, benchTable, currency, requireHit = true }) {
   const key = offer.benchmarkKey || offer.modelKey || offer.upstreamName
   const hit = match(offer, group)
   if (!hit && requireHit) return { unmatched: true }
@@ -1087,6 +1096,8 @@ function applyPricingRow(offer, { match, group, rate, byGroupModel, benchTable, 
     rate,
     sitePrice: hit,
     hasBench: Boolean(benchTable[key]),
+    // 站点价目表的币种：由站点声明（core/currency.js），与「钱包币种」分开
+    currency,
   })
   // 必须归一化：站点令牌列表里的分组名常带尾随空格，直接写进去会和
   // syncOffers 里归一化过的去重键永远对不上，每同步一轮多插一整套行
@@ -1143,7 +1154,14 @@ route('POST', /^\/api\/providers\/([\w-]+)\/apply-group$/, async (ctx) => {
       // 落价三分支（免费优先 / 倍率模式 / 广场价×倍率）与 detect-groups 共用
       // applyPricingRow → inv.applySitePricing——exact 只认本分组精确命中，
       // 全站回落价用它判免费会误伤
-      const applied = applyPricingRow(offer, { match, group, rate, byGroupModel, benchTable })
+      const applied = applyPricingRow(offer, {
+        match,
+        group,
+        rate,
+        byGroupModel,
+        benchTable,
+        currency: declaredPriceCurrency(provider),
+      })
       if (applied.unmatched) {
         unmatched.push(offer.upstreamName)
         continue
@@ -1153,6 +1171,8 @@ route('POST', /^\/api\/providers\/([\w-]+)\/apply-group$/, async (ctx) => {
       if (applied.via === 'manual' && !benchTable[applied.key]) missingBench.push(offer.upstreamName)
       updated += 1
     }
+    // 落完价顺手对齐整站币种：这批行刚变成「有倍率 × 基准价」的证据
+    applyCurrencyReconcile(d, planCurrencyReconcile(d, benchTable, fxOfSettings(d)))
   })
 
   return {
@@ -1285,6 +1305,7 @@ route('POST', /^\/api\/providers\/([\w-]+)\/detect-groups$/, async (ctx) => {
           rate: row.rate,
           byGroupModel,
           benchTable,
+          currency: declaredPriceCurrency(provider),
           requireHit: false,
         })
         if (applied.via === 'skip') {
@@ -1295,6 +1316,8 @@ route('POST', /^\/api\/providers\/([\w-]+)\/detect-groups$/, async (ctx) => {
         row.updated += 1
       }
     }
+    // 同 apply-group：识别分组后这批行有了倍率证据，立刻对齐整站币种
+    applyCurrencyReconcile(d, planCurrencyReconcile(d, benchTable, fxOfSettings(d)))
   })
 
   return {
@@ -1570,7 +1593,13 @@ route('PATCH', /^\/api\/offers\/([\w-]+)$/, async (ctx) => {
     if (b.benchmarkKey !== undefined) offer.benchmarkKey = b.benchmarkKey || null
     if (b.inPrice !== undefined) offer.inPrice = nonNegative(b.inPrice, '输入单价')
     if (b.outPrice !== undefined) offer.outPrice = nonNegative(b.outPrice, '输出单价')
-    if (b.currency !== undefined) offer.currency = b.currency === 'CNY' ? 'CNY' : 'USD'
+    // 用户手改币种 = 他告诉我们「这条我填的数字是什么钱」，打上 custom 标记：
+    // 之后自动落价（按站点价目表重写价格与币种）仍然可以覆盖，但「币种体检」
+    // 不会去动它。见 core/currency.js
+    if (b.currency !== undefined) {
+      offer.currency = normalizeCurrency(b.currency)
+      offer.currencySource = 'custom'
+    }
     if (b.priceUnit !== undefined) {
       offer.priceUnit = pricing.PRICE_UNITS.includes(b.priceUnit) ? b.priceUnit : 'per_mtok'
     }
@@ -1600,6 +1629,8 @@ route('PATCH', /^\/api\/offers\/([\w-]+)$/, async (ctx) => {
         offer.inPrice = asRatio.inPrice
         offer.outPrice = asRatio.outPrice
         offer.currency = asRatio.currency
+        // 种进来的价来自基准价表（不是用户手填），币种跟随基准价
+        offer.currencySource = 'site'
         offer.priceUnit = 'per_mtok'
       }
     }
@@ -1611,6 +1642,53 @@ route('PATCH', /^\/api\/offers\/([\w-]+)$/, async (ctx) => {
 route('POST', /^\/api\/offers\/([\w-]+)\/duplicate$/, async (ctx) => {
   await inv.duplicateOffer(ctx.params[0], { group: ctx.body.group })
   return buildState()
+})
+
+// --------------------------------------------------------------- 币种体检
+
+function fxOfSettings(db) {
+  return Number(fxLib.ensureFx(db?.settings || {}).rates.CNY) || pricing.DISPLAY_FX_DEFAULT
+}
+
+/**
+ * 把 reconcile 计划压成接口视图：按站点说清楚「声明了什么 / 数据推断出什么 / 投了几票 / 改了几条」。
+ * 前端没有体检按钮，这里只供 curl、测试和排障用；真正的自动纠正在启动和每次落价之后跑。
+ */
+function currencyReconcileView(plan) {
+  const providers = plan.providers.map((p) => ({
+    providerId: p.providerId,
+    provider: p.provider,
+    declared: p.declared,
+    inferred: p.inferred,
+    next: p.next,
+    votes: p.votes,
+    total: p.total,
+    changed: p.offers.filter((o) => o.relabel ? false : o.from !== o.to).length,
+    relabeled: p.offers.filter((o) => o.relabel).length,
+    notes: p.notes,
+  }))
+  const rows = plan.providers.flatMap((p) =>
+    p.offers
+      .filter((o) => o.from !== o.to)
+      .map((o) => ({ ...o, providerId: p.providerId, provider: p.provider })),
+  )
+  return {
+    changed: providers.filter((p) => p.changed > 0).length,
+    changedOffers: plan.changedOffers,
+    providers,
+    // 行数可能上百，预览只回前 200 条
+    rows: rows.slice(0, 200),
+  }
+}
+
+route('POST', /^\/api\/currency\/recheck$/, async (ctx) => {
+  const apply = Boolean(ctx.body?.apply)
+  const db = await store.readDb()
+  const benchmarks = await bench.readBenchmarks()
+  const fx = fxOfSettings(db)
+  if (!apply) return { applied: false, ...currencyReconcileView(planCurrencyReconcile(db, benchmarks, fx)) }
+  const { plan, result } = await store.mutate((d) => reconcileCurrencies(d, benchmarks, fx))
+  return { applied: true, ...currencyReconcileView(plan), ...result }
 })
 
 // -------------------------------------------------------------- 免费池 · 配额
@@ -1916,7 +1994,9 @@ route('POST', /^\/api\/benchmarks\/import-plaza$/, async (ctx) => {
         out: model.outPrice,
         offPeakIn: null,
         offPeakOut: null,
-        currency: 'CNY',
+        // 基准价表照抄该站的价目表口径（默认美元）——标错币种会让所有
+        // 倍率模式的供给跟着差一个汇率
+        currency: declaredPriceCurrency(provider),
         source: `${pricing.source}:${provider.id}`,
         updatedAt: new Date().toISOString(),
       }

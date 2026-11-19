@@ -8,6 +8,8 @@ Thumbs.db
 .test-data/
 .smoke/
 .test/tmp/
+# 临时脚本与临时数据目录：tmp-xxx.mjs / tmp-xxx/ 都不进库
+.test/tmp-*
 
 # 编辑器
 .vscode/
@@ -16,6 +18,8 @@ Thumbs.db
 # 工具缓存（不属于项目内容）
 .workbuddy-ai/
 .research/
+# agent 的本地记忆/会话产物，不进库
+.workbuddy/
 
 # 本机真实数据的临时备份，别误提交
 db.json

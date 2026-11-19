@@ -15,6 +15,7 @@ import { readFile, mkdir } from 'node:fs/promises'
 import { dataDir } from './store.js'
 import { writeJsonAtomic } from './fsx.js'
 import { resolveReference } from './model-prices.js'
+import { normalizeCurrency } from './currency.js'
 
 function filePath() {
   return join(dataDir(), 'benchmark.json')
@@ -80,7 +81,7 @@ export function setBenchmark(modelKey, entry) {
       // 峰谷：留空表示该模型没有分时段定价
       offPeakIn: num(entry.offPeakIn),
       offPeakOut: num(entry.offPeakOut),
-      currency: entry.currency === 'CNY' ? 'CNY' : 'USD',
+      currency: normalizeCurrency(entry.currency),
       source: entry.source || 'manual',
       updatedAt: new Date().toISOString(),
     }
@@ -148,7 +149,9 @@ export function importBenchmarksFrom(offers, providerId) {
         display: offer.upstreamName,
         in: offer.inPrice === null ? null : Number(offer.inPrice),
         out: offer.outPrice === null ? null : Number(offer.outPrice),
-        currency: offer.currency === 'CNY' ? 'CNY' : 'USD',
+        // 站点的实际价是「站点价目表口径」的钱（offer.currency 由落价时写好），
+        // 基准价表照抄这个口径，倍率算出来的价才不会差一个汇率
+        currency: normalizeCurrency(offer.currency),
         source: `imported:${providerId}`,
         updatedAt: new Date().toISOString(),
       }

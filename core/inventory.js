@@ -8,6 +8,11 @@ import { readDb, mutate, encryptSecret, decryptSecret } from './store.js'
 import { normalizeQuota, resetIfDue, consumeQuota } from './quota.js'
 // 登录态编排：凭据解密后调 providers 的登录协议（providers 不回头 import 本文件，无循环）
 import * as providers from './providers.js'
+// 币种口径的唯一真源（currency.js 零 import，不会成环）
+import { declaredPriceCurrency, normalizeCurrency } from './currency.js'
+
+// 站点价目表的币种：落价时由调用方透传，读的时候也从这里取，写读同一个函数
+export { declaredPriceCurrency, currencyOf, inferSiteCurrency } from './currency.js'
 
 export function newId(prefix) {
   return `${prefix}_${randomUUID().slice(0, 8)}`
@@ -188,6 +193,14 @@ export async function updateProvider(id, patch) {
       provider.quotaUpdatedAt = nowIso()
     }
     if (patch.currency !== undefined) provider.currency = patch.currency
+    // 站点价目表的币种：和「钱包币种」是两件事（见 core/currency.js）。
+    // 改它不会动已有供给的价格，只决定之后自动落价写什么币种
+    if (patch.priceCurrency !== undefined) {
+      const empty = patch.priceCurrency === null || patch.priceCurrency === ''
+      provider.priceCurrency = empty ? null : normalizeCurrency(patch.priceCurrency)
+      // 用户显式设过 = 他比数据更清楚，自动推断不再覆盖（见 core/currency-reconcile.js）
+      provider.priceCurrencySource = empty ? null : 'custom'
+    }
     if (patch.sortOrder !== undefined) {
       const n = Number(patch.sortOrder)
       if (!Number.isFinite(n)) throw new Error('排序号必须是数字')
@@ -389,7 +402,10 @@ export function routeableOffers(db, { ignoreModels = true } = {}) {
  */
 export async function syncOffers(providerId, credentialId, models, group = '') {
   return mutate((db) => {
-    if (!db.providers.some((p) => p.id === providerId)) throw new Error(`站点不存在：${providerId}`)
+    const provider = db.providers.find((p) => p.id === providerId)
+    if (!provider) throw new Error(`站点不存在：${providerId}`)
+    // 新供给的币种跟随站点价目表（默认美元），别在这里写死——写死一处就多一个口径
+    const siteCurrency = declaredPriceCurrency(provider) || normalizeCurrency(provider.currency)
     const g = normalizeGroup(group)
     // 按「分组 + 模型名」去重：同一个站的不同分组可以有同名模型。
     // 两侧都走 normalizeGroup——老数据的分组名可能带尾随空格，
@@ -433,7 +449,10 @@ export async function syncOffers(providerId, credentialId, models, group = '') {
         ratioSource: null,
         pricingMode: 'manual',
         benchmarkKey: null,
-        currency: 'USD',
+        currency: siteCurrency,
+        // 币种来源：'site' = 跟站点价目表（自动落价可以覆盖）；
+        // 'custom' = 用户手填（自动落价不碰）。见 core/currency.js
+        currencySource: 'site',
         priceUnit: 'per_mtok',
         listedAt: nowIso(),
         updatedAt: nowIso(),
@@ -679,9 +698,16 @@ export async function recordProbe(record) {
  * 只改价格字段，不碰 offer.group——分组归属是调用方的语义（一边按用户选择、
  * 一边按后台识别）。返回落价方式：'free' | 'percall' | 'ratio' | 'manual' | 'skip'
  * （skip = 信息不足，调用方只记分组、价格留给用户填）。
+ *
+ * currency：站点价目表的币种（调用方用 declaredPriceCurrency(provider) 取，没有就传 null 让本函数沿用这条供给原来的币种）。落价同时
+ * 把币种写对——广场/channels 不带币种字段，以前这里猜 'CNY'，美元标价站的价
+ * 会被当成人民币，`offerCost` 再除一次汇率，比价直接便宜 6.68 倍。
  */
-export function applySitePricing(offer, { exact, rate, sitePrice, hasBench }) {
+export function applySitePricing(offer, { exact, rate, sitePrice, hasBench, currency }) {
   const siteRatio = typeof rate === 'number' ? rate : null
+  // 调用方没给（站点还没声明也没推断出来）就沿用这条供给自己的币种：
+  // 存量数据里币种本来就是对的，不能被一个默认值静默翻转
+  const siteCurrency = currency ? normalizeCurrency(currency) : normalizeCurrency(offer.currency)
 
   // 缓存读价跟着同一次落价一起写：命中缓存的部分按它计费（通常只有输入价的 1/10），
   // 不写的话花费只能按输入全价算，缓存占比高的用户会被高估好几倍
@@ -707,7 +733,8 @@ export function applySitePricing(offer, { exact, rate, sitePrice, hasBench }) {
     offer.priceUnit = 'per_call'
     offer.inPrice = Math.round(call * 1000) / 1000
     offer.outPrice = null
-    offer.currency = 'CNY'
+    offer.currency = siteCurrency
+    offer.currencySource = 'site'
     offer.pricingMode = 'manual'
     offer.ratio = null
     offer.siteRatio = siteRatio
@@ -723,7 +750,8 @@ export function applySitePricing(offer, { exact, rate, sitePrice, hasBench }) {
     offer.ratio = null
     offer.inPrice = 0
     offer.outPrice = 0
-    offer.currency = 'CNY'
+    offer.currency = siteCurrency
+    offer.currencySource = 'site'
     offer.siteRatio = siteRatio
     offer.ratioSource = 'site'
     return 'free'
@@ -758,7 +786,8 @@ export function applySitePricing(offer, { exact, rate, sitePrice, hasBench }) {
       // 记下站点原价，供倍率变化时重算（见 setGroupRatio）
       offer.siteBaseIn = Number(sitePrice.inPrice)
       offer.siteBaseOut = Number(sitePrice.outPrice)
-      offer.currency = sitePrice.currency === 'USD' ? 'USD' : 'CNY'
+      offer.currency = siteCurrency
+      offer.currencySource = 'site'
       if (sitePrice.cacheReadPrice != null) {
         offer.cacheReadPrice = Math.round(Number(sitePrice.cacheReadPrice) * mult * 1000) / 1000
       }
@@ -784,8 +813,10 @@ export function applySitePricing(offer, { exact, rate, sitePrice, hasBench }) {
     if (sitePrice.outPrice !== null && sitePrice.outPrice !== undefined) {
       offer.outPrice = Math.round(sitePrice.outPrice * mult * 1000) / 1000
     }
-    // 用站点声明的币种，不再写死 CNY：广场/channels 的报价币种可能不同
-    offer.currency = sitePrice.currency === 'USD' ? 'USD' : 'CNY'
+    // 币种取站点价目表的口径（见 core/currency.js），不再写死 CNY、也不再靠
+    // sitePrice.currency 这个「广场层猜的字段」——广场接口根本不给币种
+    offer.currency = siteCurrency
+    offer.currencySource = 'site'
     offer.pricingMode = 'manual'
     offer.ratio = null
     offer.siteRatio = siteRatio
