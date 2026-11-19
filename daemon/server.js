@@ -398,6 +398,14 @@ async function buildState({ light = false, panel = false } = {}) {
 
   const { ranked, unpriced } = pricing.rankByModel(paidOffers, db.settings, benchmarks, isTrusted)
   const summary = pricing.summarize(paidOffers, db.settings, benchmarks, isTrusted)
+  // 概览卡的「站点」要能和下面的站点速览对上：速览列全部站点，
+  // 而 providerCount 只数「有在售付费供给」的站，所以两个数都下发。
+  summary.providerTotal = db.providers.length
+  // 被忽略名单藏掉的供给条数：概览写明「另有 N 条在忽略名单里」，
+  // 否则用户看到库里一百多条、卡片只有十几条会以为数据丢了。
+  summary.ignoredOfferCount = panelIgnored
+    ? 0
+    : Math.max(0, freePoolSource.length - liveOffers.length)
 
   const usage = await usageSummary({ days: 30 })
   // 关注度：有真实用量 > 调过手动顺序 > 探过。headline 优先推你真正在用的模型

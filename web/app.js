@@ -487,25 +487,54 @@ function icon(name, cls = '') {
 
 function statsHtml() {
   const s = state.summary
+  // 第 6 项是卡片底部的一行小字：卡片本身只放一个数，但「站点 17 / 在售 11」
+  // 「16 条里 4 条没定价」这类口径差必须就地说明，否则看起来就是数据不对。
   const items = [
-    ['站点', s.providerCount, '', 'servers', 'tint-muted'],
-    ['模型供给', s.offerCount, '条', 'layers', 'tint-accent'],
-    ['可横向比较', s.comparableCount, '个模型', 'columns', 'tint-muted'],
     [
-      '最大价差',
+      t('站点'),
+      s.providerTotal ?? s.providerCount,
+      t('个'),
+      'servers',
+      'tint-muted',
+      t('在售 {n}', { n: s.providerCount }),
+    ],
+    [
+      t('模型供给'),
+      s.offerCount,
+      t('条'),
+      'layers',
+      'tint-accent',
+      s.offerCount > s.pricedCount
+        ? t('已定价 {n} · 待定价 {m}', { n: s.pricedCount, m: s.offerCount - s.pricedCount })
+        : t('全部已定价'),
+    ],
+    [
+      t('可横向比较'),
+      s.comparableCount,
+      t('个模型'),
+      'columns',
+      'tint-muted',
+      t('共 {n} 个模型', { n: s.modelCount }),
+    ],
+    [
+      t('比最贵省'),
       s.maxSpreadPct === null ? '—' : s.maxSpreadPct,
       s.maxSpreadPct === null ? '' : '%',
       'trend',
       'tint-warn',
+      s.maxSpreadRatio === null || s.maxSpreadRatio === undefined
+        ? ''
+        : t('最贵 ÷ 最便宜 {x}×', { x: s.maxSpreadRatio }),
     ],
   ]
   return `<div class="stats">${items
     .map(
-      ([k, v, unit, ic, tint]) => `
+      ([k, v, unit, ic, tint, sub]) => `
     <div class="stat">
       <div class="stat-main">
         <div class="k">${k}</div>
         <div class="v">${esc(v)}${unit ? `<small>${unit}</small>` : ''}</div>
+        ${sub ? `<div class="sub">${esc(sub)}</div>` : ''}
       </div>
       <div class="stat-icon ${tint}">${icon(ic)}</div>
     </div>`,
@@ -516,6 +545,8 @@ function statsHtml() {
 // 概览「需要关注」默认只露前几条：站多了以后一屏全是红点，反而看不到下面的速览
 const OVERVIEW_ISSUE_PREVIEW = 4
 let overviewIssuesOpen = false
+// setTab 会用 TAB_META 的默认副标题覆盖，所以概览自己算出来的口径串要留一份，切页后再贴回去
+let overviewSub = ''
 
 function renderOverview() {
   const view = $('#view-overview')
@@ -523,7 +554,8 @@ function renderOverview() {
   const providers = state.providers
 
   if (providers.length === 0) {
-    setPageSubFor('overview', '还没有数据')
+    overviewSub = '还没有数据'
+    setPageSubFor('overview', overviewSub)
     view.innerHTML = `
       <div class="empty">
         <h3>从添加一个中转站开始</h3>
@@ -627,10 +659,11 @@ function renderOverview() {
       </tr>`
   }).join('')
 
-  setPageSubFor(
-    'overview',
-    `${state.summary.providerCount} 个站点 · ${state.summary.offerCount} 条模型供给 · ${state.probeTotal} 次探测`,
-  )
+  const summaryIgnored = state.summary.ignoredOfferCount || 0
+  overviewSub = `${state.summary.providerTotal ?? state.summary.providerCount} 个站点（在售 ${state.summary.providerCount}） · ${state.summary.offerCount} 条模型供给${
+    summaryIgnored > 0 ? `（另有 ${summaryIgnored} 条在忽略名单里）` : ''
+  } · ${state.probeTotal} 次探测`
+  setPageSubFor('overview', overviewSub)
 
   view.innerHTML = `
     ${headlineHtml()}
@@ -4003,6 +4036,8 @@ function setTab(name) {
   const titleEl = $('#page-title')
   if (titleEl) titleEl.textContent = meta.title
   setPageSub(meta.sub)
+  // 概览页的副标题是算出来的（站点数/供给数/探测次数），不能被 TAB_META 的默认文案盖掉
+  if (name === 'overview' && overviewSub) setPageSub(overviewSub)
   translateDom($('.topbar-left') || document.body)
   const nextHash = name === 'free' ? `#free/${freePane}` : `#${name}`
   if (location.hash !== nextHash) history.replaceState(null, '', nextHash)

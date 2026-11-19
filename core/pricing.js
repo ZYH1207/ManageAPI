@@ -295,17 +295,20 @@ export function rankByModel(offers, settings = {}, benchmarks = {}, isTrusted = 
 export function summarize(offers, settings = {}, benchmarks = {}, isTrusted = () => true) {
   const { ranked, unpriced } = rankByModel(offers, settings, benchmarks, isTrusted)
 
-  const spreads = ranked
-    .map((group) => {
-      const rows = group.rows.filter((row) => isTrusted(row.offerId))
-      if (rows.length < 2) return null
-      const cheapest = rows[0].blendedUsdPerMtok
-      const priciest = rows[rows.length - 1].blendedUsdPerMtok
-      // cheapest=0 合法（同 rankByModel 的处理）；priciest=0 时除零无意义
-      if (cheapest === null || priciest === null || priciest <= 0) return null
-      return Math.round(((priciest - cheapest) / priciest) * 100)
-    })
-    .filter((value) => typeof value === 'number')
+  const spreads = []
+  // 倍数口径：最贵 ÷ 最便宜。和「省百分之多少」是两回事——
+  // 省 63% 的价差其实是 2.7 倍，卡片只写百分比会被读成「只贵 63%」。
+  const ratios = []
+  for (const group of ranked) {
+    const rows = group.rows.filter((row) => isTrusted(row.offerId))
+    if (rows.length < 2) continue
+    const cheapest = rows[0].blendedUsdPerMtok
+    const priciest = rows[rows.length - 1].blendedUsdPerMtok
+    // cheapest=0 合法（同 rankByModel 的处理）；priciest=0 时除零无意义
+    if (cheapest === null || priciest === null || priciest <= 0) continue
+    spreads.push(Math.round(((priciest - cheapest) / priciest) * 100))
+    if (cheapest > 0) ratios.push(priciest / cheapest)
+  }
 
   const comparable = ranked.filter((group) => group.providerCount > 1)
   return {
@@ -316,6 +319,7 @@ export function summarize(offers, settings = {}, benchmarks = {}, isTrusted = ()
     providerCount: new Set(offers.map((o) => o.providerId)).size,
     avgSpreadPct: spreads.length ? Math.round(spreads.reduce((a, b) => a + b, 0) / spreads.length) : null,
     maxSpreadPct: spreads.length ? Math.max(...spreads) : null,
+    maxSpreadRatio: ratios.length ? Math.round(Math.max(...ratios) * 10) / 10 : null,
   }
 }
 
