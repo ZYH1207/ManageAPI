@@ -3367,7 +3367,16 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
           // 只有成功响应才谈得上「空回答/计费虚报」；断流已经算失败了
           result.streamError || !result.realCheck
             ? null
-            : checkRealResponse({ ...result.realCheck, requestTokens }),
+            : checkRealResponse({
+                ...result.realCheck,
+                requestTokens,
+                // 缓存命中要扣掉再判「多算钱」：上报值含缓存部分，不扣会把长上下文
+                // 高命中的站全判成虚报
+                cachedTokens:
+                  Number(result.usage?.prompt_tokens_details?.cached_tokens) ||
+                  Number(result.usage?.prompt_cache_hit_tokens) ||
+                  0,
+              }),
         )
         // 计费核对样本：本地估算的请求 token vs 上游上报的 prompt_tokens。
         // 这是唯一不依赖站点自报数字的独立证据，虚报时两者会明显背离。

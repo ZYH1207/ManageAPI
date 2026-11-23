@@ -23,6 +23,16 @@ export const BILLING_TOLERANCE_RATIO = 4
 /** 低于这个绝对值不判虚报（短请求的估算误差太大） */
 export const BILLING_MIN_TOKENS = 800
 
+/**
+ * 缓存命中率超过这个值才算可疑。
+ * 取 0.999 而不是 0.98：长系统提示被缓存时 98%~99.7% 的命中是正常的
+ * （RapidApi 实测 99.76%），只有「几乎全部命中」才像在拿缓存洗白计费。
+ */
+export const CACHE_SUSPECT_RATIO = 0.999
+
+/** 低于这个 prompt 长度时，全命中有可能是正常的短请求，不算可疑 */
+export const CACHE_SUSPECT_MIN_PROMPT = 5000
+
 const CJK = /[\u3000-\u9fff\uff00-\uffef]/
 
 /**
@@ -56,8 +66,21 @@ export function estimateRequestTokens(body) {
 }
 
 /**
- * @param {{contentChars:number, hasToolCalls:boolean, finishReason:string|null, promptTokens:number|null, requestTokens:number}} input
- * @returns {{empty: boolean, billingInflated: boolean, bad: boolean}}
+ * 一次真实响应的客观异常。
+ *
+ * 计费异常分两个判据，用途完全不同（以前只有一个，把「长上下文 + 高缓存命中」
+ * 误判成虚报，把 RapidApi 这类站按 450 倍上报的固定开销也混在一起）：
+ *
+ * - `billingInflated`：上报的 prompt_tokens 远超本地估算。**只做展示**，
+ *   因为 prompt 里含缓存部分，命中 99% 时 raw 值必然远超估算，但那段按缓存价
+ *   收费，不是多算钱。它真正说明的是「这个站有 N token 的固定开销」。
+ * - `billedInputInflated`：把缓存命中扣掉之后仍然离谱，才是真的多算钱。
+ *   这一项才进完整性扣分。
+ *
+ * @param {{contentChars:number, hasToolCalls:boolean, finishReason:string|null,
+ *   promptTokens:number|null, requestTokens:number, cachedTokens:number|null}} input
+ * @returns {{empty:boolean, billingInflated:boolean, billedInputInflated:boolean,
+ *   cacheSuspect:boolean, bad:boolean}}
  */
 export function checkRealResponse({
   contentChars = 0,
@@ -65,13 +88,33 @@ export function checkRealResponse({
   finishReason = null,
   promptTokens = null,
   requestTokens = 0,
+  cachedTokens = null,
 } = {}) {
   // 空回答：正常结束却一个字都没有。有工具调用或只有 reasoning 的响应不算
   const empty = contentChars === 0 && !hasToolCalls && (finishReason === null || finishReason === 'stop')
+  const hasPrompt = typeof promptTokens === 'number' && Number.isFinite(promptTokens)
+  const cached = typeof cachedTokens === 'number' && Number.isFinite(cachedTokens) ? cachedTokens : 0
   const inflated =
-    typeof promptTokens === 'number' &&
+    hasPrompt &&
     promptTokens > BILLING_MIN_TOKENS &&
     requestTokens > 0 &&
     promptTokens > requestTokens * BILLING_TOLERANCE_RATIO
-  return { empty, billingInflated: inflated, bad: empty || inflated }
+  const billedInput = hasPrompt ? Math.max(0, promptTokens - cached) : null
+  const billedInputInflated =
+    billedInput !== null &&
+    billedInput > BILLING_MIN_TOKENS &&
+    requestTokens > 0 &&
+    billedInput > requestTokens * BILLING_TOLERANCE_RATIO
+  // 缓存数据本身不可信：命中比 prompt 还多，或者几乎全命中（谎报缓存能洗白计费）
+  const cacheSuspect =
+    hasPrompt &&
+    cached > 0 &&
+    (cached > promptTokens || (promptTokens > CACHE_SUSPECT_MIN_PROMPT && cached / promptTokens > CACHE_SUSPECT_RATIO))
+  return {
+    empty,
+    billingInflated: inflated,
+    billedInputInflated,
+    cacheSuspect,
+    bad: empty || billedInputInflated,
+  }
 }

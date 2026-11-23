@@ -9,7 +9,12 @@
  * 全部用流式请求，顺带拿到 TTFT（首 token 延迟）——这是体验里最敏感的一项。
  */
 
-import { estimateTokens } from './quality-signals.js'
+import {
+  estimateTokens,
+  BILLING_MIN_TOKENS,
+  CACHE_SUSPECT_RATIO,
+  CACHE_SUSPECT_MIN_PROMPT,
+} from './quality-signals.js'
 
 const FINGERPRINT_PROMPT =
   'Reply with exactly this JSON and nothing else, no markdown code fence, no explanation:\n' +
@@ -194,9 +199,13 @@ export async function probeModel({ baseUrl, apiKey, model, timeoutMs = 45000 }) 
     truncated: null,
     truncationDetail: null,
     billingInflated: null,
+    billedInputInflated: null,
+    fixedOverheadTokens: null,
     cacheSupported: null,
     cacheHitRate: null,
     cacheDetail: null,
+    cachedTokens: null,
+    cacheSuspect: null,
     identityClaim: null,
     promptTokens: null,
     requestTokens: null,
@@ -275,8 +284,25 @@ export async function probeModel({ baseUrl, apiKey, model, timeoutMs = 45000 }) 
     result.cacheSupported = cache.supported
     result.cacheHitRate = cache.hitRate
     result.cacheDetail = cache.detail
+    result.cachedTokens = typeof cache.cachedTokens === 'number' ? cache.cachedTokens : null
   } catch (error) {
     result.cacheDetail = `缓存检测失败：${error?.message || error}`
+  }
+
+  // ---- 计费判据分家（必须放在缓存之后：要扣掉缓存命中再比）
+  // billingInflated 只说明「这个站有固定开销」；billedInputInflated 才是真的多算钱。
+  // 站点上报的 prompt_tokens 含缓存部分，命中 99% 时 raw 值必然远超估算，
+  // 但那段按缓存价收，拿 raw 值判虚报会全是假阳性（RapidApi 就是这样被冤枉的）。
+  if (typeof promptTokens === 'number') {
+    const cached = typeof result.cachedTokens === 'number' ? result.cachedTokens : 0
+    result.fixedOverheadTokens = promptTokens - BILLING_EXPECTED_PROMPT_TOKENS
+    const billedInput = Math.max(0, promptTokens - cached)
+    result.billedInputInflated =
+      billedInput > BILLING_MIN_TOKENS && billedInput > BILLING_EXPECTED_PROMPT_TOKENS * BILLING_TOLERANCE
+    result.cacheSuspect =
+      cached > 0 &&
+      (cached > promptTokens ||
+        (promptTokens > CACHE_SUSPECT_MIN_PROMPT && cached / promptTokens > CACHE_SUSPECT_RATIO))
   }
 
   // ---- 身份自述：只记录，不参与评分（模型自述经常不准）

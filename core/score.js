@@ -107,10 +107,13 @@ export function scoreOffers(probes, traffic = {}, options = {}) {
     const has = (r, key) => r[key] !== null && r[key] !== undefined
     const fpChecks = recent.filter((r) => has(r, 'fingerprintOk'))
     const trChecks = recent.filter((r) => has(r, 'truncated'))
-    const blChecks = recent.filter((r) => has(r, 'billingInflated'))
+    // 计费判据分家后优先用「扣掉缓存后的输入」：老探针记录只有 billingInflated，
+    // 那时它等价于「没命中缓存时的 billedInputInflated」，语义兼容
+    const blKey = recent.some((r) => has(r, 'billedInputInflated')) ? 'billedInputInflated' : 'billingInflated'
+    const blChecks = recent.filter((r) => has(r, blKey))
     const fpPass = fpChecks.filter((r) => r.fingerprintOk).length
     const trPass = trChecks.filter((r) => r.truncated === false).length
-    const blPass = blChecks.filter((r) => r.billingInflated === false).length
+    const blPass = blChecks.filter((r) => r[blKey] === false).length
 
     // 平滑通过率：等价于「先记一次通过」，样本越少越接近 1，样本多了才收敛到真实值。
     // 这样一次探针异常只会让质量轻微下降（~5~15%），而不是把质量砸到 0.5 让成本翻倍——
@@ -137,7 +140,8 @@ export function scoreOffers(probes, traffic = {}, options = {}) {
     const integrityFaults = []
     if (fpChecks.length > 0 && fpPass < fpChecks.length) integrityFaults.push('指纹不符')
     if (trChecks.length >= 2 && trPass / trChecks.length < THRESHOLDS.integrity) integrityFaults.push('输出截断')
-    if (blChecks.length >= 2 && blPass / blChecks.length < THRESHOLDS.integrity) integrityFaults.push('用量虚报')
+    // 扣掉缓存后仍然离谱才算「计费异常」——raw prompt_tokens 大只是固定开销
+    if (blChecks.length >= 2 && blPass / blChecks.length < THRESHOLDS.integrity) integrityFaults.push('计费异常')
 
     // 可用率合并探针与真实流量：探针样本少，真实请求更能反映实际状况。
     // 流量只认窗口内的（1 小时），过期的失败不能一直压着站点。
@@ -297,6 +301,8 @@ export function scoreOffers(probes, traffic = {}, options = {}) {
       integrityFaults,
       quality,
       cacheHitRate,
+      // 展示用：这个站每次请求白付多少固定 token（多半是系统提示，按缓存价收）
+      overheadTokens: median(recent.map((r) => r.fixedOverheadTokens)),
       ttftMs: median(recent.map((r) => r.ttftMs)),
       latencyMs: median(recent.map((r) => r.latencyMs)),
       lastProbeAt,
@@ -317,6 +323,10 @@ export function scoreOffers(probes, traffic = {}, options = {}) {
             truncated: last.truncated ?? null,
             truncationDetail: last.truncationDetail ?? null,
             billingInflated: last.billingInflated ?? null,
+            billedInputInflated: last.billedInputInflated ?? null,
+            fixedOverheadTokens: last.fixedOverheadTokens ?? null,
+            cacheSuspect: last.cacheSuspect ?? null,
+            cachedTokens: last.cachedTokens ?? null,
             promptTokens: last.promptTokens ?? null,
             cacheHitRate: last.cacheHitRate ?? null,
             cacheDetail: last.cacheDetail ?? null,
@@ -390,8 +400,8 @@ export function longTermScores(
   const qualityOf = (r) => {
     const fp = r.fingerprintOk === null || r.fingerprintOk === undefined ? null : r.fingerprintOk ? 1 : 0
     const tr = r.truncated === null || r.truncated === undefined ? null : r.truncated ? 0 : 1
-    const bl =
-      r.billingInflated === null || r.billingInflated === undefined ? null : r.billingInflated ? 0 : 1
+    const blRaw = r.billedInputInflated ?? r.billingInflated
+    const bl = blRaw === null || blRaw === undefined ? null : blRaw ? 0 : 1
     const parts = [
       { v: fp, w: 0.5 },
       { v: tr, w: 0.3 },

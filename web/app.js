@@ -580,7 +580,7 @@ function renderOverview() {
     if (score.availability !== null && score.availability < 0.8) entry.reasons.add('可用率低')
     if (score.fingerprintRate !== null && score.fingerprintRate < 1) entry.reasons.add('指纹不符')
     if (score.truncationRate !== null && score.truncationRate < 1) entry.reasons.add('输出截断')
-    if (score.billingRate !== null && score.billingRate < 1) entry.reasons.add('用量虚报')
+    if (score.billingRate !== null && score.billingRate < 1) entry.reasons.add('计费异常')
     issueMap.set(provider.id, entry)
   }
   const issues = [...issueMap.values()]
@@ -2556,7 +2556,12 @@ function probeDetailHtml(score) {
   const reasons = []
   if (p.fingerprintOk === false) reasons.push('指纹不符：要求精确输出固定内容，返回的不是——模型可能被掉包')
   if (p.truncated === true) reasons.push('输出被截断：要求数到 120 没数完，上游压低了 max_tokens')
-  if (p.billingInflated === true) reasons.push('用量虚报：返回的 prompt_tokens 远超实际请求规模')
+  if (p.billedInputInflated === true) reasons.push('计费异常：扣掉缓存命中后，上报的输入 token 仍远超实际请求规模')
+  else if (p.billingInflated === true && p.fixedOverheadTokens > 0)
+    reasons.push(
+      `固定开销约 ${Math.round(p.fixedOverheadTokens)} token：上报值含缓存部分，这段按缓存价计费，不算多收钱`,
+    )
+  if (p.cacheSuspect === true) reasons.push('缓存数据可疑：命中量超过 prompt，或几乎全命中——可能被用来掩盖计费')
   if (score.availability !== null && score.availability < 0.8) reasons.push(`可用率过低（${pctv(score.availability)}）`)
   if (score.stale) reasons.push('评分已过期：超过有效期没重新探测')
 
@@ -5222,7 +5227,9 @@ document.addEventListener('click', async (event) => {
       const issues = []
       if (probe.fingerprintOk === false) issues.push('指纹异常')
       if (probe.truncated === true) issues.push('输出被截断')
-      if (probe.billingInflated === true) issues.push('用量虚报')
+      if (probe.billedInputInflated === true) issues.push('计费异常')
+      else if (probe.billingInflated === true && probe.fixedOverheadTokens > 0)
+        issues.push(`固定开销 ${Math.round(probe.fixedOverheadTokens)} token（按缓存价计费）`)
       toast(issues.length ? `探测完成：${issues.join('、')}` : '探测完成：一切正常', issues.length > 0)
     })
     return
