@@ -90,6 +90,9 @@ export function selectCandidates({
     const price = cost.blendedCnyPerMtokExpected ?? cost.blendedCnyPerMtok
     const priceLegacy = cost.blendedCnyPerMtok
     const ttftMs = score?.ttftMs ?? null
+    // 首字相对值（同轮「比最快的那条慢多少毫秒」）：绝对值含本机链路，
+    // 打平链优先用它，两条都有相对值时才比相对值，否则回落到绝对值
+    const ttftRelMs = score?.ttftRelMs ?? null
     // 太慢的直接排除，但仍保留在候选列表里——决策日志要能看出「为什么没选它」
     const tooSlow = maxTtftMs > 0 && typeof ttftMs === 'number' && ttftMs > maxTtftMs
 
@@ -153,6 +156,7 @@ export function selectCandidates({
       blocked: score?.blocked || null,
       statusReason: reasons.join(' · ') || null,
       ttftMs,
+      ttftRelMs,
     }
   })
 
@@ -197,8 +201,18 @@ export function selectCandidates({
       const ha = typeof a.cacheHitRate === 'number' ? a.cacheHitRate : -1
       const hb = typeof b.cacheHitRate === 'number' ? b.cacheHitRate : -1
       if (ha !== hb) return hb - ha
-      const ta = typeof a.ttftMs === 'number' ? a.ttftMs : INFINITY_COST
-      const tb = typeof b.ttftMs === 'number' ? b.ttftMs : INFINITY_COST
+      // 首字优先比相对值（同轮「比最快的慢多少」），这样本机带宽抖动不会影响次序
+      const useRel = typeof a.ttftRelMs === 'number' && typeof b.ttftRelMs === 'number'
+      const ta = useRel
+        ? a.ttftRelMs
+        : typeof a.ttftMs === 'number'
+          ? a.ttftMs
+          : INFINITY_COST
+      const tb = useRel
+        ? b.ttftRelMs
+        : typeof b.ttftMs === 'number'
+          ? b.ttftMs
+          : INFINITY_COST
       if (ta !== tb) return ta - tb
       return (a.price ?? INFINITY_COST) - (b.price ?? INFINITY_COST)
     })
@@ -273,10 +287,24 @@ export function orderReasonBetween(
     const fmt = (v) => (v < 0 ? '未测' : `${Math.round(v * 100)}%`)
     return { code: 'tie-hit', text: `排序键相同，缓存命中率 ${fmt(hc)} 低于上一条的 ${fmt(hp)}` }
   }
-  const tp = typeof prev.ttftMs === 'number' ? prev.ttftMs : INFINITY_COST
-  const tc = typeof cur.ttftMs === 'number' ? cur.ttftMs : INFINITY_COST
+  const useRel = typeof prev.ttftRelMs === 'number' && typeof cur.ttftRelMs === 'number'
+  const tp = useRel
+    ? prev.ttftRelMs
+    : typeof prev.ttftMs === 'number'
+      ? prev.ttftMs
+      : INFINITY_COST
+  const tc = useRel
+    ? cur.ttftRelMs
+    : typeof cur.ttftMs === 'number'
+      ? cur.ttftMs
+      : INFINITY_COST
   if (tp !== tc) {
-    return { code: 'tie-ttft', text: `排序键与命中率相同，首字 ${tc === INFINITY_COST ? '无数据' : `${tc}ms`} 慢于上一条的 ${tp === INFINITY_COST ? '无数据' : `${tp}ms`}` }
+    const fmt = (v) => (v === INFINITY_COST ? '无数据' : `${v}ms`)
+    const unit = useRel ? '比本轮最快多' : ''
+    return {
+      code: 'tie-ttft',
+      text: `排序键与命中率相同，首字 ${unit}${fmt(tc)} 慢于上一条的 ${unit}${fmt(tp)}${useRel ? '（相对值，已扣掉本机链路）' : ''}`,
+    }
   }
   return { code: 'tie-price', text: '前面全都相同，按名义单价兜底' }
 }
@@ -324,6 +352,7 @@ export function explain(candidates) {
     probeOk: c.probeOk,
     tooSlow: Boolean(c.tooSlow),
     ttftMs: c.ttftMs,
+    ttftRelMs: c.ttftRelMs ?? null,
     status: c.status,
     samples: c.samples,
     confidence: c.confidence,

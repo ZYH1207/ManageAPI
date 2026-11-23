@@ -82,6 +82,24 @@ export async function runProbes({ providerId, offerId, offerIds, limit = 5 } = {
     return results.filter(Boolean).map((r) => ({ ...r, skipped: 'local-network-outage' }))
   }
 
+  // ---- 首字相对化：绝对毫秒里含本机链路（带宽/运营商抖动/家里路由器），
+  // 跨轮不可比，也解释不了「为什么这个站排后面」。同一轮里所有目标的链路
+  // 条件是同一份，减去本轮最快的那条，剩下的才是站点自身的首字差异。
+  // 老记录没有 ttftRel，读取侧会回落到绝对值，所以不用迁移数据。
+  const roundId = `r${Date.now()}`
+  const okTtfts = results
+    .filter((r) => r && r.ok !== false && typeof r.ttftMs === 'number' && r.ttftMs > 0)
+    .map((r) => r.ttftMs)
+  const roundMinTtft = okTtfts.length > 0 ? Math.min(...okTtfts) : null
+  for (const r of results) {
+    if (!r) continue
+    r.roundId = roundId
+    r.ttftRel =
+      roundMinTtft !== null && typeof r.ttftMs === 'number' && r.ttftMs > 0
+        ? Math.max(0, r.ttftMs - roundMinTtft)
+        : null
+  }
+
   for (const record of results) {
     if (!record) continue
     if (record.error === 'Key 解密失败') continue // 没有真实探测，不写评分

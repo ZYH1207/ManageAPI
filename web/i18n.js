@@ -319,6 +319,8 @@ const EN = {
   '打平·价格': 'tie · price',
   '准入': 'gate',
   '手动顺序': 'manual order',
+  '同一轮探针里比最快的那条慢多少：已扣掉本机带宽/链路的公共延迟，跨轮可比；绝对毫秒只在本机网络稳定时有意义':
+    'How much slower than the fastest target in the same probe round: the shared local-network latency is subtracted, so it is comparable across rounds.',
   '价格': 'Price',
   '性价比': 'Value',
   '质量': 'Quality',

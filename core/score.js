@@ -304,6 +304,11 @@ export function scoreOffers(probes, traffic = {}, options = {}) {
       // 展示用：这个站每次请求白付多少固定 token（多半是系统提示，按缓存价收）
       overheadTokens: median(recent.map((r) => r.fixedOverheadTokens)),
       ttftMs: median(recent.map((r) => r.ttftMs)),
+      // 首字相对值：同一轮探针里「比本轮最快的那条慢多少毫秒」。
+      // 绝对值含本机链路（带宽/运营商抖动），跨轮不可比；相对值把每轮的
+      // 公共延迟减掉了，剩下的才是站点自身的首字差异。老记录没有该字段，
+      // 这里就是 null，排序与展示自动回落到绝对值。
+      ttftRelMs: median(recent.map((r) => r.ttftRel)),
       latencyMs: median(recent.map((r) => r.latencyMs)),
       lastProbeAt,
       ageMs,
@@ -332,6 +337,7 @@ export function scoreOffers(probes, traffic = {}, options = {}) {
             cacheDetail: last.cacheDetail ?? null,
             identityClaim: last.identityClaim ?? null,
             ttftMs: last.ttftMs ?? null,
+            ttftRel: last.ttftRel ?? null,
           }
         : null,
       status,

@@ -2459,7 +2459,15 @@ function renderDecision() {
               ? `${Math.round(candidate.cacheHitRate * 100)}%`
               : `<span style="color:var(--faint)" title="${t('没测到缓存命中率，按全局先验折算；不当作 0，否则新站会被系统性排到后面')}">${t('未测')}</span>`
           }</td>
-          <td class="num">${candidate.ttftMs === null ? '—' : `${candidate.ttftMs}ms`}</td>
+          <td class="num">${
+            candidate.ttftMs === null
+              ? '—'
+              : `${candidate.ttftMs}ms${
+                  typeof candidate.ttftRelMs === 'number'
+                    ? `<div class="sub" title="${t('同一轮探针里比最快的那条慢多少：已扣掉本机带宽/链路的公共延迟，跨轮可比；绝对毫秒只在本机网络稳定时有意义')}">+${candidate.ttftRelMs}ms</div>`
+                    : ''
+                }`
+          }</td>
           <td>${orderReasonCell(candidate, index)}</td>
           <td><span class="badge ${badge.cls}">${badge.label}</span>${candidate.statusReason ? `<div class="sub">${esc(candidate.statusReason)}</div>` : ''}</td>
         </tr>`
