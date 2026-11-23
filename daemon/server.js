@@ -30,7 +30,7 @@ import {
   PROFILE_MIN_SAMPLES,
   DEFAULT_INPUT_SHARE,
 } from '../core/traffic-profile.js'
-import { classifyFailure } from '../core/failure.js'
+import { classifyFailure, isConnectionError, localNetworkSuspect } from '../core/failure.js'
 import { checkRealResponse, estimateRequestTokens } from '../core/quality-signals.js'
 import { selectCandidates, listPublicModels, explain } from '../core/router.js'
 // 决策侧重（排序偏好）的档位表：前端渲染滑块也读这一份，避免两边各写一套
@@ -2942,14 +2942,27 @@ function queueRouting(entry) {
 const trafficBuffer = new Map()
 let trafficTimer = null
 
-function bufferTraffic(offerId, ok, error, quality) {
+// 本机网络抖动：5 分钟内几个站的连接层失败同时出现 → 更像我们自己的网络断了
+const recentConnectionFails = new Map()
+
+function bufferTraffic(offerId, ok, error, quality, providerId = null) {
   if (!offerId) return
   const entry = trafficBuffer.get(offerId) || { ok: 0, fail: 0, kinds: {}, quality: { samples: 0, bad: 0 } }
   if (ok) entry.ok += 1
   else {
     // 只有站点故障算 fail；额度/限流/模型不在分组单独计数，不拉低可用率
     const { kind, countsAsOutage } = classifyFailure(error)
-    if (countsAsOutage) entry.fail += 1
+    if (kind === 'connection') {
+      // 连接层失败：单条先按站方故障记，但若同一窗口里别的站也这样，
+      // 更像是本机网络断了——那次不扣可用率，只留痕（kinds.local-network）。
+      const { localNetwork } = localNetworkSuspect(providerId || offerId, recentConnectionFails)
+      if (localNetwork) {
+        entry.kinds['local-network'] = (entry.kinds['local-network'] || 0) + 1
+      } else {
+        entry.fail += 1
+        entry.kinds[kind] = (entry.kinds[kind] || 0) + 1
+      }
+    } else if (countsAsOutage) entry.fail += 1
     else entry.kinds[kind] = (entry.kinds[kind] || 0) + 1
   }
   // 真实响应的质量信号（空回答/计费虚报）：探针之外的第二类完整性证据
@@ -3640,7 +3653,7 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
         error: result.error,
         ms: Date.now() - attemptStarted,
       })
-      bufferTraffic(candidate.offer.id, false, result.error)
+      bufferTraffic(candidate.offer.id, false, result.error, null, candidate.offer.providerId)
       const scope = classifyFailure(result.error).scope
       if (scope === 'provider') skippedProviders.add(candidate.provider.id)
       if (scope === 'request') {
@@ -3655,7 +3668,7 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
         error: error.message || String(error),
         ms: Date.now() - attemptStarted,
       })
-      bufferTraffic(candidate.offer.id, false, error.message || String(error))
+      bufferTraffic(candidate.offer.id, false, error.message || String(error), null, candidate.offer.providerId)
       const scope = classifyFailure(error.message || String(error)).scope
       if (scope === 'provider') skippedProviders.add(candidate.provider.id)
       if (scope === 'request') {

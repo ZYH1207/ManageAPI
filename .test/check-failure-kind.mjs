@@ -38,7 +38,9 @@ console.log('[1] 错误文本分类')
     ['HTTP 502：{"error":{"message":"Upstream request failed","type":"upstream_error"}}', null, true],
     ['HTTP 503：{"error":{"message":"Service temporarily unavailable"}}', null, true],
     ['The operation was aborted due to timeout', null, true],
-    ['fetch failed', null, true],
+    // 连接层失败：单条仍算站方故障，但打上 connection 标记，
+    // 供网关按「5 分钟内多站同时」判定是不是本机网络（见 check-local-network）
+    ['fetch failed', 'connection', true],
     ['上游 120 秒无响应（首字超时）', null, true],
     // 客户端自己取消（ESC / 关页面）：不算站点故障，也不算这一单可用
     ['This operation was aborted', 'client-abort', false],

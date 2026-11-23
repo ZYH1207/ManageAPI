@@ -66,16 +66,18 @@ export async function runProbes({ providerId, offerId, offerIds, limit = 5 } = {
 
   // ---- 批量网络异常防护：本机断网/代理挂了时，一轮探测会「所有站一起失败」。
   // 那不是站点的问题，写进评分会让几十条供给同时变红（真实踩过：代理断线
-  // 造成 9 条 fetch failed）。判据：失败样本 ≥3、网络类错误占比 ≥60%，
+  // 造成 9 条 fetch failed）。判据：失败样本 ≥2、网络类错误占比 ≥60%，
   // 且这些网络失败跨了 ≥2 个站——只挂一个站（哪怕它下面 10 个模型全挂）
   // 是那个站的问题，必须照常记账，否则真故障永远测不出来。
+  // （原来是 ≥3 条：一轮最多 10 个目标，只抖动 1~2 条时整轮照样落库，
+  //   把本机抖动写成了站点故障——这正是「网络波动污染排名」的主因。）
   const failed = results.filter((r) => r && r.ok === false)
   const netFailed = failed.filter((r) =>
     /timeout|aborted|fetch failed|ECONN|ENOTFOUND|EAI_AGAIN|socket|网络/i.test(String(r.error || '')),
   )
   const netProviders = new Set(netFailed.map((r) => r.providerId))
   const localNetworkOutage =
-    failed.length >= 3 && netFailed.length / failed.length >= 0.6 && netProviders.size >= 2
+    failed.length >= 2 && netFailed.length / failed.length >= 0.6 && netProviders.size >= 2
   if (localNetworkOutage) {
     return results.filter(Boolean).map((r) => ({ ...r, skipped: 'local-network-outage' }))
   }

@@ -100,10 +100,50 @@ const RULES = [
 
 /**
  * @param {string} message 上游错误文本（探针的 error 字段或网关的失败原因）
- * @returns {{kind: 'quota'|'budget'|'model-missing'|'rate-limit'|'auth'|'client-abort'|null, countsAsOutage: boolean}}
+ * @returns {{kind: 'quota'|'budget'|'model-missing'|'rate-limit'|'auth'|'client-abort'|'connection'|null, countsAsOutage: boolean}}
  */
+/** 5 分钟内两个以上站点都出现连接层失败 → 更像是本机网络，不是站点 */
+export const LOCAL_NETWORK_WINDOW_MS = 5 * 60 * 1000
+
+/**
+ * 连接层失败的特征（DNS/TCP/TLS 都没过，拿不到任何 HTTP 响应）。
+ *
+ * 注意：它**不能**放进 RULES —— RULES 里命中的都算「不是站方的问题」，
+ * 而连接失败单看一条分不清是站挂了还是本机断网，必须先按站方故障计，
+ * 再由 localNetworkSuspect() 用「多站同时」这个证据来豁免。
+ */
+const CONNECTION_RE =
+  /fetch failed|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|ENOTFOUND|EPIPE|socket hang ?up|network error|连接被重置|连接超时|网络错误/i
+
+/** 这条错误是不是「连接层就没通」（没拿到任何 HTTP 响应） */
+export function isConnectionError(message) {
+  const text = String(message || '')
+  if (/HTTP \d{3}/i.test(text)) return false // 有 HTTP 状态码 = 已经连上了
+  return CONNECTION_RE.test(text)
+}
+
+/**
+ * 判断这次连接层失败要不要算「本机网络问题」。
+ *
+ * @param {string} providerId 这次失败的站点
+ * @param {Map<string, number>} recent providerId → 最近一次连接层失败的时间戳
+ * @param {number} [now]
+ * @returns {{localNetwork: boolean, providers: number}}
+ */
+export function localNetworkSuspect(providerId, recent, now = Date.now()) {
+  const map = recent || new Map()
+  if (providerId) map.set(providerId, now)
+  // 清掉窗口外的
+  for (const [id, at] of map) {
+    if (now - at > LOCAL_NETWORK_WINDOW_MS) map.delete(id)
+  }
+  return { localNetwork: map.size >= 2, providers: map.size }
+}
+
 export function classifyFailure(message) {
   const text = String(message || '')
+  // 连接层失败先按站方故障计（scope=provider），豁免逻辑在调用方按「多站同时」判定
+  if (isConnectionError(text)) return { kind: 'connection', scope: 'provider', countsAsOutage: true }
   for (const rule of RULES) {
     if (rule.test.test(text)) return { kind: rule.kind, scope: rule.scope, countsAsOutage: false }
   }
