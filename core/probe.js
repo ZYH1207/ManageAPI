@@ -177,9 +177,60 @@ export async function probeCache({ baseUrl, apiKey, model, timeoutMs = 45000 }) 
     hitRate,
     cachedTokens,
     promptTokens,
+    // 这两次请求实际发出去的前缀有多大（本地估算）——判「多收钱」必须跟它比，
+    // 不能拿指纹请求的 45 token 去比缓存请求的 14k
+    expectedPromptTokens: estimateTokens(CACHE_PROMPT),
     detail: `prompt_tokens=${promptTokens ?? '未返回'}，cached_tokens=${cachedTokens}`,
     firstLatencyMs: first.totalMs,
     secondLatencyMs: second.totalMs,
+  }
+}
+
+/**
+ * 计费判据：只比较**同一次请求**里的 prompt_tokens 与 cached_tokens。
+ *
+ * 拆成纯函数是为了可测——这条判据出过一次大错（拿指纹请求的 prompt_tokens
+ * 去减缓存请求的 cached_tokens，两个请求长度差一个数量级），必须有单元测试钉住。
+ *
+ * @param {object} input
+ * @param {number|null} input.fingerprintPromptTokens 指纹请求上报的 prompt_tokens（只用于算固定开销）
+ * @param {number|null} input.cachePromptTokens       缓存请求上报的 prompt_tokens
+ * @param {number|null} input.cacheCachedTokens       缓存请求上报的 cached_tokens
+ * @param {number|null} input.expectedCachePromptTokens 缓存请求本地估算的输入长度
+ * @returns {{fixedOverheadTokens:number|null, billedInputTokens:number|null,
+ *            billedInputInflated:boolean|null, cacheSuspect:boolean|null}}
+ */
+export function billingVerdict({
+  fingerprintPromptTokens = null,
+  cachePromptTokens = null,
+  cacheCachedTokens = null,
+  expectedCachePromptTokens = null,
+} = {}) {
+  const fixedOverheadTokens =
+    typeof fingerprintPromptTokens === 'number'
+      ? fingerprintPromptTokens - BILLING_EXPECTED_PROMPT_TOKENS
+      : null
+  // 没有缓存请求的两个数 → 没有证据，判 null（不是 true，也不是 false）
+  if (typeof cachePromptTokens !== 'number') {
+    return { fixedOverheadTokens, billedInputTokens: null, billedInputInflated: null, cacheSuspect: null }
+  }
+  const cached = typeof cacheCachedTokens === 'number' ? cacheCachedTokens : 0
+  const billedInputTokens = Math.max(0, cachePromptTokens - cached)
+  const expected =
+    typeof expectedCachePromptTokens === 'number' && expectedCachePromptTokens > 0
+      ? expectedCachePromptTokens
+      : null
+  return {
+    fixedOverheadTokens,
+    billedInputTokens,
+    billedInputInflated:
+      expected !== null &&
+      billedInputTokens > BILLING_MIN_TOKENS &&
+      billedInputTokens > expected * BILLING_TOLERANCE,
+    cacheSuspect:
+      cached > 0 &&
+      (cached > cachePromptTokens ||
+        (cachePromptTokens > CACHE_SUSPECT_MIN_PROMPT && cached / cachePromptTokens > CACHE_SUSPECT_RATIO)),
   }
 }
 
@@ -200,6 +251,7 @@ export async function probeModel({ baseUrl, apiKey, model, timeoutMs = 45000 }) 
     truncationDetail: null,
     billingInflated: null,
     billedInputInflated: null,
+    billedInputTokens: null,
     fixedOverheadTokens: null,
     cacheSupported: null,
     cacheHitRate: null,
@@ -279,31 +331,36 @@ export async function probeModel({ baseUrl, apiKey, model, timeoutMs = 45000 }) 
   }
 
   // ---- 缓存：连发两次相同长前缀，看第二次命中多少
+  let cacheInfo = null
   try {
-    const cache = await probeCache({ baseUrl, apiKey, model, timeoutMs })
-    result.cacheSupported = cache.supported
-    result.cacheHitRate = cache.hitRate
-    result.cacheDetail = cache.detail
-    result.cachedTokens = typeof cache.cachedTokens === 'number' ? cache.cachedTokens : null
+    cacheInfo = await probeCache({ baseUrl, apiKey, model, timeoutMs })
+    result.cacheSupported = cacheInfo.supported
+    result.cacheHitRate = cacheInfo.hitRate
+    result.cacheDetail = cacheInfo.detail
+    result.cachedTokens = typeof cacheInfo.cachedTokens === 'number' ? cacheInfo.cachedTokens : null
   } catch (error) {
     result.cacheDetail = `缓存检测失败：${error?.message || error}`
   }
 
-  // ---- 计费判据分家（必须放在缓存之后：要扣掉缓存命中再比）
-  // billingInflated 只说明「这个站有固定开销」；billedInputInflated 才是真的多算钱。
-  // 站点上报的 prompt_tokens 含缓存部分，命中 99% 时 raw 值必然远超估算，
-  // 但那段按缓存价收，拿 raw 值判虚报会全是假阳性（RapidApi 就是这样被冤枉的）。
-  if (typeof promptTokens === 'number') {
-    const cached = typeof result.cachedTokens === 'number' ? result.cachedTokens : 0
-    result.fixedOverheadTokens = promptTokens - BILLING_EXPECTED_PROMPT_TOKENS
-    const billedInput = Math.max(0, promptTokens - cached)
-    result.billedInputInflated =
-      billedInput > BILLING_MIN_TOKENS && billedInput > BILLING_EXPECTED_PROMPT_TOKENS * BILLING_TOLERANCE
-    result.cacheSuspect =
-      cached > 0 &&
-      (cached > promptTokens ||
-        (promptTokens > CACHE_SUSPECT_MIN_PROMPT && cached / promptTokens > CACHE_SUSPECT_RATIO))
-  }
+  // ---- 计费判据分家
+  // billingInflated 只说明「这个站有固定开销」（展示用，不扣分）；
+  // billedInputInflated 才是真的多算钱，判它必须**在同一个请求内**比较：
+  // prompt_tokens 与 cached_tokens 来自同一次调用，跟那次调用实际发出去的长度比。
+  //
+  // 曾经的错误做法是「指纹请求的 prompt_tokens − 缓存请求的 cached_tokens」：
+  // 两个请求长度差一个数量级（45 vs 14k），减出来的数既不是任何一次请求的计费输入，
+  // 还会把「系统提示很长但每次都命中缓存」的站误判成多收钱（实测 40% 的探针被冤枉）。
+  result.billingCheckVersion = 2
+  const verdict = billingVerdict({
+    fingerprintPromptTokens: promptTokens,
+    cachePromptTokens: cacheInfo?.promptTokens ?? null,
+    cacheCachedTokens: cacheInfo?.cachedTokens ?? null,
+    expectedCachePromptTokens: cacheInfo?.expectedPromptTokens ?? null,
+  })
+  result.fixedOverheadTokens = verdict.fixedOverheadTokens
+  result.billedInputTokens = verdict.billedInputTokens
+  result.billedInputInflated = verdict.billedInputInflated
+  result.cacheSuspect = verdict.cacheSuspect
 
   // ---- 身份自述：只记录，不参与评分（模型自述经常不准）
   try {

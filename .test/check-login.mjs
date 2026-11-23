@@ -153,6 +153,8 @@ try {
     // 重新登录拿新 token（等价于真实场景里的令牌失效）
     const before = (await api('GET', '/api/state')).data
     ok(before.providers[0].adminTokenSource === 'login', '令牌来源标记为 login')
+    // 导入基准价要求站点先声明报价币种（否则币种会被猜成美元）
+    await api('PATCH', `/api/providers/${pid}`, { priceCurrency: 'CNY' })
     // 触发一次会 401 的读取（导入基准价 → channels 401 → 自动重登 → 重试成功）
     const r = await api('POST', '/api/benchmarks/import', { providerId: pid })
     ok(r.status === 200, `导入在自动重登后成功（status=${r.status}）`)

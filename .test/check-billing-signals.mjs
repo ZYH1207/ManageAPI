@@ -78,16 +78,17 @@ console.log('scoreOffers：完整性只由「扣掉缓存后的计费」决定')
   const base = { ok: true, fingerprintOk: true, truncated: false, ttftMs: 300, latencyMs: 900 }
   const probes = [
     // 高固定开销但计费干净：3 条记录
-    { ...base, ts, offerId: 'o-overhead', billingInflated: true, billedInputInflated: false },
-    { ...base, ts, offerId: 'o-overhead', billingInflated: true, billedInputInflated: false },
-    { ...base, ts, offerId: 'o-overhead', billingInflated: true, billedInputInflated: false },
+    { ...base, ts, offerId: 'o-overhead', billingInflated: true, billedInputInflated: false, billingCheckVersion: 2 },
+    { ...base, ts, offerId: 'o-overhead', billingInflated: true, billedInputInflated: false, billingCheckVersion: 2 },
+    { ...base, ts, offerId: 'o-overhead', billingInflated: true, billedInputInflated: false, billingCheckVersion: 2 },
     // 真的多算钱：2 条记录
-    { ...base, ts, offerId: 'o-inflated', billingInflated: true, billedInputInflated: true },
-    { ...base, ts, offerId: 'o-inflated', billingInflated: true, billedInputInflated: true },
-    // 老记录（只有 billingInflated，语义等同无缓存）——3 条，其中 1 条虚报
+    { ...base, ts, offerId: 'o-inflated', billingInflated: true, billedInputInflated: true, billingCheckVersion: 2 },
+    { ...base, ts, offerId: 'o-inflated', billingInflated: true, billedInputInflated: true, billingCheckVersion: 2 },
+    // 老记录（只有 billingInflated / 或旧版 billedInputInflated）——没有同请求缓存证据，不进判据
     { ...base, ts, offerId: 'o-legacy', billingInflated: false },
     { ...base, ts, offerId: 'o-legacy', billingInflated: false },
     { ...base, ts, offerId: 'o-legacy', billingInflated: true },
+    { ...base, ts, offerId: 'o-legacy', billingInflated: true, billedInputInflated: true },
   ]
   const scores = scoreOffers(probes, {}, {})
   const overhead = scores.get('o-overhead')
@@ -98,8 +99,8 @@ console.log('scoreOffers：完整性只由「扣掉缓存后的计费」决定')
   ok(overhead.integrity === 1, '完整性满分（指纹/截断/计费都过）')
   ok(inflated.integrityFaults.includes('计费异常'), '真虚报站被标「计费异常」')
   ok(!inflated.integrityFaults.includes('用量虚报'), '不再用旧标签「用量虚报」')
-  ok(legacy.integrityFaults.includes('计费异常'), '老记录 3 条里 1 条虚报（通过率 0.67 < 0.8）→ 仍判计费异常')
-  ok(legacy.billingRate !== null && legacy.billingRate < 1, '老记录仍参与计费通过率统计')
+  ok(!legacy.integrityFaults.includes('计费异常'), '老记录没有同请求缓存证据 → 不判计费异常（宁可放过）')
+  ok(legacy.billingRate === null, '老记录不参与计费通过率（raw 数字只作展示）')
 }
 
 console.log('scoreOffers：overheadTokens 只做展示')

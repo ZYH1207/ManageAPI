@@ -107,10 +107,20 @@ export function scoreOffers(probes, traffic = {}, options = {}) {
     const has = (r, key) => r[key] !== null && r[key] !== undefined
     const fpChecks = recent.filter((r) => has(r, 'fingerprintOk'))
     const trChecks = recent.filter((r) => has(r, 'truncated'))
-    // 计费判据分家后优先用「扣掉缓存后的输入」：老探针记录只有 billingInflated，
-    // 那时它等价于「没命中缓存时的 billedInputInflated」，语义兼容
-    const blKey = recent.some((r) => has(r, 'billedInputInflated')) ? 'billedInputInflated' : 'billingInflated'
-    const blChecks = recent.filter((r) => has(r, blKey))
+    // 计费判据只认「同一请求内比较」的版本（billingCheckVersion >= 2）。
+    //
+    // 早先那版拿指纹请求的 prompt_tokens 去减缓存请求的 cached_tokens，两个请求
+    // 长度差一个数量级，把「系统提示很长但全命中缓存」的站误判成多收钱——
+    // 那些记录不能再参与评分，否则一次修复要等十几轮探针才滚出窗口。
+    //
+    // 只有 billingInflated（raw 上报规模离谱）的记录也**不进判据**：站点报的 prompt
+    // 里可能包含它自己那段很长的系统提示，只要每次命中缓存，多出来的部分几乎不花钱，
+    // 单看 raw 数字分不清「固定开销」和「多收钱」。所以 raw 只作展示，
+    // 判据只认「扣掉同请求缓存命中之后仍然离谱」。没有这种证据就是「没证据」，不是「有问题」。
+    const blKey = 'billedInputInflated'
+    const blChecks = recent.filter(
+      (r) => has(r, 'billedInputInflated') && Number(r.billingCheckVersion) >= 2,
+    )
     const fpPass = fpChecks.filter((r) => r.fingerprintOk).length
     const trPass = trChecks.filter((r) => r.truncated === false).length
     const blPass = blChecks.filter((r) => r[blKey] === false).length

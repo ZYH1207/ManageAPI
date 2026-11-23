@@ -2589,6 +2589,20 @@ function probeDetailHtml(score) {
   const p = score.lastProbe || {}
   const fmt = (v) => (v === null || v === undefined ? '—' : v.toFixed(2))
   const pctv = (v) => (v === null || v === undefined ? '—' : `${Math.round(v * 100)}%`)
+  // 完整性公式：只有测过的项参与，权重按剩余项归一（没测出来不惩罚）
+  const integrityFormula = (sc) => {
+    const parts = [
+      { label: '指纹', rate: sc.fingerprintRate, weight: 0.5 },
+      { label: '未截断', rate: sc.truncationRate, weight: 0.3 },
+      { label: '计费正常', rate: sc.billingRate, weight: 0.2 },
+    ].filter((part) => part.rate !== null && part.rate !== undefined)
+    if (!parts.length) return '= 还没有完整性证据'
+    const total = parts.reduce((sum, part) => sum + part.weight, 0)
+    const text = parts
+      .map((part) => `${part.label} ${pctv(part.rate)}×${(part.weight / total).toFixed(2)}`)
+      .join(' + ')
+    return `= ${text}${parts.length < 3 ? '（没测到的项不参与）' : ''}`
+  }
 
   const reasons = []
   if (p.fingerprintOk === false) reasons.push('指纹不符：要求精确输出固定内容，返回的不是——模型可能被掉包')
@@ -2609,7 +2623,7 @@ function probeDetailHtml(score) {
         <div class="detail-line">可用率 <b>${pctv(score.availability)}</b>
           <span class="dim">= 探针 ${score.samples} 次 + 真实流量 ${score.trafficSamples} 次的成功率</span></div>
         <div class="detail-line">完整性 <b>${fmt(score.integrity)}</b>
-          <span class="dim">= 指纹 ${pctv(score.fingerprintRate)}×0.5 + 未截断 ${pctv(score.truncationRate)}×0.3 + 计费正常 ${pctv(score.billingRate)}×0.2</span></div>
+          <span class="dim">${integrityFormula(score)}</span></div>
         <div class="detail-line dim">通过率按 (通过+1)/(样本+1) 平滑：样本少时一次异常只轻微降权，判「结果可疑」另有更严的原始证据规则</div>
         ${score.realQualitySamples
           ? `<div class="detail-line">真实响应抽样 <b>${score.realQualitySamples}</b> 次

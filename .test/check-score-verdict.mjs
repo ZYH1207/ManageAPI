@@ -19,7 +19,8 @@ const ok = (cond, msg) => {
 
 const now = Date.now()
 const ago = (h) => new Date(now - h * 3600000).toISOString()
-const base = { fingerprintOk: true, truncated: false, billingInflated: false, ttftMs: 100, latencyMs: 800 }
+// 计费判据只认 v2 记录（同请求内比较），所以 fixture 必须带 billingCheckVersion
+const base = { fingerprintOk: true, truncated: false, billingInflated: false, billedInputInflated: false, billingCheckVersion: 2, ttftMs: 100, latencyMs: 800 }
 const opts = { maxAgeMs: 6 * 3600000, now }
 const score = (probes, traffic = {}) => scoreOffers(probes, traffic, opts)
 
