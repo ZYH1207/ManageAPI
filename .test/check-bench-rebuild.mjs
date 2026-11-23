@@ -209,6 +209,26 @@ try {
   // ---- 4. 幂等
   const again = await call('POST', '/api/benchmarks/rebuild', {})
   ok(again.benchRebuild.changedCount === 0, '再跑一次 dry-run 是 0 条（幂等）')
+
+  // ---- 5. 站点没声明「报价币种」时拒绝导入：否则会静默按美元写，
+  //         人民币站的价格凭空差一个汇率（6.68 倍），事后还看不出来
+  const beforeImport = Object.keys(await readBench()).length
+  const rawImport = await fetch(`${base}/api/benchmarks/import-plaza`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ providerId: provider.id }),
+  })
+  const importBody = await rawImport.json().catch(() => ({}))
+  ok(rawImport.status === 400, '没声明报价币种时导入被拒绝（400）')
+  ok(String(importBody.error || '').includes('报价币种'), '拒绝原因指明要先声明报价币种')
+  ok(Object.keys(await readBench()).length === beforeImport, '被拒绝时基准价表没被写')
+
+  // 声明之后同一个站就能导入了
+  await call('PATCH', `/api/providers/${provider.id}`, { priceCurrency: 'CNY' })
+  const afterDeclare = await call('POST', '/api/benchmarks/import-plaza', { providerId: provider.id })
+  ok(Boolean(afterDeclare.plazaBenchResult), '声明币种后导入成功')
+  const importedTable = await readBench()
+  ok(importedTable['deepseek-v4-pro']?.currency === 'CNY', '导入的基准价币种跟着站点声明（CNY）')
 } finally {
   app.kill()
   await new Promise((r) => upstream.close(r))

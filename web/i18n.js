@@ -1080,8 +1080,16 @@ Object.assign(EN, {
   '引用': 'Used by',
   '未引用': 'unused',
   '缺输出价': 'no output price',
-  '这条基准价的数字是用什么币种写的：倍率算价时按它换算（选错会差一个汇率，约 6.7 倍）':
-    'Currency this base price is written in: ratio rows are converted from it (a wrong pick is off by one exchange rate, about 6.7x)',
+  '跟站点声明一致：{names} 的报价币种就是它。要改去站点卡片改「报价币种」。':
+    'Matches the site declaration ({names}). Change it on the site card under "Price currency".',
+  '引用它的站点声明了不同币种（{list}），只能由你定一个':
+    'Sites using it declare different currencies ({list}); you have to pick one',
+  '这条基准价跟引用站点的声明不一致（站点说 {c}）':
+    'This base price disagrees with the site declaration (site says {c})',
+  '没有任何供给引用它，币种随便定（不影响钱）':
+    'No offer uses it, so the currency does not affect anything',
+  '引用它的站点还没声明报价币种':
+    'The sites using it have not declared a price currency yet',
   '先选一个站点': 'Pick a site first',
   '删除这条基准价': 'Delete this base price',
   '已用该站价格覆盖 {n} 条基准价': 'Overwrote {n} base prices with this site\'s prices',
@@ -1090,7 +1098,8 @@ Object.assign(EN, {
   '（跳过 {n} 条：已存在或无官方价）': ' (skipped {n}: already present or no list price)',
   '没有新增（都已有基准价，或{via}没给官方价）': 'Nothing new (all present, or {via} gave no list price)',
   '用该站现在填的价格覆盖同名基准价？已有条目会被替换，包括别的站导入的。': 'Overwrite base prices with this site\'s current prices? Existing entries will be replaced, including ones imported from other sites.',
-  '基准价是「倍率」的换算参照：倍率供给的价格 = 基准价 × 倍率。': 'Base prices are what ratios multiply: ratio offer price = base price × ratio.',
+  '基准价是「倍率」的换算参照：倍率供给的价格 = 基准价 × 倍率。币种跟站点卡片上的「报价币种」走——导入前先把它设好，没设就不让导入。':
+    'Base prices are what ratios multiply: ratio offer price = base price × ratio. The currency follows the site card\'s "Price currency" — set it before importing, otherwise the import is refused.',
   '官方价＝读该站的可用渠道/模型广场；已填价＝抄这个站现在填的价格': 'List price = read this site\'s channels/plaza; filled = copy the prices this site already has',
   '把「广场/渠道/从站导入」这三种来源的条目按站点原价重算：历史数据里存的是乘过倍率之后的折后价，会让倍率供给被打两次折': 'Recompute entries from plaza/channels/site-import using each site\'s list price: old rows stored the already-discounted price, so ratio offers were discounted twice',
   '没有任何站点能读到价目表时的兜底：工具内置的一份官方价': 'Fallback when no site exposes a price list: a built-in copy of official prices',

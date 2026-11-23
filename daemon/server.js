@@ -2382,6 +2382,16 @@ route('POST', /^\/api\/benchmarks\/import$/, async (ctx) => {
   const db = await store.readDb()
   const providerId = ctx.body.providerId
   if (!providerId) throw new HttpError(400, '缺少 providerId')
+  const importProvider = db.providers.find((p) => p.id === providerId)
+  if (!importProvider) throw new HttpError(404, '站点不存在')
+  // 币种只有一个真源：站点卡片上的「报价币种」。没声明就拒绝导入，
+  // 而不是按美元兜底——人民币站会被写差 6.68 倍，且事后看不出来
+  if (!declaredPriceCurrency(importProvider)) {
+    throw new HttpError(
+      400,
+      `「${importProvider.name}」还没声明报价币种。先到站点卡片把「报价币种」选成 USD 或 CNY，再回来导入；否则基准价会按美元写，人民币站会差 6.68 倍。`,
+    )
+  }
   const result = await bench.importBenchmarksFrom(db.offers, providerId)
   return { ...(await buildState()), importResult: result }
 })
@@ -2403,6 +2413,13 @@ route('POST', /^\/api\/benchmarks\/import-plaza$/, async (ctx) => {
   if (!providerId) throw new HttpError(400, '先选一个站点')
   const provider = db.providers.find((p) => p.id === providerId)
   if (!provider) throw new HttpError(404, '站点不存在')
+  // 同上：币种必须由站点声明，否则这批基准价会静默变成美元
+  if (!declaredPriceCurrency(provider)) {
+    throw new HttpError(
+      400,
+      `「${provider.name}」还没声明报价币种。先到站点卡片把「报价币种」选成 USD 或 CNY，再回来导入；否则基准价会按美元写，人民币站会差 6.68 倍。`,
+    )
+  }
 
   const adminToken = await inv.revealAdminToken(provider.id)
   const pricing = await providers.fetchProviderPricing({ baseUrl: inv.apiBaseOf(provider), adminToken })

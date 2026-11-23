@@ -3056,6 +3056,42 @@ function renderBenchmark() {
     return `<span title="${esc(names)}">${ids.size}</span>`
   }
 
+  // 币种的真源是站点卡片上的「报价币种」，不是这张表。
+  // 一条基准价可能被多个站引用：只有当「各站声明不一致」或「没有任何站引用」
+  // 时，才需要人来定；其余情况显示成只读标签，免得随手改错差一个汇率。
+  const declaredCurrenciesOf = (key) => {
+    const ids = usageByKey.get(String(key).toLowerCase())
+    const set = new Set()
+    for (const id of ids || []) {
+      const c = state.providers.find((p) => p.id === id)?.priceCurrency
+      if (c === 'CNY' || c === 'USD') set.add(c)
+    }
+    return set
+  }
+  const currencyCell = (key, entry) => {
+    const declared = declaredCurrenciesOf(key)
+    const refs = usageByKey.get(String(key).toLowerCase())?.size || 0
+    const matches = declared.size === 1 && declared.has(entry.currency)
+    if (matches) {
+      const who = [...(usageByKey.get(String(key).toLowerCase()) || [])]
+        .map((id) => state.providers.find((p) => p.id === id)?.name || id)
+        .join('、')
+      return `<span class="mono" title="${esc(t('跟站点声明一致：{names} 的报价币种就是它。要改去站点卡片改「报价币种」。', { names: who }))}">${esc(entry.currency || 'USD')}</span>`
+    }
+    const why =
+      declared.size > 1
+        ? t('引用它的站点声明了不同币种（{list}），只能由你定一个', { list: [...declared].join(' / ') })
+        : declared.size === 1
+          ? t('这条基准价跟引用站点的声明不一致（站点说 {c}）', { c: [...declared][0] })
+          : refs === 0
+            ? t('没有任何供给引用它，币种随便定（不影响钱）')
+            : t('引用它的站点还没声明报价币种')
+    return `<select data-field="currency" style="width:70px" title="${esc(why)}">
+          <option value="USD" ${entry.currency !== 'CNY' ? 'selected' : ''}>USD</option>
+          <option value="CNY" ${entry.currency === 'CNY' ? 'selected' : ''}>CNY</option>
+        </select>`
+  }
+
   // 来源值的展示友好化（来源是低频诊断信息，降为模型列的小字，省一列宽度）。
   // imported: 带站点名——「从站导入」不说是哪个站，用户对不上号
   const sourceLabel = (source) => {
@@ -3096,12 +3132,7 @@ function renderBenchmark() {
         <input type="number" step="0.001" placeholder="入" value="${entry.offPeakIn ?? ''}" data-field="offPeakIn" style="width:62px" title="空闲时段输入价（如 DeepSeek 半价时段），没有就留空" />
         <input type="number" step="0.001" placeholder="出" value="${entry.offPeakOut ?? ''}" data-field="offPeakOut" style="width:62px" title="空闲时段输出价" />
       </td>
-      <td>
-        <select data-field="currency" style="width:70px" title="${t('这条基准价的数字是用什么币种写的：倍率算价时按它换算（选错会差一个汇率，约 6.7 倍）')}">
-          <option value="USD" ${entry.currency !== 'CNY' ? 'selected' : ''}>USD</option>
-          <option value="CNY" ${entry.currency === 'CNY' ? 'selected' : ''}>CNY</option>
-        </select>
-      </td>
+      <td>${currencyCell(key, entry)}</td>
       <td class="num">${usageCell(key)}</td>
       <td class="num"><button class="ghost tiny" data-act="del-benchmark" title="删除这条基准价">×</button></td>
     </tr>`
@@ -3120,7 +3151,7 @@ function renderBenchmark() {
     .join('')
 
   view.innerHTML = `
-    <p class="hint">${t('基准价是「倍率」的换算参照：倍率供给的价格 = 基准价 × 倍率。')}</p>
+    <p class="hint">${t('基准价是「倍率」的换算参照：倍率供给的价格 = 基准价 × 倍率。币种跟站点卡片上的「报价币种」走——导入前先把它设好，没设就不让导入。')}</p>
     <div class="card">
       <div class="inline-form" style="border-top:none;margin-top:0;padding-top:0">
         <select id="import-provider" style="max-width:210px">${providerOptions || '<option value="">还没有站点</option>'}</select>
