@@ -100,6 +100,8 @@ export function offerCost(offer, settings = {}, benchmarks = {}) {
           : Number(raw) * fx
     return {
       perCall: true,
+      // 这一行实际按哪个币种算的钱（ratio 行是基准价的币种，手填行是站点价目表币种）
+      currency: resolved.currency,
       callPriceUsd: callUsd,
       callPriceCny: callCny,
       inUsdPerMtok: null,
@@ -160,6 +162,8 @@ export function offerCost(offer, settings = {}, benchmarks = {}) {
     inUsdPerMtok,
     outUsdPerMtok,
     blendedUsdPerMtok,
+    // 这一行实际按哪个币种算的钱（ratio 行是基准价的币种，手填行是站点价目表币种）
+    currency: resolved.currency,
     // 缓存读价（人民币/百万 token）；站点没公布时为 null，调用方退回输入价
     cacheReadCnyPerMtok: cacheReadCny,
     cacheReadUsdPerMtok: cacheReadCny === null ? null : cacheReadCny / fx,
@@ -248,7 +252,9 @@ export function rankByModel(offers, settings = {}, benchmarks = {}, isTrusted = 
         siteRatio: r.offer.siteRatio ?? null,
         ratioSource: r.offer.ratioSource ?? null,
         benchmarkKey: r.offer.benchmarkKey ?? null,
-        currency: r.offer.currency,
+        // 显示币种必须跟着「算钱用的币种」走：ratio 行的价格是基准价乘出来的，
+        // 行上残留的 offer.currency 可能是别的口径（曾出现显示美元、按人民币算）
+        currency: r.cost.currency ?? r.offer.currency,
         priceUnit: r.offer.priceUnit,
         // 按次计费行：blended* 全 null、perCall 标位 + 单次价（CNY 展示口径）
         perCall: Boolean(r.cost.perCall),

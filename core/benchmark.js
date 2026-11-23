@@ -140,15 +140,27 @@ export function seedReferenceBenchmarks(modelKeys) {
 export function importBenchmarksFrom(offers, providerId) {
   return mutateBenchmarks((table) => {
     let imported = 0
+    let skipped = 0
     for (const offer of offers) {
       if (offer.providerId !== providerId) continue
       if (offer.pricingMode === 'ratio') continue
-      if (offer.inPrice === null && offer.outPrice === null) continue
+      // 基准价必须是「倍率之前」的原价：倍率模式算价是「基准价 × 倍率」，
+      // 把已经乘过倍率的实际价存成基准，等于让这条链上的每一行都被打两次折
+      // （实测这批条目正好是官方价 × 0.08，价格少算 12.5 倍）。
+      // 落价时站点原价记在 siteBaseIn/siteBaseOut，优先用它；没有才退回实际价。
+      const baseIn = Number.isFinite(Number(offer.siteBaseIn)) ? Number(offer.siteBaseIn) : offer.inPrice
+      const baseOut = Number.isFinite(Number(offer.siteBaseOut)) ? Number(offer.siteBaseOut) : offer.outPrice
+      if (baseIn === null && baseOut === null) continue
+      // 0 价基准毫无意义：倍率乘上去还是 0，会把整行算成免费
+      if (baseIn !== null && Number(baseIn) <= 0 && (baseOut === null || Number(baseOut) <= 0)) {
+        skipped += 1
+        continue
+      }
       const key = offer.modelKey || offer.upstreamName
       table[key] = {
         display: offer.upstreamName,
-        in: offer.inPrice === null ? null : Number(offer.inPrice),
-        out: offer.outPrice === null ? null : Number(offer.outPrice),
+        in: baseIn === null ? null : Number(baseIn),
+        out: baseOut === null ? null : Number(baseOut),
         // 站点的实际价是「站点价目表口径」的钱（offer.currency 由落价时写好），
         // 基准价表照抄这个口径，倍率算出来的价才不会差一个汇率
         currency: normalizeCurrency(offer.currency),
@@ -157,6 +169,6 @@ export function importBenchmarksFrom(offers, providerId) {
       }
       imported += 1
     }
-    return { imported, total: Object.keys(table).length }
+    return { imported, skipped, total: Object.keys(table).length }
   })
 }

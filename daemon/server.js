@@ -1530,6 +1530,9 @@ function applyPricingRow(offer, { match, group, rate, byGroupModel, benchTable, 
     hasBench: Boolean(benchTable[key]),
     // 站点价目表的币种：由站点声明（core/currency.js），与「钱包币种」分开
     currency,
+    // 基准价的币种：倍率模式的价格是「基准价 × 倍率」，钱在基准价那个币种里，
+    // 不是站点报价的币种——不传下去就会出现「按人民币算、标美元」的行
+    benchCurrency: benchTable[key]?.currency ?? null,
   })
   // 必须归一化：站点令牌列表里的分组名常带尾随空格，直接写进去会和
   // syncOffers 里归一化过的去重键永远对不上，每同步一轮多插一整套行
@@ -2409,6 +2412,7 @@ route('POST', /^\/api\/benchmarks\/import-plaza$/, async (ctx) => {
   const result = await bench.mutateBenchmarks((table) => {
     const added = []
     let skipped = 0
+    let zeroPriced = 0
     for (const model of pricing.models) {
       const modelKey = inv.normalizeModelKey(model.name)
       if (!modelKey) continue
@@ -2420,10 +2424,22 @@ route('POST', /^\/api\/benchmarks\/import-plaza$/, async (ctx) => {
         skipped += 1
         continue
       }
+      // 基准价必须存「倍率之前」的原价：倍率模式算价是「基准价 × 倍率」，
+      // 而广场给的 inPrice 已经乘过分组倍率（core/model-plaza.js），照抄进基准表
+      // 就是让每个倍率行被打两次折（实测差 12.5 倍）。baseIn/baseOut 是原价，
+      // 拿不到才退回实际价（channels 源没有倍率，两者相等）。
+      const baseIn = model.baseIn === undefined ? model.inPrice : model.baseIn
+      const baseOut = model.baseOut === undefined ? model.outPrice : model.baseOut
+      // 0 价基准会把整行算成免费，宁可不收
+      if (baseIn !== null && baseIn !== undefined && Number(baseIn) <= 0 && (baseOut === null || baseOut === undefined || Number(baseOut) <= 0)) {
+        zeroPriced += 1
+        skipped += 1
+        continue
+      }
       table[modelKey] = {
         display: model.name,
-        in: model.inPrice,
-        out: model.outPrice,
+        in: baseIn === null || baseIn === undefined ? null : Number(baseIn),
+        out: baseOut === null || baseOut === undefined ? null : Number(baseOut),
         offPeakIn: null,
         offPeakOut: null,
         // 基准价表照抄该站的价目表口径（默认美元）——标错币种会让所有
@@ -2432,9 +2448,9 @@ route('POST', /^\/api\/benchmarks\/import-plaza$/, async (ctx) => {
         source: `${pricing.source}:${provider.id}`,
         updatedAt: new Date().toISOString(),
       }
-      added.push({ modelKey, in: model.inPrice, out: model.outPrice })
+      added.push({ modelKey, in: baseIn, out: baseOut })
     }
-    return { added, skipped }
+    return { added, skipped, zeroPriced }
   })
 
   return {
@@ -2442,9 +2458,137 @@ route('POST', /^\/api\/benchmarks\/import-plaza$/, async (ctx) => {
     plazaBenchResult: {
       added: result.added.length,
       skipped: result.skipped,
+      zeroPriced: result.zeroPriced,
       total: pricing.models.length,
       source: pricing.source,
       items: result.added,
+    },
+  }
+})
+
+// 基准价表「按原价口径重建」：把表里已经乘过倍率的条目（plaza / channels /
+// imported 三种来源）用站点当前的价目表原价重算一遍。默认 dry-run，只返回
+// from → to；`{apply:true}` 才落盘。手填（manual）、参考价（reference）、
+// 种子（seed）三种来源一律不动——那是用户或官方给的数，不是我们抄错的。
+route('POST', /^\/api\/benchmarks\/rebuild$/, async (ctx) => {
+  const db = await store.readDb()
+  const apply = Boolean(ctx.body.apply)
+  const only = Array.isArray(ctx.body.providers) && ctx.body.providers.length > 0
+    ? new Set(ctx.body.providers.map(String))
+    : null
+
+  const targets = db.providers.filter((p) => !only || only.has(p.id))
+  const fresh = new Map() // modelKey -> { baseIn, baseOut, currency, source }
+  const providersReport = []
+  for (const provider of targets) {
+    const adminToken = await inv.revealAdminToken(provider.id)
+    if (!adminToken) {
+      providersReport.push({ providerId: provider.id, provider: provider.name, ok: false, error: '没有站点令牌' })
+      continue
+    }
+    try {
+      const pricing = await providers.fetchProviderPricing({ baseUrl: inv.apiBaseOf(provider), adminToken })
+      // 站点没声明价目表币种时留 null：宁可不动条目上原有的币种，
+      // 也不要把人民币标价的站悄悄改成美元（那正好是差 7 倍的错）
+      const currency = declaredPriceCurrency(provider)
+      let models = 0
+      for (const model of pricing.models) {
+        const key = inv.normalizeModelKey(model.name)
+        if (!key) continue
+        const baseIn = model.baseIn === undefined ? model.inPrice : model.baseIn
+        const baseOut = model.baseOut === undefined ? model.outPrice : model.baseOut
+        if (baseIn === null && baseOut === null) continue
+        if (baseIn !== null && Number(baseIn) <= 0 && (baseOut === null || Number(baseOut) <= 0)) continue
+        // 先到的站优先：同一模型在多站都能读到原价时，取第一个可读的
+        if (!fresh.has(key)) {
+          fresh.set(key, {
+            baseIn: baseIn === null || baseIn === undefined ? null : Number(baseIn),
+            baseOut: baseOut === null || baseOut === undefined ? null : Number(baseOut),
+            currency,
+            source: `${pricing.source}:${provider.id}`,
+          })
+        }
+        models += 1
+      }
+      providersReport.push({ providerId: provider.id, provider: provider.name, ok: true, models, source: pricing.source })
+    } catch (error) {
+      providersReport.push({ providerId: provider.id, provider: provider.name, ok: false, error: error.message })
+    }
+  }
+
+  const REBUILDABLE = ['plaza:', 'channels:', 'imported:']
+  const changes = []
+  const table = await bench.readBenchmarks()
+  for (const [modelKey, entry] of Object.entries(table)) {
+    const src = String(entry?.source || '')
+    if (!REBUILDABLE.some((prefix) => src.startsWith(prefix))) continue
+    const hit = fresh.get(modelKey)
+    if (!hit) continue
+    const sameIn = Number(entry.in ?? null) === Number(hit.baseIn ?? null) || (entry.in === null && hit.baseIn === null)
+    const sameOut = Number(entry.out ?? null) === Number(hit.baseOut ?? null) || (entry.out === null && hit.baseOut === null)
+    // 币种只在这站明确声明了的时候才动；没声明就沿用条目原来的
+    const nextCurrency = hit.currency ? normalizeCurrency(hit.currency) : normalizeCurrency(entry.currency)
+    if (sameIn && sameOut && nextCurrency === normalizeCurrency(entry.currency)) continue
+    changes.push({
+      modelKey,
+      display: entry.display || modelKey,
+      fromIn: entry.in ?? null,
+      fromOut: entry.out ?? null,
+      toIn: hit.baseIn,
+      toOut: hit.baseOut,
+      fromSource: src,
+      toSource: hit.source,
+      currency: nextCurrency,
+      currencyChanged: nextCurrency !== normalizeCurrency(entry.currency),
+    })
+  }
+
+  let offersRelabeled = 0
+  if (apply && changes.length > 0) {
+    const byKey = new Map(changes.map((c) => [c.modelKey, c]))
+    await bench.mutateBenchmarks((t) => {
+      for (const change of changes) {
+        t[change.modelKey] = {
+          ...t[change.modelKey],
+          in: change.toIn,
+          out: change.toOut,
+          currency: change.currency,
+          source: change.toSource,
+          updatedAt: new Date().toISOString(),
+        }
+      }
+      return null
+    })
+    // 倍率行没有自己的报价，币种就是基准价的币种；顺手把标签对齐，
+    // 免得「显示美元、按人民币算」的行继续留在库里
+    const relabel = await store.mutate((d) => {
+      let n = 0
+      for (const offer of d.offers) {
+        if (offer.pricingMode !== 'ratio') continue
+        const key = offer.benchmarkKey || offer.modelKey || offer.upstreamName
+        const change = byKey.get(key) || (fresh.has(key) ? { currency: fresh.get(key).currency } : null)
+        if (!change || !change.currency) continue
+        if (offer.currency === change.currency && offer.currencySource === 'bench') continue
+        offer.currency = change.currency
+        offer.currencySource = 'bench'
+        offer.updatedAt = new Date().toISOString()
+        n += 1
+      }
+      return n
+    })
+    offersRelabeled = relabel
+  }
+
+  return {
+    ...(await buildState()),
+    benchRebuild: {
+      applied: apply && changes.length > 0,
+      scanned: Object.keys(table).length,
+      freshModels: fresh.size,
+      providers: providersReport,
+      changes: changes.slice(0, 300),
+      changedCount: changes.length,
+      offersRelabeled,
     },
   }
 })

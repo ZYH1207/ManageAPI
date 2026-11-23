@@ -750,7 +750,7 @@ export async function recordProbe(record) {
  * 把币种写对——广场/channels 不带币种字段，以前这里猜 'CNY'，美元标价站的价
  * 会被当成人民币，`offerCost` 再除一次汇率，比价直接便宜 6.68 倍。
  */
-export function applySitePricing(offer, { exact, rate, sitePrice, hasBench, currency }) {
+export function applySitePricing(offer, { exact, rate, sitePrice, hasBench, currency, benchCurrency }) {
   const siteRatio = typeof rate === 'number' ? rate : null
   // 调用方没给（站点还没声明也没推断出来）就沿用这条供给自己的币种：
   // 存量数据里币种本来就是对的，不能被一个默认值静默翻转
@@ -849,6 +849,11 @@ export function applySitePricing(offer, { exact, rate, sitePrice, hasBench, curr
     offer.pricingMode = 'ratio'
     offer.inPrice = null
     offer.outPrice = null
+    // 倍率模式没有自己的报价：价格由「基准价 × 倍率」算出来，币种就是基准价的币种。
+    // 以前这里不写币种，行上留着上次落价的币种 → 显示美元、实际按人民币算，
+    // 用户一旦切成手填，同一串数字就被当美元读，差一个汇率
+    offer.currency = normalizeCurrency(benchCurrency || offer.currency)
+    offer.currencySource = 'bench'
     return 'ratio'
   }
 

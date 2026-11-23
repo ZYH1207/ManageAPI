@@ -1071,6 +1071,17 @@ Object.assign(EN, {
   '自动 · {ago}更新': 'Auto · updated {ago}',
   '还没拉取过自动汇率': 'No auto rate fetched yet',
   '刷新汇率': 'Refresh rate',
+  '按原价重建': 'Rebuild from list prices',
+  '按站点当前价目表的原价重算基准价：只改「广场/渠道/从站导入」这三种来源，手填与参考价不动':
+    'Recompute benchmark prices from each site’s current list prices (only plaza / channels / imported entries; manual and reference entries stay untouched)',
+  '基准价已经都是原价口径了，没有要改的': 'Every benchmark price is already on list-price basis — nothing to change',
+  '没读到任何站点的价目表原价，无法重建': 'Could not read any site’s list prices — nothing to rebuild',
+  '这 {n} 条基准价存的是「乘过倍率之后」的价格，会让倍率供给被打两次折。按原价重算：':
+    '{n} benchmark prices hold already-discounted prices, which double-discounts every ratio-based supply. Recompute from list prices:',
+  '改完之后，用这些基准价的倍率供给价格会涨回真实水平。确认写入？':
+    'After this, ratio-based supplies using these benchmarks will rise back to their real prices. Write the changes?',
+  '基准价已重建 {n} 条': 'Rebuilt {n} benchmark prices',
+  '，{m} 条倍率供给的币种标签已对齐': ', and aligned the currency label on {m} ratio-based supplies',
   '恢复自动': 'Back to auto',
   '汇率已更新（手动）': 'Rate saved (manual)',
   '汇率已更新：1 美元 ≈ {rate} 元': 'Rate updated: 1 USD ≈ {rate} CNY',

@@ -3116,6 +3116,7 @@ function renderBenchmark() {
       </label>
       <span class="fx-note">${fxNoteHtml()}</span>
       <button class="ghost tiny" data-act="fx-refresh">${t('刷新汇率')}</button>
+      <button class="ghost tiny" data-act="bench-rebuild" title="${t('按站点当前价目表的原价重算基准价：只改「广场/渠道/从站导入」这三种来源，手填与参考价不动')}">${t('按原价重建')}</button>
       ${fxState().manual
         ? `<button class="ghost tiny" data-act="fx-auto">${t('恢复自动')}</button>`
         : ''}
@@ -5816,6 +5817,48 @@ document.addEventListener('change', async (event) => {
   }
 })
 document.addEventListener('click', async (event) => {
+  if (event.target.closest('[data-act="bench-rebuild"]')) {
+    const button = event.target.closest('[data-act="bench-rebuild"]')
+    await withBusy(button, async () => {
+      try {
+        // 先 dry-run：只读一遍各站价目表，把「现在 → 按原价」列出来给用户看
+        const preview = await api('POST', '/api/benchmarks/rebuild', {})
+        const plan = preview.benchRebuild
+        if (!plan || plan.changedCount === 0) {
+          toast(
+            plan && plan.freshModels > 0
+              ? t('基准价已经都是原价口径了，没有要改的')
+              : t('没读到任何站点的价目表原价，无法重建'),
+            true,
+          )
+          return
+        }
+        const lines = plan.changes
+          .slice(0, 12)
+          .map((c) => `${c.display}：${c.fromIn ?? '—'} → ${c.toIn ?? '—'}（${c.currency}）`)
+          .join('\n')
+        const more = plan.changedCount > 12 ? `\n…另有 ${plan.changedCount - 12} 条` : ''
+        const okToApply = confirm(
+          t('这 {n} 条基准价存的是「乘过倍率之后」的价格，会让倍率供给被打两次折。按原价重算：', { n: plan.changedCount }) +
+            `\n\n${lines}${more}\n\n` +
+            t('改完之后，用这些基准价的倍率供给价格会涨回真实水平。确认写入？'),
+        )
+        if (!okToApply) return
+        const applied = await api('POST', '/api/benchmarks/rebuild', { apply: true })
+        state = applied
+        render()
+        const done = applied.benchRebuild
+        toast(
+          t('基准价已重建 {n} 条', { n: done.changedCount }) +
+            (done.offersRelabeled ? t('，{m} 条倍率供给的币种标签已对齐', { m: done.offersRelabeled }) : ''),
+        )
+      } catch (error) {
+        toast(error.message, true)
+      }
+    })
+    return
+  }
+
   if (event.target.id === 'btn-plaza-benchmark') {
     const providerId = $('#import-provider')?.value
     if (!providerId) {
