@@ -302,6 +302,9 @@ const EN = {
   '还没有站点令牌：余额、公告、分组识别暂时用不了': 'No site token yet: balance, announcements and group detection stay disabled',
   '自动判定': 'Auto-detected',
   '已判定': 'detected',
+  '无证据': 'no evidence',
+  '一次都没成功过：质量按“未知”的先验 0.5 折算，不再当 1.0（否则没证据的站会和健康站同权）':
+    'Never succeeded once: quality uses the "unknown" prior 0.5 instead of 1.0, so an unevidenced site cannot tie with a healthy one',
   '决策侧重': 'Routing preference',
   '排序键': 'Sort key',
   '价格': 'Price',

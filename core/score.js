@@ -457,6 +457,14 @@ export function longTermScores(
   return result
 }
 
+/** 没有质量证据时的先验质量：既不是「完美」（1.0），也不是「完全坏」（0.05）。
+ *  为什么不是 1.0：以前 null 按 1 算，等于把「一次都没成功过」当成「完全可信」，
+ *  一条没证据的供给在性价比档里和健康站同权（有效成本 = 名义价），
+ *  只要打开「放行可疑供给」就会排到确实可用、只是不太稳的站前面。
+ *  取 0.5：有效成本变成名义价的 2 倍——有证据且质量 ≥0.5 的站仍然赢它，
+ *  质量更差的站也仍然输给它，位置落在中间，符合「不知道」的语义。 */
+export const NO_EVIDENCE_QUALITY = 0.5
+
 /**
  * 有效成本 = 名义价格 ÷ 质量系数。
  * 直观含义：为「一份可信输出」实际付了多少钱。
@@ -469,9 +477,11 @@ export function effectiveCost(priceUsdPerMtok, quality) {
   // 只有没有质量数据（null/undefined）才按 1 算；quality 恰为 0（探针全失败/
   // 流量全败）是「完全坏」，走 0.05 下限把成本放大 20 倍——此前 0 被当成
   // 「没探过」按 1 算，完全坏的站反而不降权
+  // 三档语义必须分得开：null = 没证据（先验 0.5）、0 = 探针/流量全败（下限 0.05 重罚）、
+  // 其余按实测。此前 null 和「质量 1.0」同权，等于奖励没测过的供给
   const q =
     quality === null || quality === undefined || !Number.isFinite(quality)
-      ? 1
+      ? NO_EVIDENCE_QUALITY
       : Math.max(quality, 0.05)
   return priceUsdPerMtok / q
 }

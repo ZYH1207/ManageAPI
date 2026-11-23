@@ -2421,7 +2421,11 @@ function renderDecision() {
           }</td>
           <td>${candidate.group ? `<span class="badge ${groupChipOf(candidate.providerId, candidate.group)}">${esc(candidate.group)}</span>` : '<span style="color:var(--faint)">默认</span>'}</td>
           <td class="num">${candidate.price === null ? '—' : priceText(candidate.price)}</td>
-          <td class="num">${candidate.quality === null ? '—' : candidate.quality.toFixed(2)}${
+          <td class="num">${
+            candidate.quality === null
+              ? `<span style="color:var(--faint)" title="${t('一次都没成功过：质量按“未知”的先验 0.5 折算，不再当 1.0（否则没证据的站会和健康站同权）')}">${t('无证据')}</span>`
+              : candidate.quality.toFixed(2)
+          }${
             candidate.confidence && candidate.confidence !== 'high'
               ? `<div class="sub">${candidate.samples} ${t('样本')}</div>`
               : ''

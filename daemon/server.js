@@ -2794,11 +2794,72 @@ export async function flushGatewayBuffers() {
   }
 }
 
-function openaiError(res, status, message, type = 'invalid_request_error') {
+function openaiError(res, status, message, type = 'invalid_request_error', details = null) {
   if (res.writableEnded) return
-  const body = JSON.stringify({ error: { message, type, code: status } })
+  const error = { message, type, code: status }
+  // 结构化原因：客户端/日志不必再去正则抠那句中文
+  if (details) error.details = details
+  const body = JSON.stringify({ error })
   res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' })
   res.end(body)
+}
+
+/**
+ * 「库里明明有这个模型，网关却说没有」的三种原因，逐条数出来。
+ *
+ * 以前这三类（命中忽略名单 / 站点暂停 / 已下架）全部收敛成一句「没有可用的 X」，
+ * 而且提示里的「已同步的模型」列表本身也是过滤后的——用户看到的现象是
+ * 「模型明明在比价页，网关说没有」，无从判断该去改站点还是改忽略名单。
+ * 实测这类模型有 53 个（deepseek-v4-pro、glm-5.3-flash、kimi-k3…）。
+ */
+function blockedModelReport(db, model) {
+  const key = inv.normalizeModelKey(model)
+  const pausedIds = new Set(db.providers.filter((p) => p.paused).map((p) => p.id))
+  const ignored = new Set(
+    (db.settings?.ignoredModels || []).map((name) => inv.normalizeModelKey(String(name))),
+  )
+  const report = { total: 0, ignored: 0, paused: 0, delisted: 0, ignoredListed: false, pausedProviders: [] }
+  const pausedNames = new Set()
+  for (const offer of db.offers) {
+    const offerKey = inv.normalizeModelKey(offer.modelKey || offer.upstreamName || '')
+    const sameName = offerKey === key || String(offer.upstreamName || '').trim() === String(model).trim()
+    if (!sameName) continue
+    report.total += 1
+    if (offer.delistedAt) {
+      report.delisted += 1
+      continue
+    }
+    if (pausedIds.has(offer.providerId)) {
+      report.paused += 1
+      const provider = db.providers.find((item) => item.id === offer.providerId)
+      if (provider) pausedNames.add(provider.name)
+      continue
+    }
+    if (ignored.has(offerKey)) report.ignored += 1
+  }
+  report.ignoredListed = ignored.has(key)
+  report.pausedProviders = [...pausedNames].slice(0, 5)
+  return report
+}
+
+/** 把 blockedModelReport 翻成一句能照着做的话；库里根本没有这个模型时返回 null。 */
+function blockedModelHint(model, report) {
+  if (!report || report.total === 0) return null
+  const bits = []
+  if (report.ignored) bits.push(`${report.ignored} 条在忽略名单里`)
+  if (report.paused) {
+    const names = report.pausedProviders.length ? `（${report.pausedProviders.join('、')}）` : ''
+    bits.push(`${report.paused} 条所属站点已暂停${names}`)
+  }
+  if (report.delisted) bits.push(`${report.delisted} 条已下架`)
+  if (bits.length === 0) return null
+  const todo = []
+  if (report.ignored) todo.push('到「探针」页的忽略名单里把它移除')
+  if (report.paused) todo.push('到「站点」页恢复对应站点')
+  if (report.delisted) todo.push('重新同步一次模型列表')
+  return `没有可用的 ${model}：库里有 ${report.total} 条供给，其中${bits.join('、')}。${
+    todo.length ? `${todo.join('，')}，再试。` : ''
+  }`
 }
 
 function authorizeGateway(req, db) {
@@ -2905,6 +2966,10 @@ async function forwardToUpstream({ candidate, body, res, attemptIndex, pool = 'p
   const headers = {
     'X-ManageAPI-Provider': encodeURIComponent(candidate.provider.name),
     'X-ManageAPI-Attempts': String(attemptIndex + 1),
+    // 这条候选本来不该被用（评分不健康 / 首字超限），是「全都不合格只能硬试」
+    // 才轮到它。以前这个状态只存在于路由注释里，客户端无法区分
+    // 「选了个健康站」和「所有站都不合格、硬试出来的」——补一个显式标记
+    ...(candidate.routable ? {} : { 'X-ManageAPI-Degraded': '1' }),
     'X-ManageAPI-Quality': candidate.quality === null ? 'unknown' : candidate.quality.toFixed(2),
     // 这次到底是免费池、付费池，还是免费池不够用后回落到的付费池——
     // 回落是显式开关（settings.allowPaidFallback），但客户端仍应能看出来
@@ -3199,22 +3264,33 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
         )
       }
       const available = listPublicModels({ offers: split.free, scores }).map((m) => m.id)
+      const report = blockedModelReport(db, model)
+      const hint = blockedModelHint(model, report)
       return openaiError(
         res,
         404,
-        `免费池里没有 ${model}。免费模型：${available.slice(0, 20).join(', ') || '（无，去「免费」页看看）'}`,
-        'model_not_in_free_pool',
+        hint
+          ? `${hint}（免费池现在可用：${available.slice(0, 20).join(', ') || '无'}）`
+          : `免费池里没有 ${model}。免费模型：${available.slice(0, 20).join(', ') || '（无，去「免费」页看看）'}`,
+        hint ? 'model_blocked' : 'model_not_in_free_pool',
+        { model, pool: 'free', blocked: report },
       )
     }
   }
 
   if (candidates.length === 0) {
     const available = listPublicModels({ offers: split.paid, scores }).map((m) => m.id)
+    // 先分清「库里没有」和「有但被挡住」——这两件事的处理办法完全不同
+    const report = blockedModelReport(db, model)
+    const hint = blockedModelHint(model, report)
     return openaiError(
       res,
       404,
-      `没有可用的 ${model}。已同步的模型：${available.slice(0, 20).join(', ') || '（无，先去同步模型列表）'}`,
-      'model_not_found',
+      hint
+        ? `${hint}已同步的模型：${available.slice(0, 20).join(', ') || '（无）'}`
+        : `没有可用的 ${model}。已同步的模型：${available.slice(0, 20).join(', ') || '（无，先去同步模型列表）'}`,
+      hint ? 'model_blocked' : 'model_not_found',
+      { model, pool: 'paid', blocked: report },
     )
   }
 

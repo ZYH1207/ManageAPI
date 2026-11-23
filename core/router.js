@@ -13,7 +13,9 @@
  * 由「价格 ÷ 质量」自己去权衡——质量差一半，成本就翻倍，贵不到哪里去才轮得到它。
  * 首字上限是独立的显式设置，不受这个开关影响。
  *
- * 全都不可用时不做硬拒绝——按价格排下去试，但在响应头标记 degraded。
+ * 全都不可用时不做硬拒绝——按排序键排下去试（routable=false 的留在候选尾部），
+ * 并在响应头打 X-ManageAPI-Degraded: 1，让客户端知道这一单是「硬试」出来的。
+ * 库里根本没有候选时不是降级，而是 404/402，并带 blockedModelReport 的结构化原因。
  * 个人工具里「能用」通常比「严格」更重要。
  */
 import { offerCost } from './pricing.js'
@@ -80,6 +82,7 @@ export function selectCandidates({ offers, providers, credentials, scores, bench
     if (score?.stale) reasons.push('评分过期')
     // 探针全被额度/限流挡住时，可用率没有分母（null）——这不是「能用」，
     // 而是「没有任何可靠性证据」，必须说清楚，否则用户看不懂为什么没选它
+    if (!score || score.samples === 0) reasons.push('还没探测过')
     if (score && score.availability === null && !score.blocked) reasons.push('没有可信样本')
     if (typeof score?.availability === 'number' && score.availability < THRESHOLDS.availability) {
       reasons.push(`可用率 ${Math.round(score.availability * 100)}%`)
@@ -98,6 +101,9 @@ export function selectCandidates({ offers, providers, credentials, scores, bench
       // 美元口径的名义单价：排序用这个（CNY 值只是展示口径，见上）
       priceUsd,
       quality,
+      // 质量是否有实测证据：null 不是「质量 0」，而是「一次都没成功过」；
+      // 有效成本里按 NO_EVIDENCE_QUALITY（0.5）算，界面要能看出这个区别
+      qualityKnown: quality !== null && quality !== undefined,
       // probeOk 是探针的原始判定；routable 是「这一单会不会考虑它」
       probeOk: isRoutable(score),
       routable: (allowUntrusted || isRoutable(score)) && !tooSlow,
@@ -175,6 +181,7 @@ export function explain(candidates) {
     price: c.price,
     priceUsd: c.priceUsd,
     quality: c.quality,
+    qualityKnown: c.qualityKnown,
     effective: c.effective,
     // 当前档位与它真正用来排序的值：决策页「排序键」列直接显示这个值，
     // 否则用户切到价格档后看到「有效成本」一列的数字和排名对不上
