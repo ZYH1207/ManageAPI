@@ -416,6 +416,91 @@ export async function revealSecret(credentialId) {
 // ------------------------------------------------------------------- offers
 
 /**
+ * 供给的去重键：分组 + 归一化后的模型名。
+ *
+ * 分组是 Key 的属性（同一把 Key 才能拉到同一个池），模型名要归一化
+ * ——`Qwen3.8-Max` / `qwen3.8-max` / `qwen3_8_max` 在站点上就是同一个模型，
+ * 按原文比较会让每次同步各插一条，最后比价页同站同模型两行。
+ */
+export function offerKey(group, upstreamName) {
+  return `${normalizeGroup(group)}::${normalizeModelKey(upstreamName)}`
+}
+
+/**
+ * 换分组时把该 Key 名下的行一起迁到新分组。
+ *
+ * 分组只认 Key（`credential.group`），`offer.group` 只是「落价时用的分组快照」。
+ * 以前改了 Key 分组不动行，而同步又按「分组 + 模型名」去重：
+ * 下一次同步就把同名模型当新行插进来，同一模型在旧组、新组各一条。
+ * 所以改分组必须当场迁移，先把键对齐，再落价。
+ */
+export function rekeyCredentialOffers(db, credentialId, nextGroup) {
+  const want = normalizeGroup(nextGroup)
+  let moved = 0
+  for (const offer of db.offers) {
+    if (offer.credentialId !== credentialId) continue
+    if (normalizeGroup(offer.group) === want) continue
+    offer.group = want
+    offer.updatedAt = nowIso()
+    moved += 1
+  }
+  return { moved, group: want }
+}
+
+/**
+ * 合并「同站 + 同 Key + 同模型」的重复行（大小写、换组迁移遗留）。
+ *
+ * 保留哪一条：已定价的优先（手填价 > 倍率 > 未定价），其次保留更早建的那条，
+ * 这样用户手填的价格不会被合并掉。被合并掉的行如果还挂着探针/流量引用，
+ * 这些引用会跟着一起清掉（pruneOfferRefs），避免读到已删除的行。
+ */
+export function planDuplicateMerges(db) {
+  const buckets = new Map()
+  for (const offer of db.offers) {
+    const key = `${offer.providerId}::${offer.credentialId || ''}::${normalizeModelKey(offer.upstreamName)}`
+    if (!buckets.has(key)) buckets.set(key, [])
+    buckets.get(key).push(offer)
+  }
+  const score = (o) => {
+    if (o.inPrice !== null && o.inPrice !== undefined) return 3
+    if (o.pricingMode === 'ratio' && o.ratio !== null && o.ratio !== undefined) return 2
+    return 1
+  }
+  const merged = []
+  const drop = new Set()
+  for (const rows of buckets.values()) {
+    if (rows.length < 2) continue
+    const sorted = [...rows].sort((a, b) => score(b) - score(a) || String(a.listedAt).localeCompare(String(b.listedAt)))
+    const keep = sorted[0]
+    const gone = sorted.slice(1)
+    // 只要其中一条还在售，合并结果就算在售（下线标记只对「本次没返回」有意义）
+    if (gone.some((o) => !o.delistedAt) && keep.delistedAt) keep.delistedAt = null
+    for (const row of gone) drop.add(row.id)
+    merged.push({
+      keepId: keep.id,
+      keepName: keep.upstreamName,
+      providerId: keep.providerId,
+      credentialId: keep.credentialId,
+      modelKey: normalizeModelKey(keep.upstreamName),
+      dropped: gone.map((o) => ({ id: o.id, upstreamName: o.upstreamName, group: o.group })),
+    })
+  }
+  return { merged, drop }
+}
+
+/**
+ * 按 planDuplicateMerges 的结果真正合并（保留已定价的那条，删掉重复）。
+ * 引用（探针/流量）跟着被删的行一起清掉，避免读到不存在的供给。
+ */
+export function mergeDuplicateOffers(db) {
+  const plan = planDuplicateMerges(db)
+  if (!plan.drop.size) return { merged: [], droppedCount: 0 }
+  db.offers = db.offers.filter((o) => !plan.drop.has(o.id))
+  pruneOfferRefs(db, plan.drop)
+  return { merged: plan.merged, droppedCount: plan.drop.size }
+}
+
+/**
  * 真正「在役」的供给：没下线（delistedAt）、站点没暂停（paused）、模型没被忽略（ignoredModels）。
  * 这是三条过滤规则的唯一实现——比价 / 概览 / 智能决策 / 网关 / 探针目标都从这里取，
  * 任何一侧自己再写一遍迟早漂移（曾出过「暂停站点仍被派流量」「下线模型仍被探测白烧额度」）。
@@ -457,15 +542,17 @@ export async function syncOffers(providerId, credentialId, models, group = '') {
     // 按「分组 + 模型名」去重：同一个站的不同分组可以有同名模型。
     // 两侧都走 normalizeGroup——老数据的分组名可能带尾随空格，
     // 只归一化新键会造成「永远匹配不上、每轮多插一批」
+    // 模型名也要归一化：`Qwen3.8-Max` 与 `qwen3.8-max` 是同一个模型，
+    // 只按原文比较会让每次同步各插入一条（比价页同站同模型出现两行）。
     const existing = new Map(
       db.offers
         .filter((o) => o.providerId === providerId)
-        .map((o) => [`${normalizeGroup(o.group)}::${o.upstreamName}`, o]),
+        .map((o) => [offerKey(o.group, o.upstreamName), o]),
     )
     let added = 0
     let revived = 0
     for (const upstreamName of models) {
-      const dedupeKey = `${g}::${upstreamName}`
+      const dedupeKey = offerKey(g, upstreamName)
       if (existing.has(dedupeKey)) {
         const row = existing.get(dedupeKey)
         row.listedAt = nowIso()
@@ -478,7 +565,7 @@ export async function syncOffers(providerId, credentialId, models, group = '') {
         }
         continue
       }
-      db.offers.push({
+      const created = {
         id: newId('o'),
         providerId,
         credentialId: credentialId || null,
@@ -503,7 +590,11 @@ export async function syncOffers(providerId, credentialId, models, group = '') {
         priceUnit: 'per_mtok',
         listedAt: nowIso(),
         updatedAt: nowIso(),
-      })
+      }
+      db.offers.push(created)
+      // 同一批里出现两次同名（站点自己列重了、大小写两版）：新行也要进索引，
+      // 否则只在「进循环之前的快照」里查，本批第二条会再插一条重复
+      existing.set(dedupeKey, created)
       added += 1
     }
     return { added, revived, total: models.length }
@@ -555,7 +646,7 @@ export function hasDuplicateOffer(db, { providerId, group, upstreamName, exclude
       o.id !== excludeId &&
       o.providerId === providerId &&
       normalizeGroup(o.group) === name &&
-      o.upstreamName === upstreamName,
+      normalizeModelKey(o.upstreamName) === normalizeModelKey(upstreamName),
   )
 }
 

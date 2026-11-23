@@ -291,6 +291,18 @@ const EN = {
   '站点信息': 'Site details',
   '名称': 'Name',
   '报价币种': 'Price currency',
+  '整理分组': 'Tidy groups',
+  '把供给行上的分组对齐到它所属的 Key，并合并同站同模型的重复行——先预览再落库':
+    'Align each supply row’s group with the Key it belongs to, and merge duplicate rows for the same site and model — preview first, then apply',
+  '分组都对得上，没有重复行': 'Groups already line up; no duplicate rows',
+  '{n} 条供给的分组和它所属的 Key 不一致：': '{n} supply rows disagree with the group of their Key:',
+  '{n} 组同站同模型的重复行：': '{n} duplicate groups for the same site and model:',
+  '另有 {n} 条供给没挂 Key（无法判断归属，保持不动）': 'Another {n} rows have no Key attached (ownership unknown, left untouched)',
+  '对齐分组不会改变价格，合并重复行会删掉信息较少的那条。确认执行？':
+    'Aligning groups does not change prices; merging duplicates drops the row with less information. Apply now?',
+  '已整理：{m} 条供给归到 Key 的分组，合并 {d} 条重复行':
+    'Tidied: {m} rows moved to their Key’s group, {d} duplicate rows merged',
+  '未分组': 'No group',
   '导入登录响应': 'Import login response',
   '登录响应（JSON，或直接贴 access token）': 'Login response (JSON, or paste the access token)',
   '立即续期': 'Renew now',

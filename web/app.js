@@ -1214,6 +1214,10 @@ function providersHtml({ withForm = true, panel = '', actions = '' } = {}) {
     // 分组胶囊默认只露 6 个：分组多的站（实测 9 个以上）会把卡片撑到翻屏，
     // 「还有 N 个」点开/收起。按站记住展开状态，刷新后保持
     const expanded = expandedGroups.has(p.id)
+    // 分组只认 Key（credential.group）：站点卡上要显示的是「你买的哪个分组」，
+    // 不是「行上落价时记的快照」——两者的区别正是之前「未指定也算一个分组」的来源。
+    const keyGroups = [...new Set(keys.map((k) => (k.group || '').trim()).filter(Boolean))]
+    // 行上的分组（落价快照）仍要统计：倍率面板按它分组，才能一行一行改倍率
     const groupNames = [...new Set(offers.map((o) => o.group || ''))]
     const groupStats = new Map(groupNames.map((groupName) => {
       const groupOffers = offers.filter((o) => (o.group || '') === groupName)
@@ -1234,7 +1238,7 @@ function providersHtml({ withForm = true, panel = '', actions = '' } = {}) {
       const { uniform, mixed, siteRatio, custom } = st
       return `
         <div class="keyrow" data-group-ratio="${esc(groupName)}">
-          <span>${groupName ? esc(groupName) : '<span style="color:var(--faint)">未指定分组</span>'}</span>
+          <span>${groupName ? `<span title="${esc(groupName)}">${esc(groupName)}</span>` : '<span style="color:var(--faint)">未分组</span>'}</span>
           <span class="tail">${st.count} 个模型</span>
           <span class="grow"></span>
           ${mixed ? '<span style="color:var(--warn);font-size:11px">混合</span>' : ''}
@@ -1339,20 +1343,21 @@ function providersHtml({ withForm = true, panel = '', actions = '' } = {}) {
         </div>
 
         <div class="prov-groups">
-          <span class="k">${groupNames.length ? `${groupNames.length} 个分组` : '还没有分组'}</span>
+          <span class="k">${keyGroups.length ? `${keyGroups.length} 个分组` : '未分组'}</span>
           <span class="prov-group-chips">
-            ${(expanded ? groupNames : groupNames.slice(0, 6)).map((g) => {
+            ${(expanded ? keyGroups : keyGroups.slice(0, 6)).map((g) => {
+              // 倍率从「行」取：同一分组下倍率一致才标数字，混合就标「混合」
               const st = groupStats.get(g) || {}
-              // 倍率统一才敢标（混合分组标「混合」，未填只显示名字）——数字色是折扣语义
               const tag = st.mixed
                 ? `<span class="chip-note">${t('混合')}</span>`
                 : st.uniform !== '' && st.uniform !== undefined
                   ? `<span class="ratio-tone ${ratioToneClass(st.uniform)}">×${esc(st.uniform)}</span>`
                   : ''
-              return `<span class="group-chip ${st.chipClass || ''}">${g ? esc(g) : '未指定'}${tag}</span>`
+              // 长分组名（站点真能起 40 字的）在胶囊里截断，悬停看全名
+              return `<span class="group-chip ${groupChipOf(p.id, g)}" title="${esc(g)}">${esc(g)}${tag}</span>`
             }).join('')}
-            ${groupNames.length > 6
-              ? `<button class="group-chip group-more" data-act="group-toggle" data-provider="${esc(p.id)}">${expanded ? t('收起') : t('还有 {n} 个', { n: groupNames.length - 6 })}</button>`
+            ${keyGroups.length > 6
+              ? `<button class="group-chip group-more" data-act="group-toggle" data-provider="${esc(p.id)}">${expanded ? t('收起') : t('还有 {n} 个', { n: keyGroups.length - 6 })}</button>`
               : ''}
           </span>
         </div>
@@ -1413,7 +1418,7 @@ function providersHtml({ withForm = true, panel = '', actions = '' } = {}) {
         ${groupRows ? `
         <div data-pane="rates" class="keylist" style="border-top:1px solid var(--border);padding-top:10px">
           <div class="keyrow" style="border:none;padding-bottom:2px">
-            <span style="color:var(--muted);font-size:12px">分组倍率</span>
+            <span style="color:var(--muted);font-size:12px" title="这里列的是「供给行落价时记下的分组」，不是 Key 上的分组；两边不一致时可以点站点页工具栏的「整理分组」对齐">分组倍率（按落价分组）</span>
             <span class="grow"></span>
             ${
               hasCustom
@@ -1528,8 +1533,9 @@ function syncPanelHtml(data = monitorData || {}) {
 
 function syncActionsHtml() {
   return `
-    <button data-act="monitor-collect">${icon('refresh')}立即同步</button>
-    <button class="primary" data-act="add-provider">${icon('plus')}新增站点</button>`
+    <button data-act="monitor-collect">${icon('refresh')}${t('立即同步')}</button>
+    <button data-act="groups-repair" title="${t('把供给行上的分组对齐到它所属的 Key，并合并同站同模型的重复行——先预览再落库')}">${icon('layers')}${t('整理分组')}</button>
+    <button class="primary" data-act="add-provider">${icon('plus')}${t('新增站点')}</button>`
 }
 
 /** 只重画监控页里的站点卡（搜索、翻页时用，不重新拉数据） */
@@ -5174,6 +5180,44 @@ document.addEventListener('click', async (event) => {
         const parts = [`${r.restored} 个模型已恢复为站点倍率`]
         if (r.noSiteValue?.length) parts.push(`${r.noSiteValue.length} 个没有站点值，需要重新导入`)
         toast(parts.join('，'))
+      } catch (error) {
+        toast(error.message, true)
+      }
+    })
+    return
+  }
+
+  // 整理分组：把行上的分组对齐到 Key、合并重复行（默认只预览）
+  if (action === 'groups-repair') {
+    await withBusy(actionButton, async () => {
+      try {
+        const preview = await api('POST', '/api/groups/repair', {})
+        const plan = preview.groupsRepair
+        if (!plan || (!plan.moves.length && !plan.duplicates.length)) {
+          toast(t('分组都对得上，没有重复行'))
+          return
+        }
+        const moveLines = plan.movesByProvider
+          .slice(0, 8)
+          .map((row) => `${row.provider}：${row.rows} 条（${row.groups.join('、')}）`)
+          .join('\n')
+        const dupLines = plan.duplicates
+          .slice(0, 6)
+          .map((row) => `${row.provider} · ${row.keepName}：合并掉 ${row.dropped.length} 条`)
+          .join('\n')
+        const parts = []
+        if (plan.moves.length) parts.push(t('{n} 条供给的分组和它所属的 Key 不一致：', { n: plan.moves.length }) + `\n${moveLines}`)
+        if (plan.duplicates.length) parts.push(t('{n} 组同站同模型的重复行：', { n: plan.duplicates.length }) + `\n${dupLines}`)
+        if (plan.orphanOffers) parts.push(t('另有 {n} 条供给没挂 Key（无法判断归属，保持不动）', { n: plan.orphanOffers }))
+        const ok = confirm(
+          parts.join('\n\n') + '\n\n' + t('对齐分组不会改变价格，合并重复行会删掉信息较少的那条。确认执行？'),
+        )
+        if (!ok) return
+        const applied = await api('POST', '/api/groups/repair', { apply: true })
+        state = applied
+        render()
+        const done = applied.groupsRepair
+        toast(t('已整理：{m} 条供给归到 Key 的分组，合并 {d} 条重复行', { m: done.offersMoved, d: done.offersMerged }))
       } catch (error) {
         toast(error.message, true)
       }

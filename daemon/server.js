@@ -1383,10 +1383,13 @@ route('POST', /^\/api\/providers\/([\w-]+)\/full-sync$/, async (ctx) => {
   }
 
   await store.mutate((d) => {
+    const migrated = { moved: 0 }
     for (const row of rows) {
       if (!row.matched) continue
       // 手选过分组的 Key：分组归属与倍率都不动（用户买的那一档是商务事实）
       if (row.pinned) continue
+      // 分组只认 Key：先把这把 Key 的行迁到它当前的分组，再落价
+      migrated.moved += inv.rekeyCredentialOffers(d, row.credentialId, row.group).moved
       for (const offer of d.offers) {
         if (offer.providerId !== provider.id) continue
         if (offer.credentialId !== row.credentialId) continue
@@ -1693,8 +1696,14 @@ route('POST', /^\/api\/providers\/([\w-]+)\/apply-group$/, async (ctx) => {
   let viaPercall = 0
   const unmatched = []
   const missingBench = []
+  const report = { migrated: 0, merged: null }
 
   await store.mutate((d) => {
+    // 换分组先把这把 Key 的行一起迁过去：分组只认 Key，行上的 group 只是
+    // 「落价时用的快照」。不迁的话下次同步会按「分组 + 模型名」再插一条，
+    // 同一模型在旧组、新组各一条（RapidApi 实锤）。
+    const migrated = inv.rekeyCredentialOffers(d, target.id, group)
+    report.migrated = migrated.moved
     for (const offer of d.offers) {
       if (offer.providerId !== provider.id) continue
       // 只接管属于这把 Key 的行。优先按 credentialId 精确判断——
@@ -1728,6 +1737,8 @@ route('POST', /^\/api\/providers\/([\w-]+)\/apply-group$/, async (ctx) => {
     }
     // 落完价顺手对齐整站币种：这批行刚变成「有倍率 × 基准价」的证据
     applyCurrencyReconcile(d, planCurrencyReconcile(d, benchTable, fxOfSettings(d)))
+    // 迁移/历史遗留可能留下「同 Key 同模型」的重复行，顺手合并（保留已定价的那条）
+    report.merged = inv.mergeDuplicateOffers(d)
   })
 
   return {
@@ -1745,6 +1756,8 @@ route('POST', /^\/api\/providers\/([\w-]+)\/apply-group$/, async (ctx) => {
       // 明确回传「改的是哪把 Key」，前端据此提示，避免「我改的是第二把，第一把却变了」
       credentialId: target.id,
       credentialLabel: target.label,
+      migrated: report.migrated,
+      merged: report.merged?.droppedCount || 0,
     },
   }
 })
@@ -1805,6 +1818,13 @@ route('POST', /^\/api\/providers\/([\w-]+)\/detect-groups$/, async (ctx) => {
     benchTable = await bench.readBenchmarks()
   }
   const rateOfGroup = new Map(pricing.groups.map((g) => [inv.normalizeGroup(g.name), g.rate]))
+  // 站点只公布一个统一倍率时，没分组的 Key 也能落价——否则「识别分组」对
+  // 无分组站（哈利恩/leekbox/智惠这类）永远一条都不落，而手动「应用分组」
+  // 却会兜底，同一个站两条路径价格口径不一样
+  const publishedRates = pricing.groups.map((g) => g.rate).filter((r) => typeof r === 'number')
+  const uniformRate = publishedRates.length > 0 && publishedRates.every((r) => r === publishedRates[0])
+    ? publishedRates[0]
+    : null
 
   const results = []
   for (const credential of credentials) {
@@ -1812,11 +1832,19 @@ route('POST', /^\/api\/providers\/([\w-]+)\/detect-groups$/, async (ctx) => {
     const hit = providers.matchTokenBySecret(items, secret)
     const group = hit?.group ? String(hit.group) : ''
     if (!group) {
+      // 后台没给分组：能用统一倍率落价就照落（分组留空），落不了再报告
+      const fallbackRate = typeof hit?.rate === 'number' ? hit.rate : uniformRate
       results.push({
         credentialId: credential.id,
         label: credential.label,
         matched: false,
-        reason: hit ? '这把 Key 在后台没有分组' : '后台令牌列表里找不到这把 Key',
+        priceable: typeof fallbackRate === 'number',
+        group: '',
+        rate: typeof fallbackRate === 'number' ? fallbackRate : null,
+        reason: hit
+          ? '这把 Key 在后台没有分组：按站点统一倍率落价'
+          : '后台令牌列表里找不到这把 Key：按站点统一倍率落价',
+        updated: 0,
       })
       continue
     }
@@ -1830,6 +1858,7 @@ route('POST', /^\/api\/providers\/([\w-]+)\/detect-groups$/, async (ctx) => {
       credentialId: credential.id,
       label: credential.label,
       matched: true,
+      priceable: true,
       group,
       tokenName: hit.name || '',
       rate,
@@ -1839,15 +1868,20 @@ route('POST', /^\/api\/providers\/([\w-]+)\/detect-groups$/, async (ctx) => {
     })
   }
 
+  let dedupe = { merged: [], droppedCount: 0 }
+  let detectMigrated = 0
   // 按每把 Key 自己的分组落倍率。只动属于该 Key 的行，互不干扰。
   // 落价三分支（免费优先 / 倍率模式 / 广场价×倍率）与 apply-group 共用
   // inv.applySitePricing——两处此前各写一遍，细节已经漂移过一次
   await store.mutate((d) => {
+    const migrate = { moved: 0 }
     for (const row of results) {
-      if (!row.matched) continue
+      if (!row.priceable) continue
       // 手选过分组的 Key：分组归属与倍率都不动（用户买的那一档是商务事实），
       // 只在结果里报告后台识别到的分组供参考
       if (row.pinned) continue
+      // 分组只认 Key：先把这把 Key 的行迁到它当前的分组，再落价
+      migrate.moved += inv.rekeyCredentialOffers(d, row.credentialId, row.group).moved
       for (const offer of d.offers) {
         if (offer.providerId !== provider.id) continue
         if (offer.credentialId !== row.credentialId) continue
@@ -1873,6 +1907,8 @@ route('POST', /^\/api\/providers\/([\w-]+)\/detect-groups$/, async (ctx) => {
     }
     // 同 apply-group：识别分组后这批行有了倍率证据，立刻对齐整站币种
     applyCurrencyReconcile(d, planCurrencyReconcile(d, benchTable, fxOfSettings(d)))
+    dedupe = inv.mergeDuplicateOffers(d)
+    detectMigrated = migrate.moved
   })
 
   return {
@@ -1884,7 +1920,97 @@ route('POST', /^\/api\/providers\/([\w-]+)\/detect-groups$/, async (ctx) => {
       matched: results.filter((r) => r.matched).length,
       pricingError,
       results,
+      migrated: detectMigrated,
+      merged: dedupe.droppedCount || 0,
     },
+  }
+})
+
+/**
+ * 分组体检 + 修复：把「行上的分组」对齐到它所属 Key 的分组，并合并重复行。
+ *
+ * 分组只认 Key（`credential.group`）。行上的 `offer.group` 是「落价时用的快照」，
+ * 历史原因会漂移：改了 Key 分组却没迁行、同一模型大小写不同各插一条、
+ * 站点卡的「N 个分组」把空分组也算成一个。这里一次性整理干净。
+ *
+ * 默认只预览（dry-run），带 `{apply:true}` 才落库——这两步会改行数与分组归属，
+ * 先让用户看清楚再点头。
+ */
+route('POST', /^\/api\/groups\/repair$/, async (ctx) => {
+  const apply = Boolean(ctx.body?.apply)
+  const db = await store.readDb()
+  const credOf = new Map(db.credentials.map((c) => [c.id, c]))
+  const providerOf = new Map(db.providers.map((p) => [p.id, p]))
+
+  const moves = []
+  let orphans = 0
+  for (const offer of db.offers) {
+    const credential = offer.credentialId ? credOf.get(offer.credentialId) : null
+    if (!credential) {
+      orphans += 1
+      continue
+    }
+    const want = inv.normalizeGroup(credential.group)
+    const have = inv.normalizeGroup(offer.group)
+    if (want === have) continue
+    moves.push({
+      offerId: offer.id,
+      providerId: offer.providerId,
+      provider: providerOf.get(offer.providerId)?.name || offer.providerId,
+      credentialId: credential.id,
+      credential: credential.label,
+      upstreamName: offer.upstreamName,
+      from: have,
+      to: want,
+    })
+  }
+
+  const plan = inv.planDuplicateMerges(db)
+  const duplicates = plan.merged.map((row) => ({
+    ...row,
+    provider: providerOf.get(row.providerId)?.name || row.providerId,
+    credential: credOf.get(row.credentialId)?.label || '',
+  }))
+
+  const byProvider = []
+  const map = new Map()
+  for (const move of moves) {
+    if (!map.has(move.providerId)) map.set(move.providerId, { providerId: move.providerId, provider: move.provider, rows: 0, keys: new Set(), groups: new Set() })
+    const entry = map.get(move.providerId)
+    entry.rows += 1
+    entry.keys.add(move.credential)
+    entry.groups.add(`${move.from || '∅'} → ${move.to || '∅'}`)
+  }
+  for (const entry of map.values()) {
+    byProvider.push({ ...entry, keys: [...entry.keys], groups: [...entry.groups] })
+  }
+
+  const report = {
+    applied: apply,
+    moves,
+    movesByProvider: byProvider,
+    duplicates,
+    orphanOffers: orphans,
+  }
+  if (!apply || (!moves.length && !duplicates.length)) {
+    return { ...(await buildState()), groupsRepair: { ...report, offersMoved: 0, offersMerged: 0 } }
+  }
+
+  const result = await store.mutate((d) => {
+    const touched = new Set()
+    for (const move of moves) touched.add(move.credentialId)
+    let moved = 0
+    for (const credentialId of touched) {
+      const credential = d.credentials.find((c) => c.id === credentialId)
+      if (!credential) continue
+      moved += inv.rekeyCredentialOffers(d, credentialId, credential.group).moved
+    }
+    const merged = inv.mergeDuplicateOffers(d)
+    return { moved, merged: merged.droppedCount || 0 }
+  })
+  return {
+    ...(await buildState()),
+    groupsRepair: { ...report, applied: true, offersMoved: result.moved, offersMerged: result.merged },
   }
 })
 
