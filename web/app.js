@@ -3070,26 +3070,45 @@ function renderBenchmark() {
   }
   const currencyCell = (key, entry) => {
     const declared = declaredCurrenciesOf(key)
-    const refs = usageByKey.get(String(key).toLowerCase())?.size || 0
-    const matches = declared.size === 1 && declared.has(entry.currency)
-    if (matches) {
-      const who = [...(usageByKey.get(String(key).toLowerCase()) || [])]
-        .map((id) => state.providers.find((p) => p.id === id)?.name || id)
-        .join('、')
-      return `<span class="mono" title="${esc(t('跟站点声明一致：{names} 的报价币种就是它。要改去站点卡片改「报价币种」。', { names: who }))}">${esc(entry.currency || 'USD')}</span>`
-    }
-    const why =
-      declared.size > 1
-        ? t('引用它的站点声明了不同币种（{list}），只能由你定一个', { list: [...declared].join(' / ') })
-        : declared.size === 1
-          ? t('这条基准价跟引用站点的声明不一致（站点说 {c}）', { c: [...declared][0] })
-          : refs === 0
-            ? t('没有任何供给引用它，币种随便定（不影响钱）')
-            : t('引用它的站点还没声明报价币种')
-    return `<select data-field="currency" style="width:70px" title="${esc(why)}">
-          <option value="USD" ${entry.currency !== 'CNY' ? 'selected' : ''}>USD</option>
-          <option value="CNY" ${entry.currency === 'CNY' ? 'selected' : ''}>CNY</option>
+    const ids = usageByKey.get(String(key).toLowerCase())
+    const refs = ids?.size || 0
+    const source = String(entry.source || 'manual')
+    const shown = entry.currency || 'USD'
+    // 只有「币种没法从站点声明推出来」时才给下拉：
+    //   1) 多个引用站点声明了不同币种 → 只能由人定
+    //   2) 条目与唯一声明不一致 → 数据已经脏了，得让人改
+    //   3) 手填条目且没人引用 → 没有任何外部来源可依
+    // 其余一律只读：没人引用的历史条目、以及站点还没声明的情况，都不该让人手改
+    const editable =
+      declared.size > 1 ||
+      (declared.size === 1 && !declared.has(shown)) ||
+      (declared.size === 0 && refs === 0 && source === 'manual')
+    if (editable) {
+      const why =
+        declared.size > 1
+          ? t('引用它的站点声明了不同币种（{list}），只能由你定一个', { list: [...declared].join(' / ') })
+          : declared.size === 1
+            ? t('这条基准价跟引用站点的声明不一致（站点说 {c}）', { c: [...declared][0] })
+            : t('手填条目，没有站点可依，币种由你定')
+      return `<select data-field="currency" style="width:70px" title="${esc(why)}">
+          <option value="USD" ${shown !== 'CNY' ? 'selected' : ''}>USD</option>
+          <option value="CNY" ${shown === 'CNY' ? 'selected' : ''}>CNY</option>
         </select>`
+    }
+    const names = [...(ids || [])]
+      .map((id) => state.providers.find((p) => p.id === id)?.name || id)
+      .join('、')
+    const title =
+      declared.size === 1
+        ? t('跟站点声明一致：{names} 的报价币种就是它。要改去站点卡片改「报价币种」。', { names })
+        : refs === 0
+          ? t('没有供给引用它，币种沿用导入时的站点声明（{c}），不影响任何价格', { c: shown })
+          : t('引用它的站点（{names}）还没声明报价币种，这里沿用导入时的 {c}；去站点卡片声明后会自动对齐', {
+              names,
+              c: shown,
+            })
+    const faint = refs === 0 ? ' style="color:var(--faint)"' : ''
+    return `<span class="mono"${faint} title="${esc(title)}">${esc(shown)}</span>`
   }
 
   // 来源值的展示友好化（来源是低频诊断信息，降为模型列的小字，省一列宽度）。

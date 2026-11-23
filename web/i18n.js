@@ -1086,8 +1086,12 @@ Object.assign(EN, {
     'Sites using it declare different currencies ({list}); you have to pick one',
   '这条基准价跟引用站点的声明不一致（站点说 {c}）':
     'This base price disagrees with the site declaration (site says {c})',
-  '没有任何供给引用它，币种随便定（不影响钱）':
-    'No offer uses it, so the currency does not affect anything',
+  '手填条目，没有站点可依，币种由你定':
+    'Hand-entered entry with no site to inherit from; the currency is yours to pick',
+  '没有供给引用它，币种沿用导入时的站点声明（{c}），不影响任何价格':
+    'No offer uses it; the currency stays as imported ({c}) and affects nothing',
+  '引用它的站点（{names}）还没声明报价币种，这里沿用导入时的 {c}；去站点卡片声明后会自动对齐':
+    'The sites using it ({names}) have not declared a price currency; it stays {c} until they do',
   '引用它的站点还没声明报价币种':
     'The sites using it have not declared a price currency yet',
   '先选一个站点': 'Pick a site first',
