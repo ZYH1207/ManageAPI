@@ -140,6 +140,49 @@ function scoresFor(db) {
   })
 }
 
+// ---- 成本画像（期望成本要用）：输入占比来自 usage.json，命中率来自探针/计费样本。
+// 网关每一单都要用这两个数，所以缓存住：读盘只发生在后台刷新，不阻塞请求。
+let usageShareCache = { at: 0, share: null, samples: 0 }
+let profileCache = { at: 0, map: new Map() }
+
+/** 后台刷新「输入占比」；5 分钟内不重复读盘。失败不抛，沿用上一次的值。 */
+async function refreshUsageShare() {
+  if (Date.now() - usageShareCache.at < 5 * 60 * 1000) return
+  try {
+    const usage = await readUsage()
+    const info = inputShareOf(usage?.days || {})
+    usageShareCache = { at: Date.now(), share: info.share, samples: info.samples }
+  } catch {
+    usageShareCache = { ...usageShareCache, at: Date.now() }
+  }
+}
+
+/**
+ * offerId → 流量画像（缓存命中率 + 输入占比）。30 秒内复用，避免每单重算中位。
+ * 注意：命中率拿不到时用全局先验（0.85）并标记低置信，不当 0 —— 否则新站会被系统性惩罚。
+ */
+function costProfilesFor(db) {
+  if (Date.now() - profileCache.at < 30 * 1000) return profileCache.map
+  const map = new Map()
+  const billingSamples = Array.isArray(db.billingSamples) ? db.billingSamples : []
+  const probeRows = []
+  for (const [offerId, rows] of Object.entries(db.probes || {})) {
+    for (const row of Array.isArray(rows) ? rows : []) probeRows.push({ ...row, offerId })
+  }
+  const inputShare = usageShareCache.share
+  for (const offer of db.offers || []) {
+    const hit = cacheHitRateOf({ offerId: offer.id, probes: probeRows, billingSamples })
+    map.set(offer.id, {
+      cacheHitRate: hit.rate,
+      cacheHitSource: hit.source,
+      cacheHitLowConfidence: hit.lowConfidence,
+      inputShare,
+    })
+  }
+  profileCache = { at: Date.now(), map }
+  return map
+}
+
 /**
  * 平台侧视图：把平台、账号、额度、预计剩余天数拼在一起给前端。
  * 读失败（比如 free.json 被手改坏）不能让整个页面挂掉，所以整体包一层 try。
@@ -326,7 +369,10 @@ function buildGatewaySection(settings) {
 }
 
 /** 决策预览：每个模型当前的候选排序，供「智能决策」页展示。 */
-function buildDecisions(rankedWithCache, { paidOffers, providers, credentials, scores, benchmarks, settings, manualOrder }) {
+function buildDecisions(
+  rankedWithCache,
+  { paidOffers, providers, credentials, scores, benchmarks, settings, manualOrder, profiles },
+) {
   return rankedWithCache.map((group) => {
     const order = manualOrder?.[group.modelKey] || null
     const candidates = selectCandidates({
@@ -338,6 +384,7 @@ function buildDecisions(rankedWithCache, { paidOffers, providers, credentials, s
       settings,
       model: group.modelKey,
       order,
+      profiles,
     })
     const rankedCandidates = explain(candidates)
     const winner = rankedCandidates.find((c) => c.routable) || null
@@ -366,6 +413,8 @@ async function buildState({ light = false, panel = false } = {}) {
   // 本函数及它调用的评分/比价/决策全部是纯读——约定见 readDbCached 的注释。
   const db = await store.readDbCached()
   const benchmarks = await bench.readBenchmarks()
+  // 输入占比来自 usage.json（异步读盘）：后台刷新，不阻塞这次渲染
+  void refreshUsageShare()
   const scoreMap = scoresFor(db)
   const maxTtftMs = Number(db.settings.maxTtftMs) || 0
   // 用户开关：放行可疑供给。打开后探针判定不可信/过期的照样参与排序，
@@ -466,6 +515,7 @@ async function buildState({ light = false, panel = false } = {}) {
     scores: scoreMap,
     benchmarks,
     settings: db.settings,
+    profiles: costProfilesFor(db),
     manualOrder: db.manualOrder,
   })
 
@@ -476,6 +526,14 @@ async function buildState({ light = false, panel = false } = {}) {
     // 前端不另抄一份，否则改档位要改两处、迟早对不上
     decisionModes: DECISION_MODES,
     decisionMode: normalizeDecisionMode(db.settings.decisionMode),
+    // 成本口径：前端要显示「现在用的是实测输入占比还是固定值」，
+    // 否则用户看到有效单价变了却不知道依据从哪来
+    costProfile: {
+      ...costProfileOf(db.settings),
+      inputShareSource: usageShareCache.share === null ? 'default' : 'traffic',
+      inputShareSamples: usageShareCache.samples,
+      inputShareMeasured: usageShareCache.share,
+    },
     // 站点卡的「免费 N」徽章与免费池同口径（都不过滤忽略模型），
     // 否则徽章说 2 个、点进去只有 1 个，用户会以为丢数据
     providers: buildProviderViews(db, freeOffersAll),
@@ -650,6 +708,36 @@ function applyDisplaySettings(db, body) {
   }
   if (body.allowUntrusted !== undefined) {
     db.settings.allowUntrusted = Boolean(body.allowUntrusted)
+  }
+  if (body.costProfile !== undefined) {
+    // 成本口径：只接受写明的值，拼错就报错——静默回落会让用户以为自己换了口径
+    const raw = body.costProfile || {}
+    const current = db.settings.costProfile || {}
+    const next = { ...current }
+    if (raw.mode !== undefined) {
+      const v = String(raw.mode).trim().toLowerCase()
+      if (!['expected', 'legacy'].includes(v)) throw new HttpError(400, '成本口径只能是 expected / legacy')
+      next.mode = v
+    }
+    if (raw.inputShare !== undefined) {
+      if (raw.inputShare === 'auto' || raw.inputShare === null) {
+        next.inputShare = 'auto'
+      } else {
+        const v = Number(raw.inputShare)
+        if (!Number.isFinite(v) || v < 0 || v > 1) throw new HttpError(400, '输入占比必须是 0~1 或 auto')
+        next.inputShare = v
+      }
+    }
+    if (raw.cacheDiscount !== undefined) {
+      const v = Number(raw.cacheDiscount)
+      if (!Number.isFinite(v) || v < 0 || v > 1) throw new HttpError(400, '缓存折扣必须是 0~1')
+      next.cacheDiscount = v
+    }
+    if (raw.cacheDiscountEnabled !== undefined) {
+      next.cacheDiscountEnabled = Boolean(raw.cacheDiscountEnabled)
+    }
+    db.settings.costProfile = next
+    profileCache = { at: 0, map: new Map() }
   }
   if (body.decisionMode !== undefined) {
     // 只接受写明的档位：拼错 / 手改接口传脏值时报错，而不是静默回落到默认档——
@@ -3326,6 +3414,7 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
       settings: db.settings,
       model,
       order: manualOrder,
+      profiles: costProfilesFor(db),
     })
 
   // 免费池先过闸门（额度 / 指纹 / 截断 / 过期），过了才交给路由排序。

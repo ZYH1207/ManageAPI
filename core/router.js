@@ -32,17 +32,31 @@ function getScore(scores, offerId) {
 }
 
 /**
- * @param {{offers, providers, credentials, scores, benchmarks, settings, model, order?}} input
+ * @param {{offers, providers, credentials, scores, benchmarks, settings, model, order?, profiles?}} input
  *   order —— 用户手动调过的 offerId 顺序；只影响可用的那几条，不影响可用性判定
- * @returns {Array<{offer,provider,credential,price,quality,routable,effective,status,ttftMs}>}
+ *   profiles —— offerId → {cacheHitRate, inputShare} 的流量画像；缺省时按设置里的固定值算
+ * @returns {Array<{offer,provider,credential,price,priceUsd,quality,routable,effective,status,ttftMs}>}
  */
-export function selectCandidates({ offers, providers, credentials, scores, benchmarks, settings, model, order }) {
+export function selectCandidates({
+  offers,
+  providers,
+  credentials,
+  scores,
+  benchmarks,
+  settings,
+  model,
+  order,
+  profiles,
+}) {
   const key = normalizeModelKey(model)
   const maxTtftMs = Number(settings?.maxTtftMs) || 0
   // 用户开关：探针说可疑的也让它正常参与排序（首字上限仍然独立生效）
   const allowUntrusted = Boolean(settings?.allowUntrusted)
   // 排序偏好（价格 / 性价比 / 质量）：只改排序键，不改上面两条准入判定
   const decisionMode = normalizeDecisionMode(settings?.decisionMode)
+  // 流量画像：Map 或普通对象都兼容（网关热路径传 Map，测试可以传对象）
+  const profileOf = (offer) =>
+    (profiles instanceof Map ? profiles.get(offer.id) : profiles?.[offer.id]) || null
   const matched = offers.filter(
     (offer) =>
       offer.modelKey === key ||
@@ -59,15 +73,20 @@ export function selectCandidates({ offers, providers, credentials, scores, bench
         (c) => c.providerId === offer.providerId && (c.group || '') === (offer.group || ''),
       ) ||
       credentials.find((c) => c.providerId === offer.providerId)
-    const cost = offerCost(offer, settings, benchmarks)
+    const profile = profileOf(offer)
+    const cost = offerCost(offer, settings, benchmarks, profile || {})
     const score = getScore(scores, offer.id)
     const quality = score?.quality ?? null
     // 两个价格口径，分工写在定价模块里：比较一律按美元（pricing.js 的声明），
     // 所以排序和有效成本用 priceUsd；price 字段是给前端展示的人民币值，
     // 由前端 priceText 按显示币种换算——此前排序直接拿 CNY 值，排序结果虽
     // 不受影响（汇率对全部候选是同一标量），但和声明的口径自相矛盾。
-    const priceUsd = cost.blendedUsdPerMtok
-    const price = cost.blendedCnyPerMtok
+    // 期望成本口径：输入占比按真实流量、输入价按缓存命中打折。
+    // 旧口径（固定输入权重、不看缓存）保留在 priceUsdLegacy 里，供界面并列展示与回滚核对。
+    const priceUsdLegacy = cost.blendedUsdPerMtok
+    const priceUsd = cost.blendedUsdPerMtokExpected ?? priceUsdLegacy
+    const price = cost.blendedCnyPerMtokExpected ?? cost.blendedCnyPerMtok
+    const priceLegacy = cost.blendedCnyPerMtok
     const ttftMs = score?.ttftMs ?? null
     // 太慢的直接排除，但仍保留在候选列表里——决策日志要能看出「为什么没选它」
     const tooSlow = maxTtftMs > 0 && typeof ttftMs === 'number' && ttftMs > maxTtftMs
@@ -98,8 +117,14 @@ export function selectCandidates({ offers, providers, credentials, scores, bench
       provider,
       credential,
       price,
-      // 美元口径的名义单价：排序用这个（CNY 值只是展示口径，见上）
+      // 美元口径的期望单价：排序用这个（CNY 值只是展示口径，见上）
       priceUsd,
+      // 旧口径（未按流量画像折算）——只用于对照，不参与排序
+      priceUsdLegacy,
+      priceLegacy,
+      // 这一条用了多少缓存命中折扣：null 表示没测到（按先验值算的）
+      cacheHitRate: cost.costProfile?.cacheHitRate ?? null,
+      costProfile: cost.costProfile || null,
       quality,
       // 质量是否有实测证据：null 不是「质量 0」，而是「一次都没成功过」；
       // 有效成本里按 NO_EVIDENCE_QUALITY（0.5）算，界面要能看出这个区别

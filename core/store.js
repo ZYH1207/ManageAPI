@@ -58,6 +58,17 @@ export function emptyDb() {
       // 只改「谁排前面」，不改准入——准入仍由 allowUntrusted 与 maxTtftMs 决定。
       // 默认 value，等于此前唯一的行为，老库升级后排序结果不变。
       decisionMode: 'value',
+      // 成本口径（期望成本）：把「输入占比」与「缓存命中率」代入混合价。
+      //   mode: 'expected' 期望成本（默认）| 'legacy' 旧口径（固定 25% 输入权重、忽略缓存）
+      //   inputShare: 'auto' 用 usage.json 的实测占比 | 0..1 手填
+      //   cacheDiscount: 命中缓存的那部分输入按这个折扣计价（0.9 = 省 90%）
+      // mode:'legacy' 是唯一回滚开关，改回它排序立刻回到改造前。
+      costProfile: {
+        mode: 'expected',
+        inputShare: 'auto',
+        cacheDiscount: 0.9,
+        cacheDiscountEnabled: true,
+      },
       // 免费池跨栏偏好：同一个模型同时出现在中转站与平台时怎么选。
       //   'platform'  平台优先（更怕假货）
       //   'relay'     中转站优先（更怕断供）

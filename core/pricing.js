@@ -11,6 +11,13 @@
 import { ensureFx } from './fx.js'
 // 币种只有一个真源（currency.js 零 import，不会成环）
 import { normalizeCurrency } from './currency.js'
+// 流量画像：输入占比与缓存命中率，用来算「期望成本」
+import {
+  costProfileOf,
+  effectiveInPrice,
+  blendedWithProfile,
+  DEFAULT_INPUT_SHARE,
+} from './traffic-profile.js'
 
 const UNIT_MULTIPLIER = {
   per_mtok: 1,
@@ -72,7 +79,14 @@ export function resolveOfferPrice(offer, benchmarks = {}) {
  *            inCnyPerMtok:number|null, outCnyPerMtok:number|null, blendedCnyPerMtok:number|null,
  *            complete:boolean}}
  */
-export function offerCost(offer, settings = {}, benchmarks = {}) {
+/**
+ * 一条供给的成本。
+ *
+ * `profile` 是这条供给的流量画像（`{ cacheHitRate, inputShare }`）。
+ * `blendedUsdPerMtok` 仍是**旧口径**（固定输入权重、忽略缓存），
+ * 新口径在 `blendedUsdPerMtokExpected`；两者同时返回，便于并列展示与一键回滚。
+ */
+export function offerCost(offer, settings = {}, benchmarks = {}, profile = {}) {
   // 汇率只有 fx 模块一个真源；settings.fxUsdCny 是兼容镜像，别再直接读
   const fx = Number(ensureFx(settings).rates.CNY) || DISPLAY_FX_DEFAULT
   const rawWeight = Number(settings.blendInputWeight)
@@ -114,6 +128,11 @@ export function offerCost(offer, settings = {}, benchmarks = {}) {
       outCnyPerMtok: null,
       blendedCnyPerMtok: null,
       offPeakBlendedCnyPerMtok: null,
+      // 按次供给没有「每百万 token」概念，期望口径同样为空（保持字段齐整）
+      inUsdPerMtokEffective: null,
+      blendedUsdPerMtokExpected: null,
+      blendedCnyPerMtokExpected: null,
+      costProfile: null,
       hasOffPeak: false,
       complete: false,
     }
@@ -148,6 +167,40 @@ export function offerCost(offer, settings = {}, benchmarks = {}) {
 
   const toCny = (usd) => (usd === null ? null : usd * fx)
 
+  // ---- 期望成本：把「输入占比」与「缓存命中率」代入
+  const cp = costProfileOf(settings)
+  const share =
+    cp.inputShare === 'auto'
+      ? typeof profile?.inputShare === 'number' && Number.isFinite(profile.inputShare)
+        ? profile.inputShare
+        : DEFAULT_INPUT_SHARE
+      : cp.inputShare
+  const cacheHitRate =
+    typeof profile?.cacheHitRate === 'number' && Number.isFinite(profile.cacheHitRate)
+      ? profile.cacheHitRate
+      : null
+  const profileInEffective = cp.cacheDiscountEnabled
+    ? effectiveInPrice(inUsdPerMtok, cacheHitRate, cp.cacheDiscount)
+    : inUsdPerMtok
+  const expectedBlend =
+    cp.mode === 'legacy'
+      ? blendedUsdPerMtok
+      : blendedWithProfile({
+          inUsdPerMtok,
+          outUsdPerMtok,
+          inputShare: share,
+          hitRate: cacheHitRate,
+          cacheDiscount: cp.cacheDiscount,
+          cacheDiscountEnabled: cp.cacheDiscountEnabled,
+        })
+  const profileUsed = {
+    mode: cp.mode,
+    inputShare: share,
+    cacheHitRate,
+    cacheDiscount: cp.cacheDiscount,
+    cacheDiscountEnabled: cp.cacheDiscountEnabled,
+  }
+
   // 缓存读/写价：与 in/out 价出自同一张价目表、同一币种，必须走同样的
   // currency 折算——此前一律当人民币，美元标价站的缓存价会差一个汇率的平方
   const toCnyPrice = (raw) => {
@@ -172,6 +225,11 @@ export function offerCost(offer, settings = {}, benchmarks = {}) {
     offPeakInUsdPerMtok: offPeakInUsd,
     offPeakOutUsdPerMtok: offPeakOutUsd,
     offPeakBlendedUsdPerMtok,
+    // ---- 期望成本口径（排序用它）
+    inUsdPerMtokEffective: profileInEffective,
+    blendedUsdPerMtokExpected: expectedBlend,
+    blendedCnyPerMtokExpected: toCny(expectedBlend),
+    costProfile: profileUsed,
     // 展示用的人民币值（只影响显示，不参与排序）
     inCnyPerMtok: toCny(inUsdPerMtok),
     outCnyPerMtok: toCny(outUsdPerMtok),
