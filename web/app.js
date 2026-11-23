@@ -1282,7 +1282,6 @@ function providersHtml({ withForm = true, panel = '', actions = '' } = {}) {
             <b>${esc(p.name)}</b>
             ${siteLinkOf(p) ? `<a class="icon-btn prov-open" href="${esc(siteLinkOf(p))}" target="_blank" rel="noreferrer" title="${t('打开站点后台')}">${icon('external')}</a>` : ''}
             ${kindText ? `<span class="badge ${kindMeta.cls}" title="${esc(p.kindSource === 'manual' ? t('系别由用户手动设置') : t('系别由添加站点/登录时自动探测得出'))}">${esc(kindText)}</span>` : ''}
-            ${p.siteVersion ? `<span class="badge" title="${esc(t('站点自述的版本（完整同步时读到）'))}">${esc(p.siteVersion)}</span>` : ''}
             ${
               freeNames.length
                 ? `<span class="badge prov-free" title="${esc(t('免费模型：{list}', { list: freeNames.join('、') }))}">${icon('gift')}${t('免费 {n}', { n: freeNames.length })}</span>`
