@@ -161,7 +161,7 @@ export function selectCandidates({
       ? new Map(order.map((id, index) => [id, index]))
       : null
 
-  return rows
+  const sorted = rows
     .filter((row) => row.provider && row.credential)
     .sort((a, b) => {
       // 可用性永远优先：手动排序不能把不可信的站提到前面
@@ -202,6 +202,83 @@ export function selectCandidates({
       if (ta !== tb) return ta - tb
       return (a.price ?? INFINITY_COST) - (b.price ?? INFINITY_COST)
     })
+
+  // 排完之后给每一行补一句「为什么排在这里」：它跟上一名的差别是什么。
+  // 排序本身在上面完成，这里只做解释，不改顺序——但两处必须用同一套判定，
+  // 所以解释函数读的是同一批字段（routable / manualIndex / sortValue / 命中率 / 首字）。
+  sorted.forEach((row, index) => {
+    const reason = orderReasonBetween(sorted[index - 1], row, {
+      decisionMode,
+      stickinessPct,
+      stickyOfferId,
+      manualIndex,
+    })
+    row.orderReason = reason.code
+    row.orderReasonText = reason.text
+  })
+  return sorted
+}
+
+/**
+ * 第 cur 条为什么排在 prev 后面——把排序时真正生效的那一步翻译成人话。
+ * 纯解释函数：只读候选行，不修改、不参与排序。
+ */
+export function orderReasonBetween(
+  prev,
+  cur,
+  { decisionMode = 'value', stickinessPct = 0, stickyOfferId = null, manualIndex = null } = {},
+) {
+  if (!prev) return { code: 'first', text: '排序键最优（同模型里它最便宜/质量最高）' }
+  // 1. 准入：能不能用排在第一位，价格再好也翻不过去
+  if (prev.routable !== cur.routable) {
+    return cur.routable
+      ? { code: 'gate', text: '它可用，上一条不可用（准入优先于价格）' }
+      : { code: 'gate', text: '它不可路由：没有可信证据/被探针判可疑，排在有证据的后面' }
+  }
+  // 2. 手动顺序
+  if (manualIndex) {
+    const ip = manualIndex.has(prev.offer.id) ? manualIndex.get(prev.offer.id) : Number.MAX_SAFE_INTEGER
+    const ic = manualIndex.has(cur.offer.id) ? manualIndex.get(cur.offer.id) : Number.MAX_SAFE_INTEGER
+    if (ip !== ic) return { code: 'manual', text: '你在决策页手动排的顺序' }
+  }
+  // 3. 排序键（档位决定比什么）
+  const byMode = compareByMode(prev, cur, decisionMode)
+  const pv = sortValueOf(prev, decisionMode)
+  const cv = sortValueOf(cur, decisionMode)
+  const pct = Number.isFinite(pv) && Number.isFinite(cv) && Math.min(pv, cv) > 0
+    ? Math.abs(cv - pv) / Math.min(pv, cv)
+    : null
+  if (byMode !== 0) {
+    // 粘性：价差在阈值内时，优先留在上次成功的站（避免换站导致上游前缀缓存作废）
+    if (stickyOfferId && (prev.offer.id === stickyOfferId || cur.offer.id === stickyOfferId)) {
+      const tolerance = Math.max(0, Number(stickinessPct) || 0)
+      if (pct !== null && pct < tolerance) {
+        return {
+          code: 'sticky',
+          text: `粘住上次成功的站（价差 ${(pct * 100).toFixed(1)}% < 阈值 ${(tolerance * 100).toFixed(0)}%，换站会让上游缓存作废）`,
+          gapPct: pct,
+        }
+      }
+    }
+    return {
+      code: 'key',
+      text: pct === null ? '排序键更低' : `排序键比上一条高 ${(pct * 100).toFixed(1)}%`,
+      gapPct: pct,
+    }
+  }
+  // 4. 排序键完全相同时的打平链
+  const hp = typeof prev.cacheHitRate === 'number' ? prev.cacheHitRate : -1
+  const hc = typeof cur.cacheHitRate === 'number' ? cur.cacheHitRate : -1
+  if (hp !== hc) {
+    const fmt = (v) => (v < 0 ? '未测' : `${Math.round(v * 100)}%`)
+    return { code: 'tie-hit', text: `排序键相同，缓存命中率 ${fmt(hc)} 低于上一条的 ${fmt(hp)}` }
+  }
+  const tp = typeof prev.ttftMs === 'number' ? prev.ttftMs : INFINITY_COST
+  const tc = typeof cur.ttftMs === 'number' ? cur.ttftMs : INFINITY_COST
+  if (tp !== tc) {
+    return { code: 'tie-ttft', text: `排序键与命中率相同，首字 ${tc === INFINITY_COST ? '无数据' : `${tc}ms`} 慢于上一条的 ${tp === INFINITY_COST ? '无数据' : `${tp}ms`}` }
+  }
+  return { code: 'tie-price', text: '前面全都相同，按名义单价兜底' }
 }
 
 /** 网关对外的模型清单：按归一化名去重，客户端用这个名字请求即可。 */
@@ -254,5 +331,8 @@ export function explain(candidates) {
     // 不然用户看到一条看着健康的站却没被选，会以为评分出错
     blocked: c.blocked ? { kind: c.blocked.kind, until: c.blocked.until } : null,
     statusReason: c.statusReason ?? null,
+    // 为什么排在这里（相对上一名）：决策页单独一列显示，纯解释不改顺序
+    orderReason: c.orderReason ?? null,
+    orderReasonText: c.orderReasonText ?? null,
   }))
 }

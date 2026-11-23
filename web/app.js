@@ -2401,6 +2401,27 @@ function renderDecision() {
     return candidate.effective === null ? '—' : priceText(candidate.effective)
   }
 
+  // 「为什么排这里」：第一名标排序键最优，其余显示它输给上一名的那个环节。
+  // 纯解释——后端在 router.orderReasonBetween 里用同一套判定生成，前端只做映射。
+  const ORDER_REASON_LABEL = {
+    first: '排序键最优',
+    key: '排序键',
+    sticky: '粘住上次',
+    'tie-hit': '打平·命中率',
+    'tie-ttft': '打平·首字',
+    'tie-price': '打平·价格',
+    gate: '准入',
+    manual: '手动顺序',
+  }
+  function orderReasonCell(candidate, index) {
+    const code = candidate.orderReason || (index === 0 ? 'first' : null)
+    if (!code) return '<span style="color:var(--faint)">—</span>'
+    const label = t(ORDER_REASON_LABEL[code] || code)
+    const detail = candidate.orderReasonText ? ` title="${esc(candidate.orderReasonText)}"` : ''
+    const dim = code === 'first' ? '' : ' style="color:var(--muted)"'
+    return `<span${dim}${detail}>${esc(label)}</span>`
+  }
+
   const blocks = visibleDecisions.map((decision) => {
     const panelKey = `decision:${decision.modelKey}`
     const isCollapsed = collapsedPanels.has(panelKey)
@@ -2439,6 +2460,7 @@ function renderDecision() {
               : `<span style="color:var(--faint)" title="${t('没测到缓存命中率，按全局先验折算；不当作 0，否则新站会被系统性排到后面')}">${t('未测')}</span>`
           }</td>
           <td class="num">${candidate.ttftMs === null ? '—' : `${candidate.ttftMs}ms`}</td>
+          <td>${orderReasonCell(candidate, index)}</td>
           <td><span class="badge ${badge.cls}">${badge.label}</span>${candidate.statusReason ? `<div class="sub">${esc(candidate.statusReason)}</div>` : ''}</td>
         </tr>`
     }).join('')
@@ -2456,7 +2478,7 @@ function renderDecision() {
           <thead><tr>
             <th style="width:66px"></th><th class="num">#</th><th>站点</th><th>分组</th>
             <th class="num">价格</th><th class="num">质量</th>
-            <th class="num">排序键<div class="sub">${esc(modeMeta.label)}</div></th><th class="num">命中率<div class="sub">缓存</div></th><th class="num">首字</th><th>状态</th>
+            <th class="num">排序键<div class="sub">${esc(modeMeta.label)}</div></th><th class="num">命中率<div class="sub">缓存</div></th><th class="num">首字</th><th>${t('为什么排这里')}</th><th>状态</th>
           </tr></thead>
           <tbody>${rows}</tbody>
         </table>`}
