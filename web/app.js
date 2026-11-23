@@ -3002,6 +3002,9 @@ function fxNoteHtml() {
 // 基准价分层：默认只展开「与本地供给相关」（模型在比价/路由里用得到）
 // 和「手动改过」的条目，其余（导入后没用上的）收进折叠区
 let benchShowAll = false
+/** 基准价页导入卡的选择：render() 会整页重画，不记住就会跳回第一个站点 */
+let benchImportProviderId = ''
+let benchImportMode = 'official'
 
 function renderBenchmark() {
   const view = $('#view-benchmark')
@@ -3094,7 +3097,7 @@ function renderBenchmark() {
         <input type="number" step="0.001" placeholder="出" value="${entry.offPeakOut ?? ''}" data-field="offPeakOut" style="width:62px" title="空闲时段输出价" />
       </td>
       <td>
-        <select data-field="currency" style="width:70px">
+        <select data-field="currency" style="width:70px" title="${t('这条基准价的数字是用什么币种写的：倍率算价时按它换算（选错会差一个汇率，约 6.7 倍）')}">
           <option value="USD" ${entry.currency !== 'CNY' ? 'selected' : ''}>USD</option>
           <option value="CNY" ${entry.currency === 'CNY' ? 'selected' : ''}>CNY</option>
         </select>
@@ -3104,8 +3107,17 @@ function renderBenchmark() {
     </tr>`
   }).join('')
 
+  // 选中的站点要跨重画保留：导入/校准之后 state 一变就 render()，
+  // 下拉如果每次都回到第一项，用户会以为「站点被自动换成了秋」
+  const importProviderId = state.providers.some((p) => p.id === benchImportProviderId)
+    ? benchImportProviderId
+    : state.providers[0]?.id || ''
   const providerOptions = state.providers
-    .map((p) => `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join('')
+    .map(
+      (p) =>
+        `<option value="${esc(p.id)}" ${p.id === importProviderId ? 'selected' : ''}>${esc(p.name)}</option>`,
+    )
+    .join('')
 
   view.innerHTML = `
     <p class="hint">${t('基准价是「倍率」的换算参照：倍率供给的价格 = 基准价 × 倍率。')}</p>
@@ -3113,8 +3125,8 @@ function renderBenchmark() {
       <div class="inline-form" style="border-top:none;margin-top:0;padding-top:0">
         <select id="import-provider" style="max-width:210px">${providerOptions || '<option value="">还没有站点</option>'}</select>
         <select id="import-mode" style="max-width:186px" title="${t('官方价＝读该站的可用渠道/模型广场；已填价＝抄这个站现在填的价格')}">
-          <option value="official">${t('官方价（只补空缺）')}</option>
-          <option value="offers">${t('该站已填价（覆盖）')}</option>
+          <option value="official" ${benchImportMode === 'official' ? 'selected' : ''}>${t('官方价（只补空缺）')}</option>
+          <option value="offers" ${benchImportMode === 'offers' ? 'selected' : ''}>${t('该站已填价（覆盖）')}</option>
         </select>
         <button id="btn-benchmark-import" ${state.providers.length ? '' : 'disabled'}>${t('导入')}</button>
         <span style="flex:1"></span>
@@ -5746,6 +5758,15 @@ document.addEventListener('change', async (event) => {
     } catch (error) {
       toast(error.message, true)
     }
+    return
+  }
+
+  if (input.id === 'import-provider') {
+    benchImportProviderId = input.value
+    return
+  }
+  if (input.id === 'import-mode') {
+    benchImportMode = input.value === 'offers' ? 'offers' : 'official'
     return
   }
 

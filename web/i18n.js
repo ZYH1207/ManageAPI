@@ -1080,6 +1080,8 @@ Object.assign(EN, {
   '引用': 'Used by',
   '未引用': 'unused',
   '缺输出价': 'no output price',
+  '这条基准价的数字是用什么币种写的：倍率算价时按它换算（选错会差一个汇率，约 6.7 倍）':
+    'Currency this base price is written in: ratio rows are converted from it (a wrong pick is off by one exchange rate, about 6.7x)',
   '先选一个站点': 'Pick a site first',
   '删除这条基准价': 'Delete this base price',
   '已用该站价格覆盖 {n} 条基准价': 'Overwrote {n} base prices with this site\'s prices',
