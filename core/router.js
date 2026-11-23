@@ -47,6 +47,8 @@ export function selectCandidates({
   model,
   order,
   profiles,
+  stickyOfferId = null,
+  stickinessPct = 0.05,
 }) {
   const key = normalizeModelKey(model)
   const maxTtftMs = Number(settings?.maxTtftMs) || 0
@@ -125,6 +127,8 @@ export function selectCandidates({
       // 这一条用了多少缓存命中折扣：null 表示没测到（按先验值算的）
       cacheHitRate: cost.costProfile?.cacheHitRate ?? null,
       costProfile: cost.costProfile || null,
+      // 这一条是不是「上次成功的站」：粘性只在价差 <stickinessPct 时生效
+      sticky: Boolean(stickyOfferId) && offer.id === stickyOfferId,
       quality,
       // 质量是否有实测证据：null 不是「质量 0」，而是「一次都没成功过」；
       // 有效成本里按 NO_EVIDENCE_QUALITY（0.5）算，界面要能看出这个区别
@@ -170,7 +174,32 @@ export function selectCandidates({
       // 排序键随「决策侧重」变：价格档比名义单价、性价比档比有效成本、
       // 质量档先比质量再比价格。缺值在 orderKey 里统一按 Infinity 处理。
       const byMode = compareByMode(a, b, decisionMode)
-      if (byMode !== 0) return byMode
+      if (byMode !== 0) {
+        // 粘性：两条价格差很小（默认 <5%）时，优先留在「上次成功的那个站」——
+        // 换站会让上游的前缀缓存作废，一次抖动就换站的代价比省下的那点钱高。
+        // 差得多了就照常按排序键走，粘性不能盖过真实价差。
+        if (stickyOfferId && (a.offer.id === stickyOfferId || b.offer.id === stickyOfferId)) {
+          const av = sortValueOf(a, decisionMode)
+          const bv = sortValueOf(b, decisionMode)
+          if (Number.isFinite(av) && Number.isFinite(bv)) {
+            const base = Math.min(av, bv)
+            const gap = Math.abs(av - bv)
+            const tolerance = Math.max(0, Number(stickinessPct) || 0)
+            if (base > 0 && gap / base < tolerance) {
+              return a.offer.id === stickyOfferId ? -1 : 1
+            }
+          }
+        }
+        return byMode
+      }
+      // 完全打平（排序键相同）时的次序：命中率高的先、首字低的后、再按名义价兜底。
+      // 这条链只决定「一样好的两条谁先」，不影响任何准入判定。
+      const ha = typeof a.cacheHitRate === 'number' ? a.cacheHitRate : -1
+      const hb = typeof b.cacheHitRate === 'number' ? b.cacheHitRate : -1
+      if (ha !== hb) return hb - ha
+      const ta = typeof a.ttftMs === 'number' ? a.ttftMs : INFINITY_COST
+      const tb = typeof b.ttftMs === 'number' ? b.ttftMs : INFINITY_COST
+      if (ta !== tb) return ta - tb
       return (a.price ?? INFINITY_COST) - (b.price ?? INFINITY_COST)
     })
 }
@@ -205,6 +234,8 @@ export function explain(candidates) {
     group: c.offer.group || '',
     price: c.price,
     priceUsd: c.priceUsd,
+    priceUsdLegacy: c.priceUsdLegacy ?? null,
+    cacheHitRate: c.cacheHitRate ?? null,
     quality: c.quality,
     qualityKnown: c.qualityKnown,
     effective: c.effective,

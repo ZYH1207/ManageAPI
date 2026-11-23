@@ -2430,7 +2430,14 @@ function renderDecision() {
               ? `<div class="sub">${candidate.samples} ${t('样本')}</div>`
               : ''
           }</td>
-          <td class="num">${sortCell(candidate)}</td>
+          <td class="num">${sortCell(candidate)}${
+            candidate.sticky ? `<div class="sub">${t('粘住上次的站')}</div>` : ''
+          }</td>
+          <td class="num">${
+            typeof candidate.cacheHitRate === 'number'
+              ? `${Math.round(candidate.cacheHitRate * 100)}%`
+              : `<span style="color:var(--faint)" title="${t('没测到缓存命中率，按全局先验折算；不当作 0，否则新站会被系统性排到后面')}">${t('未测')}</span>`
+          }</td>
           <td class="num">${candidate.ttftMs === null ? '—' : `${candidate.ttftMs}ms`}</td>
           <td><span class="badge ${badge.cls}">${badge.label}</span>${candidate.statusReason ? `<div class="sub">${esc(candidate.statusReason)}</div>` : ''}</td>
         </tr>`
@@ -2449,7 +2456,7 @@ function renderDecision() {
           <thead><tr>
             <th style="width:66px"></th><th class="num">#</th><th>站点</th><th>分组</th>
             <th class="num">价格</th><th class="num">质量</th>
-            <th class="num">排序键<div class="sub">${esc(modeMeta.label)}</div></th><th class="num">首字</th><th>状态</th>
+            <th class="num">排序键<div class="sub">${esc(modeMeta.label)}</div></th><th class="num">命中率<div class="sub">缓存</div></th><th class="num">首字</th><th>状态</th>
           </tr></thead>
           <tbody>${rows}</tbody>
         </table>`}

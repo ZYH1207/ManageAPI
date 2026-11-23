@@ -305,6 +305,10 @@ const EN = {
   '无证据': 'no evidence',
   '一次都没成功过：质量按“未知”的先验 0.5 折算，不再当 1.0（否则没证据的站会和健康站同权）':
     'Never succeeded once: quality uses the "unknown" prior 0.5 instead of 1.0, so an unevidenced site cannot tie with a healthy one',
+  '粘住上次的站': 'sticky (kept last good site)',
+  '未测': 'n/a',
+  '没测到缓存命中率，按全局先验折算；不当作 0，否则新站会被系统性排到后面':
+    'No cache-hit measurement for this offer, so the global prior is used; treating it as 0 would systematically push new sites to the bottom.',
   '决策侧重': 'Routing preference',
   '排序键': 'Sort key',
   '价格': 'Price',

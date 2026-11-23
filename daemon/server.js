@@ -158,6 +158,22 @@ async function refreshUsageShare() {
 }
 
 /**
+ * 上次成功的站：同一模型最近一条 outcome='ok' 的路由记录。
+ * 用途只有一个——两条候选价格差很小时优先留在它上面，避免一次抖动就换站、
+ * 把上游的前缀缓存全作废（换站省下的钱通常抵不过重算的 prompt）。
+ */
+function stickyOfferFor(routingRows, model) {
+  const rows = Array.isArray(routingRows) ? routingRows : []
+  const key = inv.normalizeModelKey(model)
+  for (let i = rows.length - 1; i >= 0; i -= 1) {
+    const row = rows[i]
+    if (!row || row.outcome !== 'ok' || !row.chosenOfferId) continue
+    if (inv.normalizeModelKey(row.model || '') === key) return row.chosenOfferId
+  }
+  return null
+}
+
+/**
  * offerId → 流量画像（缓存命中率 + 输入占比）。30 秒内复用，避免每单重算中位。
  * 注意：命中率拿不到时用全局先验（0.85）并标记低置信，不当 0 —— 否则新站会被系统性惩罚。
  */
@@ -371,7 +387,7 @@ function buildGatewaySection(settings) {
 /** 决策预览：每个模型当前的候选排序，供「智能决策」页展示。 */
 function buildDecisions(
   rankedWithCache,
-  { paidOffers, providers, credentials, scores, benchmarks, settings, manualOrder, profiles },
+  { paidOffers, providers, credentials, scores, benchmarks, settings, manualOrder, profiles, routing },
 ) {
   return rankedWithCache.map((group) => {
     const order = manualOrder?.[group.modelKey] || null
@@ -385,6 +401,8 @@ function buildDecisions(
       model: group.modelKey,
       order,
       profiles,
+      stickyOfferId: stickyOfferFor(routing, group.modelKey),
+      stickinessPct: Number(settings?.stickinessPct) || 0,
     })
     const rankedCandidates = explain(candidates)
     const winner = rankedCandidates.find((c) => c.routable) || null
@@ -516,6 +534,7 @@ async function buildState({ light = false, panel = false } = {}) {
     benchmarks,
     settings: db.settings,
     profiles: costProfilesFor(db),
+    routing: db.routing,
     manualOrder: db.manualOrder,
   })
 
@@ -708,6 +727,11 @@ function applyDisplaySettings(db, body) {
   }
   if (body.allowUntrusted !== undefined) {
     db.settings.allowUntrusted = Boolean(body.allowUntrusted)
+  }
+  if (body.stickinessPct !== undefined) {
+    const v = Number(body.stickinessPct)
+    if (!Number.isFinite(v) || v < 0 || v > 1) throw new HttpError(400, '粘性阈值必须是 0~1')
+    db.settings.stickinessPct = v
   }
   if (body.costProfile !== undefined) {
     // 成本口径：只接受写明的值，拼错就报错——静默回落会让用户以为自己换了口径
@@ -3169,6 +3193,12 @@ async function forwardToUpstream({ candidate, body, res, attemptIndex, pool = 'p
     // 这次到底是免费池、付费池，还是免费池不够用后回落到的付费池——
     // 回落是显式开关（settings.allowPaidFallback），但客户端仍应能看出来
     'X-ManageAPI-Pool': pool || 'paid',
+    // 期望成本与它用到的画像：客户端的账本要能对上「为什么这次走这家」，
+    // 也方便排查「命中率是不是取到了先验值」
+    'X-ManageAPI-EffCost': typeof candidate.priceUsd === 'number' ? candidate.priceUsd.toFixed(6) : 'unknown',
+    'X-ManageAPI-CacheHit':
+      typeof candidate.cacheHitRate === 'number' ? candidate.cacheHitRate.toFixed(3) : 'unknown',
+    'X-ManageAPI-Sticky': candidate.sticky ? '1' : '0',
   }
 
   if (!isStream) {
@@ -3415,6 +3445,8 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
       model,
       order: manualOrder,
       profiles: costProfilesFor(db),
+      stickyOfferId: stickyOfferFor(db.routing, model),
+      stickinessPct: Number(db.settings.stickinessPct) || 0,
     })
 
   // 免费池先过闸门（额度 / 指纹 / 截断 / 过期），过了才交给路由排序。
