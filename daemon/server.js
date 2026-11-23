@@ -21,7 +21,15 @@ import {
 import * as pricing from '../core/pricing.js'
 import * as bench from '../core/benchmark.js'
 import * as providers from '../core/providers.js'
-import { scoreOffers, isRoutable, longTermScores } from '../core/score.js'
+import { scoreOffers, isRoutable, longTermScores, NO_EVIDENCE_QUALITY } from '../core/score.js'
+import {
+  costProfileOf,
+  inputShareOf,
+  cacheHitRateOf,
+  blendedWithProfile,
+  PROFILE_MIN_SAMPLES,
+  DEFAULT_INPUT_SHARE,
+} from '../core/traffic-profile.js'
 import { classifyFailure } from '../core/failure.js'
 import { checkRealResponse, estimateRequestTokens } from '../core/quality-signals.js'
 import { selectCandidates, listPublicModels, explain } from '../core/router.js'
@@ -1993,6 +2001,105 @@ route('PUT', /^\/api\/decisions\/([^/]+)\/order$/, async (ctx) => {
   const modelKey = decodeURIComponent(ctx.params[0])
   await inv.setManualOrder(modelKey, ctx.body.order)
   return buildState()
+})
+
+// ---------------------------------------------------------------- 成本预览
+
+/**
+ * 成本口径预览（dry-run）：把「现在怎么算」和「按真实流量画像怎么算」并排列出来。
+ *
+ * 为什么要有这个接口：新口径会把绝对成本整体改小一个量级、排名也会动几位，
+ * 这种改动不该由后端偷偷生效。先看一眼名单，确认合理再切 `costProfile.mode`。
+ */
+route('POST', /^\/api\/cost\/preview$/, async (ctx) => {
+  const db = await store.readDbCached()
+  const benchmarks = await bench.readBenchmarks()
+  const scoreMap = scoresFor(db)
+  const routeable = inv.routeableOffers(db, { ignoreModels: true })
+  const { paid } = splitOffers(routeable, benchmarks)
+  const profile = costProfileOf(db.settings)
+
+  const usage = await readUsage()
+  const shareInfo = inputShareOf(usage?.days || {})
+  const inputShare =
+    profile.inputShare === 'auto' ? (shareInfo.share ?? DEFAULT_INPUT_SHARE) : profile.inputShare
+
+  const billingSamples = Array.isArray(db.billingSamples) ? db.billingSamples : []
+  const probeRows = []
+  for (const [offerId, rows] of Object.entries(db.probes || {})) {
+    for (const row of Array.isArray(rows) ? rows : []) probeRows.push({ ...row, offerId })
+  }
+
+  const providerNames = new Map((db.providers || []).map((p) => [p.id, p.name]))
+  const rows = []
+  for (const offer of paid) {
+    const cost = pricing.offerCost(offer, db.settings, benchmarks)
+    if (cost.perCall || cost.blendedUsdPerMtok === null) continue
+    const score = scoreMap.get(offer.id) || null
+    const hit = cacheHitRateOf({ offerId: offer.id, probes: probeRows, billingSamples })
+    const blended = blendedWithProfile({
+      inUsdPerMtok: cost.inUsdPerMtok,
+      outUsdPerMtok: cost.outUsdPerMtok,
+      inputShare,
+      hitRate: hit.rate,
+      cacheDiscount: profile.cacheDiscount,
+      cacheDiscountEnabled: profile.cacheDiscountEnabled,
+    })
+    const quality = score?.quality ?? null
+    // 期望成本 = 混合价 ÷ 质量：质量未知时用先验 0.5（与路由的 effectiveCost 同口径）
+    const divisor = quality === null ? NO_EVIDENCE_QUALITY : Math.max(quality, 0.05)
+    rows.push({
+      offerId: offer.id,
+      providerName: providerNames.get(offer.providerId) || null,
+      upstreamName: offer.upstreamName || null,
+      modelKey: inv.normalizeModelKey(offer.modelKey || offer.upstreamName || ''),
+      legacyUsd: cost.blendedUsdPerMtok,
+      expectedUsd: blended === null ? null : blended / divisor,
+      blendedUsd: blended,
+      quality,
+      hitRate: hit.rate,
+      hitSource: hit.source,
+      hitLowConfidence: hit.lowConfidence,
+      routable: score ? isRoutable(score) : false,
+    })
+  }
+
+  const byModel = new Map()
+  for (const row of rows) {
+    if (!byModel.has(row.modelKey)) byModel.set(row.modelKey, [])
+    byModel.get(row.modelKey).push(row)
+  }
+  const models = [...byModel.entries()].map(([modelKey, list]) => {
+    const legacySorted = [...list].sort((a, b) => a.legacyUsd - b.legacyUsd)
+    const expectedSorted = [...list].sort(
+      (a, b) => (a.expectedUsd ?? Infinity) - (b.expectedUsd ?? Infinity),
+    )
+    const rankNow = new Map(legacySorted.map((row, index) => [row.offerId, index + 1]))
+    const rankNew = new Map(expectedSorted.map((row, index) => [row.offerId, index + 1]))
+    return {
+      modelKey,
+      rows: expectedSorted.map((row) => ({
+        ...row,
+        rankNow: rankNow.get(row.offerId) || null,
+        rankNew: rankNew.get(row.offerId) || null,
+        rankDelta: (rankNow.get(row.offerId) || 0) - (rankNew.get(row.offerId) || 0),
+      })),
+    }
+  })
+  models.sort((a, b) => b.rows.length - a.rows.length)
+
+  return {
+    profile: {
+      mode: profile.mode,
+      inputShare,
+      inputShareSource: profile.inputShare === 'auto' ? 'usage' : 'settings',
+      inputShareSamples: shareInfo.samples,
+      cacheDiscount: profile.cacheDiscount,
+      cacheDiscountEnabled: profile.cacheDiscountEnabled,
+      minSamples: PROFILE_MIN_SAMPLES,
+    },
+    models: ctx.body?.model ? models.filter((m) => m.modelKey === inv.normalizeModelKey(ctx.body.model)) : models,
+  }
 })
 
 // ------------------------------------------------------------------- probes
