@@ -1086,6 +1086,21 @@ Object.assign(EN, {
     'Sites using it declare different currencies ({list}); you have to pick one',
   '这条基准价跟引用站点的声明不一致（站点说 {c}）':
     'This base price disagrees with the site declaration (site says {c})',
+  '新增基准价': 'Add base price',
+  '某个模型没有任何站点提供价目表时，手动补一条参照价':
+    'Add a reference price by hand when no site publishes one for a model',
+  '模型名（如 deepseek-v4-pro）': 'Model name (e.g. deepseek-v4-pro)',
+  '输入价': 'Input price',
+  '输出价': 'Output price',
+  '选币种': 'Pick currency',
+  '保存': 'Save',
+  '这条基准价的数字用什么币种写，必选': 'Currency this base price is written in (required)',
+  '币种必选：没有站点可继承时按你选的算，选错差一个汇率（约 6.7 倍）':
+    'Currency is required: with no site to inherit from, a wrong pick is off by one exchange rate (about 6.7x)',
+  '先填模型名': 'Enter a model name first',
+  '新增基准价必须选币种（USD 或 CNY）': 'A new base price needs a currency (USD or CNY)',
+  '输入价和输出价至少填一个': 'Fill in at least one of input / output price',
+  '已新增基准价 {k}': 'Added base price {k}',
   '手填条目，没有站点可依，币种由你定':
     'Hand-entered entry with no site to inherit from; the currency is yours to pick',
   '没有供给引用它，币种沿用导入时的站点声明（{c}），不影响任何价格':

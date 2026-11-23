@@ -2369,7 +2369,15 @@ route('POST', /^\/api\/free\/platforms\/([\w-]+)\/diagnose$/, async (ctx) => {
 route('PUT', /^\/api\/benchmarks$/, async (ctx) => {
   const { modelKey, ...entry } = ctx.body
   if (!modelKey) throw new HttpError(400, '缺少 modelKey')
-  await bench.setBenchmark(modelKey, entry)
+  const key = inv.normalizeModelKey(modelKey) || String(modelKey)
+  const existing = await bench.readBenchmarks()
+  const isNew = !existing[key]
+  // 新增条目没有站点可以继承币种，必须显式选；否则 setBenchmark 会按美元兜底，
+  // 人民币口径的基准价被当成美元，算出来的价差 6.68 倍
+  if (isNew && entry.currency !== 'USD' && entry.currency !== 'CNY') {
+    throw new HttpError(400, '新增基准价必须选币种（USD 或 CNY）')
+  }
+  await bench.setBenchmark(key, { ...entry, source: isNew ? 'manual' : entry.source })
   return buildState()
 })
 

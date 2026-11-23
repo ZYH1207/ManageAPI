@@ -229,6 +229,31 @@ try {
   ok(Boolean(afterDeclare.plazaBenchResult), '声明币种后导入成功')
   const importedTable = await readBench()
   ok(importedTable['deepseek-v4-pro']?.currency === 'CNY', '导入的基准价币种跟着站点声明（CNY）')
+
+  // ---- 6. 手填新增条目必须选币种（没有站点可继承时，默认美元会差一个汇率）
+  const rawAdd = await fetch(`${base}/api/benchmarks`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ modelKey: 'hand-model', in: 3, out: 6 }),
+  })
+  const addBody = await rawAdd.json().catch(() => ({}))
+  ok(rawAdd.status === 400, '新增基准价不选币种被拒绝（400）')
+  ok(String(addBody.error || '').includes('币种'), '拒绝原因说明要选币种')
+
+  await call('PUT', '/api/benchmarks', { modelKey: 'hand-model', in: 3, out: 6, currency: 'CNY' })
+  const added = await readBench()
+  ok(added['hand-model']?.in === 3 && added['hand-model']?.currency === 'CNY', '选了币种后新增成功')
+  ok(added['hand-model']?.source === 'manual', '手填条目来源标成 manual')
+
+  // 改已有条目不该被降级成 manual，也不该因为带了币种而报错
+  await call('PUT', '/api/benchmarks', {
+    modelKey: 'deepseek-v4-pro',
+    in: 9,
+    out: 27,
+    currency: 'CNY',
+    source: `channels:${provider.id}`,
+  })
+  ok((await readBench())['deepseek-v4-pro'].source === `channels:${provider.id}`, '改已有条目保留原来源')
 } finally {
   app.kill()
   await new Promise((r) => upstream.close(r))

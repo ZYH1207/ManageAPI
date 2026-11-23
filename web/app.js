@@ -3005,6 +3005,8 @@ let benchShowAll = false
 /** 基准价页导入卡的选择：render() 会整页重画，不记住就会跳回第一个站点 */
 let benchImportProviderId = ''
 let benchImportMode = 'official'
+/** 「新增基准价」表单是否展开 */
+let benchAddOpen = false
 
 function renderBenchmark() {
   const view = $('#view-benchmark')
@@ -3182,7 +3184,24 @@ function renderBenchmark() {
         <span style="flex:1"></span>
         <button class="ghost tiny" data-act="bench-rebuild" title="${t('把「广场/渠道/从站导入」这三种来源的条目按站点原价重算：历史数据里存的是乘过倍率之后的折后价，会让倍率供给被打两次折')}">${t('校准为原价')}</button>
         <button id="btn-seed-benchmark" class="ghost tiny" title="${t('没有任何站点能读到价目表时的兜底：工具内置的一份官方价')}">${t('内置参考价兜底')}</button>
+        <button class="ghost tiny" data-act="bench-add-toggle" title="${t('某个模型没有任何站点提供价目表时，手动补一条参照价')}">${benchAddOpen ? '−' : '＋'} ${t('新增基准价')}</button>
       </div>
+      ${
+        benchAddOpen
+          ? `<div class="inline-form" style="margin-top:8px">
+        <input id="add-bench-key" placeholder="${t('模型名（如 deepseek-v4-pro）')}" style="max-width:260px" />
+        <input id="add-bench-in" type="number" step="0.001" placeholder="${t('输入价')}" style="width:110px" />
+        <input id="add-bench-out" type="number" step="0.001" placeholder="${t('输出价')}" style="width:110px" />
+        <select id="add-bench-currency" title="${t('这条基准价的数字用什么币种写，必选')}">
+          <option value="">${t('选币种')}</option>
+          <option value="CNY">CNY ¥</option>
+          <option value="USD">USD $</option>
+        </select>
+        <button id="btn-add-benchmark" class="ghost tiny">${t('保存')}</button>
+        <span class="hint" style="margin:0">${t('币种必选：没有站点可继承时按你选的算，选错差一个汇率（约 6.7 倍）')}</span>
+      </div>`
+          : ''
+      }
       <p class="hint" style="margin:10px 0 0">
         ${t('<b>导入</b>：「官方价」只补空缺、不动你已有的条目；「已填价」用这个站现在填的价格整体覆盖同名条目。<br />')}
         ${t('<b>校准为原价</b>：只改「广场 / 渠道 / 从站导入」这三种来源，手填与参考价不动。<br />')}
@@ -5938,6 +5957,47 @@ document.addEventListener('click', async (event) => {
         toast(error.message, true)
       }
     })
+    return
+  }
+
+  if (event.target.closest('[data-act="bench-add-toggle"]')) {
+    benchAddOpen = !benchAddOpen
+    render()
+    if (benchAddOpen) $('#add-bench-key')?.focus()
+    return
+  }
+
+  if (event.target.id === 'btn-add-benchmark') {
+    const modelKey = ($('#add-bench-key')?.value || '').trim()
+    const currency = $('#add-bench-currency')?.value || ''
+    const inPrice = $('#add-bench-in')?.value
+    const outPrice = $('#add-bench-out')?.value
+    if (!modelKey) {
+      toast(t('先填模型名'), true)
+      return
+    }
+    if (currency !== 'USD' && currency !== 'CNY') {
+      toast(t('新增基准价必须选币种（USD 或 CNY）'), true)
+      return
+    }
+    if ((inPrice === '' || inPrice === undefined) && (outPrice === '' || outPrice === undefined)) {
+      toast(t('输入价和输出价至少填一个'), true)
+      return
+    }
+    try {
+      state = await api('PUT', '/api/benchmarks', {
+        modelKey,
+        display: modelKey,
+        in: inPrice === '' ? null : Number(inPrice),
+        out: outPrice === '' ? null : Number(outPrice),
+        currency,
+      })
+      benchAddOpen = false
+      render()
+      toast(t('已新增基准价 {k}', { k: modelKey }))
+    } catch (error) {
+      toast(error.message, true)
+    }
     return
   }
 
