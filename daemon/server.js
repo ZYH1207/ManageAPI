@@ -2516,12 +2516,17 @@ route('POST', /^\/api\/benchmarks\/rebuild$/, async (ctx) => {
     }
   }
 
-  const REBUILDABLE = ['plaza:', 'channels:', 'imported:']
+  // 可重算的来源：广场 / 渠道 / 从站导入。历史数据里这些来源写的是裸 `plaza`
+  // `channels`（不带站点 id），新代码写的是 `plaza:<id>`——两种都要认，
+  // 否则老库 150 多条条目会被当成「不可重算」直接跳过（实测 179 条里只有 19 条能命中）。
+  const REBUILDABLE = ['plaza', 'channels', 'imported']
+  const isRebuildable = (source) =>
+    REBUILDABLE.some((name) => source === name || source.startsWith(`${name}:`))
   const changes = []
   const table = await bench.readBenchmarks()
   for (const [modelKey, entry] of Object.entries(table)) {
     const src = String(entry?.source || '')
-    if (!REBUILDABLE.some((prefix) => src.startsWith(prefix))) continue
+    if (!isRebuildable(src)) continue
     const hit = fresh.get(modelKey)
     if (!hit) continue
     const sameIn = Number(entry.in ?? null) === Number(hit.baseIn ?? null) || (entry.in === null && hit.baseIn === null)

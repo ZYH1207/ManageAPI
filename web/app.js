@@ -3035,6 +3035,24 @@ function renderBenchmark() {
   const relevantCount = entries.filter(isRelevant).length
   const restCount = entries.length - (layering ? matching.length : relevantCount)
 
+  // 引用计数：这条基准价被几条供给用着。没被引用的条目改了不影响钱，
+  // 但最容易变成死数据——摆在表里，别让人猜。
+  const usageByKey = new Map()
+  for (const offer of state.offers || []) {
+    const usedKey = String(offer.benchmarkKey || offer.modelKey || offer.upstreamName || '').toLowerCase()
+    if (!usedKey) continue
+    if (!usageByKey.has(usedKey)) usageByKey.set(usedKey, new Set())
+    usageByKey.get(usedKey).add(offer.providerId)
+  }
+  const usageCell = (key) => {
+    const ids = usageByKey.get(String(key).toLowerCase())
+    if (!ids || ids.size === 0) {
+      return '<span style="color:var(--faint)" title="没有任何供给引用这条基准价">未引用</span>'
+    }
+    const names = [...ids].map((id) => state.providers.find((p) => p.id === id)?.name || id).join('、')
+    return `<span title="${esc(names)}">${ids.size}</span>`
+  }
+
   // 来源值的展示友好化（来源是低频诊断信息，降为模型列的小字，省一列宽度）。
   // imported: 带站点名——「从站导入」不说是哪个站，用户对不上号
   const sourceLabel = (source) => {
@@ -3063,7 +3081,14 @@ function renderBenchmark() {
         ${extras.length ? `<div class="sub" style="color:var(--faint)">${esc(extras.join(' · '))}</div>` : ''}
       </td>
       <td class="num"><input type="number" step="0.001" placeholder="—" value="${entry.in ?? ''}" data-field="in" /></td>
-      <td class="num"><input type="number" step="0.001" placeholder="—" value="${entry.out ?? ''}" data-field="out" /></td>
+      <td class="num">
+        <input type="number" step="0.001" placeholder="—" value="${entry.out ?? ''}" data-field="out" />
+        ${
+          entry.out === null || entry.out === undefined
+            ? '<div class="sub" style="color:var(--warn)" title="缺输出价，综合成本会偏低">缺输出价</div>'
+            : ''
+        }
+      </td>
       <td class="num" style="white-space:nowrap">
         <input type="number" step="0.001" placeholder="入" value="${entry.offPeakIn ?? ''}" data-field="offPeakIn" style="width:62px" title="空闲时段输入价（如 DeepSeek 半价时段），没有就留空" />
         <input type="number" step="0.001" placeholder="出" value="${entry.offPeakOut ?? ''}" data-field="offPeakOut" style="width:62px" title="空闲时段输出价" />
@@ -3074,7 +3099,8 @@ function renderBenchmark() {
           <option value="CNY" ${entry.currency === 'CNY' ? 'selected' : ''}>CNY</option>
         </select>
       </td>
-      <td class="num"><button class="ghost danger" data-act="del-benchmark">删除</button></td>
+      <td class="num">${usageCell(key)}</td>
+      <td class="num"><button class="ghost tiny" data-act="del-benchmark" title="删除这条基准价">×</button></td>
     </tr>`
   }).join('')
 
@@ -3082,19 +3108,23 @@ function renderBenchmark() {
     .map((p) => `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join('')
 
   view.innerHTML = `
-    <p class="hint">基准价是「倍率」的换算参照。三条路：从站点导入官方价、以此站已填价为准、或载入内置参考价。</p>
+    <p class="hint">${t('基准价是「倍率」的换算参照：倍率供给的价格 = 基准价 × 倍率。')}</p>
     <div class="card">
       <div class="inline-form" style="border-top:none;margin-top:0;padding-top:0">
         <select id="import-provider" style="max-width:210px">${providerOptions || '<option value="">还没有站点</option>'}</select>
-        <button id="btn-plaza-benchmark" title="优先用令牌读「可用渠道」，没有则用模型广场" ${state.providers.length ? '' : 'disabled'}>从站点导入官方价</button>
-        <button id="btn-import-benchmark" ${state.providers.length ? '' : 'disabled'}>以此站已填价为准</button>
-        <span style="color:var(--faint);font-size:12px;margin:0 2px">或</span>
-        <button id="btn-seed-benchmark">载入内置参考价</button>
+        <select id="import-mode" style="max-width:186px" title="${t('官方价＝读该站的可用渠道/模型广场；已填价＝抄这个站现在填的价格')}">
+          <option value="official">${t('官方价（只补空缺）')}</option>
+          <option value="offers">${t('该站已填价（覆盖）')}</option>
+        </select>
+        <button id="btn-benchmark-import" ${state.providers.length ? '' : 'disabled'}>${t('导入')}</button>
+        <span style="flex:1"></span>
+        <button class="ghost tiny" data-act="bench-rebuild" title="${t('把「广场/渠道/从站导入」这三种来源的条目按站点原价重算：历史数据里存的是乘过倍率之后的折后价，会让倍率供给被打两次折')}">${t('校准为原价')}</button>
+        <button id="btn-seed-benchmark" class="ghost tiny" title="${t('没有任何站点能读到价目表时的兜底：工具内置的一份官方价')}">${t('内置参考价兜底')}</button>
       </div>
       <p class="hint" style="margin:10px 0 0">
-        ${t('<b>从站点导入官方价</b>：优先用「令牌」读该站的「可用渠道」（数据最全，不要求开广场），读不到再回落「模型广场」。只补空缺、不覆盖你已有的条目。<br />')}
-        ${t('<b>以此站已填价为准</b>：把这个站已经填好的实际价整体设为基准，适合你确信它没虚标的情况。<br />')}
-        ${t('<b>载入内置参考价</b>：用工具内置的一份官方价（截至 {asOf}），价格常变，务必核对。', {
+        ${t('<b>导入</b>：「官方价」只补空缺、不动你已有的条目；「已填价」用这个站现在填的价格整体覆盖同名条目。<br />')}
+        ${t('<b>校准为原价</b>：只改「广场 / 渠道 / 从站导入」这三种来源，手填与参考价不动。<br />')}
+        ${t('<b>内置参考价兜底</b>：工具内置的官方价（截至 {asOf}），价格常变，务必核对。', {
           asOf: esc(state.reference?.asOf || '—'),
         })}
       </p>
@@ -3103,20 +3133,12 @@ function renderBenchmark() {
       <input id="benchmark-search" class="search" type="search" placeholder="搜索模型名…" value="${esc(filters.benchmark)}" />
       <span class="hint" style="margin:0">${layering ? `${matching.length} 条与本地供给相关 · 共 ${entries.length} 条` : `共 ${entries.length} 条`}</span>
       <span style="flex:1"></span>
-      <label class="field-inline" title="${t('只影响价格显示，不影响比较口径（比较一律按美元）')}">
-        <span>${t('显示币种')}</span>
-        <select id="display-currency" data-act="display-currency" style="width:78px">
-          <option value="USD" ${state.settings.displayCurrency === 'USD' ? 'selected' : ''}>USD $</option>
-          <option value="CNY" ${state.settings.displayCurrency === 'CNY' ? 'selected' : ''}>CNY ¥</option>
-        </select>
-      </label>
-      <label class="field-inline" title="${t('只影响人民币标价/展示的折算')}">
+      <label class="field-inline" title="${t('手改这个数字会切成手动汇率，自动任务不再覆盖')}">
         <span data-i18n="汇率 USD→CNY">汇率 USD→CNY</span>
         <input id="fx-input" data-act="fx" type="number" step="0.0001" min="1" value="${esc(rateCny())}" style="width:96px" />
       </label>
       <span class="fx-note">${fxNoteHtml()}</span>
       <button class="ghost tiny" data-act="fx-refresh">${t('刷新汇率')}</button>
-      <button class="ghost tiny" data-act="bench-rebuild" title="${t('按站点当前价目表的原价重算基准价：只改「广场/渠道/从站导入」这三种来源，手填与参考价不动')}">${t('按原价重建')}</button>
       ${fxState().manual
         ? `<button class="ghost tiny" data-act="fx-auto">${t('恢复自动')}</button>`
         : ''}
@@ -3127,16 +3149,16 @@ function renderBenchmark() {
           <th>模型 <span style="color:var(--faint);font-weight:400">（小字为显示名 / 来源）</span></th>
           <th class="num">输入价</th><th class="num">输出价</th>
           <th class="num">空闲价（入 / 出）</th>
-          <th>币种</th><th></th>
+          <th>币种</th><th class="num">引用</th><th></th>
         </tr></thead>
-        <tbody>${rows || '<tr><td colspan="6" style="color:var(--faint);text-align:center;padding:24px">还没有基准价</td></tr>'}</tbody>
+        <tbody>${rows || '<tr><td colspan="7" style="color:var(--faint);text-align:center;padding:24px">还没有基准价</td></tr>'}</tbody>
         ${
           layering && restCount > 0
-            ? `<tr><td colspan="6" style="text-align:center;padding:10px;border-top:1px dashed var(--border)">
+            ? `<tr><td colspan="7" style="text-align:center;padding:10px;border-top:1px dashed var(--border)">
                  <button class="ghost tiny" data-act="bench-show-all">${t('显示其余 {n} 条（未匹配本地供给）', { n: restCount })}</button>
                </td></tr>`
             : benchShowAll && !filterText && relevantCount < entries.length
-              ? `<tr><td colspan="6" style="text-align:center;padding:10px;border-top:1px dashed var(--border)">
+              ? `<tr><td colspan="7" style="text-align:center;padding:10px;border-top:1px dashed var(--border)">
                    <button class="ghost tiny" data-act="bench-show-all">${t('收起，只看与本地供给相关的 {n} 条', { n: relevantCount })}</button>
                  </td></tr>`
               : ''
@@ -5791,17 +5813,6 @@ document.addEventListener('change', async (event) => {
 
 // 汇率输入框在「基准价」页里动态渲染，所以用事件委托而不是直接绑定
 document.addEventListener('change', async (event) => {
-  const currency = event.target.closest('[data-act="display-currency"]')
-  if (currency) {
-    try {
-      state = await api('PATCH', '/api/settings', { displayCurrency: currency.value })
-      render()
-      toast(t('显示币种已切换'))
-    } catch (error) {
-      toast(error.message, true)
-    }
-    return
-  }
   const input = event.target.closest('[data-act="fx"]')
   if (!input) return
   // 清空或非正数不提交：Number('') 是 0，直接 PATCH 会把 0 存进设置
@@ -5859,23 +5870,43 @@ document.addEventListener('click', async (event) => {
     return
   }
 
-  if (event.target.id === 'btn-plaza-benchmark') {
+  if (event.target.id === 'btn-benchmark-import') {
     const providerId = $('#import-provider')?.value
     if (!providerId) {
-      toast('先在上面选一个站点', true)
+      toast(t('先选一个站点'), true)
       return
     }
+    const mode = $('#import-mode')?.value === 'offers' ? 'offers' : 'official'
     await withBusy(event.target, async () => {
       try {
+        if (mode === 'offers') {
+          // 用这个站现在填的价格整体覆盖同名条目——会冲掉别站导入的更好数据，所以先问一句
+          const okToApply = confirm(
+            t('用该站现在填的价格覆盖同名基准价？已有条目会被替换，包括别的站导入的。'),
+          )
+          if (!okToApply) return
+          const result = await api('POST', '/api/benchmarks/import', { providerId })
+          state = result
+          render()
+          const r = result.importResult
+          toast(
+            r.imported > 0
+              ? t('已用该站价格覆盖 {n} 条基准价', { n: r.imported })
+              : t('这个站没有可用的已填价格'),
+            r.imported === 0,
+          )
+          return
+        }
         const result = await api('POST', '/api/benchmarks/import-plaza', { providerId })
         state = result
         render()
         const r = result.plazaBenchResult
-        const via = r.source === 'channels' ? '可用渠道' : '模型广场'
+        const via = r.source === 'channels' ? t('可用渠道') : t('模型广场')
         toast(
           r.added > 0
-            ? `从${via}导入 ${r.added} 条官方价${r.skipped ? `（跳过 ${r.skipped} 条：已存在或无官方价）` : ''}`
-            : `没有新增（都已有基准价，或${via}没给官方价）`,
+            ? t('从{via}导入 {n} 条官方价', { via, n: r.added }) +
+              (r.skipped ? t('（跳过 {n} 条：已存在或无官方价）', { n: r.skipped }) : '')
+            : t('没有新增（都已有基准价，或{via}没给官方价）', { via }),
           r.added === 0,
         )
       } catch (error) {
@@ -5905,15 +5936,6 @@ document.addEventListener('click', async (event) => {
     return
   }
 
-  if (event.target.id !== 'btn-import-benchmark') return
-  const providerId = $('#import-provider').value
-  if (!providerId) return
-  await withBusy(event.target, async () => {
-    const result = await api('POST', '/api/benchmarks/import', { providerId })
-    state = result
-    render()
-    toast(`导入 ${result.importResult.imported} 条基准价`)
-  })
 })
 
 // ------------------------------------------------------------------ 启动

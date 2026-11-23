@@ -58,6 +58,7 @@ const upstream = createServer((req, res) => {
               groups: [{ name: 'default', rate_multiplier: 0.15 }],
               supported_models: [
                 { name: 'deepseek-v4-pro', pricing: { input_price: 9e-6, output_price: 27e-6 } },
+                { name: 'glm-5.3', pricing: { input_price: 8e-6, output_price: 28e-6 } },
               ],
             },
           ],
@@ -150,6 +151,17 @@ try {
           source: 'imported:p-old',
           updatedAt: new Date().toISOString(),
         },
+        // 老库里广场/渠道来源写的是裸 `channels`（不带站点 id）：这条也必须能被重算
+        'glm-5.3': {
+          display: 'glm-5.3',
+          in: 0.64,
+          out: 2.24,
+          offPeakIn: null,
+          offPeakOut: null,
+          currency: 'CNY',
+          source: 'channels',
+          updatedAt: new Date().toISOString(),
+        },
         'manual-model': {
           display: 'manual-model',
           in: 5,
@@ -167,11 +179,14 @@ try {
   // ---- 1. dry-run
   const preview = await call('POST', '/api/benchmarks/rebuild', {})
   const plan = preview.benchRebuild
-  ok(plan.changedCount === 1, 'dry-run 只报 1 条要改（手填来源不动）')
-  ok(plan.changes[0]?.modelKey === 'deepseek-v4-pro', '报的是 deepseek-v4-pro')
-  ok(plan.changes[0]?.fromIn === 0.72, 'from 是折后价 0.72')
-  ok(plan.changes[0]?.toIn === 9, 'to 是站点原价 9')
-  ok(plan.changes[0]?.toSource === `channels:${provider.id}`, '来源标成实际读到它的站')
+  ok(plan.changedCount === 2, 'dry-run 报 2 条要改（手填来源不动）')
+  const proChange = plan.changes.find((c) => c.modelKey === 'deepseek-v4-pro')
+  const legacyChange = plan.changes.find((c) => c.modelKey === 'glm-5.3')
+  ok(proChange?.modelKey === 'deepseek-v4-pro', '报的是 deepseek-v4-pro')
+  ok(proChange?.fromIn === 0.72, 'from 是折后价 0.72')
+  ok(proChange?.toIn === 9, 'to 是站点原价 9')
+  ok(proChange?.toSource === `channels:${provider.id}`, '来源标成实际读到它的站')
+  ok(legacyChange?.fromIn === 0.64 && legacyChange?.toIn === 8, '裸 channels 老来源也被重算（0.64 → 8）')
   ok(plan.applied === false, 'dry-run 不落盘')
   ok((await readBench())['deepseek-v4-pro'].in === 0.72, 'dry-run 后文件里的基准价没变')
 
@@ -182,6 +197,7 @@ try {
   const table = await readBench()
   ok(table['deepseek-v4-pro'].in === 9, '基准价改成原价 9')
   ok(table['deepseek-v4-pro'].out === 27, '输出价改成原价 27')
+  ok(table['glm-5.3'].in === 8 && table['glm-5.3'].out === 28, '裸 channels 条目落盘成原价 8 / 28')
   ok(table['manual-model'].in === 5, '手填来源的基准价不动')
 
   // ---- 3. 倍率行的币种跟着基准价对齐
