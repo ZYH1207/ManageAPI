@@ -2105,3 +2105,44 @@ body.prov-dragging .drop-zone { display: flex; }
 
 .empty.small { padding: 18px 0; }
 .empty.small h3 { font-size: 13px; }
+
+/* ------------------------------------------------------ 同步记录（站点页底部）
+ * 版式照插件端：标题 + 一行说明、右侧次数，表格四列，失败行错误原文单行截断。
+ * 用 grid 而不是 <table>：站点名长短不一，table 的列宽会被最长那行撑开。
+ */
+.runs-card { padding: 16px 18px 14px; }
+.runs-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; margin-bottom: 12px; }
+.runs-head h3 { margin: 0; font-size: 15px; font-weight: 600; }
+.runs-sub { margin: 5px 0 0; font-size: 12px; line-height: 1.5; color: var(--muted); }
+.runs-table { border: 1px solid var(--divider); border-radius: 10px; overflow: hidden; }
+.runs-row {
+  display: grid;
+  grid-template-columns: 116px 168px 78px minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+  padding: 11px 16px;
+  border-bottom: 1px solid var(--divider);
+  font-size: 13px;
+}
+.runs-row:last-child { border-bottom: none; }
+.runs-row--head { padding: 9px 16px; font-size: 12px; color: var(--faint); background: var(--surface-2); }
+.runs-time { color: var(--muted); font-variant-numeric: tabular-nums; }
+.runs-site { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.runs-ms { color: var(--muted); font-variant-numeric: tabular-nums; }
+.runs-result { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.runs-badge { padding: 2px 9px; border-radius: 6px; font-size: 12px; flex: none; }
+.runs-error {
+  min-width: 0;
+  font-size: 12px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.runs-foot { margin: 11px 0 0; font-size: 12px; line-height: 1.6; color: var(--muted); }
+[data-theme='dark'] .runs-row--head { background: rgba(255, 255, 255, 0.03); }
+@media (max-width: 760px) {
+  .runs-row { grid-template-columns: 92px minmax(0, 1fr) 62px; row-gap: 6px; }
+  .runs-result { grid-column: 1 / -1; }
+  .runs-row--head span:nth-child(4) { display: none; }
+}

@@ -80,6 +80,14 @@ function fmtDateTime(iso) {
   return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
 }
 
+/** 同步耗时：超过 1 秒读成 9.2s，否则 320ms —— 「2900ms」一眼看不出量级 */
+function costDuration(ms) {
+  const n = Number(ms)
+  if (!Number.isFinite(n) || n < 0) return '—'
+  if (n >= 1000) return `${(n / 1000).toFixed(1)}s`
+  return `${Math.round(n)}ms`
+}
+
 /** 站点登录态状态灯（卡片上站点名左边的小圆点）：
  *  绿=账号密码登录有效；黄=有令牌但不是可用登录态（手填的 / 登录令牌已失效）；
  *  红=什么都没有——余额、公告、分组识别这些登录态功能全是哑的 */
@@ -4097,14 +4105,22 @@ function renderMonitor() {
     </div>`
 
   // ---------------------------------------------------------- 同步记录
+  // 版式：标题下面一行说明（只读站点数据），表格四列「时间/站点/耗时/结果」，
+  // 失败行的错误原文跟在徽章后面单行截断——整排失败通常就是令牌过期。
   const runRows = (data.runs || [])
     .map(
-      (run) => `<tr>
-        <td>${agoText(run.at)}</td>
-        <td>${esc(run.providerName || '')}</td>
-        <td class="num">${run.ms}ms</td>
-        <td>${run.ok ? '<span class="badge ok">成功</span>' : `<span class="badge danger">失败</span> <span class="hint">${esc(run.error || '')}</span>`}</td>
-      </tr>`,
+      (run) => `<div class="runs-row">
+        <span class="runs-time">${fmtDateTime(run.at)}</span>
+        <span class="runs-site">${esc(run.providerName || '')}</span>
+        <span class="runs-ms num">${costDuration(run.ms)}</span>
+        <span class="runs-result">${
+          run.ok
+            ? '<span class="badge runs-badge ok">成功</span>'
+            : `<span class="badge runs-badge danger">失败</span><span class="runs-error" title="${esc(
+                run.error || '',
+              )}">${esc(run.error || '')}</span>`
+        }</span>
+      </div>`,
     )
     .join('')
 
@@ -4112,16 +4128,21 @@ function renderMonitor() {
   // 它和下面那排站点卡是同一件事：改完间隔/阈值，顺手就在这儿点「立即同步」。
 
   const runsCard = runRows
-    ? `<div class="card">
-        <div class="card-head"><h3>同步记录</h3><span class="hint">最近 ${data.runs.length} 次</span></div>
-        <div class="table-wrap"><table>
-          <thead><tr><th>时间</th><th>站点</th><th class="num">耗时</th><th>结果</th></tr></thead>
-          <tbody>${runRows}</tbody>
-        </table></div>
-        <p class="hint">
-          同步只读站点公开/后台数据，不打真实对话请求，所以可以比探针勤。
-          余额要走站点后台接口，需要先在「站点」页填「令牌」。
-        </p>
+    ? `<div class="card runs-card">
+        <div class="runs-head">
+          <div>
+            <h3>同步记录</h3>
+            <p class="runs-sub">只读站点公开 / 后台数据，不打真实对话请求</p>
+          </div>
+          <span class="hint">最近 ${data.runs.length} 次</span>
+        </div>
+        <div class="runs-table">
+          <div class="runs-row runs-row--head">
+            <span>时间</span><span>站点</span><span>耗时</span><span>结果</span>
+          </div>
+          ${runRows}
+        </div>
+        <p class="runs-foot">余额要走站点后台接口，得先在站点卡上填「令牌」；令牌过期时这里会整排失败。</p>
       </div>`
     : ''
 
