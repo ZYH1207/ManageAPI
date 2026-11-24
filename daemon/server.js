@@ -3494,6 +3494,9 @@ async function forwardToUpstream({ candidate, body, res, attemptIndex, pool = 'p
   }
 
   let upstreamRes
+  // 上游 HTTP 状态：成功时记成 200，非 2xx 时记成它自己的状态码。
+  // 路由日志要靠它区分「网关自己拦下（如站点货币未声明）」和「站点返回 5xx」。
+  let upstreamStatus = null
   try {
     upstreamRes = await fetch(`${inv.apiBaseOf(candidate.provider).replace(/\/+$/, '')}/chat/completions`, {
       method: 'POST',
@@ -3520,10 +3523,11 @@ async function forwardToUpstream({ candidate, body, res, attemptIndex, pool = 'p
     return { committed: false, error: `连接失败：${error.message}` }
   }
 
+  upstreamStatus = upstreamRes.status
   if (!upstreamRes.ok) {
     const text = await upstreamRes.text().catch(() => '')
     cleanup()
-    return { committed: false, error: `HTTP ${upstreamRes.status} ${text.slice(0, 160).replace(/\s+/g, ' ')}` }
+    return { committed: false, error: `HTTP ${upstreamRes.status} ${text.slice(0, 160).replace(/\s+/g, ' ')}`, upstreamStatus: upstreamRes.status }
   }
 
   const headers = {
@@ -3555,14 +3559,16 @@ async function forwardToUpstream({ candidate, body, res, attemptIndex, pool = 'p
       if (clientGone || clientSignal?.aborted) {
         return { committed: false, clientAborted: true, error: '客户端已断开' }
       }
-      return { committed: false, error: '上游返回的不是 JSON' }
+      return { committed: false, error: '上游返回的不是 JSON', upstreamStatus }
     }
     cleanup()
-    if (payload?.error) return { committed: false, error: payload.error.message || '上游返回 error 字段' }
+    if (payload?.error) {
+      return { committed: false, error: payload.error.message || '上游返回 error 字段', upstreamStatus }
+    }
     // 响应已经拿到了，只是客户端先走了：token 照样计费、照样记用量，
     // 但不写已经死掉的 socket，也不把它算成站点的成功样本
     if (clientGone || clientSignal?.aborted) {
-      return { committed: true, clientAborted: true, usage: payload.usage || null, ttftMs: null }
+      return { committed: true, clientAborted: true, usage: payload.usage || null, ttftMs: null, upstreamStatus }
     }
     res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', ...headers })
     res.end(JSON.stringify(payload))
@@ -3573,6 +3579,7 @@ async function forwardToUpstream({ candidate, body, res, attemptIndex, pool = 'p
       committed: true,
       usage: payload.usage || null,
       ttftMs: null,
+      upstreamStatus,
       realCheck: {
         contentChars: (message.content || '').length + (message.reasoning_content || '').length,
         hasToolCalls: Boolean(message.tool_calls?.length),
@@ -3712,7 +3719,7 @@ async function forwardToUpstream({ candidate, body, res, attemptIndex, pool = 'p
 
     if (!committed) {
       cleanup()
-      return { committed: false, error: '上游没有返回任何内容' }
+      return { committed: false, error: '上游没有返回任何内容', upstreamStatus }
     }
 
     res.end()
@@ -3723,10 +3730,10 @@ async function forwardToUpstream({ candidate, body, res, attemptIndex, pool = 'p
     // 这既不是站方断流也不是网关故障：已写出的部分内容保留，但绝不记成站点失败。
     if (clientGone || clientSignal?.aborted) {
       if (!res.writableEnded) res.end()
-      return { committed, usage, ttftMs, clientAborted: true }
+      return { committed, usage, ttftMs, clientAborted: true, upstreamStatus }
     }
     const reason = idleTimedOut ? `上游流中断（${STREAM_IDLE_MS / 1000} 秒无数据）` : error.message
-    if (!committed) return { committed: false, error: `流中断：${reason}` }
+    if (!committed) return { committed: false, error: `流中断：${reason}`, upstreamStatus }
     if (!res.writableEnded) res.end()
     return { committed: true, usage, ttftMs, streamError: reason }
   }
@@ -3736,6 +3743,7 @@ async function forwardToUpstream({ candidate, body, res, attemptIndex, pool = 'p
     committed: true,
     usage,
     ttftMs,
+    upstreamStatus,
     realCheck: { contentChars, hasToolCalls, finishReason, promptTokens: usage?.prompt_tokens ?? null },
   }
 }
@@ -3997,8 +4005,13 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
       if (result.clientAborted || clientAbort.signal.aborted) return
       failures.push({
         providerName: candidate.provider.name,
+        providerId: candidate.provider.id,
         offerId: candidate.offer.id,
         error: result.error,
+        // 非 2xx 但打卡成功（没带上游状态）说明是我们自己拦下的，不是站点故障。
+        // 以前日志只有一句「站点: 请求返回 402」，看不出是谁在拦
+        gatewayBlocked: result.upstreamStatus == null,
+        httpStatus: result.upstreamStatus ?? null,
         ms: Date.now() - attemptStarted,
       })
       bufferTraffic(candidate.offer.id, false, result.error, null, candidate.offer.providerId)
@@ -4012,8 +4025,11 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
       if (clientAbort.signal.aborted) return
       failures.push({
         providerName: candidate.provider.name,
+        providerId: candidate.provider.id,
         offerId: candidate.offer.id,
         error: error.message || String(error),
+        gatewayBlocked: false,
+        httpStatus: null,
         ms: Date.now() - attemptStarted,
       })
       bufferTraffic(candidate.offer.id, false, error.message || String(error), null, candidate.offer.providerId)
@@ -4028,6 +4044,20 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
 
   // 请求本身不成立：换多少家结果都一样，直接把上游原话交回去（400 而不是 502）
   if (requestScopedError) {
+    queueRouting({
+      model,
+      pool,
+      keyId: keyRecord?.id ?? null,
+      keyName: keyRecord?.name ?? null,
+      chosenOfferId: null,
+      attempts: failures.length,
+      outcome: 'failed',
+      failKind: 'request-scoped',
+      latencyMs: Date.now() - started,
+      candidates: explain(candidates),
+      failures,
+      note: requestScopedError,
+    })
     return openaiError(res, 400, `请求本身不成立：${requestScopedError}`, 'invalid_request_error')
   }
 
@@ -4039,6 +4069,7 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
     chosenOfferId: null,
     attempts: candidates.length,
     outcome: 'failed',
+    failKind: 'all-failed',
     latencyMs: Date.now() - started,
     candidates: explain(candidates),
     failures,
