@@ -2147,32 +2147,18 @@ body.prov-dragging .drop-zone { display: flex; }
   .runs-row--head span:nth-child(4) { display: none; }
 }
 
-/* 决策页 · 质量列：主体数字带颜色，因子与样本数用同一行的灰字跟着，
-   不换行、不叠第二行。1.00 = 该模型的中位水平（不是及格线），只用来决定颜色。
-   用 block 而不是 inline-flex：这一列是右对齐的，整条算式超出格宽时要能自然换行，
-   否则会把整列的右边界顶开、数字离开表头。 */
-.q-quality {
-  display: inline-block;
-  text-align: right;
-  line-height: 1.5;
-  white-space: nowrap;
-  cursor: help;
-}
-.q-score {
+/* 决策页 · 质量列：三行纯文本（质量 / 可靠度 × 体验 / 样本数），
+   不用彩色、不用悬停提示——颜色留给状态列，这里只把算式摊开给人看。 */
+.q-val {
   font-variant-numeric: tabular-nums;
-  font-weight: 600;
-  font-size: 14px;
-  letter-spacing: .2px;
+  line-height: 1.5;
 }
-.q-score.q-good { color: var(--success); }
-.q-score.q-mid { color: var(--text); }
-.q-score.q-low { color: var(--warn, #b45309); }
-.q-score.q-none { color: var(--faint); font-weight: 400; }
-.q-factors,
-.q-samples {
+/* 三行是一组：和状态列、首字列的多行副信息保持同样的行距与灰度 */
+.q-meta + .q-meta { margin-top: 1px; }
+.q-meta {
   font-size: 11px;
-  font-weight: 400;
+  line-height: 1.5;
   color: var(--muted);
+  white-space: nowrap;
 }
-.q-factors .q-sep { color: var(--faint); }
 .q-samples { color: var(--faint); }

@@ -2786,31 +2786,23 @@ function renderDecision() {
       (parts.length ? `（${parts.join(' · ')}）` : '')
   }
 
-  // 质量列直接写算式，不再折叠：
-  //   2.73 = 可靠度 1.00 × 体验 2.73 · 5 样本
-  // 主体数字决定颜色（1.00 = 该模型的中位水平，不是及格线），
-  // 后面的因子用同一行的灰字跟着，拆解一眼能对账，也不占第二行。
+  // 质量列三行、全部正文色，不用彩色也不用悬浮提示：
+  //   2.38
+  //   可靠度 0.97 × 体验 2.46
+  //   61 样本
   function qualityCell(candidate) {
     if (candidate.quality === null || candidate.quality === undefined) {
-      return `<span class="q-score q-none" title="${esc(t('一次都没成功过：质量按“未知”的先验 0.5 折算，不再当 1.0（否则没证据的站会和健康站同权）'))}">—</span>`
+      return `<div class="q-val" style="color:var(--faint)">—</div>`
     }
     const exp = Number(candidate.experience)
     const rel = capturedReliability(candidate)
-    const tone = candidate.quality >= 1.15 ? 'q-good' : candidate.quality >= 0.95 ? 'q-mid' : 'q-low'
-    const factors = [`${t('可靠度')} ${rel.toFixed(2)}`]
-    if (Number.isFinite(exp)) {
-      factors.push(Math.abs(exp - 1) > 0.005 ? `${t('体验')} ×${exp.toFixed(2)}` : t('中位水平'))
-    }
-    const sampleText = Number.isFinite(candidate.samples) ? `${candidate.samples} ${t('样本')}` : ''
-    const tip = [experienceTitle(candidate), t('质量 = 混合价 ÷ 质量；1.00 = 该模型的中位水平')].filter(Boolean).join('\n')
-    // 整条算式不折行：「23 样本」被拆成「23 样 / 本」时，看起来像数字坏了。
-    // 用 nbsp 把「23 样本」这类组内空格粘住，折行只允许出现在 × 前后。
-    const glued = factors.map((x) => x.replace(/(?<=\d) (?=\S)/g, '\u00a0'))
-    const factorPart = glued.join(' <span class="q-sep">×</span> ')
-    const sampleHtml = sampleText ? ` <span class="q-samples">· ${esc(sampleText).replace(/(?<=\d) (?=\S)/g, '\u00a0')}</span>` : ''
-    return `<span class="q-quality" title="${esc(tip)}"><span class="q-score ${tone}">${candidate.quality.toFixed(2)}</span>` +
-      `<span class="q-factors"> = ${factorPart}${sampleHtml}</span>` +
-      `</span>`
+    const expText = Number.isFinite(exp)
+      ? (Math.abs(exp - 1) > 0.005 ? `${t('体验')} ${exp.toFixed(2)}` : t('中位水平'))
+      : ''
+    const factors = `${t('可靠度')} ${rel.toFixed(2)}` + (expText ? ` × ${expText}` : '')
+    return `<div class="q-val">${candidate.quality.toFixed(2)}</div>` +
+      `<div class="q-meta">${esc(factors)}</div>` +
+      (Number.isFinite(candidate.samples) ? `<div class="q-meta">${candidate.samples} ${t('样本')}</div>` : '')
   }
 
   // 可靠度 = 质量 ÷ 体验分；体验分缺失时就是质量本身
