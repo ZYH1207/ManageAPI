@@ -1266,6 +1266,10 @@ function providersHtml({ withForm = true, panel = '', actions = '' } = {}) {
       if (published) {
         return `<span class="ratio-tone ${ratioToneClass(published.rate)}" title="${t('站点公布的分组倍率（还没落到价格）')}">×${esc(String(published.rate))}</span>`
       }
+      // 名字本身就是免费池、但还没同步到行：倍率就是 0，别标「未落价」
+      if (/免费|free/i.test(String(groupName))) {
+        return `<span class="ratio-tone" title="${t('免费')}">×0</span>`
+      }
       // 既没行、也没有站点给的倍率：说清楚「还没落价」，别留白让人以为漏了
       return `<span class="chip-note" title="${t('这个分组下的供给还没落价')}">${t('未落价')}</span>`
     }
