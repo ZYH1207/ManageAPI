@@ -1234,6 +1234,41 @@ function providersHtml({ withForm = true, panel = '', actions = '' } = {}) {
         chipClass: groupChipClass(groupOffers),
       }]
     }))
+    // 胶囊上的倍率：行上的倍率是落价结果，最准；行还没落价（刚换过分组、或这把 Key
+    // 还没识别过）就回落到「站点给这把 Key 配的倍率」和「站点公布的分组倍率」。
+    // 只看 Key 名字对不上行名字就一个字都不显示，是上一版的 bug。
+    // normName 必须先声明：下面的 sameGroupName 引用它，颠倒会踩 TDZ
+    const normName = (v) => String(v ?? '').trim().replace(/\s+/g, ' ').toLowerCase()
+    const sameGroupName = (a, b) => normName(a) === normName(b)
+    const groupChipTag = (groupName) => {
+      const rows = offers.filter((o) => sameGroupName(o.group, groupName))
+      if (rows.length) {
+        const ratios = new Set(rows.map((o) => (o.ratio === null || o.ratio === undefined ? '' : String(o.ratio))))
+        if (ratios.size > 1) return `<span class="chip-note">${t('混合')}</span>`
+        const only = [...ratios][0] ?? ''
+        // 手填价没有倍率；整档都是 0 价就是免费池，标「免费」比空白有用
+        if (only === '') {
+          if (rows.every((o) => Number(o.inPrice) === 0 && Number(o.outPrice) === 0)) {
+            return `<span class="chip-note">${t('免费')}</span>`
+          }
+          if (rows.some((o) => o.inPrice !== null && o.inPrice !== undefined)) {
+            return `<span class="chip-note">${t('手填价')}</span>`
+          }
+          return `<span class="chip-note" title="${t('这个分组下的供给还没落价')}">${t('未落价')}</span>`
+        }
+        return `<span class="ratio-tone ${ratioToneClass(only)}">×${esc(only)}</span>`
+      }
+      const owner = keys.find((k) => sameGroupName(k.group, groupName) && typeof k.tokenRate === 'number')
+      if (owner) {
+        return `<span class="ratio-tone ${ratioToneClass(owner.tokenRate)}" title="${t('站点给这把 Key 配的倍率')}">×${esc(String(owner.tokenRate))}</span>`
+      }
+      const published = (p.siteGroups || []).find((g) => sameGroupName(g.name, groupName) && g.rate !== null && g.rate !== undefined)
+      if (published) {
+        return `<span class="ratio-tone ${ratioToneClass(published.rate)}" title="${t('站点公布的分组倍率（还没落到价格）')}">×${esc(String(published.rate))}</span>`
+      }
+      // 既没行、也没有站点给的倍率：说清楚「还没落价」，别留白让人以为漏了
+      return `<span class="chip-note" title="${t('这个分组下的供给还没落价')}">${t('未落价')}</span>`
+    }
     const groupRows = [...groupStats.entries()].map(([groupName, st]) => {
       const { uniform, mixed, siteRatio, custom } = st
       return `
@@ -1346,15 +1381,8 @@ function providersHtml({ withForm = true, panel = '', actions = '' } = {}) {
           <span class="k">${keyGroups.length ? `${keyGroups.length} 个分组` : '未分组'}</span>
           <span class="prov-group-chips">
             ${(expanded ? keyGroups : keyGroups.slice(0, 6)).map((g) => {
-              // 倍率从「行」取：同一分组下倍率一致才标数字，混合就标「混合」
-              const st = groupStats.get(g) || {}
-              const tag = st.mixed
-                ? `<span class="chip-note">${t('混合')}</span>`
-                : st.uniform !== '' && st.uniform !== undefined
-                  ? `<span class="ratio-tone ${ratioToneClass(st.uniform)}">×${esc(st.uniform)}</span>`
-                  : ''
               // 长分组名（站点真能起 40 字的）在胶囊里截断，悬停看全名
-              return `<span class="group-chip ${groupChipOf(p.id, g)}" title="${esc(g)}">${esc(g)}${tag}</span>`
+              return `<span class="group-chip ${groupChipOf(p.id, g)}" title="${esc(g)}">${esc(g)}${groupChipTag(g)}</span>`
             }).join('')}
             ${keyGroups.length > 6
               ? `<button class="group-chip group-more" data-act="group-toggle" data-provider="${esc(p.id)}">${expanded ? t('收起') : t('还有 {n} 个', { n: keyGroups.length - 6 })}</button>`

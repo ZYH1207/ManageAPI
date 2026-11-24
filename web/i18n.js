@@ -1193,6 +1193,12 @@ Object.assign(EN, {
   '提示': 'Note',
   '后台令牌列表里的名字': 'Name in the site admin token list',
   '站点后台给这把 Key 配的倍率': 'Rate the site assigns to this key',
+  '站点给这把 Key 配的倍率': 'rate set for this key on the site',
+  '站点公布的分组倍率（还没落到价格）': 'group rate published by the site (not yet applied to prices)',
+  '手填价': 'manual price',
+  '未落价': 'not priced yet',
+  '这个分组下的供给还没落价': 'offers in this group have not been priced yet',
+  '免费': 'free',
   '一键同步会读站点的自述信息、价目表与后台令牌列表，补录还没导入的 Key，同步模型并按分组落价，最后读余额。每一步独立容错，没读到的会列在上面。':
     'Full sync reads the site identity, price table and admin token list, imports missing keys, syncs models, applies group pricing and finally reads balance. Each step is independent; anything unreadable is listed above.',
   '同步完成，{n} 个站有问题：{error}': 'Synced — {n} sites had problems: {error}',
