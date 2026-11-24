@@ -88,6 +88,54 @@ function costDuration(ms) {
   return `${Math.round(n)}ms`
 }
 
+/** 命中率的出处：实测（逐单记账）/ 探针（合成测试）/ 先验（没测过时的保守值）。
+ *  三种数不是一个东西，界面上必须分开说，否则用户没法判断该不该信这一列。 */
+function cacheHitSourceOf(x) {
+  const src = x?.cacheHitSource
+  if (src === 'actual') return x.cacheHitLowConfidence ? t('实测·少') : t('实测')
+  if (src === 'probe') return t('探针')
+  if (src === 'prior') return t('先验')
+  return ''
+}
+
+function cacheHitTitle(x) {
+  const parts = []
+  if (typeof x?.cacheHitRaw === 'number') {
+    parts.push(`${t('原始命中率')} ${Math.round(x.cacheHitRaw * 100)}%`)
+  }
+  if (x?.cacheHitWarmSamples) parts.push(`${x.cacheHitWarmSamples} ${t('单有效样本')}`)
+  if (x?.cacheHitColdSamples) parts.push(`${t('剔除冷启动')} ${x.cacheHitColdSamples} ${t('单')}`)
+  if (x?.cacheHitLowConfidence) parts.push(t('样本偏少，已向全局中位收缩，别当精确值'))
+  if (x?.cacheHitSource === 'actual' && !parts.length) parts.push(t('按逐单记账加权算出的实际命中率'))
+  return parts.join(' · ')
+}
+
+function liveHitHint() {
+  const live = state.cacheLive || {}
+  if (!live.requests) {
+    return `<p class="hint">${t('今天还没有经过网关的请求，命中率先按全局先验折算；下一条请求开始就会变成实测值。')}</p>`
+  }
+  const pct = Math.round((live.hitRate || 0) * 100)
+  return `<p class="hint">${t('今天的实测命中率：')}<b>${pct}%</b>${t('（{n} 单 · 缓存读 {c} / 计费输入 {b}）——下面「命中率」列里标「实测」的就是按这个口径逐单算的，探针值只用来判断站点支不支持缓存。', {
+    n: live.requests,
+    c: formatTokens(live.cachedTokens),
+    b: formatTokens(live.billedTokens),
+  })}</p>`
+}
+
+function cacheHitCell(candidate) {
+  const rate = candidate?.cacheHitRate
+  const tag = cacheHitSourceOf(candidate)
+  const badge = tag ? `<div class="sub">${esc(tag)}</div>` : ''
+  if (typeof rate !== 'number') {
+    return `<span style="color:var(--faint)" title="${esc(
+      t('没测到缓存命中率，按全局先验折算；不当作 0，否则新站会被系统性排到后面'),
+    )}">${t('未测')}</span>`
+  }
+  const title = cacheHitTitle(candidate) || t('按逐单记账加权算出的实际命中率')
+  return `<span title="${esc(title)}">${Math.round(rate * 100)}%</span>${badge}`
+}
+
 /** 站点登录态状态灯（卡片上站点名左边的小圆点）：
  *  绿=账号密码登录有效；黄=有令牌但不是可用登录态（手填的 / 登录令牌已失效）；
  *  红=什么都没有——余额、公告、分组识别这些登录态功能全是哑的 */
@@ -2323,7 +2371,7 @@ function renderPricing() {
       const cacheCell =
         row.cacheHitRate === null || row.cacheHitRate === undefined
           ? '—'
-          : `${Math.round(row.cacheHitRate * 100)}%`
+          : `<span title="${esc(cacheHitTitle(row))}">${Math.round(row.cacheHitRate * 100)}%</span>`
       // 已定价的供给在本页只读：输入/输出价由 core/pricing.js 算好
       // （按倍率的行 = 基准价 × 倍率，手填价的行 = 站点申报的单价），
       // 展示币种跟随顶栏的全局币种开关，行内不再有下拉和输入框。
@@ -2736,11 +2784,7 @@ function renderDecision() {
           <td class="num">${sortCell(candidate)}${
             candidate.sticky ? `<div class="sub">${t('粘住上次的站')}</div>` : ''
           }</td>
-          <td class="num">${
-            typeof candidate.cacheHitRate === 'number'
-              ? `${Math.round(candidate.cacheHitRate * 100)}%`
-              : `<span style="color:var(--faint)" title="${t('没测到缓存命中率，按全局先验折算；不当作 0，否则新站会被系统性排到后面')}">${t('未测')}</span>`
-          }</td>
+          <td class="num">${cacheHitCell(candidate)}</td>
           <td class="num">${
             candidate.ttftMs === null
               ? '—'
@@ -2826,6 +2870,7 @@ function renderDecision() {
       </div>
     </div>
     ${untrustedSwitch}
+    ${liveHitHint()}
     <p class="hint">按上方「决策侧重」排序（${esc(modeMeta.label)}：${esc(modeMeta.desc)}），用 ↑↓ 手动调整「可用」那几条的先后——不可信的站不会因为你拖它而排到前面，排序偏好也改不了准入。</p>
     <p class="hint">${t('注意：<b>同一个模型在不同站的状态是各自独立的</b>（A 站健康、B 站掉包很正常），所以这里按「站 × 模型」逐条评估，状态下方会写明具体原因。')}</p>
     ${blocks}`

@@ -129,6 +129,12 @@ export function selectCandidates({
       priceLegacy,
       // 这一条用了多少缓存命中折扣：null 表示没测到（按先验值算的）
       cacheHitRate: cost.costProfile?.cacheHitRate ?? null,
+      // 命中率来源要跟着走：实测/先验/探针在界面上是三种可信度，混在一起显示会误导
+      cacheHitSource: profile?.cacheHitSource || null,
+      cacheHitRaw: profile?.cacheHitRaw ?? null,
+      cacheHitLowConfidence: Boolean(profile?.cacheHitLowConfidence),
+      cacheHitWarmSamples: profile?.cacheHitWarmSamples ?? null,
+      cacheHitColdSamples: profile?.cacheHitColdSamples ?? null,
       costProfile: cost.costProfile || null,
       // 这一条是不是「上次成功的站」：粘性只在价差 <stickinessPct 时生效
       sticky: Boolean(stickyOfferId) && offer.id === stickyOfferId,
@@ -341,6 +347,9 @@ export function explain(candidates) {
     priceUsd: c.priceUsd,
     priceUsdLegacy: c.priceUsdLegacy ?? null,
     cacheHitRate: c.cacheHitRate ?? null,
+    cacheHitSource: c.cacheHitSource || null,
+    cacheHitRaw: c.cacheHitRaw ?? null,
+    cacheHitLowConfidence: Boolean(c.cacheHitLowConfidence),
     quality: c.quality,
     qualityKnown: c.qualityKnown,
     effective: c.effective,

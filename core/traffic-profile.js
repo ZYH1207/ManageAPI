@@ -86,9 +86,11 @@ export function cacheHitRateOf({ offerId, probes = [], billingSamples = [], prio
   }
 
   const rows = (probes || []).filter((row) => row?.offerId === offerId)
-  // 明确测出「不支持缓存」就是真实值 0，不该用先验覆盖
-  if (rows.some((row) => row?.cacheSupported === false)) {
-    return { rate: 0, source: 'unsupported', samples: rows.length, lowConfidence: false }
+  // 支持性判定要求「所有探测都说不支持」（且至少两条）：以前只要有一条说不支持就
+  // 一票否决成 0，历史脏记录会把支持缓存的站永久锁死在场外（实测 8 个站受害）。
+  const supportRows = rows.filter((row) => typeof row?.cacheSupported === 'boolean')
+  if (supportRows.length >= 2 && supportRows.every((row) => row.cacheSupported === false)) {
+    return { rate: 0, source: 'unsupported', samples: supportRows.length, lowConfidence: false }
   }
   const hits = rows.map((row) => row?.cacheHitRate).filter((v) => typeof v === 'number' && Number.isFinite(v))
   if (hits.length > 0) {
@@ -142,6 +144,8 @@ export function costProfileOf(settings = {}) {
     inputShare: share === 'auto' ? 'auto' : Number.isFinite(share) && share >= 0 && share <= 1 ? share : 'auto',
     cacheDiscount: Number.isFinite(discount) && discount >= 0 && discount <= 1 ? discount : DEFAULT_CACHE_DISCOUNT,
     cacheDiscountEnabled: raw.cacheDiscountEnabled === false ? false : true,
+    // 命中率来源：actual=逐单真实样本（默认），probe=探针中位，legacy=不折缓存（旧口径）
+    cacheSource: raw.cacheSource === 'probe' ? 'probe' : raw.cacheSource === 'legacy' ? 'legacy' : 'actual',
   }
 }
 
@@ -166,4 +170,118 @@ export function blendedWithProfile({ inUsdPerMtok, outUsdPerMtok, inputShare, hi
   if (inPrice === null) return outUsdPerMtok
   if (typeof outUsdPerMtok !== 'number' || !Number.isFinite(outUsdPerMtok)) return inPrice
   return inPrice * share + outUsdPerMtok * (1 - share)
+}
+
+/* ───────────── 真实请求样本 → 实际命中率（逐单，非抽样） ───────────── */
+
+/** 少于 3 单 warm 样本时不敢当结论（1 单可能就是冷启动） */
+export const CACHE_ACTUAL_MIN_SAMPLES = 3
+
+/** 少于这么多 warm token 时，收缩后仍标低置信 */
+export const CACHE_ACTUAL_MIN_TOKENS = 500_000
+
+/**
+ * 收缩强度（alpha）：相当于「先验值自带这么多 token 的权重」。
+ * 500k ≈ 你库里一个模型一天的输入量，样本到这个量级才明显压过先验。
+ */
+export const CACHE_SHRINK_TOKENS = 500_000
+
+/** 距上一单超过这么久且几乎没命中 → 认为是缓存过期后的冷启动 */
+export const CACHE_COLD_GAP_MS = 10 * 60 * 1000
+
+/** prompt 比上一单涨这么多且几乎没命中 → 前缀变了（新会话/换了系统提示） */
+export const CACHE_COLD_PROMPT_RATIO = 1.3
+
+/** 判定「几乎没命中」的阈值 */
+export const CACHE_COLD_HIT_FLOOR = 0.2
+
+/**
+ * 把逐单样本分成 warm / cold。
+ *
+ * 冷启动单是真实数据，但不是「这个站的缓存能力」——把它算进命中率，
+ * 会出现「一次新会话把 95% 的站打成 5%」这种噪声（RapidApi 实测就是这样：
+ * 3 单里 1 单 231k prompt 只有 13k 命中）。
+ *
+ * @param {Array<{at:number,prompt:number,cached:number,cacheWrite?:number}>} samples 按 at 升序
+ */
+export function splitCacheSamples(samples = []) {
+  const warm = []
+  const cold = []
+  // 样本可能来自两处：网关逐单记账写的是 promptTokens/cachedTokens，
+  // 测试与旧记录用 prompt/cached —— 这里统一成短名，两边的字段都能吃
+  const list = (samples || [])
+    .map((row) => ({
+      ...row,
+      prompt: Number(row?.prompt ?? row?.promptTokens) || 0,
+      cached: Number(row?.cached ?? row?.cachedTokens) || 0,
+      cacheWrite: Number(row?.cacheWrite ?? row?.cacheWriteTokens) || 0,
+    }))
+    .filter((row) => row && Number.isFinite(row.at) && row.prompt > 0)
+    .sort((a, b) => a.at - b.at)
+
+  for (const row of list) {
+    const prompt = Number(row.prompt) || 0
+    const cached = Number(row.cached) || 0
+    const write = Number(row.cacheWrite) || 0
+    const billed = Math.max(prompt, cached + write)
+    const hit = billed > 0 ? cached / billed : 0
+    const prev = warm[warm.length - 1]
+    const firstCold = warm.length === 0 && cold.length < 2
+    const wroteOnly = write > 0 && cached === 0
+    const staleGap = Boolean(prev) && row.at - prev.at > CACHE_COLD_GAP_MS && hit < CACHE_COLD_HIT_FLOOR
+    const bigger = Boolean(prev) && prompt > prev.prompt * CACHE_COLD_PROMPT_RATIO && hit < CACHE_COLD_HIT_FLOOR
+    // 前缀变大比「隔太久」更具体：后者可能是同一条会话后面接了长附件，先报 prefix
+    if (firstCold || wroteOnly || bigger || staleGap) {
+      cold.push({ ...row, reason: wroteOnly ? 'cache-write' : firstCold ? 'first' : bigger ? 'prefix' : 'stale' })
+      continue
+    }
+    warm.push(row)
+  }
+  return { warm, cold }
+}
+
+/**
+ * 某条供给的「实际命中率」：只用 warm 样本，按 token 加权，再做收缩。
+ *
+ * 收缩 h = (Σcached + α·prior) / (Σbilled + α)
+ * 样本少时 h 被拉向先验（不会因为一单 5% 就判死），样本多时贴近实测。
+ *
+ * @param {{offerId:string, samples?:object[], prior?:number, shrinkTokens?:number}} input
+ */
+export function cacheActualOf({ offerId, samples = [], prior = CACHE_HIT_PRIOR, shrinkTokens = CACHE_SHRINK_TOKENS } = {}) {
+  const mine = (samples || []).filter((row) => row?.offerId === offerId)
+  const { warm, cold } = splitCacheSamples(mine)
+  let cached = 0
+  let billed = 0
+  for (const row of warm) {
+    const c = Number(row.cached) || 0
+    const w = Number(row.cacheWrite) || 0
+    const p = Number(row.prompt) || 0
+    cached += c
+    billed += Math.max(p, c + w)
+  }
+  const safePrior = Number.isFinite(prior) ? Math.min(1, Math.max(0, prior)) : CACHE_HIT_PRIOR
+  const alpha = Number.isFinite(shrinkTokens) && shrinkTokens >= 0 ? shrinkTokens : CACHE_SHRINK_TOKENS
+  const raw = billed > 0 ? cached / billed : null
+  if (warm.length === 0) {
+    return {
+      rate: safePrior,
+      raw: null,
+      source: 'prior',
+      warmSamples: 0,
+      coldSamples: cold.length,
+      warmTokens: 0,
+      lowConfidence: true,
+    }
+  }
+  const rate = (cached + alpha * safePrior) / (billed + alpha)
+  return {
+    rate,
+    raw,
+    source: 'actual',
+    warmSamples: warm.length,
+    coldSamples: cold.length,
+    warmTokens: billed,
+    lowConfidence: warm.length < CACHE_ACTUAL_MIN_SAMPLES || billed < CACHE_ACTUAL_MIN_TOKENS,
+  }
 }

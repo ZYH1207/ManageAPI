@@ -69,6 +69,8 @@ export function emptyDb() {
       costProfile: {
         mode: 'expected',
         inputShare: 'auto',
+        // 命中率来源：actual=逐单真实样本 / probe=探针 / legacy=不折缓存
+        cacheSource: 'actual',
         cacheDiscount: 0.9,
         cacheDiscountEnabled: true,
       },

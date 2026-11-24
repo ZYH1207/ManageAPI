@@ -26,10 +26,13 @@ import {
   costProfileOf,
   inputShareOf,
   cacheHitRateOf,
+  cacheActualOf,
   blendedWithProfile,
   PROFILE_MIN_SAMPLES,
   DEFAULT_INPUT_SHARE,
 } from '../core/traffic-profile.js'
+import { usageNumbers } from '../core/wire.js'
+import { recordCacheSample, readCacheSamples, recentCacheSamples } from '../core/cache-samples.js'
 import { classifyFailure, isConnectionError, localNetworkSuspect } from '../core/failure.js'
 import { checkRealResponse, estimateRequestTokens } from '../core/quality-signals.js'
 import { selectCandidates, listPublicModels, explain } from '../core/router.js'
@@ -144,6 +147,24 @@ function scoresFor(db) {
 // 网关每一单都要用这两个数，所以缓存住：读盘只发生在后台刷新，不阻塞请求。
 let usageShareCache = { at: 0, share: null, samples: 0 }
 let profileCache = { at: 0, map: new Map() }
+let cacheSampleCache = { at: 0, rows: [] }
+
+/**
+ * 后台刷新逐单缓存样本。60 秒内复用，避免每次选站都重新扫一遍当天文件。
+ * 失败沿用上一次：样本少了只会让命中率更靠近先验，不会让转发失败。
+ */
+async function refreshCacheSamples() {
+  if (Date.now() - cacheSampleCache.at < 60 * 1000) return
+  try {
+    cacheSampleCache = { at: Date.now(), rows: await readCacheSamples() }
+    // 新样本进来了，画像缓存立刻作废：否则最多 30 秒内还在用旧命中率，
+    // 界面上「实测」来源会晚一拍出现
+    profileCache = { at: 0, map: new Map() }
+  } catch (error) {
+    cacheSampleCache = { ...cacheSampleCache, at: Date.now() }
+    console.warn('[缓存样本] 读取失败：', error?.message || error)
+  }
+}
 
 /** 后台刷新「输入占比」；5 分钟内不重复读盘。失败不抛，沿用上一次的值。 */
 async function refreshUsageShare() {
@@ -177,6 +198,51 @@ function stickyOfferFor(routingRows, model) {
  * offerId → 流量画像（缓存命中率 + 输入占比）。30 秒内复用，避免每单重算中位。
  * 注意：命中率拿不到时用全局先验（0.85）并标记低置信，不当 0 —— 否则新站会被系统性惩罚。
  */
+/**
+ * 最近 N 天的「实测命中率」——用网关逐单记账算的，不是探针合成值。
+ * 这是用户能在界面上对照自己用量的数：`缓存读 ÷ (净输入 + 缓存读 + 缓存写)`。
+ */
+async function cacheLiveStats({ days = 1, limit = 0 } = {}) {
+  let rows = []
+  try {
+    rows = await readCacheSamples({ days })
+  } catch {
+    rows = []
+  }
+  let cachedTokens = 0
+  let billedTokens = 0
+  let requests = 0
+  const per = new Map()
+  for (const row of rows) {
+    const prompt = Number(row.promptTokens) || 0
+    const cached = Number(row.cachedTokens) || 0
+    const write = Number(row.cacheWriteTokens) || 0
+    if (prompt <= 0) continue
+    const billed = Math.max(prompt, cached + write)
+    cachedTokens += cached
+    billedTokens += billed
+    requests += 1
+    const key = row.offerId || row.modelKey || '?'
+    const agg = per.get(key) || { offerId: row.offerId || null, modelKey: row.modelKey || '', requests: 0, cachedTokens: 0, billedTokens: 0 }
+    agg.requests += 1
+    agg.cachedTokens += cached
+    agg.billedTokens += billed
+    per.set(key, agg)
+  }
+  const byOffer = [...per.values()]
+    .map((x) => ({ ...x, hitRate: x.billedTokens > 0 ? x.cachedTokens / x.billedTokens : null }))
+    .sort((a, b) => (b.billedTokens || 0) - (a.billedTokens || 0))
+  return {
+    windowDays: days,
+    requests,
+    cachedTokens,
+    billedTokens,
+    hitRate: billedTokens > 0 ? cachedTokens / billedTokens : null,
+    byOffer: limit > 0 ? byOffer.slice(0, limit) : byOffer,
+    rows: limit > 0 ? rows.slice(-limit) : rows.slice(-200),
+  }
+}
+
 function costProfilesFor(db) {
   if (Date.now() - profileCache.at < 30 * 1000) return profileCache.map
   const map = new Map()
@@ -186,12 +252,23 @@ function costProfilesFor(db) {
     for (const row of Array.isArray(rows) ? rows : []) probeRows.push({ ...row, offerId })
   }
   const inputShare = usageShareCache.share
+  const sampleRows = cacheSampleCache.rows
+  const profileSettings = costProfileOf(db.settings)
+  const useActual = profileSettings.cacheSource === 'actual'
   for (const offer of db.offers || []) {
-    const hit = cacheHitRateOf({ offerId: offer.id, probes: probeRows, billingSamples })
+    const probe = cacheHitRateOf({ offerId: offer.id, probes: probeRows, billingSamples })
+    const actual = cacheActualOf({ offerId: offer.id, samples: sampleRows })
+    const chosen = useActual ? actual : probe
     map.set(offer.id, {
-      cacheHitRate: hit.rate,
-      cacheHitSource: hit.source,
-      cacheHitLowConfidence: hit.lowConfidence,
+      cacheHitRate: chosen.rate,
+      cacheHitRaw: useActual ? actual.raw : probe.rate,
+      cacheHitSource: useActual ? actual.source : probe.source,
+      cacheHitLowConfidence: Boolean(chosen.lowConfidence),
+      cacheHitProbe: probe.rate,
+      cacheHitActual: actual.rate,
+      cacheHitWarmSamples: actual.warmSamples,
+      cacheHitColdSamples: actual.coldSamples,
+      cacheHitWarmTokens: actual.warmTokens,
       inputShare,
     })
   }
@@ -511,14 +588,23 @@ async function buildState({ light = false, panel = false } = {}) {
     }
   }
 
-  // 把缓存命中率与延迟挂到比价行上，供前端展示
+  await refreshCacheSamples()
+  // 把缓存命中率与延迟挂到比价行上，供前端展示。
+  // 命中率优先用「实际口径」（逐单记账 + 冷启动剔除 + 收缩），与决策页一致；
+  // 拿不到实测才退回探针中位数——两张表对同一条供给必须说同一个数。
+  const profilesForView = costProfilesFor(db)
   const rankedWithCache = ranked.map((group) => ({
     ...group,
     rows: group.rows.map((row) => {
       const score = scoreMap.get(row.offerId)
+      const prof = profilesForView.get(row.offerId)
       return {
         ...row,
-        cacheHitRate: score?.cacheHitRate ?? null,
+        cacheHitSource: prof?.cacheHitSource || (typeof score?.cacheHitRate === 'number' ? 'probe' : null),
+        cacheHitRaw: prof?.cacheHitRaw ?? null,
+        cacheHitWarmSamples: prof?.cacheHitWarmSamples ?? 0,
+        cacheHitLowConfidence: Boolean(prof?.cacheHitLowConfidence),
+        cacheHitRate: prof?.cacheHitRate ?? score?.cacheHitRate ?? null,
         ttftMs: score?.ttftMs ?? null,
         avgLatencyMs: score?.latencyMs ?? null,
       }
@@ -585,6 +671,7 @@ async function buildState({ light = false, panel = false } = {}) {
     siteRanking,
     scores,
     probeTotal: db.probes.length,
+    cacheLive: await cacheLiveStats({ days: 1 }),
     gateway: buildGatewaySection(db.settings),
     usage,
     routing: (db.routing || []).slice(-40).reverse(),
@@ -762,6 +849,13 @@ function applyDisplaySettings(db, body) {
     }
     if (raw.cacheDiscountEnabled !== undefined) {
       next.cacheDiscountEnabled = Boolean(raw.cacheDiscountEnabled)
+    }
+    if (raw.cacheSource !== undefined) {
+      const v = String(raw.cacheSource).trim().toLowerCase()
+      if (!['actual', 'probe', 'legacy'].includes(v)) {
+        throw new HttpError(400, '缓存命中率来源只能是 actual / probe / legacy')
+      }
+      next.cacheSource = v
     }
     db.settings.costProfile = next
     profileCache = { at: 0, map: new Map() }
@@ -2252,6 +2346,54 @@ route('PUT', /^\/api\/decisions\/([^/]+)\/order$/, async (ctx) => {
  * 为什么要有这个接口：新口径会把绝对成本整体改小一个量级、排名也会动几位，
  * 这种改动不该由后端偷偷生效。先看一眼名单，确认合理再切 `costProfile.mode`。
  */
+/**
+ * 最近这些真实请求的缓存命中率（逐单，不是抽样、不是探针）。
+ *
+ * 数据来自网关转发成功时记下的样本，内存环形里保留最近 2000 单，
+ * 所以这个接口反映的是「此刻你正在用的这条链路」——换站、换会话都会立刻反映出来。
+ */
+route('GET', /^\/api\/cache\/live$/, async (ctx) => {
+  const limit = Math.max(1, Math.min(500, Number(ctx.query.get('limit')) || 50))
+  const rows = recentCacheSamples(limit)
+  const db = await store.readDbCached()
+  const labels = new Map()
+  for (const offer of db.offers || []) {
+    const provider = (db.providers || []).find((p) => p.id === offer.providerId)
+    labels.set(offer.id, {
+      providerName: provider?.name || null,
+      upstreamName: offer.upstreamName || null,
+      modelKey: offer.modelKey || offer.upstreamName || null,
+    })
+  }
+  const byOffer = new Map()
+  for (const row of rows) {
+    const cached = Number(row.cached) || 0
+    const billed = Math.max(Number(row.prompt) || 0, cached + (Number(row.cacheWrite) || 0))
+    const acc = byOffer.get(row.offerId) || { offerId: row.offerId, requests: 0, cachedTokens: 0, billedTokens: 0 }
+    acc.requests += 1
+    acc.cachedTokens += cached
+    acc.billedTokens += billed
+    byOffer.set(row.offerId, acc)
+  }
+  const byOfferRows = [...byOffer.values()]
+    .map((acc) => ({
+      ...acc,
+      ...(labels.get(acc.offerId) || {}),
+      hitRate: acc.billedTokens > 0 ? acc.cachedTokens / acc.billedTokens : null,
+    }))
+    .sort((a, b) => b.billedTokens - a.billedTokens)
+  const totalCached = byOfferRows.reduce((sum, item) => sum + item.cachedTokens, 0)
+  const totalBilled = byOfferRows.reduce((sum, item) => sum + item.billedTokens, 0)
+  return {
+    window: rows.length,
+    hitRate: totalBilled > 0 ? totalCached / totalBilled : null,
+    cachedTokens: totalCached,
+    billedTokens: totalBilled,
+    byOffer: byOfferRows,
+    rows,
+  }
+})
+
 route('POST', /^\/api\/cost\/preview$/, async (ctx) => {
   const db = await store.readDbCached()
   const benchmarks = await bench.readBenchmarks()
@@ -2271,21 +2413,29 @@ route('POST', /^\/api\/cost\/preview$/, async (ctx) => {
     for (const row of Array.isArray(rows) ? rows : []) probeRows.push({ ...row, offerId })
   }
 
+  await refreshCacheSamples()
+  const sampleRows = cacheSampleCache.rows
+
   const providerNames = new Map((db.providers || []).map((p) => [p.id, p.name]))
   const rows = []
   for (const offer of paid) {
     const cost = pricing.offerCost(offer, db.settings, benchmarks)
     if (cost.perCall || cost.blendedUsdPerMtok === null) continue
     const score = scoreMap.get(offer.id) || null
-    const hit = cacheHitRateOf({ offerId: offer.id, probes: probeRows, billingSamples })
-    const blended = blendedWithProfile({
-      inUsdPerMtok: cost.inUsdPerMtok,
-      outUsdPerMtok: cost.outUsdPerMtok,
-      inputShare,
-      hitRate: hit.rate,
-      cacheDiscount: profile.cacheDiscount,
-      cacheDiscountEnabled: profile.cacheDiscountEnabled,
-    })
+    const probe = cacheHitRateOf({ offerId: offer.id, probes: probeRows, billingSamples })
+    const actual = cacheActualOf({ offerId: offer.id, samples: sampleRows })
+    const hit = profile.cacheSource === 'actual' ? actual : probe
+    const blendFor = (rate) =>
+      blendedWithProfile({
+        inUsdPerMtok: cost.inUsdPerMtok,
+        outUsdPerMtok: cost.outUsdPerMtok,
+        inputShare,
+        hitRate: rate,
+        cacheDiscount: profile.cacheDiscount,
+        cacheDiscountEnabled: profile.cacheDiscountEnabled,
+      })
+    const blended = blendFor(hit.rate)
+    const probeBlended = blendFor(probe.rate)
     const quality = score?.quality ?? null
     // 期望成本 = 混合价 ÷ 质量：质量未知时用先验 0.5（与路由的 effectiveCost 同口径）
     const divisor = quality === null ? NO_EVIDENCE_QUALITY : Math.max(quality, 0.05)
@@ -2301,6 +2451,11 @@ route('POST', /^\/api\/cost\/preview$/, async (ctx) => {
       hitRate: hit.rate,
       hitSource: hit.source,
       hitLowConfidence: hit.lowConfidence,
+      hitRateProbe: probe.rate,
+      hitRateActual: actual.rate,
+      hitWarmSamples: actual.warmSamples,
+      hitColdSamples: actual.coldSamples,
+      expectedUsdProbe: probeBlended === null ? null : probeBlended / divisor,
       routable: score ? isRoutable(score) : false,
     })
   }
@@ -2337,6 +2492,7 @@ route('POST', /^\/api\/cost\/preview$/, async (ctx) => {
       inputShareSamples: shareInfo.samples,
       cacheDiscount: profile.cacheDiscount,
       cacheDiscountEnabled: profile.cacheDiscountEnabled,
+      cacheSource: profile.cacheSource,
       minSamples: PROFILE_MIN_SAMPLES,
     },
     models: ctx.body?.model ? models.filter((m) => m.modelKey === inv.normalizeModelKey(ctx.body.model)) : models,
@@ -3733,20 +3889,28 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
           candidates: explain(candidates),
           failures,
         })
+        const usageNums = usageNumbers(result.usage)
+        await recordCacheSample({
+          offerId: candidate.offer.id,
+          providerId: candidate.offer.providerId,
+          modelKey: candidate.offer.modelKey || candidate.offer.upstreamName || null,
+          keyId: keyRecord?.id ?? null,
+          promptTokens: usageNums.promptTokens,
+          cachedTokens: usageNums.cachedTokens,
+          cacheWriteTokens: usageNums.cacheWriteTokens,
+          stream: Boolean(result.stream || result.streaming),
+        }).catch((error) => console.warn('[缓存样本] 记录失败：', error))
         await recordUsage({
           keyId: keyRecord?.id ?? '-',
           providerId: candidate.offer.providerId,
           model: candidate.offer.modelKey || candidate.offer.upstreamName,
-          inputTokens: result.usage?.prompt_tokens,
-          outputTokens: result.usage?.completion_tokens,
-          cachedTokens: result.usage?.prompt_tokens_details?.cached_tokens,
+          inputTokens: usageNums.promptTokens,
+          outputTokens: usageNums.completionTokens,
+          cachedTokens: usageNums.cachedTokens,
           // 缓存写入是独立计费项（站点按 cache_creation 收，通常是输入价的 1.25 倍）。
           // 上游字段名各家不一，Anthropic 系在 cache_creation_input_tokens，
           // OpenAI 兼容层常放在 prompt_tokens_details.cache_creation_tokens
-          cacheCreationTokens:
-            result.usage?.cache_creation_input_tokens ??
-            result.usage?.prompt_tokens_details?.cache_creation_tokens ??
-            0,
+          cacheCreationTokens: usageNums.cacheWriteTokens,
           latencyMs,
           ttftMs: result.ttftMs,
           // 被用户取消的请求不记错误：token 已经产生（要计花费），但不是站点失败
@@ -3764,10 +3928,7 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
                 requestTokens,
                 // 缓存命中要扣掉再判「多算钱」：上报值含缓存部分，不扣会把长上下文
                 // 高命中的站全判成虚报
-                cachedTokens:
-                  Number(result.usage?.prompt_tokens_details?.cached_tokens) ||
-                  Number(result.usage?.prompt_cache_hit_tokens) ||
-                  0,
+                cachedTokens: usageNums.cachedTokens,
               }),
         )
         // 计费核对样本：本地估算的请求 token vs 上游上报的 prompt_tokens。
@@ -3779,8 +3940,8 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
               providerId: candidate.offer.providerId,
               modelKey: candidate.offer.modelKey || null,
               localTokens: requestTokens,
-              reportedPrompt: Number(result.usage.prompt_tokens) || null,
-              reportedCached: Number(result.usage?.prompt_tokens_details?.cached_tokens) || 0,
+              reportedPrompt: usageNums.promptTokens,
+              reportedCached: usageNums.cachedTokens,
             })
             .catch((error) => console.warn('[计费样本] 记录失败：', error))
         }

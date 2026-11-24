@@ -321,6 +321,21 @@ const EN = {
     'Never succeeded once: quality uses the "unknown" prior 0.5 instead of 1.0, so an unevidenced site cannot tie with a healthy one',
   '粘住上次的站': 'sticky (kept last good site)',
   '未测': 'n/a',
+  '实测': 'actual',
+  '今天还没有经过网关的请求，命中率先按全局先验折算；下一条请求开始就会变成实测值。':
+    'No gateway traffic today yet — hit rate falls back to the global prior until the first request lands.',
+  '今天的实测命中率：': "Today's measured cache hit rate: ",
+  '（{n} 单 · 缓存读 {c} / 计费输入 {b}）——下面「命中率」列里标「实测」的就是按这个口径逐单算的，探针值只用来判断站点支不支持缓存。':
+    ' ({n} requests · cache read {c} / billed input {b}). Rows marked "actual" use exactly this per-request figure; probe values only tell whether the site supports caching.',
+  '实测·少': 'actual (few)',
+  '探针': 'probe',
+  '先验': 'prior',
+  '原始命中率': 'raw hit rate',
+  '单有效样本': 'valid samples',
+  '剔除冷启动': 'cold-start dropped',
+  '单': '',
+  '样本偏少，已向全局中位收缩，别当精确值': 'few samples: shrunk toward the global median, do not treat as exact',
+  '按逐单记账加权算出的实际命中率': 'hit rate computed from per-request billing records, token-weighted',
   '没测到缓存命中率，按全局先验折算；不当作 0，否则新站会被系统性排到后面':
     'No cache-hit measurement for this offer, so the global prior is used; treating it as 0 would systematically push new sites to the bottom.',
   '决策侧重': 'Routing preference',

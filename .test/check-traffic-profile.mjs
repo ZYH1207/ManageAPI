@@ -94,9 +94,20 @@ console.log('cacheHitRateOf：优先级与先验')
   ok(r3.source === 'probe', '没有流量样本时用探针')
   ok(near(r3.rate, 0.92), '探针取中位 0.92')
 
-  const r4 = cacheHitRateOf({ offerId: 'o4', probes: [{ offerId: 'o4', cacheSupported: false }] })
-  ok(r4.rate === 0 && r4.source === 'unsupported', '探针明确测出不支持缓存 → 0（真实值，不用先验）')
-  ok(r4.lowConfidence === false, '这是证据而不是猜测')
+  // 一次探针说不支持不算数：实测里同一条供给的探针一会儿 true 一会儿 false
+  // （命中率低时站点本就不回缓存字段），早先「一票否决」把 8 个站显示成 0%
+  const once = cacheHitRateOf({ offerId: 'o4', probes: [{ offerId: 'o4', cacheSupported: false }] })
+  ok(once.source !== 'unsupported', '单条「不支持」不判 0（不搞一票否决）')
+
+  const twice = cacheHitRateOf({
+    offerId: 'o4',
+    probes: [
+      { offerId: 'o4', cacheSupported: false },
+      { offerId: 'o4', cacheSupported: false },
+    ],
+  })
+  ok(twice.rate === 0 && twice.source === 'unsupported', '两次都测出不支持 → 0（真实值，不用先验）')
+  ok(twice.lowConfidence === false, '这是证据而不是猜测')
 
   const r5 = cacheHitRateOf({ offerId: 'o5' })
   ok(r5.source === 'prior' && r5.rate === CACHE_HIT_PRIOR, '什么证据都没有 → 先验 + 低置信')
