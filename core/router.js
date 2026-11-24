@@ -377,6 +377,9 @@ export function explain(candidates) {
     experienceDetail: c.experienceDetail ?? null,
     qualityScore: c.qualityScore ?? null,
     effective: c.effective,
+    // 决策页要显示「排序键比上一条低/高多少」：下面这个值是排序时真正比的那个数，
+    // 换算成人民币只用于兜底显示（真实金额走 price / effective）
+    effectiveUsd: c.effectiveUsd ?? null,
     // 当前档位与它真正用来排序的值：决策页「排序键」列直接显示这个值，
     // 否则用户切到价格档后看到「有效成本」一列的数字和排名对不上
     decisionMode: c.decisionMode,

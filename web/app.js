@@ -2725,10 +2725,38 @@ function renderDecision() {
     modes.findIndex((mode) => mode.key === decisionMode),
   )
   const modeMeta = modes[modeIndex] || { label: '性价比', hint: '', desc: '' }
-  const sortCell = (candidate) => {
-    if (decisionMode === 'quality') return candidate.quality === null ? '—' : candidate.quality.toFixed(2)
-    if (decisionMode === 'price') return candidate.price === null ? '—' : priceText(candidate.price)
-    return candidate.effective === null ? '—' : priceText(candidate.effective)
+  // 排序键格里直接带上「比上一条低/高多少」：只有第一名和打平/粘性时才有必要说别的，
+  // 所以「为什么排这里」不再是单独一列（整列都在重复「排序键」三个字）。
+  const sortValueOf = (candidate) => {
+    if (decisionMode === 'quality') return candidate.quality === null ? null : candidate.quality
+    if (decisionMode === 'price') return typeof candidate.priceUsd === 'number' ? candidate.priceUsd : null
+    return typeof candidate.effectiveUsd === 'number' ? candidate.effectiveUsd : null
+  }
+  const sortCell = (candidate, prev) => {
+    const main = decisionMode === 'quality'
+      ? (candidate.quality === null ? '—' : candidate.quality.toFixed(2))
+      : (decisionMode === 'price'
+        ? (candidate.price === null ? '—' : priceText(candidate.price))
+        : (candidate.effective === null ? '—' : priceText(candidate.effective)))
+    const code = candidate.orderReason || null
+    let sub = ''
+    if (!prev) {
+      sub = `<div class="sub" style="color:var(--faint)">${decisionMode === 'quality' ? t('最高') : t('最低')}</div>`
+    } else if (code === 'key' || code === 'sticky') {
+      const cv = sortValueOf(candidate)
+      const pv = sortValueOf(prev)
+      // 质量档「越大越好」，其余两档「越小越好」，差值方向要跟着翻
+      if (cv !== null && pv !== null && Math.min(Math.abs(cv), Math.abs(pv)) > 0) {
+        const cheap = decisionMode === 'quality' ? -1 : 1
+        const pct = ((cv - pv) / Math.min(Math.abs(cv), Math.abs(pv))) * 100 * cheap
+        const word = pct >= 0 ? t('高出') : t('低了')
+        const color = pct >= 0 ? 'var(--faint)' : 'var(--muted)'
+        sub = `<div class="sub" style="color:${color}" title="${esc(candidate.orderReasonText || '')}">${t('比上一条')}${word} ${Math.abs(pct).toFixed(1)}%</div>`
+      }
+    } else if (code && code !== 'first') {
+      sub = `<div class="sub" style="color:var(--muted)" title="${esc(candidate.orderReasonText || '')}">${esc(t(ORDER_REASON_LABEL[code] || code))}</div>`
+    }
+    return `${main}${sub}`
   }
 
   // 「为什么排这里」：第一名标排序键最优，其余显示它输给上一名的那个环节。
@@ -2763,19 +2791,18 @@ function renderDecision() {
       return `<span style="color:var(--faint)" title="${t('一次都没成功过：质量按“未知”的先验 0.5 折算，不再当 1.0（否则没证据的站会和健康站同权）')}">${t('无证据')}</span>`
     }
     const exp = Number(candidate.experience)
-    const detail = Number.isFinite(exp) && Math.abs(exp - 1) > 0.005
-      ? `<div class="sub" title="${esc(experienceTitle(candidate))}">${t('体验')} ×${exp.toFixed(2)}</div>`
-      : `<div class="sub" style="color:var(--faint)">${t('中位水平')}</div>`
+    const parts = []
+    if (Number.isFinite(exp) && Math.abs(exp - 1) > 0.005) {
+      parts.push(`<span title="${esc(experienceTitle(candidate))}">${t('体验')} ×${exp.toFixed(2)}</span>`)
+    } else if (Number.isFinite(exp)) {
+      parts.push(`<span title="${esc(experienceTitle(candidate))}">${t('中位水平')}</span>`)
+    }
+    if (candidate.confidence && candidate.confidence !== 'high' && Number.isFinite(candidate.samples)) {
+      // 样本少才值得写数字；样本充足时写「37 样本」只是噪音
+      parts.push(`<span title="${t('探针成功的次数，越多越可信')}">${candidate.samples} ${t('样本')}</span>`)
+    }
+    const detail = parts.length ? `<div class="sub" style="color:var(--faint)">${parts.join(' · ')}</div>` : ''
     return `${candidate.quality.toFixed(2)}${detail}`
-  }
-
-  function orderReasonCell(candidate, index) {
-    const code = candidate.orderReason || (index === 0 ? 'first' : null)
-    if (!code) return '<span style="color:var(--faint)">—</span>'
-    const label = t(ORDER_REASON_LABEL[code] || code)
-    const detail = candidate.orderReasonText ? ` title="${esc(candidate.orderReasonText)}"` : ''
-    const dim = code === 'first' ? '' : ' style="color:var(--muted)"'
-    return `<span${dim}${detail}>${esc(label)}</span>`
   }
 
   const blocks = visibleDecisions.map((decision) => {
@@ -2798,14 +2825,8 @@ function renderDecision() {
           }</td>
           <td>${candidate.group ? `<span class="badge ${groupChipOf(candidate.providerId, candidate.group)}">${esc(candidate.group)}</span>` : '<span style="color:var(--faint)">默认</span>'}</td>
           <td class="num">${candidate.price === null ? '—' : priceText(candidate.price)}</td>
-          <td class="num">${qualityCell(candidate)}${
-            candidate.confidence && candidate.confidence !== 'high'
-              ? `<div class="sub">${candidate.samples} ${t('样本')}</div>`
-              : ''
-          }</td>
-          <td class="num">${sortCell(candidate)}${
-            candidate.sticky ? `<div class="sub">${t('粘住上次的站')}</div>` : ''
-          }</td>
+          <td class="num">${qualityCell(candidate)}</td>
+          <td class="num">${sortCell(candidate, index > 0 ? decision.candidates[index - 1] : null)}</td>
           <td class="num">${cacheHitCell(candidate)}</td>
           <td class="num">${
             typeof candidate.tps === 'number'
@@ -2820,7 +2841,6 @@ function renderDecision() {
                     : ''
                 }`
           }</td>
-          <td>${orderReasonCell(candidate, index)}</td>
           <td><span class="badge ${badge.cls}">${badge.label}</span>${candidate.statusReason ? `<div class="sub">${esc(candidate.statusReason)}</div>` : ''}</td>
         </tr>`
     }).join('')
@@ -2838,7 +2858,7 @@ function renderDecision() {
           <thead><tr>
             <th style="width:66px"></th><th class="num">#</th><th>站点</th><th>分组</th>
             <th class="num">价格</th><th class="num">质量<div class="sub">${t('可靠度 × 体验')}</div></th>
-            <th class="num">排序键<div class="sub">${esc(modeMeta.label)}</div></th><th class="num">命中率<div class="sub">缓存</div></th><th class="num">首字</th><th>${t('为什么排这里')}</th><th>状态</th>
+            <th class="num">排序键<div class="sub">${esc(modeMeta.label)}</div></th><th class="num">命中率<div class="sub">缓存</div></th><th class="num">首字</th><th>状态</th>
           </tr></thead>
           <tbody>${rows}</tbody>
         </table>`}
