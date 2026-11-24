@@ -40,7 +40,8 @@ function dayKey(at) {
  * 失败只打日志：样本缺失只让统计变保守，不能因为它中断一次已经成功的转发。
  *
  * @param {{at?:number, offerId:string, providerId?:string, modelKey?:string, keyId?:string,
- *   promptTokens?:number|null, cachedTokens?:number, cacheWriteTokens?:number, stream?:boolean}} entry
+ *   promptTokens?:number|null, cachedTokens?:number, cacheWriteTokens?:number, stream?:boolean,
+ *   warm?:boolean, warmHint?:string}} entry
  */
 export async function recordCacheSample(entry) {
   if (!entry?.offerId) return null
@@ -55,6 +56,10 @@ export async function recordCacheSample(entry) {
     cached: Number(entry.cachedTokens) || 0,
     cacheWrite: Number(entry.cacheWriteTokens) || 0,
     stream: entry.stream === true,
+    // 发请求前这条供给刚热过（十分钟内、规模相近）→ 这一单的「固定开销」不可信：
+    // 几百 token 的追问会把 prompt 全算成站方多收。标了 warm 的样本只当上界用
+    warm: entry.warm === true,
+    warmHint: entry.warmHint || null,
   }
   if (row.prompt <= 0) return null
 

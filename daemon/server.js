@@ -30,6 +30,8 @@ import {
   blendedWithProfile,
   PROFILE_MIN_SAMPLES,
   DEFAULT_INPUT_SHARE,
+  splitCacheSamples,
+  CACHE_COLD_GAP_MS,
 } from '../core/traffic-profile.js'
 import { usageNumbers } from '../core/wire.js'
 import { recordCacheSample, readCacheSamples, recentCacheSamples } from '../core/cache-samples.js'
@@ -195,12 +197,41 @@ function stickyOfferFor(routingRows, model) {
 }
 
 /**
- * offerId → 流量画像（缓存命中率 + 输入占比）。30 秒内复用，避免每单重算中位。
- * 注意：命中率拿不到时用全局先验（0.85）并标记低置信，不当 0 —— 否则新站会被系统性惩罚。
+ * 这一单发出去之前，同一条供给最近有没有「热」样本？
+ *
+ * 用来给逐单缓存样本打标：同一站在 CACHE_COLD_GAP_MS 内刚调用过、prompt 规模相近时，
+ * 这一次大概率还是命中缓存的（DeepSeek 前缀缓存窗口约 10 分钟），第一单只有几百 token
+ * 就把「固定开销 = prompt − 本地估算」算成天文数字，是报表失真的主要来源。
+ * 判据刻意保守：只要没有同规模的近期样本、或近期样本命中率不高，就返回 false。
+ *
+ * @param {string} offerId
+ * @param {number} requestTokens 本次请求的输入 token（0/未知时只按时间判）
  */
+export function hasPriors(offerId, requestTokens = 0) {
+  if (!offerId) return false
+  const now = Date.now()
+  // 环形样本最多 2000 条，全取一次比按站过滤更省事，够覆盖最近几小时的全部供给
+  const mine = recentCacheSamples(2000).filter((row) => row?.offerId === offerId)
+  if (mine.length === 0) return false
+  const { warm } = splitCacheSamples(mine)
+  if (warm.length === 0) return false
+  const last = warm[warm.length - 1]
+  if (now - Number(last.at) > CACHE_COLD_GAP_MS) return false
+  const tokens = Number(requestTokens) || 0
+  // 请求规模比最近那条热样本大不少时，前缀大概率变了（新会话/换了系统提示），按冷启动算
+  if (tokens > 0 && tokens > Number(last.prompt || 0) * 1.3) return false
+  const cached = Number(last.cached) || 0
+  const billed = Math.max(Number(last.prompt) || 0, cached + (Number(last.cacheWrite) || 0))
+  return billed > 0 && cached / billed >= 0.2
+}
+
 /**
  * 最近 N 天的「实测命中率」——用网关逐单记账算的，不是探针合成值。
  * 这是用户能在界面上对照自己用量的数：`缓存读 ÷ (净输入 + 缓存读 + 缓存写)`。
+ *
+ * warm / cold 分开统计：`warm: true` 的行是「十分钟内同一站刚热过」的追问
+ * （第一单只有几百 token、缓存还没写进去），它们的固定开销不可信，
+ * 混进总体会把命中率往下拉。
  */
 async function cacheLiveStats({ days = 1, limit = 0 } = {}) {
   let rows = []
@@ -212,16 +243,20 @@ async function cacheLiveStats({ days = 1, limit = 0 } = {}) {
   let cachedTokens = 0
   let billedTokens = 0
   let requests = 0
+  let coldRequests = 0
+  let warmRequests = 0
   const per = new Map()
   for (const row of rows) {
-    const prompt = Number(row.promptTokens) || 0
-    const cached = Number(row.cachedTokens) || 0
-    const write = Number(row.cacheWriteTokens) || 0
+    const prompt = Number(row.prompt) || 0
+    const cached = Number(row.cached) || 0
+    const write = Number(row.cacheWrite) || 0
     if (prompt <= 0) continue
     const billed = Math.max(prompt, cached + write)
     cachedTokens += cached
     billedTokens += billed
     requests += 1
+    if (row.warm === true) warmRequests += 1
+    else coldRequests += 1
     const key = row.offerId || row.modelKey || '?'
     const agg = per.get(key) || { offerId: row.offerId || null, modelKey: row.modelKey || '', requests: 0, cachedTokens: 0, billedTokens: 0 }
     agg.requests += 1
@@ -235,6 +270,10 @@ async function cacheLiveStats({ days = 1, limit = 0 } = {}) {
   return {
     windowDays: days,
     requests,
+    // 冷启动单：同一站隔了十分钟以上、或前缀变了的那一单，最容易「查出没命中」
+    coldRequests,
+    // 热样本单：刚调过、还在缓存窗口里，命中率天然偏高，单独计数便于对照
+    warmRequests,
     cachedTokens,
     billedTokens,
     hitRate: billedTokens > 0 ? cachedTokens / billedTokens : null,
@@ -3444,7 +3483,15 @@ function authorizeGateway(req, db) {
  * 关键在流式的提交边界：必须读到第一个 chunk 并确认它不是错误，才向客户端
  * writeHead。在这之前失败都可以静默换站；一旦提交，就只能收尾，不能重试。
  */
-async function forwardToUpstream({ candidate, body, res, attemptIndex, pool = 'paid', clientSignal = null }) {
+async function forwardToUpstream({
+  candidate,
+  body,
+  res,
+  attemptIndex,
+  pool = 'paid',
+  clientSignal = null,
+  requestTokens = 0,
+}) {
   const apiKey = await inv.revealSecret(candidate.credential.id)
   if (!apiKey) return { committed: false, error: 'Key 解密失败' }
 
@@ -3493,6 +3540,8 @@ async function forwardToUpstream({ candidate, body, res, attemptIndex, pool = 'p
     if (clientSignal) clientSignal.removeEventListener('abort', onClientGone)
   }
 
+  // 这一单是不是「刚热过的会话再调一次」：只影响缓存样本的可信度标注，不影响转发
+  const warmCacheHint = hasPriors(candidate.offer.id, Number(requestTokens) || 0)
   let upstreamRes
   // 上游 HTTP 状态：成功时记成 200，非 2xx 时记成它自己的状态码。
   // 路由日志要靠它区分「网关自己拦下（如站点货币未声明）」和「站点返回 5xx」。
@@ -3548,7 +3597,6 @@ async function forwardToUpstream({ candidate, body, res, attemptIndex, pool = 'p
       typeof candidate.cacheHitRate === 'number' ? candidate.cacheHitRate.toFixed(3) : 'unknown',
     'X-ManageAPI-Sticky': candidate.sticky ? '1' : '0',
   }
-
   if (!isStream) {
     let payload
     try {
@@ -3568,7 +3616,7 @@ async function forwardToUpstream({ candidate, body, res, attemptIndex, pool = 'p
     // 响应已经拿到了，只是客户端先走了：token 照样计费、照样记用量，
     // 但不写已经死掉的 socket，也不把它算成站点的成功样本
     if (clientGone || clientSignal?.aborted) {
-      return { committed: true, clientAborted: true, usage: payload.usage || null, ttftMs: null, upstreamStatus }
+      return { committed: true, clientAborted: true, usage: payload.usage || null, ttftMs: null, upstreamStatus, warmCacheHint }
     }
     res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', ...headers })
     res.end(JSON.stringify(payload))
@@ -3580,6 +3628,7 @@ async function forwardToUpstream({ candidate, body, res, attemptIndex, pool = 'p
       usage: payload.usage || null,
       ttftMs: null,
       upstreamStatus,
+      warmCacheHint,
       realCheck: {
         contentChars: (message.content || '').length + (message.reasoning_content || '').length,
         hasToolCalls: Boolean(message.tool_calls?.length),
@@ -3730,7 +3779,7 @@ async function forwardToUpstream({ candidate, body, res, attemptIndex, pool = 'p
     // 这既不是站方断流也不是网关故障：已写出的部分内容保留，但绝不记成站点失败。
     if (clientGone || clientSignal?.aborted) {
       if (!res.writableEnded) res.end()
-      return { committed, usage, ttftMs, clientAborted: true, upstreamStatus }
+      return { committed, usage, ttftMs, clientAborted: true, upstreamStatus, warmCacheHint }
     }
     const reason = idleTimedOut ? `上游流中断（${STREAM_IDLE_MS / 1000} 秒无数据）` : error.message
     if (!committed) return { committed: false, error: `流中断：${reason}`, upstreamStatus }
@@ -3744,6 +3793,7 @@ async function forwardToUpstream({ candidate, body, res, attemptIndex, pool = 'p
     usage,
     ttftMs,
     upstreamStatus,
+    warmCacheHint,
     realCheck: { contentChars, hasToolCalls, finishReason, promptTokens: usage?.prompt_tokens ?? null },
   }
 }
@@ -3897,12 +3947,22 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
         attemptIndex: index,
         pool,
         clientSignal: clientAbort.signal,
+        requestTokens,
       })
       if (result.committed) {
         const latencyMs = Date.now() - started
         // 客户端取消（ESC / 关页面）：上游确实被我们 abort 了，但这不是站的失败样本。
         // 记成 client-aborted —— 既不拉低可用率，也不把「被取消」伪装成成功。
         const clientAborted = Boolean(result.clientAborted)
+        // 真实流量的命中率：决策页显示的是「探针给的先验」，这次请求的真实值更可信。
+        // 记进路由日志后，同一站的实测命中率会比探针更早反映「缓存被关掉」这种事
+        const realUsage = usageNumbers(result.usage)
+        const realPrompt = Number(realUsage.promptTokens)
+        const realCached = Number(realUsage.cachedTokens)
+        const realHitRate =
+          Number.isFinite(realPrompt) && realPrompt > 0 && Number.isFinite(realCached) && realCached >= 0
+            ? Math.min(1, realCached / realPrompt)
+            : null
         queueRouting({
           model,
           pool,
@@ -3918,6 +3978,7 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
           latencyMs,
           ttftMs: result.ttftMs ?? null,
           usage: result.usage || null,
+          cacheHitRate: realHitRate,
           candidates: explain(candidates),
           failures,
         })
@@ -3942,6 +4003,10 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
           cachedTokens: usageNums.cachedTokens,
           cacheWriteTokens: usageNums.cacheWriteTokens,
           stream: Boolean(result.stream || result.streaming),
+          // 分段标记：同一站短间隔重复调用时，第一单往往只有几百 token、缓存还没写进去，
+          // 报表固定开销会严重失真。标了 warm 的行在统计里只算上界
+          warm: result.warmCacheHint !== false,
+          warmHint: result.warmCacheHint === true ? 'recent-warm' : 'no-evidence',
         }).catch((error) => console.warn('[缓存样本] 记录失败：', error))
         await recordUsage({
           keyId: keyRecord?.id ?? '-',
