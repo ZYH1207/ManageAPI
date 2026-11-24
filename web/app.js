@@ -655,28 +655,52 @@ function overviewTrendCard() {
 
   const series = data.balanceSeries || []
   const spend = data.spendSeries || []
-  const providerIds = (data.balanceByProvider || []).map((row) => row.providerId)
+  const balanceRows = data.balanceByProvider || []
+  // 只把「有余额或有花费」的站放进选择器——没数据的站点了也是空图
+  const providerIds = balanceRows
+    .filter(
+      (row) =>
+        row.balance !== null || spend.some((d) => (d.byProvider?.[row.providerId] || 0) > 0),
+    )
+    .map((row) => row.providerId)
+  // 选中的站在数据里消失了（被删/暂停）→ 回落到全部
+  if (chartSite !== 'ALL' && !providerIds.includes(chartSite)) chartSite = 'ALL'
   const colorOf = (pid) =>
     OVERVIEW_SERIES_COLORS[Math.max(0, providerIds.indexOf(pid)) % OVERVIEW_SERIES_COLORS.length]
   const seriesClassOf = (pid) =>
     `series-${(Math.max(0, providerIds.indexOf(pid)) % OVERVIEW_SERIES_COLORS.length) + 1}`
   const chart = monitorChartSvg(series, spend, {
-    selected: 'ALL',
+    selected: chartSite,
     providerIds,
     colorOf,
     seriesClassOf,
     fx: rateCny(),
   })
+  // 悬停上下文：选中单站时，余额线换成该站的值（USD 余额按汇率折成 CNY）
   const chartCtx = {
     days: series.map((d) => d.day),
-    balance: series.map((d) => (typeof d.total === 'number' ? d.total : null)),
+    balance: series.map((d) => {
+      if (chartSite === 'ALL') return typeof d.total === 'number' ? d.total : null
+      const raw = d.perProvider?.[chartSite]
+      return typeof raw === 'number' ? raw * rateCny() : null
+    }),
     spend: spend.map((d) => d.byProvider || {}),
     total: spend.map((d) => d.cny || 0),
-    site: 'ALL',
-    names: Object.fromEntries((data.balanceByProvider || []).map((row) => [row.providerId, row.name])),
+    site: chartSite,
+    names: Object.fromEntries(balanceRows.map((row) => [row.providerId, row.name])),
     providers: providerIds,
     colors: Object.fromEntries(providerIds.map((pid) => [pid, colorOf(pid)])),
   }
+  const allChip = `<button class="monitor-chip${chartSite === 'ALL' ? ' is-on' : ''}" data-chart-site="ALL">${t('全部站点')}</button>`
+  const siteChips = balanceRows
+    .filter((row) => providerIds.includes(row.providerId))
+    .map((row) => {
+      const on = chartSite === row.providerId ? ' is-on' : ''
+      return `<button class="monitor-chip ${seriesClassOf(row.providerId)}${on}" data-chart-site="${esc(
+        row.providerId,
+      )}" title="${t('只看这个站')}"><span class="dot"></span>${esc(row.name)}</button>`
+    })
+    .join('')
   return `<div class="card monitor-chart-card" data-chart-ctx="${esc(JSON.stringify(chartCtx))}">
     ${head}
     ${
@@ -685,13 +709,17 @@ function overviewTrendCard() {
         : '<div class="empty small"><p>还没有同步到余额。</p></div>'
     }
     <div class="chart-legend">
-      <span><i class="legend-line"></i>${t('余额合计（{sym}，其他币种按汇率折算）', { sym: priceSym() })}</span>
-      <span><i class="legend-bar"></i>${t('各站花费（堆叠）')}</span>
+      <span><i class="legend-line"></i>${
+        chartSite === 'ALL'
+          ? t('余额合计（{sym}，其他币种按汇率折算）', { sym: priceSym() })
+          : t('该站余额（{sym}）', { sym: priceSym() })
+      }</span>
+      <span><i class="legend-bar"></i>${chartSite === 'ALL' ? t('各站花费（堆叠）') : t('该站每日花费')}</span>
     </div>
+    <div class="monitor-chips">${allChip}${siteChips}</div>
   </div>`
 }
 
-/** 实时流量：最近真实请求（网关决策日志前 14 条），选中站、首字、尝试次数都能看到 */
 function overviewFlowCard() {
   const rows = (state.routing || []).slice(0, 14)
   const badgeOf = (outcome) => {
@@ -4663,14 +4691,20 @@ document.addEventListener('click', async (event) => {
     return
   }
 
-  // 概览图的站点选择：单选，'ALL' 看总体，选站只看该站
+  // 余额概览的站点选择：单选，'ALL' 看总体，选站只看该站
+  // 这张图现在挂在概览页，站点页只剩管理卡，所以按当前页决定重画谁
   const chartSiteBtn = event.target.closest('[data-chart-site]')
   if (chartSiteBtn) {
     const next = chartSiteBtn.dataset.chartSite
     if (next && next !== chartSite) {
       chartSite = next
-      renderMonitor()
-      translateDom($('#view-monitor') || document.body)
+      if (activeTab === 'overview') {
+        renderOverview()
+        translateDom($('#view-overview') || document.body)
+      } else {
+        renderMonitor()
+        translateDom($('#view-monitor') || document.body)
+      }
     }
     return
   }
