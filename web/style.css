@@ -955,10 +955,15 @@ a.icon-btn:hover { text-decoration: none; }
 }
 .prov-group-chips .group-chip:hover { border-color: var(--accent); }
 /* 站点真会起 40 字的分组名（「【自建】混池 6.1-sol专属，高缓不降智…」）：
-   胶囊里截断，悬停看全名，否则一张卡被一个名字撑到翻屏 */
+   只截断名字本身，倍率是名字的兄弟节点、不参与省略——
+   以前整个胶囊 overflow:hidden，名字一长后面「×0.12」就被省略号一起吃掉 */
 .prov-group-chips .group-chip {
-  max-width: 148px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  max-width: 176px; display: inline-flex; align-items: center; gap: 4px; white-space: nowrap;
 }
+.prov-group-chips .group-chip .chip-name {
+  min-width: 0; max-width: 112px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.prov-group-chips .group-chip > *:not(.chip-name) { flex: none; }
 
 /* ------------------------------------------- 厂商品牌配色（分组胶囊 / 分组徽章）
    胶囊底色按厂商品牌色：国产统一 DeepSeek 蓝、OpenAI 用 ChatGPT 绿、

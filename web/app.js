@@ -1249,7 +1249,7 @@ function providersHtml({ withForm = true, panel = '', actions = '' } = {}) {
         // 手填价没有倍率；整档都是 0 价就是免费池，标「免费」比空白有用
         if (only === '') {
           if (rows.every((o) => Number(o.inPrice) === 0 && Number(o.outPrice) === 0)) {
-            return `<span class="chip-note">${t('免费')}</span>`
+            return `<span class="ratio-tone" title="${t('免费')}">×0</span>`
           }
           if (rows.some((o) => o.inPrice !== null && o.inPrice !== undefined)) {
             return `<span class="chip-note">${t('手填价')}</span>`
@@ -1382,7 +1382,7 @@ function providersHtml({ withForm = true, panel = '', actions = '' } = {}) {
           <span class="prov-group-chips">
             ${(expanded ? keyGroups : keyGroups.slice(0, 6)).map((g) => {
               // 长分组名（站点真能起 40 字的）在胶囊里截断，悬停看全名
-              return `<span class="group-chip ${groupChipOf(p.id, g)}" title="${esc(g)}">${esc(g)}${groupChipTag(g)}</span>`
+              return `<span class="group-chip ${groupChipOf(p.id, g)}" title="${esc(g)}"><span class="chip-name">${esc(g)}</span>${groupChipTag(g)}</span>`
             }).join('')}
             ${keyGroups.length > 6
               ? `<button class="group-chip group-more" data-act="group-toggle" data-provider="${esc(p.id)}">${expanded ? t('收起') : t('还有 {n} 个', { n: keyGroups.length - 6 })}</button>`
