@@ -66,6 +66,8 @@ export function emptyDb() {
       // 粘性：两条候选的排序键差小于这个比例时，优先留在上次成功的站上
       // （换站会让上游前缀缓存作废）。0 = 关闭粘性，完全按价格排。
       stickinessPct: 0.05,
+      // 体验分（首字 / 输出速度）是否乘进质量；关掉即回到「可用率 × 完整性」的老口径
+      quality: { experienceEnabled: true },
       costProfile: {
         mode: 'expected',
         inputShare: 'auto',

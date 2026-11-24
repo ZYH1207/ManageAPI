@@ -5,7 +5,8 @@
  * 三件事要成立：
  *  1. 探针记录带 roundId + ttftRel（本轮最小值已减掉）
  *  2. 评分聚合出 ttftRelMs 中位
- *  3. 打平链优先比相对值；只有一条有相对值时回落绝对值
+ *  3. 首字已经折进质量（体验分），打平链不再单独拿首字/相对值排序；
+ *     相对值仍保留在候选行上，供界面标注「比本轮最快多多少」
  */
 import { scoreOffers } from '../core/score.js'
 import { selectCandidates, orderReasonBetween } from '../core/router.js'
@@ -95,17 +96,17 @@ const run = (scores) =>
     model: 'm',
   })
 
-console.log('打平链：两条都有相对值时按相对值排（绝对值更小的反而在后）')
+console.log('首字进质量：同模型里更快的那条质量更高')
 {
-  // a 绝对 900ms 但相对只有 20ms；b 绝对 200ms 但相对 180ms。
-  // 说明这一轮本机链路整体快/慢不同，绝对毫秒不可比，站点自身首字 a 更快。
+  // 体验分用「同模型首字中位」当尺子：200ms 比 900ms 快，质量更高、排前面。
+  // 相对值只作展示（哪个站比本轮最快慢多少），不再单独参与排序。
   const rows = run([
     scoreRow('a', { ttftMs: 900, ttftRelMs: 20 }),
     scoreRow('b', { ttftMs: 200, ttftRelMs: 180 }),
   ])
-  ok(rows[0].offer.id === 'a', '相对首字更小的 a 排第一')
-  ok(rows[1].orderReason === 'tie-ttft', '落败原因标成 tie-ttft')
-  ok(/相对值/.test(rows[1].orderReasonText), '解释里点明用的是相对值')
+  ok(rows[0].offer.id === 'b', '首字 200ms 的站体验分更高、排第一')
+  ok(rows[1].orderReason === 'key', '落败原因标成排序键（首字已折进质量，不再是打平链）')
+  ok(rows[0].ttftRelMs === 180, '相对值仍保留在候选行上，供界面标注')
 }
 
 console.log('只有一条有相对值时回落到绝对值，不混着比')
@@ -118,13 +119,13 @@ console.log('只有一条有相对值时回落到绝对值，不混着比')
   ok(typeof rows[0].ttftRelMs === 'number' && rows[1].ttftRelMs === null, '两条的相对值分别保留')
 }
 
-console.log('解释函数：相对值口径写进说明')
+console.log('解释函数：首字不再单独作为打平依据')
 {
-  const a = { offer: { id: 'a' }, routable: true, sortValue: 1, cacheHitRate: 0.5, ttftMs: 900, ttftRelMs: 20, price: 7 }
-  const b = { offer: { id: 'b' }, routable: true, sortValue: 1, cacheHitRate: 0.5, ttftMs: 200, ttftRelMs: 180, price: 7 }
+  const a = { offer: { id: 'a' }, routable: true, sortValue: 1, samples: 10, provider: { quotaRemaining: 1 }, ttftMs: 900, ttftRelMs: 20, price: 7 }
+  const b = { offer: { id: 'b' }, routable: true, sortValue: 1, samples: 10, provider: { quotaRemaining: 1 }, ttftMs: 200, ttftRelMs: 180, price: 7 }
   const reason = orderReasonBetween(a, b, { decisionMode: 'value', stickinessPct: 0.05 })
-  ok(reason.code === 'tie-ttft', 'tie-ttft')
-  ok(/20ms/.test(reason.text) && /180ms/.test(reason.text), '说明里是相对值而不是 900/200')
+  ok(reason.code === 'tie-order', '排序键相同时落到固定次序（首字已在质量里算过）')
+  ok(!/ms/.test(reason.text), '说明里不再拿毫秒比较')
 }
 
 console.log('')

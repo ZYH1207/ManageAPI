@@ -338,14 +338,27 @@ const EN = {
   '按逐单记账加权算出的实际命中率': 'hit rate computed from per-request billing records, token-weighted',
   '没测到缓存命中率，按全局先验折算；不当作 0，否则新站会被系统性排到后面':
     'No cache-hit measurement for this offer, so the global prior is used; treating it as 0 would systematically push new sites to the bottom.',
+  '体验': 'exp.',
+  '中位水平': 'median',
+  '可靠度 × 体验': 'reliability × experience',
+  '同模型首字中位': 'median first-token for this model:',
+  '同模型速度中位': 'median output speed for this model:',
+  '首字分': 'first-token score',
+  '速度分': 'speed score',
+  '体验分 = 首字分 × 速度分的几何平均；1.00 = 该模型的中位水平，>1 表示比中位快':
+    'Experience = geometric mean of the first-token and speed scores; 1.00 is this model’s median, above 1 is faster than the median',
+  '没测到首字与速度，按中位水平 1.00 计（不奖不罚）':
+    'No first-token or speed data yet: counted as the median (1.00), neither rewarded nor penalised',
+  '输出速度：扣掉首字之后的解码阶段每秒 token 数':
+    'Output speed: tokens per second during decoding, excluding the first token',
   '决策侧重': 'Routing preference',
   '排序键': 'Sort key',
   '为什么排这里': 'Why this rank',
   '排序键最优': 'best sort key',
   '粘住上次': 'sticky',
-  '打平·命中率': 'tie · cache hit',
-  '打平·首字': 'tie · TTFT',
-  '打平·价格': 'tie · price',
+  '打平·证据量': 'tie · more evidence',
+  '打平·余额': 'tie · more balance',
+  '打平·固定次序': 'tie · stable order',
   '准入': 'gate',
   '手动顺序': 'manual order',
   '同一轮探针里比最快的那条慢多少：已扣掉本机带宽/链路的公共延迟，跨轮可比；绝对毫秒只在本机网络稳定时有意义':

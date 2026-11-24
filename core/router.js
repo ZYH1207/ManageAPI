@@ -19,7 +19,8 @@
  * 个人工具里「能用」通常比「严格」更重要。
  */
 import { offerCost } from './pricing.js'
-import { isRoutable, effectiveCost, THRESHOLDS } from './score.js'
+import { isRoutable, effectiveCost, THRESHOLDS, NO_EVIDENCE_QUALITY } from './score.js'
+import { experienceScores } from './experience.js'
 import { normalizeModelKey } from './inventory.js'
 import { normalizeDecisionMode, compareByMode, sortValueOf } from './decision-mode.js'
 
@@ -90,6 +91,8 @@ export function selectCandidates({
     const price = cost.blendedCnyPerMtokExpected ?? cost.blendedCnyPerMtok
     const priceLegacy = cost.blendedCnyPerMtok
     const ttftMs = score?.ttftMs ?? null
+    // 输出速度（解码阶段 tok/s）：体验分的另一半，和首字一起构成「快不快」
+    const tps = score?.tps ?? null
     // 首字相对值（同轮「比最快的那条慢多少毫秒」）：绝对值含本机链路，
     // 打平链优先用它，两条都有相对值时才比相对值，否则回落到绝对值
     const ttftRelMs = score?.ttftRelMs ?? null
@@ -162,9 +165,41 @@ export function selectCandidates({
       blocked: score?.blocked || null,
       statusReason: reasons.join(' · ') || null,
       ttftMs,
+      tps,
       ttftRelMs,
     }
   })
+
+  // 体验分：同一模型横向比一次「快不快」，再乘进质量。
+  // 放在这里而不是 score.js，是因为尺子是「同模型全部在售供给的中位」，
+  // 单站评分阶段还看不到别人；决策页走同一个函数，否则页面和网关会又对不上。
+  const experienceEnabled = settings?.quality?.experienceEnabled !== false
+  const { map: expMap, baseline: expBaseline } = experienceEnabled
+    ? experienceScores(rows.map((row) => ({ offerId: row.offer.id, ttftMs: row.ttftMs, tps: row.tps })))
+    : { map: new Map(), baseline: null }
+  for (const row of rows) {
+    const exp = expMap.get(row.offer.id) || { score: 1, ttftScore: 1, tpsScore: 1, source: 'none' }
+    row.experience = exp.score
+    row.experienceDetail = {
+      score: exp.score,
+      ttftScore: exp.ttftScore,
+      tpsScore: exp.tpsScore,
+      source: exp.source,
+      baseline: exp.baseline || expBaseline,
+    }
+    // 可靠度没证据时按 0.5 的先验（与 effectiveCost 的约定一致），再乘体验分。
+    // 注意：质量可以 >1（比中位快），这不是错误——1.00 是「中位水平」。
+    const reliable = row.quality === null || row.quality === undefined ? NO_EVIDENCE_QUALITY : row.quality
+    const qualityScore = reliable * exp.score
+    row.qualityScore = qualityScore
+    if (row.quality !== null && row.quality !== undefined) row.quality = row.quality * exp.score
+    row.effective = effectiveCost(row.price, qualityScore)
+    row.effectiveUsd = effectiveCost(row.priceUsd, qualityScore)
+    row.sortValue = sortValueOf(
+      { priceUsd: row.priceUsd, quality: qualityScore, effectiveUsd: row.effectiveUsd },
+      decisionMode,
+    )
+  }
 
   const manualIndex =
     Array.isArray(order) && order.length > 0
@@ -202,25 +237,16 @@ export function selectCandidates({
         }
         return byMode
       }
-      // 完全打平（排序键相同）时的次序：命中率高的先、首字低的后、再按名义价兜底。
-      // 这条链只决定「一样好的两条谁先」，不影响任何准入判定。
-      const ha = typeof a.cacheHitRate === 'number' ? a.cacheHitRate : -1
-      const hb = typeof b.cacheHitRate === 'number' ? b.cacheHitRate : -1
-      if (ha !== hb) return hb - ha
-      // 首字优先比相对值（同轮「比最快的慢多少」），这样本机带宽抖动不会影响次序
-      const useRel = typeof a.ttftRelMs === 'number' && typeof b.ttftRelMs === 'number'
-      const ta = useRel
-        ? a.ttftRelMs
-        : typeof a.ttftMs === 'number'
-          ? a.ttftMs
-          : INFINITY_COST
-      const tb = useRel
-        ? b.ttftRelMs
-        : typeof b.ttftMs === 'number'
-          ? b.ttftMs
-          : INFINITY_COST
-      if (ta !== tb) return ta - tb
-      return (a.price ?? INFINITY_COST) - (b.price ?? INFINITY_COST)
+      // 完全打平（排序键相同）时的次序。命中率在价格里、首字与速度在质量里，
+      // 这里再比一次等于把同一个优势罚两遍，所以只比「没被建模过」的因素：
+      // 证据多的先（更可预测）→ 余额多的先（能跑更久）→ offerId 稳定序。
+      const sa = Number.isFinite(a.samples) ? a.samples : 0
+      const sb = Number.isFinite(b.samples) ? b.samples : 0
+      if (sa !== sb) return sb - sa
+      const qa = Number.isFinite(a.provider?.quotaRemaining) ? a.provider.quotaRemaining : -1
+      const qb = Number.isFinite(b.provider?.quotaRemaining) ? b.provider.quotaRemaining : -1
+      if (qa !== qb) return qb - qa
+      return String(a.offer.id).localeCompare(String(b.offer.id))
     })
 
   // 排完之后给每一行补一句「为什么排在这里」：它跟上一名的差别是什么。
@@ -286,33 +312,26 @@ export function orderReasonBetween(
       gapPct: pct,
     }
   }
-  // 4. 排序键完全相同时的打平链
-  const hp = typeof prev.cacheHitRate === 'number' ? prev.cacheHitRate : -1
-  const hc = typeof cur.cacheHitRate === 'number' ? cur.cacheHitRate : -1
-  if (hp !== hc) {
-    const fmt = (v) => (v < 0 ? '未测' : `${Math.round(v * 100)}%`)
-    return { code: 'tie-hit', text: `排序键相同，缓存命中率 ${fmt(hc)} 低于上一条的 ${fmt(hp)}` }
-  }
-  const useRel = typeof prev.ttftRelMs === 'number' && typeof cur.ttftRelMs === 'number'
-  const tp = useRel
-    ? prev.ttftRelMs
-    : typeof prev.ttftMs === 'number'
-      ? prev.ttftMs
-      : INFINITY_COST
-  const tc = useRel
-    ? cur.ttftRelMs
-    : typeof cur.ttftMs === 'number'
-      ? cur.ttftMs
-      : INFINITY_COST
-  if (tp !== tc) {
-    const fmt = (v) => (v === INFINITY_COST ? '无数据' : `${v}ms`)
-    const unit = useRel ? '比本轮最快多' : ''
+  // 4. 排序键完全相同时的打平链：只比「没被价格/质量建模过」的因素。
+  // 命中率已经在价格里折算过、首字与速度已经在体验分里折算过，
+  // 这里再比一次等于把同一个优势罚两遍，所以这里不比它们。
+  const spa = Number.isFinite(prev.samples) ? prev.samples : 0
+  const spc = Number.isFinite(cur.samples) ? cur.samples : 0
+  if (spa !== spc) {
     return {
-      code: 'tie-ttft',
-      text: `排序键与命中率相同，首字 ${unit}${fmt(tc)} 慢于上一条的 ${unit}${fmt(tp)}${useRel ? '（相对值，已扣掉本机链路）' : ''}`,
+      code: 'tie-samples',
+      text: `排序键相同，它只有 ${spc} 条证据、上一条有 ${spa} 条（证据多的先，更可预测）`,
     }
   }
-  return { code: 'tie-price', text: '前面全都相同，按名义单价兜底' }
+  const qp = Number.isFinite(prev.provider?.quotaRemaining) ? prev.provider.quotaRemaining : null
+  const qc = Number.isFinite(cur.provider?.quotaRemaining) ? cur.provider.quotaRemaining : null
+  if (qp !== qc && qp !== null && qc !== null) {
+    return {
+      code: 'tie-balance',
+      text: `排序键与证据量相同，它的余额更少（余额多的先，能跑更久）`,
+    }
+  }
+  return { code: 'tie-order', text: '前面全都相同，按固定次序兜底（避免刷新后顺序跳动）' }
 }
 
 /** 网关对外的模型清单：按归一化名去重，客户端用这个名字请求即可。 */
@@ -352,6 +371,11 @@ export function explain(candidates) {
     cacheHitLowConfidence: Boolean(c.cacheHitLowConfidence),
     quality: c.quality,
     qualityKnown: c.qualityKnown,
+    // 体验分拆解：决策页要显示「质量 = 可靠度 × 体验(首字分 × 速度分)」，
+    // 只给最终质量的话，用户看到 1.88 会以为是评分算错了
+    experience: c.experience ?? null,
+    experienceDetail: c.experienceDetail ?? null,
+    qualityScore: c.qualityScore ?? null,
     effective: c.effective,
     // 当前档位与它真正用来排序的值：决策页「排序键」列直接显示这个值，
     // 否则用户切到价格档后看到「有效成本」一列的数字和排名对不上
@@ -361,6 +385,7 @@ export function explain(candidates) {
     probeOk: c.probeOk,
     tooSlow: Boolean(c.tooSlow),
     ttftMs: c.ttftMs,
+    tps: c.tps,
     ttftRelMs: c.ttftRelMs ?? null,
     status: c.status,
     samples: c.samples,

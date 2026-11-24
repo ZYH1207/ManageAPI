@@ -58,28 +58,46 @@ const healthy = (id, ttftMs = 100) => [
   },
 ]
 
-console.log('排序键相同时：命中率高的先')
+console.log('排序键相同时：证据多的先（命中率已折进价格，不再比第二次）')
 {
   const offers = [offer('a', 1, 1), offer('b', 1, 1)]
-  const scores = new Map([healthy('a'), healthy('b')])
+  const scores = new Map([
+    ['a', { ...healthy('a')[1], samples: 3 }],
+    ['b', { ...healthy('b')[1], samples: 10 }],
+  ])
+  // 命中率差很大，但 legacy 口径下它不进价格；打平链也不该拿它当依据，
+  // 否则「价格里罚一次、次序上再罚一次」= 同一个优势算两遍。
   const profiles = new Map([
-    ['a', { cacheHitRate: 0.2, inputShare: 0.99 }],
-    ['b', { cacheHitRate: 0.9, inputShare: 0.99 }],
+    ['a', { cacheHitRate: 0.95, inputShare: 0.99 }],
+    ['b', { cacheHitRate: 0.05, inputShare: 0.99 }],
   ])
   const rows = selectCandidates({ offers, providers: [provider], credentials: [credential], scores, benchmarks: {}, settings, model: 'm', profiles })
-  ok(rows[0].offer.id === 'b', '同价同质量时，命中率 90% 的排在命中率 20% 的前面')
+  ok(rows[0].offer.id === 'b', '同价同质量时，证据多的 b 排在前面（不看命中率）')
+  ok(rows[1].orderReason === 'tie-samples', '解释是 tie-samples')
 }
 
-console.log('排序键相同时：首字低的先')
+console.log('排序键、证据都相同时：余额多的先')
 {
   const offers = [offer('a', 1, 1), offer('b', 1, 1)]
-  const scores = new Map([healthy('a', 900), healthy('b', 120)])
-  const profiles = new Map([
-    ['a', { cacheHitRate: 0.5, inputShare: 0.99 }],
-    ['b', { cacheHitRate: 0.5, inputShare: 0.99 }],
+  const providers = [
+    { ...provider, id: 'p1', quotaRemaining: 1000 },
+    { ...provider, id: 'p2', name: 'T', quotaRemaining: 900000 },
+  ]
+  const offers2 = [
+    { ...offer('a', 1, 1), providerId: 'p1' },
+    { ...offer('b', 1, 1), providerId: 'p2' },
+  ]
+  const credentials = [
+    { id: 'c1', providerId: 'p1', secret: 'x', group: '' },
+    { id: 'c2', providerId: 'p2', secret: 'x', group: '' },
+  ]
+  const scores = new Map([
+    ['a', { ...healthy('a')[1], samples: 10 }],
+    ['b', { ...healthy('b')[1], samples: 10 }],
   ])
-  const rows = selectCandidates({ offers, providers: [provider], credentials: [credential], scores, benchmarks: {}, settings, model: 'm', profiles })
-  ok(rows[0].offer.id === 'b', '命中率相同 → 首字 120ms 排在 900ms 前面')
+  const rows = selectCandidates({ offers: offers2, providers, credentials, scores, benchmarks: {}, settings, model: 'm' })
+  ok(rows[0].offer.id === 'b', '同价、同证据量时余额多的 b 先（能跑更久）')
+  ok(rows[1].orderReason === 'tie-balance', '解释是 tie-balance')
 }
 
 console.log('粘性：价差在阈值内时留在上次成功的站')

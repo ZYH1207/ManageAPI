@@ -860,6 +860,14 @@ function applyDisplaySettings(db, body) {
     db.settings.costProfile = next
     profileCache = { at: 0, map: new Map() }
   }
+  if (body.quality !== undefined) {
+    // 体验分开关：关掉就回到「可用率 × 完整性」的老口径，方便对比与回滚
+    const raw = body.quality || {}
+    const current = db.settings.quality || {}
+    const next = { ...current }
+    if (raw.experienceEnabled !== undefined) next.experienceEnabled = Boolean(raw.experienceEnabled)
+    db.settings.quality = next
+  }
   if (body.decisionMode !== undefined) {
     // 只接受写明的档位：拼错 / 手改接口传脏值时报错，而不是静默回落到默认档——
     // 静默回落会让用户以为自己改了偏好、实际还是旧顺序。

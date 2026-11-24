@@ -2737,12 +2737,38 @@ function renderDecision() {
     first: '排序键最优',
     key: '排序键',
     sticky: '粘住上次',
-    'tie-hit': '打平·命中率',
-    'tie-ttft': '打平·首字',
-    'tie-price': '打平·价格',
+    'tie-samples': '打平·证据量',
+    'tie-balance': '打平·余额',
+    'tie-order': '打平·固定次序',
     gate: '准入',
     manual: '手动顺序',
   }
+  // 体验分拆解：1.00 = 该模型的中位水平（不是「及格线」，也不封顶）。
+  // 倍数写在这里是因为用户看不到「首字 5898ms 到底算快算慢」——
+  // 尺子是同一模型的其他站，换个模型就换一批尺子。
+  function experienceTitle(candidate) {
+    const d = candidate.experienceDetail
+    if (!d || !d.baseline) return ''
+    const parts = []
+    if (d.baseline.ttft) parts.push(`${t('同模型首字中位')} ${Math.round(d.baseline.ttft)}ms`)
+    if (d.baseline.tps) parts.push(`${t('同模型速度中位')} ${d.baseline.tps.toFixed(1)} tok/s`)
+    if (d.source === 'none') return t('没测到首字与速度，按中位水平 1.00 计（不奖不罚）')
+    return `${t('体验分 = 首字分 × 速度分的几何平均；1.00 = 该模型的中位水平，>1 表示比中位快')}：` +
+      `${t('首字分')} ${d.ttftScore.toFixed(2)} × ${t('速度分')} ${d.tpsScore.toFixed(2)}` +
+      (parts.length ? `（${parts.join(' · ')}）` : '')
+  }
+
+  function qualityCell(candidate) {
+    if (candidate.quality === null || candidate.quality === undefined) {
+      return `<span style="color:var(--faint)" title="${t('一次都没成功过：质量按“未知”的先验 0.5 折算，不再当 1.0（否则没证据的站会和健康站同权）')}">${t('无证据')}</span>`
+    }
+    const exp = Number(candidate.experience)
+    const detail = Number.isFinite(exp) && Math.abs(exp - 1) > 0.005
+      ? `<div class="sub" title="${esc(experienceTitle(candidate))}">${t('体验')} ×${exp.toFixed(2)}</div>`
+      : `<div class="sub" style="color:var(--faint)">${t('中位水平')}</div>`
+    return `${candidate.quality.toFixed(2)}${detail}`
+  }
+
   function orderReasonCell(candidate, index) {
     const code = candidate.orderReason || (index === 0 ? 'first' : null)
     if (!code) return '<span style="color:var(--faint)">—</span>'
@@ -2772,11 +2798,7 @@ function renderDecision() {
           }</td>
           <td>${candidate.group ? `<span class="badge ${groupChipOf(candidate.providerId, candidate.group)}">${esc(candidate.group)}</span>` : '<span style="color:var(--faint)">默认</span>'}</td>
           <td class="num">${candidate.price === null ? '—' : priceText(candidate.price)}</td>
-          <td class="num">${
-            candidate.quality === null
-              ? `<span style="color:var(--faint)" title="${t('一次都没成功过：质量按“未知”的先验 0.5 折算，不再当 1.0（否则没证据的站会和健康站同权）')}">${t('无证据')}</span>`
-              : candidate.quality.toFixed(2)
-          }${
+          <td class="num">${qualityCell(candidate)}${
             candidate.confidence && candidate.confidence !== 'high'
               ? `<div class="sub">${candidate.samples} ${t('样本')}</div>`
               : ''
@@ -2786,6 +2808,10 @@ function renderDecision() {
           }</td>
           <td class="num">${cacheHitCell(candidate)}</td>
           <td class="num">${
+            typeof candidate.tps === 'number'
+              ? `<div class="sub" title="${t('输出速度：扣掉首字之后的解码阶段每秒 token 数')}">${candidate.tps.toFixed(1)} tok/s</div>`
+              : ''
+          }${
             candidate.ttftMs === null
               ? '—'
               : `${candidate.ttftMs}ms${
@@ -2811,7 +2837,7 @@ function renderDecision() {
         <table>
           <thead><tr>
             <th style="width:66px"></th><th class="num">#</th><th>站点</th><th>分组</th>
-            <th class="num">价格</th><th class="num">质量</th>
+            <th class="num">价格</th><th class="num">质量<div class="sub">${t('可靠度 × 体验')}</div></th>
             <th class="num">排序键<div class="sub">${esc(modeMeta.label)}</div></th><th class="num">命中率<div class="sub">缓存</div></th><th class="num">首字</th><th>${t('为什么排这里')}</th><th>状态</th>
           </tr></thead>
           <tbody>${rows}</tbody>

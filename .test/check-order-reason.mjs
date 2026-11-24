@@ -104,19 +104,18 @@ console.log('价差超出阈值时不能拿粘性解释')
   ok(rows[1].orderReason === 'key', '解释退回「排序键」')
 }
 
-console.log('打平链：命中率、首字')
+console.log('打平链：证据量（命中率与首字已在价格/质量里算过）')
 {
   const rows = run({
     offers: [offer('a', 1, 4), offer('b', 1, 4)],
-    scores: [score('a'), score('b')],
+    scores: [score('a', { samples: 3 }), score('b', { samples: 12 })],
     profiles: new Map([
-      ['a', { inputShare: 0.9, cacheHitRate: 0.9 }],
-      ['b', { inputShare: 0.9, cacheHitRate: 0.2 }],
+      ['a', { inputShare: 0.9, cacheHitRate: 0.95 }],
+      ['b', { inputShare: 0.9, cacheHitRate: 0.05 }],
     ]),
   })
-  ok(rows[0].offer.id === 'a', '命中率高的排前面')
-  // 注意：命中率不同会让期望成本不同，所以这里解释的是「排序键」而不是打平链
-  ok(['key', 'tie-hit'].includes(rows[1].orderReason), '解释落在 key 或 tie-hit 上，不会瞎标')
+  ok(rows[0].offer.id === 'b', '同价同质量时证据多的 b 排前面（不再按命中率排）')
+  ok(rows[1].orderReason === 'tie-samples', '解释是 tie-samples')
 }
 
 console.log('准入：不可路由的排后面，且解释为「准入」')
@@ -142,11 +141,16 @@ console.log('手动顺序')
 
 console.log('直接调用解释函数：相同两条返回打平链结论')
 {
-  const a = { offer: { id: 'a' }, routable: true, sortValue: 1, cacheHitRate: 0.5, ttftMs: 100, price: 7 }
-  const b = { offer: { id: 'b' }, routable: true, sortValue: 1, cacheHitRate: 0.5, ttftMs: 900, price: 7 }
+  const a = { offer: { id: 'a' }, routable: true, sortValue: 1, samples: 10, provider: { quotaRemaining: 100000 }, price: 7 }
+  const b = { offer: { id: 'b' }, routable: true, sortValue: 1, samples: 10, provider: { quotaRemaining: 1000 }, price: 7 }
   const reason = orderReasonBetween(a, b, { decisionMode: 'value', stickinessPct: 0.05 })
-  ok(reason.code === 'tie-ttft', '首字不同 → tie-ttft')
-  ok(/900ms/.test(reason.text), '说明里带出具体毫秒')
+  ok(reason.code === 'tie-balance', '证据量相同、余额更少 → tie-balance')
+  ok(/余额/.test(reason.text), '说明里解释余额')
+  const c = { ...b, provider: { quotaRemaining: 100000 } }
+  ok(
+    orderReasonBetween(a, c, { decisionMode: 'value', stickinessPct: 0.05 }).code === 'tie-order',
+    '全同 → tie-order（固定次序，刷新不跳）',
+  )
   ok(orderReasonBetween(null, a).code === 'first', '没有上一条时返回 first')
 }
 

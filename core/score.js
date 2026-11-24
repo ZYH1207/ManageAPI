@@ -319,6 +319,21 @@ export function scoreOffers(probes, traffic = {}, options = {}) {
       // 公共延迟减掉了，剩下的才是站点自身的首字差异。老记录没有该字段，
       // 这里就是 null，排序与展示自动回落到绝对值。
       ttftRelMs: median(recent.map((r) => r.ttftRel)),
+      // 输出速度：扣掉首字之后的纯生成阶段每秒吐多少 token。
+      // 用解码速度而不是「总 token ÷ 总耗时」，否则首字慢的长文会被算得更慢，
+      // 和体验里的「首字」重复计算。
+      tps: median(
+        recent.map((r) => {
+          const ct = Number(r.completionTokens)
+          const lat = Number(r.latencyMs)
+          if (!Number.isFinite(ct) || ct <= 0) return null
+          if (!Number.isFinite(lat) || lat <= 0) return null
+          const ttft = Number.isFinite(Number(r.ttftMs)) ? Number(r.ttftMs) : 0
+          const decodeMs = lat - ttft
+          if (decodeMs <= 0) return null
+          return ct / (decodeMs / 1000)
+        }),
+      ),
       latencyMs: median(recent.map((r) => r.latencyMs)),
       lastProbeAt,
       ageMs,
