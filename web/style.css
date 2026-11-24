@@ -2147,27 +2147,32 @@ body.prov-dragging .drop-zone { display: flex; }
   .runs-row--head span:nth-child(4) { display: none; }
 }
 
-/* 决策页 · 质量列：一个数字 + 颜色，拆解放 title。
-   tone 只表示「比该模型的中位水平（1.00）好还是差」，不是及格线。 */
-.q-score {
+/* 决策页 · 质量列：主体数字带颜色，因子与样本数用同一行的灰字跟着，
+   不换行、不叠第二行。1.00 = 该模型的中位水平（不是及格线），只用来决定颜色。
+   用 block 而不是 inline-flex：这一列是右对齐的，整条算式超出格宽时要能自然换行，
+   否则会把整列的右边界顶开、数字离开表头。 */
+.q-quality {
   display: inline-block;
+  text-align: right;
+  line-height: 1.5;
+  white-space: nowrap;
+  cursor: help;
+}
+.q-score {
   font-variant-numeric: tabular-nums;
   font-weight: 600;
   font-size: 14px;
   letter-spacing: .2px;
-  cursor: help;
 }
 .q-score.q-good { color: var(--success); }
 .q-score.q-mid { color: var(--text); }
 .q-score.q-low { color: var(--warn, #b45309); }
 .q-score.q-none { color: var(--faint); font-weight: 400; }
-.q-warn {
-  display: inline-block;
-  margin-left: 2px;
-  font-size: 9px;
-  line-height: 1;
-  color: var(--faint);
-  cursor: help;
-  vertical-align: super;
-  opacity: .7;
+.q-factors,
+.q-samples {
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--muted);
 }
+.q-factors .q-sep { color: var(--faint); }
+.q-samples { color: var(--faint); }

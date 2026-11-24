@@ -348,6 +348,7 @@ const EN = {
   '探针成功的次数，越多越可信': 'successful probe count; more is more trustworthy',
   '可靠度 × 体验': 'reliability × experience',
   '可靠度': 'reliability',
+  '质量 = 混合价 ÷ 质量；1.00 = 该模型的中位水平': 'quality = blended price ÷ quality; 1.00 = the median for this model',
   '样本少，置信度低': 'few samples, low confidence',
   '样本少，结论可能抖动；点开看探测记录': 'few samples — the number may move; open the probe records',
   '同模型首字中位': 'median first-token for this model:',

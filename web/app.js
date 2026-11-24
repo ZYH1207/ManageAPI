@@ -2786,31 +2786,31 @@ function renderDecision() {
       (parts.length ? `（${parts.join(' · ')}）` : '')
   }
 
-  // 质量这一列只留一个数字：1.00 是分界线，好坏看颜色不看文字。
-  // 拆解（可靠度 × 体验、样本数）挪进 title —— 一行里塞三种颜色三种字号，
-  // 下面是灰的、上面是黑的，扫一眼根本抓不住「谁更好」。
-  // 量的括号 = 是「质量 = 混合价 ÷ 质量」里的除数，颜色只需要表示比 1 好还是差。
+  // 质量列直接写算式，不再折叠：
+  //   2.73 = 可靠度 1.00 × 体验 2.73 · 5 样本
+  // 主体数字决定颜色（1.00 = 该模型的中位水平，不是及格线），
+  // 后面的因子用同一行的灰字跟着，拆解一眼能对账，也不占第二行。
   function qualityCell(candidate) {
     if (candidate.quality === null || candidate.quality === undefined) {
       return `<span class="q-score q-none" title="${esc(t('一次都没成功过：质量按“未知”的先验 0.5 折算，不再当 1.0（否则没证据的站会和健康站同权）'))}">—</span>`
     }
     const exp = Number(candidate.experience)
-    const expText = Number.isFinite(exp)
-      ? (Math.abs(exp - 1) > 0.005 ? `${t('体验')} ×${exp.toFixed(2)}` : t('中位水平'))
-      : ''
-    // 「?」只在证据真的很少（≤3 条）时出现；5~7 条虽然也是 low confidence，
-    // 但每行都挂一个问号等于噪音，那种情况放进 title 就够了
-    const lowSamples = Number.isFinite(candidate.samples) && candidate.samples <= 3
-    const bits = [
-      expText ? `${t('质量')} ${candidate.quality.toFixed(2)} = ${t('可靠度')} ${(capturedReliability(candidate)).toFixed(2)} × ${expText}` : `${t('质量')} ${candidate.quality.toFixed(2)}`,
-      Number.isFinite(candidate.samples) ? `${candidate.samples} ${t('样本')}` : '',
-      experienceTitle(candidate),
-    ].filter(Boolean)
-    // 阈值 1 是「该模型的中位水平」，不是及格线；只用来决定颜色深浅
+    const rel = capturedReliability(candidate)
     const tone = candidate.quality >= 1.15 ? 'q-good' : candidate.quality >= 0.95 ? 'q-mid' : 'q-low'
-    return `<span class="q-score ${tone}" title="${esc(bits.join('\n'))}">${candidate.quality.toFixed(2)}</span>${
-      lowSamples ? `<span class="q-warn" title="${esc(t('样本少，结论可能抖动；点开看探测记录'))}">?</span>` : ''
-    }`
+    const factors = [`${t('可靠度')} ${rel.toFixed(2)}`]
+    if (Number.isFinite(exp)) {
+      factors.push(Math.abs(exp - 1) > 0.005 ? `${t('体验')} ×${exp.toFixed(2)}` : t('中位水平'))
+    }
+    const sampleText = Number.isFinite(candidate.samples) ? `${candidate.samples} ${t('样本')}` : ''
+    const tip = [experienceTitle(candidate), t('质量 = 混合价 ÷ 质量；1.00 = 该模型的中位水平')].filter(Boolean).join('\n')
+    // 整条算式不折行：「23 样本」被拆成「23 样 / 本」时，看起来像数字坏了。
+    // 用 nbsp 把「23 样本」这类组内空格粘住，折行只允许出现在 × 前后。
+    const glued = factors.map((x) => x.replace(/(?<=\d) (?=\S)/g, '\u00a0'))
+    const factorPart = glued.join(' <span class="q-sep">×</span> ')
+    const sampleHtml = sampleText ? ` <span class="q-samples">· ${esc(sampleText).replace(/(?<=\d) (?=\S)/g, '\u00a0')}</span>` : ''
+    return `<span class="q-quality" title="${esc(tip)}"><span class="q-score ${tone}">${candidate.quality.toFixed(2)}</span>` +
+      `<span class="q-factors"> = ${factorPart}${sampleHtml}</span>` +
+      `</span>`
   }
 
   // 可靠度 = 质量 ÷ 体验分；体验分缺失时就是质量本身
