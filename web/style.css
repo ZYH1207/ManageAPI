@@ -2163,10 +2163,11 @@ body.prov-dragging .drop-zone { display: flex; }
 .q-score.q-none { color: var(--faint); font-weight: 400; }
 .q-warn {
   display: inline-block;
-  margin-left: 3px;
-  font-size: 10px;
+  margin-left: 2px;
+  font-size: 9px;
   line-height: 1;
   color: var(--faint);
   cursor: help;
   vertical-align: super;
+  opacity: .7;
 }

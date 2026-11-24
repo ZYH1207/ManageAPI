@@ -2798,10 +2798,12 @@ function renderDecision() {
     const expText = Number.isFinite(exp)
       ? (Math.abs(exp - 1) > 0.005 ? `${t('体验')} ×${exp.toFixed(2)}` : t('中位水平'))
       : ''
-    const lowSamples = candidate.confidence && candidate.confidence !== 'high' && Number.isFinite(candidate.samples)
+    // 「?」只在证据真的很少（≤3 条）时出现；5~7 条虽然也是 low confidence，
+    // 但每行都挂一个问号等于噪音，那种情况放进 title 就够了
+    const lowSamples = Number.isFinite(candidate.samples) && candidate.samples <= 3
     const bits = [
       expText ? `${t('质量')} ${candidate.quality.toFixed(2)} = ${t('可靠度')} ${(capturedReliability(candidate)).toFixed(2)} × ${expText}` : `${t('质量')} ${candidate.quality.toFixed(2)}`,
-      lowSamples ? `${candidate.samples} ${t('样本')}（${t('样本少，置信度低')}）` : '',
+      Number.isFinite(candidate.samples) ? `${candidate.samples} ${t('样本')}` : '',
       experienceTitle(candidate),
     ].filter(Boolean)
     // 阈值 1 是「该模型的中位水平」，不是及格线；只用来决定颜色深浅
