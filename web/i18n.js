@@ -1039,6 +1039,17 @@ Object.assign(EN, {
   '还没有余额数据': 'no balance yet',
   '最低：{name} {amount}': 'Lowest: {name} {amount}',
   '余额概览': 'Balance overview',
+  '总金额': 'Total balance',
+  '元': 'CNY',
+  '未采集': 'not collected',
+  '还没有余额快照': 'no balance snapshot yet',
+  '到「站点」页点「立即同步」后才读得到账单': 'Run “sync now” on the Sites tab to read the site bills',
+  '正在读监控数据…': 'Reading monitor data…',
+  '实时流量': 'Live traffic',
+  '最近 {n} 次': 'last {n}',
+  '首字 {n}ms': 'TTFT {n}ms',
+  '尝试 {n}': 'attempt {n}',
+  '还没有请求。网关接到第一单后就会出现在这里。': 'No requests yet. They show up here after the first gateway call.',
   '还没有同步到余额。点右上角「立即同步」跑一轮。':
     'No balance collected yet — hit "Collect now" to run a round.',
   // 图例符号是动态的（显示币种），用 {sym} 占位符；旧的整串 key 已对不上当前文案

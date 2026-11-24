@@ -485,19 +485,97 @@ function icon(name, cls = '') {
     stroke-linecap="round" stroke-linejoin="round"${cls ? ` class="${cls}"` : ''}>${body}</svg>`
 }
 
-function statsHtml() {
+// ---------------------------------------------------------- 概览的监控数据
+// 「总金额 / 真实花费 / 余额趋势 / 实时流量」这四块的数据在 /api/monitor 里
+// （/api/state 只有站点与供给）。接口一次 80KB 左右，所以缓存 60 秒：
+// 切页、改设置、点按钮引起的整页重画都不会重复拉一遍。
+let overviewMonitor = null
+let overviewMonitorAt = 0
+let overviewLoading = false
+let overviewDays = 14
+const OVERVIEW_MONITOR_TTL = 60 * 1000
+// 与站点页同一套配色顺序，这样同一个站在两页是同一个颜色
+const OVERVIEW_SERIES_COLORS = [
+  'hsl(226 55% 52%)',
+  'hsl(18 60% 52%)',
+  'hsl(166 45% 38%)',
+  'hsl(268 42% 56%)',
+  'hsl(340 48% 55%)',
+  'hsl(43 65% 45%)',
+  'hsl(200 50% 45%)',
+  'hsl(100 30% 42%)',
+]
+
+function loadOverviewMonitor(force = false) {
+  if (overviewLoading) return
+  if (!force && overviewMonitor && Date.now() - overviewMonitorAt < OVERVIEW_MONITOR_TTL) return
+  overviewLoading = true
+  api('GET', `/api/monitor?days=${overviewDays}`)
+    .then((data) => {
+      overviewMonitor = data
+      overviewMonitorAt = Date.now()
+      if (activeTab === 'overview') {
+        renderOverview()
+        translateDom($('#view-overview') || document.body)
+      }
+    })
+    // 监控接口挂了不该让概览白屏：卡片退化成「未采集 / 还没有余额快照」
+    .catch(() => {})
+    .finally(() => {
+      overviewLoading = false
+    })
+}
+
+/** 余额合计取「最后一个有数的快照点」，不在前端把每天的数相加：
+ *  各站采集时间不同，前端求和会把「昨天采过、今天还没采」的站当 0。 */
+function latestBalancePoint(series) {
+  const list = Array.isArray(series) ? series : []
+  for (let i = list.length - 1; i >= 0; i -= 1) {
+    const point = list[i]
+    if (point && typeof point.total === 'number') return point
+  }
+  return null
+}
+
+/** 站点账单口径的今日花费：拉过才有数，「没采集」和「真的花了 0」必须分开显示 */
+function todaySiteSpend() {
+  const spend = overviewMonitor?.siteSpend
+  const rows = Object.values(spend?.byProvider || {})
+  const fetched = rows.some((row) => row && row.todayFetchedAt)
+  return { spend, fetched, row: spend?.today || { actual: 0, requests: 0, providers: 0 } }
+}
+
+/** 金额要带两位小数：money() 对 >=100 的数会取整，余额上千就看不见零头 */
+function money2(value) {
+  const n = Number(value)
+  if (!Number.isFinite(n)) return '—'
+  return n.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+}
+
+/** 概览 5 张卡：站点 → 总金额 → 真实花费 → 模型供给 → 可横向比较（顺序是定死的） */
+function overviewCardItems() {
   const s = state.summary
-  // 第 6 项是卡片底部的一行小字：卡片本身只放一个数，但「站点 17 / 在售 11」
-  // 「16 条里 4 条没定价」这类口径差必须就地说明，否则看起来就是数据不对。
-  const items = [
-    [
-      t('站点'),
-      s.providerTotal ?? s.providerCount,
-      t('个'),
-      'servers',
-      'tint-muted',
-      t('在售 {n}', { n: s.providerCount }),
-    ],
+  const point = latestBalancePoint(overviewMonitor?.balanceSeries)
+  const providerTotal = s.providerTotal ?? s.providerCount
+  const counted = point ? Object.keys(point.perProvider || {}).length : 0
+  const balanceValue = point === null ? '—' : `${priceSym()}${money2(dispPrice(point.total))}`
+  const balanceSub =
+    point === null
+      ? '还没有余额快照'
+      : `${counted}/${providerTotal} 站 · 快照 ${String(point.day || '').slice(5)} · ${
+          showUsd() ? `≈ ¥${money(point.total)}` : `≈ $${money(point.total / rateCny())}`
+        }`
+
+  const { spend, fetched, row } = todaySiteSpend()
+  const spendValue = fetched ? `${priceSym()}${money2(row.actual)}` : '未采集'
+  const spendSub = fetched
+    ? `${row.providers} 站 · ${row.requests} 次请求${spend?.anyTruncated ? ' · 有明细未拉全' : ''}`
+    : '到「站点」页点「立即同步」后才读得到账单'
+
+  return [
+    [t('站点'), providerTotal, t('个'), 'servers', 'tint-muted', t('在售 {n}', { n: s.providerCount })],
+    [t('总金额'), balanceValue, '', 'wallet', 'tint-accent', balanceSub],
+    [t('真实花费'), spendValue, '', 'receipt', 'tint-warn', spendSub],
     [
       t('模型供给'),
       s.offerCount,
@@ -516,17 +594,13 @@ function statsHtml() {
       'tint-muted',
       t('共 {n} 个模型', { n: s.modelCount }),
     ],
-    [
-      t('比最贵省'),
-      s.maxSpreadPct === null ? '—' : s.maxSpreadPct,
-      s.maxSpreadPct === null ? '' : '%',
-      'trend',
-      'tint-warn',
-      s.maxSpreadRatio === null || s.maxSpreadRatio === undefined
-        ? ''
-        : t('最贵 ÷ 最便宜 {x}×', { x: s.maxSpreadRatio }),
-    ],
   ]
+}
+
+function statsHtml() {
+  // 卡片底部那行小字是口径说明（「站点 17 / 在售 11」「16 条里 4 条没定价」），
+  // 只放一个数而不解释，看起来就是数据不对。
+  const items = overviewCardItems()
   return `<div class="stats">${items
     .map(
       ([k, v, unit, ic, tint, sub]) => `
@@ -542,6 +616,112 @@ function statsHtml() {
     .join('')}</div>`
 }
 
+/** 余额趋势：SVG 与站点页同一个函数，只是固定看全部站点、天数在卡头切换 */
+function overviewTrendCard() {
+  const seg = [7, 14, 30]
+    .map(
+      (d) =>
+        `<button data-overview-days="${d}" class="${d === overviewDays ? 'active' : ''}">${t('{n} 天', { n: d })}</button>`,
+    )
+    .join('')
+  const head = `<div class="card-head"><h3>${t('余额概览')}</h3><div class="seg">${seg}</div></div>`
+  const data = overviewMonitor
+  if (!data) {
+    return `<div class="card monitor-chart-card">${head}<div class="empty small"><p>${
+      overviewLoading ? t('正在读监控数据…') : t('还没有同步到余额。到「站点」页点「立即同步」跑一轮。')
+    }</p></div></div>`
+  }
+
+  const series = data.balanceSeries || []
+  const spend = data.spendSeries || []
+  const providerIds = (data.balanceByProvider || []).map((row) => row.providerId)
+  const colorOf = (pid) =>
+    OVERVIEW_SERIES_COLORS[Math.max(0, providerIds.indexOf(pid)) % OVERVIEW_SERIES_COLORS.length]
+  const seriesClassOf = (pid) =>
+    `series-${(Math.max(0, providerIds.indexOf(pid)) % OVERVIEW_SERIES_COLORS.length) + 1}`
+  const chart = monitorChartSvg(series, spend, {
+    selected: 'ALL',
+    providerIds,
+    colorOf,
+    seriesClassOf,
+    fx: rateCny(),
+  })
+  const chartCtx = {
+    days: series.map((d) => d.day),
+    balance: series.map((d) => (typeof d.total === 'number' ? d.total : null)),
+    spend: spend.map((d) => d.byProvider || {}),
+    total: spend.map((d) => d.cny || 0),
+    site: 'ALL',
+    names: Object.fromEntries((data.balanceByProvider || []).map((row) => [row.providerId, row.name])),
+    providers: providerIds,
+    colors: Object.fromEntries(providerIds.map((pid) => [pid, colorOf(pid)])),
+  }
+  return `<div class="card monitor-chart-card" data-chart-ctx="${esc(JSON.stringify(chartCtx))}">
+    ${head}
+    ${
+      chart
+        ? `<div class="chart-wrap">${chart}<div class="chart-tip" id="chart-tip" role="tooltip"></div></div>`
+        : '<div class="empty small"><p>还没有同步到余额。</p></div>'
+    }
+    <div class="chart-legend">
+      <span><i class="legend-line"></i>${t('余额合计（{sym}，其他币种按汇率折算）', { sym: priceSym() })}</span>
+      <span><i class="legend-bar"></i>${t('各站花费（堆叠）')}</span>
+    </div>
+  </div>`
+}
+
+/** 实时流量：最近真实请求（网关决策日志前 14 条），选中站、首字、尝试次数都能看到 */
+function overviewFlowCard() {
+  const rows = (state.routing || []).slice(0, 14)
+  const badgeOf = (outcome) => {
+    if (outcome === 'ok') return '<span class="badge ok">成功</span>'
+    if (outcome === 'client-aborted') return '<span class="badge">取消</span>'
+    if (outcome === 'stream-broken') return '<span class="badge danger">断流</span>'
+    return '<span class="badge danger">失败</span>'
+  }
+  const body = rows
+    .map(
+      (row) => `<div class="monitor-flow-row">
+        <div class="monitor-flow-top">
+          <span class="monitor-flow-key">${esc(row.model || '—')}</span>
+          ${badgeOf(row.outcome)}
+        </div>
+        <div class="monitor-flow-meta">
+          <span>${esc(row.chosenProviderName || '—')}</span>
+          ${row.ttftMs ? `<span>${t('首字 {n}ms', { n: row.ttftMs })}</span>` : ''}
+          <span>${t('尝试 {n}', { n: row.attempts || 1 })}</span>
+          <span>${agoText(row.ts)}</span>
+        </div>
+      </div>`,
+    )
+    .join('')
+  return `<div class="card monitor-flow-card">
+    <div class="card-head"><h3>${t('实时流量')}</h3><span class="hint">${t('最近 {n} 次', { n: rows.length })}</span></div>
+    <div class="monitor-flow-list">
+      ${body || '<div class="empty small"><p>还没有请求。网关接到第一单后就会出现在这里。</p></div>'}
+    </div>
+  </div>`
+}
+
+/** 「需要关注」顶部的采集失败聚合行：同步没跑通时，下面所有评分都是旧数据 */
+function overviewCaptureRow() {
+  const failed = (overviewMonitor?.runs || []).filter((run) => !run.ok)
+  if (!failed.length) return ''
+  const names = [...new Set(failed.map((run) => run.providerName).filter(Boolean))]
+  const who = names.slice(0, 3).join('、')
+  return `<div class="notice danger">
+      <span class="name">采集失败</span>
+      <span class="desc">${names.length} 个站点 · ${agoText(failed[0].at)}</span>
+      <span class="grow"></span>
+      <span class="desc">${esc(who)}${names.length > 3 ? ` 等 ${names.length} 个` : ''}：${esc(failed[0].error || '读不到余额/账单')}</span>
+    </div>`
+}
+
+function overviewCardsHtml() {
+  if (state.providers.length === 0) return ''
+  return `<div class="monitor-cols monitor-cols--overview">${overviewTrendCard()}${overviewFlowCard()}</div>`
+}
+
 // 概览「需要关注」默认只露前几条：站多了以后一屏全是红点，反而看不到下面的速览
 const OVERVIEW_ISSUE_PREVIEW = 4
 let overviewIssuesOpen = false
@@ -552,6 +732,8 @@ function renderOverview() {
   const view = $('#view-overview')
   const scores = state.scores || {}
   const providers = state.providers
+  // 概览要用的余额快照与站点账单在 /api/monitor 里，首次进入时拉一次
+  loadOverviewMonitor()
 
   if (providers.length === 0) {
     overviewSub = '还没有数据'
@@ -598,12 +780,15 @@ function renderOverview() {
       )
       .join('')
 
+  const captureRow = overviewCaptureRow()
+
   const hiddenCount = overviewIssuesOpen ? 0 : Math.max(0, issues.length - OVERVIEW_ISSUE_PREVIEW)
   const issueBlock =
     issues.length === 0
       ? `
     <h3 class="section-title"><span class="s-icon">${icon('alert')}</span>需要关注</h3>
     <div class="notice-list">
+      ${captureRow}
       <div class="notice calm">
         <span class="name">一切正常</span>
         <span class="grow"></span>
@@ -613,6 +798,7 @@ function renderOverview() {
       : `
     <h3 class="section-title"><span class="s-icon">${icon('alert')}</span>需要关注（${issues.length} 个站点）</h3>
     <div class="notice-list">
+      ${captureRow}
       ${issueRows(overviewIssuesOpen ? issues : issues.slice(0, OVERVIEW_ISSUE_PREVIEW))}
       ${
         hiddenCount > 0
@@ -668,6 +854,7 @@ function renderOverview() {
   view.innerHTML = `
     ${headlineHtml()}
     ${statsHtml()}
+    ${overviewCardsHtml()}
     ${issueBlock}
     <h3 class="section-title">
       <span class="s-icon">${icon('table')}</span>站点速览
@@ -3692,7 +3879,8 @@ function renderMonitor() {
   }
 
   // ---------------------------------------------------------------- KPI
-  const latestBalance = [...(data.balanceSeries || [])].reverse().find((d) => typeof d.total === 'number')
+  // 站点页只留「管理」要用的三个数：余额趋势与花费已经挪到概览，
+  // 两个页面各显示一份只会让人对不上数。
   const kpiItems = [
     {
       k: '站点',
@@ -3700,31 +3888,6 @@ function renderMonitor() {
       sub: '有余额数据',
       ic: 'servers',
       tint: 'tint-muted',
-    },
-    {
-      k: '总余额',
-      // 后端给的 total 是人民币口径；主数字按显示币种渲染
-      v: latestBalance?.total == null
-        ? '—'
-        : `${priceSym()}${money(dispPrice(latestBalance.total))}`,
-      // 副标题给「另一个币种」的等值，方便对账；没有总额时才退回「最低」
-      sub: latestBalance?.total != null
-        ? (showUsd()
-            ? `≈ ¥${money(latestBalance.total)}（按汇率折算）`
-            : `≈ $${money(latestBalance.total / rateCny())}（按汇率折算）`)
-        : (kpi.lowest
-            ? t('最低：{name} {amount}', {
-                name: kpi.lowest.name,
-                amount: `${kpi.lowest.currency || ''} ${money(kpi.lowest.balance)}`.trim(),
-              })
-            : '还没有余额数据'),
-      ic: 'wallet',
-      tint: 'tint-accent',
-    },
-    {
-      // 花费卡：模型消费（站点口径估算）与实际消费（钱包里真正少掉的钱）并列。
-      // 实际消费 = 估算 × (站点单价 ÷ 市场汇率)；不填单价时系数为 1，两数相同
-      ...spendStat(spendRange),
     },
     {
       k: '24 小时变动',
@@ -3755,111 +3918,7 @@ function renderMonitor() {
     )
     .join('')}</div>`
 
-  // -------------------------------------------------------------- 图表
-  // 只把「有余额或有花费」的站放进选择器——没数据的站点了也是空图
-  const chartProviders = (data.balanceByProvider || [])
-    .filter((row) => row.balance !== null || (data.spendSeries || []).some((d) => (d.byProvider?.[row.providerId] || 0) > 0))
-    .map((row) => row.providerId)
-  // 直接解析 CSS 变量给 SVG 用：series-N 类挂在选择器胶囊上，
-  // SVG 里的 rect 拿不到那个作用域，必须给具体颜色值
-  const SERIES_COLORS = [
-    'hsl(226 55% 52%)', 'hsl(18 60% 52%)', 'hsl(166 45% 38%)', 'hsl(268 42% 56%)',
-    'hsl(340 48% 55%)', 'hsl(43 65% 45%)', 'hsl(200 50% 45%)', 'hsl(100 30% 42%)',
-  ]
-  const seriesColorOf = (pid) => SERIES_COLORS[(Math.max(0, chartProviders.indexOf(pid)) % 8)]
-  const seriesClassOf = (pid) => `series-${(Math.max(0, chartProviders.indexOf(pid)) % 8) + 1}`
-  const colorOf = seriesColorOf
-  // 选中的站在数据里消失了（被删/暂停）→ 回落到全部
-  if (chartSite !== 'ALL' && !chartProviders.includes(chartSite)) chartSite = 'ALL'
-  const chart = monitorChartSvg(data.balanceSeries, data.spendSeries, {
-    selected: chartSite,
-    providerIds: chartProviders,
-    colorOf,
-    seriesClassOf,
-    fx: rateCny(),
-  })
-  const seg = `<div class="seg">${[7, 14, 30]
-    .map((d) => `<button data-monitor-days="${d}" class="${d === monitorDays ? 'active' : ''}">${t('{n} 天', { n: d })}</button>`)
-    .join('')}</div>`
-
-  // 站点选择胶囊：「全部」+ 有数据的站。只放站名，余额在卡片/KPI 里已经有了
-  const allChip = `<button class="monitor-chip${chartSite === 'ALL' ? ' is-on' : ''}" data-chart-site="ALL">${t('全部站点')}</button>`
-  const siteChips = (data.balanceByProvider || [])
-    .filter((row) => chartProviders.includes(row.providerId))
-    .map((row) => {
-      const on = chartSite === row.providerId ? ' is-on' : ''
-      return `<button class="monitor-chip ${seriesClassOf(row.providerId)}${on}" data-chart-site="${esc(row.providerId)}" title="${t('只看这个站')}">
-        <span class="dot"></span>${esc(row.name)}
-      </button>`
-    })
-    .join('')
-  const chips = allChip + siteChips
-
-  // 悬停所需的上下文（序列 + 站点名 + 配色）挂在卡片上，避免事件处理器再算一遍
-  const chartCtx = {
-    days: (data.balanceSeries || []).map((d) => d.day),
-    balance: (data.balanceSeries || []).map((d) => {
-      if (chartSite === 'ALL') return typeof d.total === 'number' ? d.total : null
-      const raw = d.perProvider?.[chartSite]
-      return typeof raw === 'number' ? raw * rateCny() : null
-    }),
-    spend: (data.spendSeries || []).map((d) => d.byProvider || {}),
-    total: (data.spendSeries || []).map((d) => d.cny || 0),
-    site: chartSite,
-    names: Object.fromEntries((data.balanceByProvider || []).map((r) => [r.providerId, r.name])),
-    providers: chartProviders,
-    colors: Object.fromEntries(chartProviders.map((pid) => [pid, seriesColorOf(pid)])),
-  }
-  const chartCard = `
-    <div class="card monitor-chart-card" data-chart-ctx="${esc(JSON.stringify(chartCtx))}">
-      <div class="card-head">
-        <h3>余额概览</h3>
-        ${seg}
-      </div>
-      ${chart
-        ? `<div class="chart-wrap">${chart}<div class="chart-tip" id="chart-tip" role="tooltip"></div></div>`
-        : '<div class="empty small"><p>还没有同步到余额。点右上角「立即同步」跑一轮。</p></div>'}
-      <div class="chart-legend">
-        <span><i class="legend-line"></i>${chartSite === 'ALL'
-          ? t('余额合计（{sym}，其他币种按汇率折算）', { sym: priceSym() })
-          : t('该站余额（{sym}）', { sym: priceSym() })}</span>
-        <span><i class="legend-bar"></i>${chartSite === 'ALL' ? t('各站花费（堆叠）') : t('该站每日花费')}</span>
-      </div>
-      <div class="monitor-chips">${chips}</div>
-    </div>`
-
-  // ---------------------------------------------------------- 倍率变动
-  const changeRows = (data.changes || [])
-    .slice(0, 12)
-    .map((row) => {
-      const dir = typeof row.pct === 'number' ? (row.pct > 0 ? 'up' : row.pct < 0 ? 'down' : 'flat') : 'flat'
-      const label = typeof row.pct === 'number' ? `${row.pct > 0 ? '+' : ''}${row.pct}%` : '—'
-      return `<div class="monitor-flow-row">
-        <div class="monitor-flow-top">
-          <span class="monitor-flow-key">${esc(row.key)}</span>
-          <span class="badge ${dir === 'up' ? 'danger' : dir === 'down' ? 'ok' : ''}">${label}</span>
-        </div>
-        <div class="monitor-flow-meta">
-          <span>${esc(row.providerName || '')}</span>
-          <span>${money(row.from)} → ${money(row.to)}</span>
-          <span>${agoText(row.at)}</span>
-        </div>
-      </div>`
-    })
-    .join('')
-
-  const changesCard = `
-    <div class="card monitor-flow-card">
-      <div class="card-head">
-        <h3>最近倍率变动</h3>
-        <span class="hint">${t('{n} 条', { n: (data.changes || []).length })}</span>
-      </div>
-      <div class="monitor-flow-list">
-        ${changeRows || '<div class="empty small"><p>还没有变动。第一次同步只记基线，之后才开始比较。</p></div>'}
-      </div>
-    </div>`
-
-  // ------------------------------------------------------------ 站点卡
+  // 余额趋势与实时流量已经挪到「概览」：站点页只留站点卡片与同步记录\n\n  // ------------------------------------------------------------ 站点卡
   // 版式照 upstream-ops 的渠道卡：头行（站名 + 类型 + 时间/外链）、三格统计、
   // 两格「阈值·状态 / 上次同步」、分组 chips、底部动作按钮。
   const siteCards = (data.balanceByProvider || [])
@@ -4023,7 +4082,6 @@ function renderMonitor() {
   )
   view.innerHTML = `
     ${kpiHtml}
-    <div class="monitor-cols monitor-cols--overview">${chartCard}${changesCard}</div>
     ${sitesCard}
     <div class="monitor-cols monitor-cols--feed">${alertsCard}${announcementsCard}</div>
     ${runsCard}`
@@ -4173,7 +4231,7 @@ const filters = { pricing: '', decision: '', benchmark: '' }
 
 const TAB_META = {
   overview: { title: '概览', sub: '当前状态一眼看完' },
-  monitor: { title: '站点', sub: '余额趋势、倍率变动与站点管理' },
+  monitor: { title: '站点', sub: '站点卡片、余额与同步记录' },
   free: { title: '免费', sub: '免费额度与平台积分，不参与付费比价' },
   pricing: { title: '比价', sub: '同一模型跨站对比' },
   decision: { title: '智能决策', sub: '候选排序与手动调整' },
@@ -4512,6 +4570,15 @@ document.addEventListener('click', async (event) => {
       renderMonitor()
       translateDom($('#view-monitor') || document.body)
     }
+    return
+  }
+
+  const overviewDaysBtn = event.target.closest('[data-overview-days]')
+  if (overviewDaysBtn) {
+    const days = Number(overviewDaysBtn.dataset.overviewDays)
+    if (days === overviewDays && overviewMonitor) return
+    overviewDays = days
+    loadOverviewMonitor(true)
     return
   }
 
