@@ -44,7 +44,7 @@ export function emptyDb() {
       // fxUsdCny 只是给老代码留的镜像，每次写入都会同步。
       fx: { base: 'USD', rates: { CNY: 7.2 }, updatedAt: null, source: 'default', manual: false },
       blendInputWeight: 0.25,
-      probeTimeoutMs: 45000,
+      probeTimeoutMs: 90000,
       // 0 = 关闭定时探测
       probeIntervalMinutes: 60,
       // 超过这个小时数的探测结果视为过期，不再参与路由
@@ -216,6 +216,10 @@ export async function readDb() {
   const base = emptyDb()
   const rawSettings = raw.settings || {}
   const settings = { ...base.settings, ...rawSettings }
+  // 探测超时从 45 秒抬到 90 秒：真实请求的 TTFT 能到 90 秒，45 秒会把
+  // 「站点此刻忙」判成「站点死了」。老库里存的就是旧默认值 45000，只迁移它；
+  // 用户手改过的其它值保持不动。
+  if (Number(settings.probeTimeoutMs) === 45000) settings.probeTimeoutMs = 90000
   // 阈值口径从人民币改成美元：老配置只存了 balanceWarnCny，这里折一次
   // （判断依据是原始文件里有没有 balanceWarnUsd，否则默认值会盖掉迁移）
   if (rawSettings.balanceWarnUsd === undefined) {

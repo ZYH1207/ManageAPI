@@ -5327,13 +5327,30 @@ document.addEventListener('click', async (event) => {
     const offerId = actionButton.closest('[data-offer]').dataset.offer
     toast('正在探测，需要几秒到几十秒…')
     await withBusy(actionButton, async () => {
-      const result = await api('POST', '/api/probes/run', { offerId, limit: 1 })
+      const runOnce = (force) => api('POST', '/api/probes/run', force ? { offerId, limit: 1, force: true } : { offerId, limit: 1 })
+      let result
+      try {
+        result = await runOnce(false)
+      } catch (error) {
+        // 冷却中：先问清楚再打第二针——限流期里反复探只会更严重
+        if (error.status !== 409) throw error
+        if (!confirm(`${error.message}\n\n仍要现在强制探一次吗？`)) return
+        result = await runOnce(true)
+      }
       state = result
       render()
       const probe = result.probeResults[0]
       if (!probe) return
       if (!probe.ok) {
-        toast(`探测失败：${probe.error}`, true)
+        const transient = /HTTP\s*5\d\d|timeout|timed out|aborted|fetch failed|ECONN|socket|超时/i.test(
+          String(probe.error || ''),
+        )
+        toast(
+          transient
+            ? `探测失败（瞬时：站点此刻没响应，已自动重试过一次，稍后会再验）：${probe.error}`
+            : `探测失败（站方明确拒绝）：${probe.error}`,
+          true,
+        )
         return
       }
       const issues = []

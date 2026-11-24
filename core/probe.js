@@ -238,7 +238,7 @@ export function billingVerdict({
  * 完整探测一个「站 × 分组 × 模型」。
  * 发四次请求：指纹与计费、截断、缓存（两次）。
  */
-export async function probeModel({ baseUrl, apiKey, model, timeoutMs = 45000 }) {
+export async function probeModel({ baseUrl, apiKey, model, timeoutMs = 45000, skipCache = false }) {
   const result = {
     ok: false,
     model,
@@ -330,16 +330,19 @@ export async function probeModel({ baseUrl, apiKey, model, timeoutMs = 45000 }) 
     result.truncated = null
   }
 
-  // ---- 缓存：连发两次相同长前缀，看第二次命中多少
+  // ---- 缓存：连发两次相同长前缀，看第二次命中多少。
+  // 这两针各带约 14.5k token，而命中率几小时才变一次——按调用方给的间隔降频，
+  // 其余轮次沿用上次结果（读取侧本来就对老记录取中位）。
   let cacheInfo = null
   try {
+    if (skipCache) throw new Error('skipped')
     cacheInfo = await probeCache({ baseUrl, apiKey, model, timeoutMs })
     result.cacheSupported = cacheInfo.supported
     result.cacheHitRate = cacheInfo.hitRate
     result.cacheDetail = cacheInfo.detail
     result.cachedTokens = typeof cacheInfo.cachedTokens === 'number' ? cacheInfo.cachedTokens : null
   } catch (error) {
-    result.cacheDetail = `缓存检测失败：${error?.message || error}`
+    if (!skipCache) result.cacheDetail = `缓存检测失败：${error?.message || error}`
   }
 
   // ---- 计费判据分家

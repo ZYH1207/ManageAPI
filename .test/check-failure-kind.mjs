@@ -35,8 +35,8 @@ console.log('[1] 错误文本分类')
     ['HTTP 429：{"error":{"message":"Upstream rate limit exceeded"}}', 'rate-limit', false],
     ['HTTP 429：{"error":{"message":"All available accounts are currently rate limited"}}', 'rate-limit', false],
     ['HTTP 404：{"error":{"message":"Model \\"deepseek-v4.1\\" is not supported by any configured account"}}', 'model-missing', false],
-    ['HTTP 502：{"error":{"message":"Upstream request failed","type":"upstream_error"}}', null, true],
-    ['HTTP 503：{"error":{"message":"Service temporarily unavailable"}}', null, true],
+    ['HTTP 502：{"error":{"message":"Upstream request failed","type":"upstream_error"}}', 'upstream', true],
+    ['HTTP 503：{"error":{"message":"Service temporarily unavailable"}}', 'upstream', true],
     ['The operation was aborted due to timeout', null, true],
     // 连接层失败：单条仍算站方故障，但打上 connection 标记，
     // 供网关按「5 分钟内多站同时」判定是不是本机网络（见 check-local-network）

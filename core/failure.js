@@ -44,14 +44,21 @@ export function failureScope(kind) {
 
 /** 各类「暂时不可用」的冷却时长：多久之后值得再试一次 */
 export const UNAVAILABLE_COOLDOWN_MS = {
-  quota: 30 * 60 * 1000,
-  // 单次预算超限只说明这一单太大，5 分钟后照常参与竞争
-  budget: 5 * 60 * 1000,
-  'rate-limit': 5 * 60 * 1000,
-  'model-missing': 60 * 60 * 1000,
+  // 余额/额度类不是「等一会儿就好」，要人去充值或换 Key：给足半天再探。
+  quota: 6 * 60 * 60 * 1000,
+  // 单次预算超限只说明这一单太大，10 分钟后照常参与竞争
+  budget: 10 * 60 * 1000,
+  // 限流至少半小时：之前 5 分钟的冷却比重试节奏（20 分钟）还短，
+  // 等于没有冷却，同一条供给一天被探 60 多次，还越探越限流。
+  'rate-limit': 30 * 60 * 1000,
+  'model-missing': 6 * 60 * 60 * 1000,
   // Key 被拒（401/403）不是一个供给的问题：整站这把钥匙都废了，
   // 同步给账号作用域，别在同站的其他供给上白试第二次。
-  auth: 30 * 60 * 1000,
+  auth: 60 * 60 * 1000,
+  // 分组在站方后台被删了：不修永远是错的，别每小时再去撞一次。
+  'group-deleted': 6 * 60 * 60 * 1000,
+  // 502/503/504 是站方上游抖动，值得等一会儿再验
+  upstream: 10 * 60 * 1000,
 }
 
 const RULES = [
@@ -70,7 +77,14 @@ const RULES = [
   {
     kind: 'model-missing',
     scope: 'provider',
-    test: /model[_\s-]?not[_\s-]?found|not[_\s-]?supported[_\s-]?by|not[_\s-]?in[_\s-]?group|no[_\s-]?available[_\s-]?(channel|account)|model_not_in_group|模型不存在|模型不可用|无可用渠道|资源不存在/i,
+    test: /model[_\s-]?not[_\s-]?found|not[_\s-]?supported(?:[_\s-]?by)?|not[_\s-]?in[_\s-]?group|no[_\s-]?available[_\s-]?(channel|account)|model_not_in_group|模型不存在|模型不可用|无可用渠道|资源不存在/i,
+  },
+  {
+    // 分组被站方删了（GROUP_DELETED）：比鉴权失败更确定——这把 Key 的分组
+    // 不存在了，不修就永远是错的。排在 auth 之前：403 会被 auth 的裸 403 吃掉。
+    kind: 'group-deleted',
+    scope: 'account',
+    test: /group[_\s-]?deleted|所属分组已删除|分组已删除|group[_\s-]?not[_\s-]?found/i,
   },
   {
     // 鉴权失败（Key 失效 / 被禁用）：账号级的确定性失败，冷却 30 分钟等人换 Key
@@ -82,6 +96,16 @@ const RULES = [
     kind: 'rate-limit',
     scope: 'transient',
     test: /\b429\b|rate[_\s-]?limit|too[_\s-]?many[_\s-]?requests|请求过于频繁|限流/i,
+  },
+  {
+    // 站方上游抖动（502/503/504）：不是这条供给的问题，但也不是「能用」，
+    // 给个短冷却，别在重试节奏里反复撞。必须排在 auth 之后，
+    // 否则 403 里带 503 字样的响应会被抢先归到这里。
+    kind: 'upstream',
+    scope: 'provider',
+    // 502 是站方真的没服务成功，必须继续扣可用率（此前靠「没有规则」间接实现）
+    countsAsOutage: true,
+    test: /HTTP\s*50[234]|bad gateway|gateway time-?out|upstream (request|service)|service temporarily unavailable|服务暂时不可用/i,
   },
   {
     // 客户端主动断开：浏览器按 ESC、切走页面、Ctrl+C、fetch abort。
@@ -100,7 +124,7 @@ const RULES = [
 
 /**
  * @param {string} message 上游错误文本（探针的 error 字段或网关的失败原因）
- * @returns {{kind: 'quota'|'budget'|'model-missing'|'rate-limit'|'auth'|'client-abort'|'connection'|null, countsAsOutage: boolean}}
+ * @returns {{kind: 'quota'|'budget'|'model-missing'|'rate-limit'|'auth'|'group-deleted'|'upstream'|'client-abort'|'connection'|null, countsAsOutage: boolean}}
  */
 /** 5 分钟内两个以上站点都出现连接层失败 → 更像是本机网络，不是站点 */
 export const LOCAL_NETWORK_WINDOW_MS = 5 * 60 * 1000
@@ -145,7 +169,11 @@ export function classifyFailure(message) {
   // 连接层失败先按站方故障计（scope=provider），豁免逻辑在调用方按「多站同时」判定
   if (isConnectionError(text)) return { kind: 'connection', scope: 'provider', countsAsOutage: true }
   for (const rule of RULES) {
-    if (rule.test.test(text)) return { kind: rule.kind, scope: rule.scope, countsAsOutage: false }
+    // 规则默认「有种类但不计故障」：429/额度/鉴权这些是配置或限流问题，
+    // 记下来档位就够了。真该扣可用率的规则（上游 5xx）显式标 countsAsOutage。
+    if (rule.test.test(text)) {
+      return { kind: rule.kind, scope: rule.scope, countsAsOutage: rule.countsAsOutage === true }
+    }
   }
   return { kind: null, scope: 'provider', countsAsOutage: true }
 }

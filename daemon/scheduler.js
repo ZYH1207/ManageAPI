@@ -13,6 +13,7 @@ import * as store from '../core/store.js'
 import * as inv from '../core/inventory.js'
 import * as fxLib from '../core/fx.js'
 import { scoreOffers } from '../core/score.js'
+import { providerCooldowns } from '../core/probe-policy.js'
 
 const MAX_PER_TICK = 10
 const CHECK_INTERVAL_MS = 60000
@@ -85,8 +86,22 @@ export function startProbeScheduler({ runProbes, collectMonitor = null, logger =
       maxAgeMs: (Number(db.settings.scoreMaxAgeHours) || 6) * 3600 * 1000,
     })
     const now = Date.now()
+    // 站点级冷却：限流/欠费/Key 失效都是账号范围的问题，同一把钥匙下
+    // 每条供给再去撞一遍只会加重限流。整站冷却期间一条都不探。
+    const offersById = new Map(routable.map((offer) => [offer.id, offer]))
+    const providerCooling = providerCooldowns(
+      scores,
+      (offerId) => offersById.get(offerId)?.providerId || '',
+      now,
+    )
+    const lastAt = (offer) => {
+      const at = scores.get(offer.id)?.lastProbeAt
+      const t = at ? new Date(at).getTime() : 0
+      return Number.isFinite(t) ? t : 0
+    }
     const due = routable
       .filter((offer) => {
+        if (providerCooling.has(offer.providerId)) return false
         const score = scores.get(offer.id)
         if (!score || !score.lastProbeAt) return true
         // 冷却中（额度不足/限流/模型不在分组）探了也是白探：等冷却结束再验
@@ -99,6 +114,9 @@ export function startProbeScheduler({ runProbes, collectMonitor = null, logger =
         const minutes = healthy ? intervalMinutes : retryMinutes
         return now - new Date(score.lastProbeAt).getTime() >= minutes * 60000
       })
+      // 到期最久的先探：以前按数组顺序取前 10 个，死供给（60 次/天）把名额
+      // 长期占满，健康站反而被饿着。
+      .sort((a, b) => lastAt(a) - lastAt(b))
       .slice(0, MAX_PER_TICK)
 
     if (due.length === 0) return

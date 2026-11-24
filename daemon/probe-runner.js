@@ -4,6 +4,13 @@
 import * as store from '../core/store.js'
 import * as inv from '../core/inventory.js'
 import { probeModel } from '../core/probe.js'
+import {
+  isNonChatModel,
+  isTransientError,
+  lastCacheProbeAt,
+  probeTimeoutMsOf,
+  shouldProbeCache,
+} from '../core/probe-policy.js'
 
 /**
  * @param {{providerId?:string, offerId?:string, offerIds?:string[], limit?:number}} options
@@ -34,6 +41,7 @@ export async function runProbes({ providerId, offerId, offerIds, limit = 5 } = {
   // 4 路并发：一轮 10 个目标串行跑满 45 秒超时时要 7 分钟以上，
   // 站点会在这期间持续处于「探针过期」而掉出路由池。写盘仍由 mutate 串行，
   // 并发只影响网络等待，不影响数据一致性
+  const timeoutMs = probeTimeoutMsOf(db.settings)
   const CONCURRENCY = 4
   const results = new Array(targets.length)
   let cursor = 0
@@ -50,12 +58,36 @@ export async function runProbes({ providerId, offerId, offerIds, limit = 5 } = {
         results[index] = { offerId: offer.id, providerId: offer.providerId, ok: false, error: 'Key 解密失败' }
         continue
       }
-      const record = await probeModel({
-        baseUrl: inv.apiBaseOf(provider),
-        apiKey,
-        model: offer.upstreamName,
-        timeoutMs: db.settings.probeTimeoutMs || 45000,
-      })
+      // 画图 / 向量 / 语音这类模型拿 chat/completions 打必然 400，
+      // 白白拉低可用率，还每次记一条「失败」——直接跳过，不写评分。
+      if (isNonChatModel(offer.upstreamName)) {
+        results[index] = {
+          offerId: offer.id,
+          providerId: offer.providerId,
+          ok: false,
+          skipped: 'non-chat-model',
+          error: '非对话模型，不用 chat 探针',
+        }
+        continue
+      }
+      const skipCache = !shouldProbeCache(lastCacheProbeAt(db.probes, offer.id))
+      const probeOnce = () =>
+        probeModel({
+          baseUrl: inv.apiBaseOf(provider),
+          apiKey,
+          model: offer.upstreamName,
+          timeoutMs,
+          skipCache,
+        })
+      let record = await probeOnce()
+      // 瞬时错误（5xx / 超时 / 连接没建立）先重试一次：一针定生死会把
+      // 「站点此刻忙」记成「不可用」，手动点探测时体感尤其差。
+      if (record.ok === false && isTransientError(record.error)) {
+        await new Promise((resolve) => setTimeout(resolve, 800))
+        const again = await probeOnce()
+        again.retried = true
+        record = again
+      }
       // 先只收集结果，落盘在批量网络异常判断之后（见下）
       results[index] = { offerId: offer.id, providerId: offer.providerId, ...record }
     }
@@ -103,6 +135,7 @@ export async function runProbes({ providerId, offerId, offerIds, limit = 5 } = {
   for (const record of results) {
     if (!record) continue
     if (record.error === 'Key 解密失败') continue // 没有真实探测，不写评分
+    if (record.skipped) continue // 跳过类的（非对话模型 / 本机断网）不写评分
     const { skipped, ...clean } = record
     await inv.recordProbe({
       ...clean,

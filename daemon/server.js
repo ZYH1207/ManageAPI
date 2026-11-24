@@ -2344,9 +2344,27 @@ route('POST', /^\/api\/cost\/preview$/, async (ctx) => {
 
 route('POST', /^\/api\/probes\/run$/, async (ctx) => {
   const limit = Math.min(Number(ctx.body.limit) || 5, 20)
+  const offerId = ctx.body.offerId
+  // 手动探测同样受冷却约束：429 还在冷却时再打一针只会加重限流，
+  // 而「要不要现在硬探一次」应该由人明确决定，所以给 409 + force 开关。
+  if (offerId && !ctx.body.force) {
+    const db0 = await store.readDb()
+    const scores = scoreOffers(db0.probes, db0.traffic, {
+      maxAgeMs: (Number(db0.settings.scoreMaxAgeHours) || 6) * 3600 * 1000,
+    })
+    const blocked = scores.get(offerId)?.blocked
+    if (blocked && blocked.until > Date.now()) {
+      const mins = Math.max(1, Math.round((blocked.until - Date.now()) / 60000))
+      throw new HttpError(
+        409,
+        `这条供给还在冷却中（${blocked.kind || '上次失败'}），还剩 ${mins} 分钟。现在再探多半还是同一个错误，冷却结束会自动重试；一定要现在验就点一次「强制再探」。`,
+        { cooldown: { kind: blocked.kind || null, until: blocked.until } },
+      )
+    }
+  }
   const results = await runProbes({
     providerId: ctx.body.providerId,
-    offerId: ctx.body.offerId,
+    offerId,
     limit,
   })
   if (results.length === 0) {
