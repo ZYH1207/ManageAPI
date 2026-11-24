@@ -2146,3 +2146,27 @@ body.prov-dragging .drop-zone { display: flex; }
   .runs-result { grid-column: 1 / -1; }
   .runs-row--head span:nth-child(4) { display: none; }
 }
+
+/* 决策页 · 质量列：一个数字 + 颜色，拆解放 title。
+   tone 只表示「比该模型的中位水平（1.00）好还是差」，不是及格线。 */
+.q-score {
+  display: inline-block;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  font-size: 14px;
+  letter-spacing: .2px;
+  cursor: help;
+}
+.q-score.q-good { color: var(--success); }
+.q-score.q-mid { color: var(--text); }
+.q-score.q-low { color: var(--warn, #b45309); }
+.q-score.q-none { color: var(--faint); font-weight: 400; }
+.q-warn {
+  display: inline-block;
+  margin-left: 3px;
+  font-size: 10px;
+  line-height: 1;
+  color: var(--faint);
+  cursor: help;
+  vertical-align: super;
+}

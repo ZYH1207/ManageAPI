@@ -2786,23 +2786,36 @@ function renderDecision() {
       (parts.length ? `（${parts.join(' · ')}）` : '')
   }
 
+  // 质量这一列只留一个数字：1.00 是分界线，好坏看颜色不看文字。
+  // 拆解（可靠度 × 体验、样本数）挪进 title —— 一行里塞三种颜色三种字号，
+  // 下面是灰的、上面是黑的，扫一眼根本抓不住「谁更好」。
+  // 量的括号 = 是「质量 = 混合价 ÷ 质量」里的除数，颜色只需要表示比 1 好还是差。
   function qualityCell(candidate) {
     if (candidate.quality === null || candidate.quality === undefined) {
-      return `<span style="color:var(--faint)" title="${t('一次都没成功过：质量按“未知”的先验 0.5 折算，不再当 1.0（否则没证据的站会和健康站同权）')}">${t('无证据')}</span>`
+      return `<span class="q-score q-none" title="${esc(t('一次都没成功过：质量按“未知”的先验 0.5 折算，不再当 1.0（否则没证据的站会和健康站同权）'))}">—</span>`
     }
     const exp = Number(candidate.experience)
-    const parts = []
-    if (Number.isFinite(exp) && Math.abs(exp - 1) > 0.005) {
-      parts.push(`<span title="${esc(experienceTitle(candidate))}">${t('体验')} ×${exp.toFixed(2)}</span>`)
-    } else if (Number.isFinite(exp)) {
-      parts.push(`<span title="${esc(experienceTitle(candidate))}">${t('中位水平')}</span>`)
-    }
-    if (candidate.confidence && candidate.confidence !== 'high' && Number.isFinite(candidate.samples)) {
-      // 样本少才值得写数字；样本充足时写「37 样本」只是噪音
-      parts.push(`<span title="${t('探针成功的次数，越多越可信')}">${candidate.samples} ${t('样本')}</span>`)
-    }
-    const detail = parts.length ? `<div class="sub" style="color:var(--faint)">${parts.join(' · ')}</div>` : ''
-    return `${candidate.quality.toFixed(2)}${detail}`
+    const expText = Number.isFinite(exp)
+      ? (Math.abs(exp - 1) > 0.005 ? `${t('体验')} ×${exp.toFixed(2)}` : t('中位水平'))
+      : ''
+    const lowSamples = candidate.confidence && candidate.confidence !== 'high' && Number.isFinite(candidate.samples)
+    const bits = [
+      expText ? `${t('质量')} ${candidate.quality.toFixed(2)} = ${t('可靠度')} ${(capturedReliability(candidate)).toFixed(2)} × ${expText}` : `${t('质量')} ${candidate.quality.toFixed(2)}`,
+      lowSamples ? `${candidate.samples} ${t('样本')}（${t('样本少，置信度低')}）` : '',
+      experienceTitle(candidate),
+    ].filter(Boolean)
+    // 阈值 1 是「该模型的中位水平」，不是及格线；只用来决定颜色深浅
+    const tone = candidate.quality >= 1.15 ? 'q-good' : candidate.quality >= 0.95 ? 'q-mid' : 'q-low'
+    return `<span class="q-score ${tone}" title="${esc(bits.join('\n'))}">${candidate.quality.toFixed(2)}</span>${
+      lowSamples ? `<span class="q-warn" title="${esc(t('样本少，结论可能抖动；点开看探测记录'))}">?</span>` : ''
+    }`
+  }
+
+  // 可靠度 = 质量 ÷ 体验分；体验分缺失时就是质量本身
+  function capturedReliability(candidate) {
+    const exp = Number(candidate.experience)
+    if (!Number.isFinite(exp) || exp <= 0) return candidate.quality
+    return candidate.quality / exp
   }
 
   const blocks = visibleDecisions.map((decision) => {
