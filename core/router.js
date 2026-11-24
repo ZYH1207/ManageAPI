@@ -91,6 +91,10 @@ export function selectCandidates({
     const price = cost.blendedCnyPerMtokExpected ?? cost.blendedCnyPerMtok
     const priceLegacy = cost.blendedCnyPerMtok
     const ttftMs = score?.ttftMs ?? null
+    // 真实流量的首字与速度（traffic 行里累积的样本中位）。探针量的是 1k 级
+    // 短请求，实测同一站同一时刻真实首字要慢 3~4 倍，所以两者分开走两档尺子。
+    const trafficTtftMs = Number.isFinite(Number(score?.trafficTtftMs)) ? Number(score.trafficTtftMs) : null
+    const trafficTps = Number.isFinite(Number(score?.trafficTps)) ? Number(score.trafficTps) : null
     // 输出速度（解码阶段 tok/s）：体验分的另一半，和首字一起构成「快不快」
     const tps = score?.tps ?? null
     // 首字相对值（同轮「比最快的那条慢多少毫秒」）：绝对值含本机链路，
@@ -166,6 +170,8 @@ export function selectCandidates({
       statusReason: reasons.join(' · ') || null,
       ttftMs,
       tps,
+      trafficTtftMs,
+      trafficTps,
       ttftRelMs,
     }
   })
@@ -175,7 +181,17 @@ export function selectCandidates({
   // 单站评分阶段还看不到别人；决策页走同一个函数，否则页面和网关会又对不上。
   const experienceEnabled = settings?.quality?.experienceEnabled !== false
   const { map: expMap, baseline: expBaseline } = experienceEnabled
-    ? experienceScores(rows.map((row) => ({ offerId: row.offer.id, ttftMs: row.ttftMs, tps: row.tps })))
+    ? experienceScores(
+        rows.map((row) => ({
+          offerId: row.offer.id,
+          ttftMs: row.ttftMs,
+          tps: row.tps,
+          // 真实流量的首字/速度：有就让体验分走真实档（探针是 1k 级短请求，
+          // 真实是十几万 token 长前缀，量纲不同，混着比没有意义）
+          trafficTtftMs: row.trafficTtftMs ?? null,
+          trafficTps: row.trafficTps ?? null,
+        })),
+      )
     : { map: new Map(), baseline: null }
   for (const row of rows) {
     const exp = expMap.get(row.offer.id) || { score: 1, ttftScore: 1, tpsScore: 1, source: 'none' }
@@ -185,6 +201,12 @@ export function selectCandidates({
       ttftScore: exp.ttftScore,
       tpsScore: exp.tpsScore,
       source: exp.source,
+      // 'real' = 按真实流量量（十几万 token 长前缀）折算，'probe' = 只有探针（1k 级短请求），
+      // 'none' = 没测到，按中位水平
+      tier: exp.tier || 'probe',
+      capped: Boolean(exp.capped),
+      ttftMs: exp.ttftMs ?? null,
+      tps: exp.tps ?? null,
       baseline: exp.baseline || expBaseline,
     }
     // 可靠度没证据时按 0.5 的先验（与 effectiveCost 的约定一致），再乘体验分。
@@ -389,6 +411,8 @@ export function explain(candidates) {
     tooSlow: Boolean(c.tooSlow),
     ttftMs: c.ttftMs,
     tps: c.tps,
+    trafficTtftMs: c.trafficTtftMs ?? null,
+    trafficTps: c.trafficTps ?? null,
     ttftRelMs: c.ttftRelMs ?? null,
     status: c.status,
     samples: c.samples,

@@ -28,6 +28,37 @@ const close = (a, b, eps = 1e-9) => Math.abs(a - b) < eps
 
 console.log('\n[尺子与单项分]')
 {
+  // 三个站只有探针（1k 级短请求，首字 3 秒上下），两个站有真实流量（二十七万 token，首字 9~14 秒）
+  const rows = [
+    { offerId: 'a', ttftMs: 3000, tps: 60 },
+    { offerId: 'b', ttftMs: 3200, tps: 55 },
+    { offerId: 'c', ttftMs: 3600, tps: 50 },
+    { offerId: 'd', ttftMs: 3100, tps: 90, trafficTtftMs: 9200, trafficTps: 340 },
+    { offerId: 'e', ttftMs: 3600, tps: 50, trafficTtftMs: 11400, trafficTps: 175 },
+  ]
+  const { map, baseline } = experienceScores(rows)
+  ok(close(baseline.probe.ttft, 3200), '探针档自己的尺子：首字中位 3200ms')
+  ok(close(baseline.probe.tps, 55), '探针档自己的尺子：速度中位 55 tok/s')
+  ok(close(baseline.real.ttft, 10300), '真实档自己的尺子：首字中位 10300ms')
+  ok(close(baseline.real.tps, 257.5), '真实档自己的尺子：速度中位 257.5 tok/s')
+
+  const a = map.get('a')
+  const d = map.get('d')
+  ok(a.tier === 'probe' && a.capped === true, '只有探针数据的站走探针档，且被压回中位水平')
+  ok(close(a.score, 1), '探针档封顶 1.00（不给超额）')
+  ok(d.tier === 'real' && d.capped === false, '有真实流量的站走真实档，不受封顶')
+  ok(d.score > 1, '真实档快于真实中位 → 体验分 >1')
+
+  // 没实测的站不会被惩罚成 0.5，也不会凭空拿到 1.5
+  ok(close(a.score, 1) || a.score < 1, '没实测的站既不被奖励也不被压到 0.5')
+
+  // 只有真实数据的站：探针那一档为空，它自己就是真实档的中位
+  const solo = experienceScores([{ offerId: 'x', trafficTtftMs: 9000, trafficTps: 200 }])
+  ok(solo.map.get('x').tier === 'real' && close(solo.map.get('x').score, 1), '唯一有真实数据的站 = 真实档中位水平')
+}
+
+console.log('\n[尺子与单项分]')
+{
   const rows = [{ ttftMs: 100, tps: 10 }, { ttftMs: 200, tps: 20 }, { ttftMs: 300, tps: 30 }]
   const base = experienceBaselines(rows)
   ok(base.ttft === 200, '首字中位 200ms')
@@ -38,8 +69,11 @@ console.log('\n[尺子与单项分]')
   ok(close(fast.ttftScore, 2), '首字 100ms 是「中位的 2 倍快」→ 2.00')
   ok(close(fast.tpsScore, 2), '速度 40 = 中位 20 的两倍 → 2.00')
   // 2^0.6 × 2^0.4 = 2
-  ok(close(fast.score, 2), '几何平均后体验分 2.00（首字权重 0.6 / 速度 0.4）')
-  ok(fast.source === 'measured', '有测到就标 measured')
+  // 两档尺子：只有探针数据时不给超额，分数上限压到中位水平 1.00
+  ok(close(fast.score, EXPERIENCE_PRIOR), '只有探针数据时体验分封顶 1.00（没有实测不给超额）')
+  ok(fast.source === 'probe', '只有探针数据标 probe')
+  ok(fast.capped === true, '被压回中位水平时标 capped')
+  ok(close(fast.ttftScore, 2) && close(fast.tpsScore, 2), '单项分本身照实算（2.00 / 2.00），只是总分封顶')
 
   const slow = experienceScore({ ttftMs: 400, tps: 10 }, base)
   ok(close(slow.ttftScore, 0.5), '首字 400ms → 0.50')
@@ -54,7 +88,15 @@ console.log('\n[尺子与单项分]')
   ok(noBaseline.score === EXPERIENCE_PRIOR, '尺子本身没样本 → 1.00')
 
   const noCap = experienceScore({ ttftMs: 10, tps: 400 }, base)
-  ok(noCap.score > 5, '不设上限：10ms 首字 / 400 tok/s 得 >5 的体验分')
+  // 真实档没有上限：同价下快出 5 倍就该拿到 5 倍的体验分
+  // 真实档的尺子来自真实档本身（真实请求十几万 token，探针 1k 级，量纲不同）
+  const realBase = experienceBaselines([
+    { trafficTtftMs: 100, trafficTps: 10 },
+    { trafficTtftMs: 200, trafficTps: 20 },
+    { trafficTtftMs: 300, trafficTps: 30 },
+  ])
+  const realNoCap = experienceScore({ trafficTtftMs: 10, trafficTps: 400, ttftMs: 10, tps: 400 }, realBase)
+  ok(realNoCap.score > 5, '真实档不设上限：10ms 首字 / 400 tok/s 得 >5 的体验分')
 }
 
 console.log('\n[文案]')
@@ -139,10 +181,12 @@ const settings = (extra = {}) => ({
   // 尺子是「这两家的中位」：首字中位 250ms、速度中位 25 tok/s
   ok(close(fast.experienceDetail.baseline.ttft, 250), '尺子取同模型中位：首字 250ms')
   ok(close(fast.experienceDetail.baseline.tps, 25), '尺子取同模型中位：速度 25 tok/s')
-  ok(fast.experience > 1.9 && fast.experience < 2.2, '快站体验分 >1.9（首字 2.5 分 × 速度 1.6 分）')
-  ok(slow.experience > 0.4 && slow.experience < 0.6, '慢站体验分 <0.6（首字 0.625 分 × 速度 0.4 分）')
+  // 两家都只有探针数据 → 同一档，快的那家本该拿 2.09，但探针档不给超额，压回 1.00
+  ok(close(fast.experience, 1), '快站只有探针数据 → 体验分封顶 1.00')
+  ok(close(fast.experienceDetail.ttftScore, 2.5), '但单项分照实：首字 2.5 分')
+  ok(slow.experience > 0.4 && slow.experience < 0.6, '慢站体验分 <0.6（首字 0.625 分 × 速度 0.4 分）→ 慢站照样降权')
   ok(close(fast.quality, fast.experience), '质量 = 可靠度 1.00 × 体验分')
-  ok(close(slow.effectiveUsd / fast.effectiveUsd, 4, 1e-6), '同价时有效成本差 4 倍（体验分 2.09 vs 0.52）')
+  ok(close(slow.effectiveUsd / fast.effectiveUsd, 1.913, 0.01), '同价时有效成本差约 1.9 倍（封顶 1.00 vs 0.52）')
   ok(rows[0].offer.id === 'o_fast', '同价时快站排第一')
   ok(fast.effectiveUsd < slow.effectiveUsd, '有效成本：快站 < 慢站')
 
@@ -299,7 +343,8 @@ console.log('\n[同一个模型里「快」不会越过准入门槛]')
     model: 'm',
   })
   const deadRow = rows.find((r) => r.offer.id === 'o_dead')
-  ok(deadRow.experience > 1, '死站虽然最快，体验分仍 >1')
+  ok(deadRow.experienceDetail.ttftScore > 1, '死站虽然最快，单项分确实 >1')
+  ok(deadRow.experience === 1, '但它只有探针数据 → 体验分封顶 1.00，不给超额')
   ok(deadRow.routable === false, '但它依旧不可路由（体验分不改准入）')
   ok(rows[0].offer.id === 'o_live', '排第一的是能用的那条')
 }

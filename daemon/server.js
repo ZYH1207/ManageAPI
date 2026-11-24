@@ -243,6 +243,7 @@ async function cacheLiveStats({ days = 1, limit = 0 } = {}) {
   }
 }
 
+
 function costProfilesFor(db) {
   if (Date.now() - profileCache.at < 30 * 1000) return profileCache.map
   const map = new Map()
@@ -3260,9 +3261,15 @@ let trafficTimer = null
 // 本机网络抖动：5 分钟内几个站的连接层失败同时出现 → 更像我们自己的网络断了
 const recentConnectionFails = new Map()
 
-function bufferTraffic(offerId, ok, error, quality, providerId = null) {
+function bufferTraffic(offerId, ok, error, quality, providerId = null, speed = null) {
   if (!offerId) return
-  const entry = trafficBuffer.get(offerId) || { ok: 0, fail: 0, kinds: {}, quality: { samples: 0, bad: 0 } }
+  const entry = trafficBuffer.get(offerId) || {
+    ok: 0,
+    fail: 0,
+    kinds: {},
+    quality: { samples: 0, bad: 0 },
+    speed: { samples: 0, ttftMs: [], tps: [] },
+  }
   if (ok) entry.ok += 1
   else {
     // 只有站点故障算 fail；额度/限流/模型不在分组单独计数，不拉低可用率
@@ -3285,6 +3292,22 @@ function bufferTraffic(offerId, ok, error, quality, providerId = null) {
     entry.quality = entry.quality || { samples: 0, bad: 0 }
     entry.quality.samples += 1
     if (quality.bad) entry.quality.bad += 1
+  }
+  // 速度样本：真实流量的首字与解码速度（决策页要拿它判断探针代表不代表真实工况）。
+  // 只统计成功且有 token 的请求；被取消的请求时长没有意义，不能进样本。
+  if (speed && ok) {
+    const ttft = Number(speed.ttftMs)
+    const tps = Number(speed.tps)
+    if (Number.isFinite(ttft) && ttft > 0) {
+      entry.speed = entry.speed || { samples: 0, ttftMs: [], tps: [] }
+      entry.speed.samples = (entry.speed.samples || 0) + 1
+      entry.speed.ttftMs.push(Math.round(ttft))
+      if (entry.speed.ttftMs.length > 40) entry.speed.ttftMs.shift()
+      if (Number.isFinite(tps) && tps > 0) {
+        entry.speed.tps.push(Math.round(tps * 10) / 10)
+        if (entry.speed.tps.length > 40) entry.speed.tps.shift()
+      }
+    }
   }
   trafficBuffer.set(offerId, entry)
   if (!trafficTimer) {
@@ -3898,6 +3921,17 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
           failures,
         })
         const usageNums = usageNumbers(result.usage)
+        // 真实流量的速度画像：首字 + 解码速度。探针发的是 1k 级短请求，
+        // 真实请求常是十几万 token 的长前缀，两者的首字差 3~4 倍（实测），
+        // 所以必须单独记一份真实值，决策页才能说清「探针代表不代表真实工况」。
+        const trafficSpeed = (() => {
+          const completionTokens = Number(usageNums.completionTokens)
+          const ttft = Number(result.ttftMs)
+          if (clientAborted || !Number.isFinite(ttft) || ttft <= 0) return null
+          if (!(completionTokens > 0)) return { ttftMs: ttft, tps: null }
+          const decodeMs = Number(latencyMs) - ttft
+          return { ttftMs: ttft, tps: decodeMs > 0 ? completionTokens / (decodeMs / 1000) : null }
+        })()
         await recordCacheSample({
           offerId: candidate.offer.id,
           providerId: candidate.offer.providerId,
@@ -3938,6 +3972,7 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
                 // 高命中的站全判成虚报
                 cachedTokens: usageNums.cachedTokens,
               }),
+          trafficSpeed,
         )
         // 计费核对样本：本地估算的请求 token vs 上游上报的 prompt_tokens。
         // 这是唯一不依赖站点自报数字的独立证据，虚报时两者会明显背离。

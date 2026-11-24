@@ -2777,13 +2777,19 @@ function renderDecision() {
   function experienceTitle(candidate) {
     const d = candidate.experienceDetail
     if (!d || !d.baseline) return ''
+    const tier = d.tier === 'real' ? d.baseline.real || {} : d.baseline.probe || d.baseline
     const parts = []
-    if (d.baseline.ttft) parts.push(`${t('同模型首字中位')} ${Math.round(d.baseline.ttft)}ms`)
-    if (d.baseline.tps) parts.push(`${t('同模型速度中位')} ${d.baseline.tps.toFixed(1)} tok/s`)
+    if (tier.ttft) parts.push(`${t('同模型首字中位')} ${Math.round(tier.ttft)}ms`)
+    if (tier.tps) parts.push(`${t('同模型速度中位')} ${tier.tps.toFixed(1)} tok/s`)
     if (d.source === 'none') return t('没测到首字与速度，按中位水平 1.00 计（不奖不罚）')
-    return `${t('体验分 = 首字分 × 速度分的几何平均；1.00 = 该模型的中位水平，>1 表示比中位快')}：` +
+    const scale = d.tier === 'real'
+      ? t('这一档是真实流量（十几万 token 的长前缀），不是探针的短请求')
+      : t('这一档只有探针数据（1k 级短请求），只能证明「不慢」，所以最高 1.00')
+    return `${t('体验分 = 首字分 × 速度分的几何平均；1.00 = 该档的中位水平')}：` +
       `${t('首字分')} ${d.ttftScore.toFixed(2)} × ${t('速度分')} ${d.tpsScore.toFixed(2)}` +
-      (parts.length ? `（${parts.join(' · ')}）` : '')
+      (parts.length ? `（${parts.join(' · ')}）` : '') +
+      `\n${scale}` +
+      (d.capped ? `\n${t('探针档不给超额，已压回 1.00')}` : '')
   }
 
   // 质量列三行、全部正文色，不用彩色也不用悬浮提示：
@@ -2796,13 +2802,47 @@ function renderDecision() {
     }
     const exp = Number(candidate.experience)
     const rel = capturedReliability(candidate)
+    // 体验分后面标一档：实测（有真实流量）/ 探针（只有短请求）/ 压回（探针不给超额）
+    const detail = candidate.experienceDetail || {}
+    const tierMark = detail.tier === 'real' ? t('实测') : t('探针')
+    const cappedMark = detail.capped ? ` ${t('压回')}` : ''
     const expText = Number.isFinite(exp)
-      ? (Math.abs(exp - 1) > 0.005 ? `${t('体验')} ${exp.toFixed(2)}` : t('中位水平'))
+      ? (Math.abs(exp - 1) > 0.005
+          ? `${t('体验')} ${exp.toFixed(2)}${detail.tier === 'real' ? '' : `（${tierMark}）`}`
+          : `${t('中位水平')}（${tierMark}${cappedMark}）`)
       : ''
     const factors = `${t('可靠度')} ${rel.toFixed(2)}` + (expText ? ` × ${expText}` : '')
     return `<div class="q-val">${candidate.quality.toFixed(2)}</div>` +
       `<div class="q-meta">${esc(factors)}</div>` +
       (Number.isFinite(candidate.samples) ? `<div class="q-meta">${candidate.samples} ${t('样本')}</div>` : '')
+  }
+
+  // 首字列：有真实流量就显示真实值（这才是你实际会看到的首字），
+  // 并在第二行标出探针值做对照——探针是 1k 级短请求，比真实值快 3~4 倍。
+  function ttftCell(candidate) {
+    const detail = candidate.experienceDetail || {}
+    const real = detail.tier === 'real' && Number.isFinite(Number(detail.ttftMs))
+    const lines = []
+    if (real) {
+      const tps = Number.isFinite(Number(detail.tps)) ? `${detail.tps.toFixed(1)} tok/s` : ''
+      lines.push(`<div title="${t('真实流量实测：你自己请求的真实首字')}">${Math.round(detail.ttftMs)}ms</div>`)
+      if (tps) lines.push(`<div class="sub">${tps}</div>`)
+      if (candidate.ttftMs !== null && candidate.ttftMs !== undefined) {
+        lines.push(`<div class="sub" title="${t('探针是 1k 级短请求，比真实请求快很多；这里只做对照')}">${t('探针')} ${candidate.ttftMs}ms</div>`)
+      }
+      return lines.join('')
+    }
+    if (candidate.ttftMs === null || candidate.ttftMs === undefined) {
+      return '<div style="color:var(--faint)">—</div>'
+    }
+    if (typeof candidate.tps === 'number') {
+      lines.push(`<div class="sub" title="${t('输出速度：扣掉首字之后的解码阶段每秒 token 数')}">${candidate.tps.toFixed(1)} tok/s</div>`)
+    }
+    lines.push(`${candidate.ttftMs}ms`)
+    if (typeof candidate.ttftRelMs === 'number') {
+      lines.push(`<div class="sub" title="${t('同一轮探针里比最快的那条慢多少：已扣掉本机带宽/链路的公共延迟，跨轮可比；绝对毫秒只在本机网络稳定时有意义')}">+${candidate.ttftRelMs}ms</div>`)
+    }
+    return lines.join('')
   }
 
   // 可靠度 = 质量 ÷ 体验分；体验分缺失时就是质量本身
@@ -2835,19 +2875,7 @@ function renderDecision() {
           <td class="num">${qualityCell(candidate)}</td>
           <td class="num">${sortCell(candidate, index > 0 ? decision.candidates[index - 1] : null)}</td>
           <td class="num">${cacheHitCell(candidate)}</td>
-          <td class="num">${
-            typeof candidate.tps === 'number'
-              ? `<div class="sub" title="${t('输出速度：扣掉首字之后的解码阶段每秒 token 数')}">${candidate.tps.toFixed(1)} tok/s</div>`
-              : ''
-          }${
-            candidate.ttftMs === null
-              ? '—'
-              : `${candidate.ttftMs}ms${
-                  typeof candidate.ttftRelMs === 'number'
-                    ? `<div class="sub" title="${t('同一轮探针里比最快的那条慢多少：已扣掉本机带宽/链路的公共延迟，跨轮可比；绝对毫秒只在本机网络稳定时有意义')}">+${candidate.ttftRelMs}ms</div>`
-                    : ''
-                }`
-          }</td>
+          <td class="num">${ttftCell(candidate)}</td>
           <td><span class="badge ${badge.cls}">${badge.label}</span>${candidate.statusReason ? `<div class="sub">${esc(candidate.statusReason)}</div>` : ''}</td>
         </tr>`
     }).join('')

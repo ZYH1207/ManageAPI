@@ -34,52 +34,105 @@ export function medianOf(values) {
 }
 
 /**
- * 一个模型这一轮的「尺子」。
- * @param {Array<{ttftMs?:number|null, tps?:number|null}>} rows
- * @returns {{ttft: number|null, tps: number|null, samples: number}}
+ * 一个模型这一轮的「尺子」，分成两档。
+ *
+ * 为什么要分档：探针发的是 1k 级短请求，实测首字 3 秒上下；真实请求是十几万
+ * token 的长前缀，同一时刻首字中位 9~14 秒。同一个「1.00」在两档里等于完全
+ * 不同的绝对时间，混着比就是把苹果和梨相加。
+ *
+ * 所以每档各用各的中位当尺子，且都以 1.00 为「该档之中的中位水平」——
+ * 数字之间可以直接比大小（都是相对分），但只有拿到真实数据的站才允许超过 1.00：
+ * 探针档只能证明「不慢」，不能证明「比有实测的站更快」。
+ *
+ * @param {Array<{ttftMs?:number|null, tps?:number|null,
+ *   trafficTtftMs?:number|null, trafficTps?:number|null}>} rows
  */
 export function experienceBaselines(rows) {
-  const ttfts = []
-  const speeds = []
+  const probeTtfts = []
+  const probeSpeeds = []
+  const realTtfts = []
+  const realSpeeds = []
   for (const row of rows || []) {
+    // 真实流量优先：有真实样本就整条走真实档，不把两种量纲混成一把尺子
+    const realTtft = finitePositive(row?.trafficTtftMs)
+    const realTps = finitePositive(row?.trafficTps)
+    if (realTtft || realTps) {
+      if (realTtft) realTtfts.push(realTtft)
+      if (realTps) realSpeeds.push(realTps)
+      continue
+    }
     const ttft = finitePositive(row?.ttftMs)
-    if (ttft) ttfts.push(ttft)
+    if (ttft) probeTtfts.push(ttft)
     const tps = finitePositive(row?.tps)
-    if (tps) speeds.push(tps)
+    if (tps) probeSpeeds.push(tps)
   }
   return {
-    ttft: medianOf(ttfts),
-    tps: medianOf(speeds),
-    samples: Math.max(ttfts.length, speeds.length),
+    // 老字段：探针档（保持既有调用方与测试的语义不变）
+    ttft: medianOf(probeTtfts),
+    tps: medianOf(probeSpeeds),
+    samples: Math.max(probeTtfts.length, probeSpeeds.length),
+    probe: {
+      ttft: medianOf(probeTtfts),
+      tps: medianOf(probeSpeeds),
+      samples: Math.max(probeTtfts.length, probeSpeeds.length),
+    },
+    real: {
+      ttft: medianOf(realTtfts),
+      tps: medianOf(realSpeeds),
+      samples: Math.max(realTtfts.length, realSpeeds.length),
+    },
   }
 }
 
 /**
  * 单条的体验分。
- * @returns {{score:number, ttftScore:number, tpsScore:number, source:string}}
- *   source: 'measured'（有速度证据）/ 'none'（两项都没测到，按中位水平 1.00）
+ *
+ * @returns {{score:number, ttftScore:number, tpsScore:number, source:'real'|'probe'|'none',
+ *   tier:'real'|'probe', capped:boolean}}
+ *   source: 'real' 走真实流量档 / 'probe' 只有探针数据 / 'none' 什么都没测到
+ *   capped: 探针档的分数被压回 1.00（没有实测就不给超额）
  */
 export function experienceScore(row, baseline) {
-  const ttft = finitePositive(row?.ttftMs)
-  const tps = finitePositive(row?.tps)
-  const baseTtft = finitePositive(baseline?.ttft)
-  const baseTps = finitePositive(baseline?.tps)
+  const realTtft = finitePositive(row?.trafficTtftMs)
+  const realTps = finitePositive(row?.trafficTps)
+  const hasReal = Boolean(realTtft || realTps)
+
+  // 选档：有真实样本走真实档，否则走探针档；两档各用各的中位
+  const tier = hasReal ? 'real' : 'probe'
+  const ttft = hasReal ? realTtft : finitePositive(row?.ttftMs)
+  const tps = hasReal ? realTps : finitePositive(row?.tps)
+  // 注意：baseline 可能只有老字段（ttft/tps），那是探针档的中位——真实档必须
+  // 用 baseline.real，拿不到就退回老字段，否则两档会悄悄共用一把尺子。
+  const base = hasReal ? baseline?.real || baseline : baseline?.probe || baseline
+  const baseTtft = finitePositive(base?.ttft)
+  const baseTps = finitePositive(base?.tps)
 
   // 没测到（或尺子本身没有样本）→ 中位水平，不奖不罚
   const ttftScore = ttft && baseTtft ? baseTtft / ttft : EXPERIENCE_PRIOR
   const tpsScore = tps && baseTps ? tps / baseTps : EXPERIENCE_PRIOR
-  const score = Math.pow(ttftScore, EXPERIENCE_WEIGHTS.ttft) * Math.pow(tpsScore, EXPERIENCE_WEIGHTS.tps)
+  const raw = Math.pow(ttftScore, EXPERIENCE_WEIGHTS.ttft) * Math.pow(tpsScore, EXPERIENCE_WEIGHTS.tps)
+  // 探针只能证明「不慢」，不能证明「比有实测的更快」：上限压到中位水平。
+  // 下限不设——探针测出来明显慢的站照样该被降权。
+  const capped = tier === 'probe' && raw > EXPERIENCE_PRIOR
+  const score = capped ? EXPERIENCE_PRIOR : raw
   return {
     score,
     ttftScore,
     tpsScore,
-    source: ttft || tps ? 'measured' : 'none',
+    source: ttft || tps ? tier : 'none',
+    tier,
+    capped,
+    // 界面要能写清「这个分是按谁算的」：实测档给真实首字/速度，探针档给探针值
+    ttftMs: ttft,
+    tps,
   }
 }
 
 /**
- * 一轮候选的体验分表：先取尺子，再逐条算。
- * @param {Array<{offerId:string, ttftMs?:number|null, tps?:number|null}>} rows
+ * 一轮候选的体验分表：先取两档的尺子，再逐条算。
+ *
+ * @param {Array<{offerId:string, ttftMs?:number|null, tps?:number|null,
+ *   trafficTtftMs?:number|null, trafficTps?:number|null}>} rows
  * @returns {{map: Map<string, any>, baseline: ReturnType<typeof experienceBaselines>}}
  */
 export function experienceScores(rows) {

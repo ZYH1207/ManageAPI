@@ -322,6 +322,22 @@ export function scoreOffers(probes, traffic = {}, options = {}) {
       // 输出速度：扣掉首字之后的纯生成阶段每秒吐多少 token。
       // 用解码速度而不是「总 token ÷ 总耗时」，否则首字慢的长文会被算得更慢，
       // 和体验里的「首字」重复计算。
+      // 真实流量的首字/速度（traffic 行里累积的样本），只进展示与体验分档，
+      // 不参与「这就是站点速度」的判定——探针与真实是两档尺子。
+      trafficTtftMs: (() => {
+        const list = (trafficRow?.speed?.ttftMs || []).map(Number).filter((n) => Number.isFinite(n) && n > 0)
+        if (list.length === 0) return null
+        const sorted = [...list].sort((a, b) => a - b)
+        const mid = sorted.length >> 1
+        return sorted.length % 2 === 1 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2
+      })(),
+      trafficTps: (() => {
+        const list = (trafficRow?.speed?.tps || []).map(Number).filter((n) => Number.isFinite(n) && n > 0)
+        if (list.length === 0) return null
+        const sorted = [...list].sort((a, b) => a - b)
+        const mid = sorted.length >> 1
+        return sorted.length % 2 === 1 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2
+      })(),
       tps: median(
         recent.map((r) => {
           const ct = Number(r.completionTokens)

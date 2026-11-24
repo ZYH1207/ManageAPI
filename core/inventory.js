@@ -1107,6 +1107,8 @@ export async function setManualOrder(modelKey, order) {
 // ----------------------------------------------------------- 真实流量计数
 
 const TRAFFIC_WINDOW_MS = 3600 * 1000
+// 每条供给留多少条速度样本（中位数足够稳，多了只是白占 db.json）
+const SPEED_SAMPLE_KEEP = 40
 
 /**
  * 计费核对样本：每 N 次成功请求抽一条，记「本地估算 token vs 上游上报 prompt_tokens」。
@@ -1174,6 +1176,10 @@ export async function addTraffic(entries, windowMs = TRAFFIC_WINDOW_MS) {
     const now = Date.now()
     const atIso = new Date(now).toISOString()
     for (const [offerId, delta] of entries) {
+      // 速度样本单独存一份「长期」档：可用率只关心最近 1 小时，但「这个站快不快」
+      // 是相对稳定的属性，只留 1 小时会随窗口滚动而闪断（决策页的体验分跟着抖）。
+      // 所以窗口滚动时只清 ok/fail，速度样本保留最近 SPEED_SAMPLE_KEEP 条。
+      const prevSpeed = db.traffic?.[offerId]?.speed || null
       const row = db.traffic[offerId] || { ok: 0, fail: 0, since: atIso, kinds: {}, quality: { samples: 0, bad: 0 } }
       if (now - new Date(row.since).getTime() > windowMs) {
         row.ok = 0
@@ -1193,6 +1199,27 @@ export async function addTraffic(entries, windowMs = TRAFFIC_WINDOW_MS) {
         if (!row.quality || typeof row.quality !== 'object') row.quality = { samples: 0, bad: 0 }
         row.quality.samples += delta.quality.samples || 0
         row.quality.bad += delta.quality.bad || 0
+      }
+      // 真实流量的速度画像：只累计「有效样本」（成功、有 token、有首字），
+      // 用来判断探针测出来的快慢能不能代表真实工况——探针发的是 1k 级短请求，
+      // 而真实请求常常是十几万 token 的长前缀，两者的首字根本不是一个量纲。
+      if (delta.speed) {
+        if (!row.speed || typeof row.speed !== 'object') row.speed = prevSpeed && typeof prevSpeed === 'object' ? prevSpeed : { samples: 0, ttftMs: [], tps: [] }
+        const speed = row.speed
+        if (!Array.isArray(speed.ttftMs)) speed.ttftMs = []
+        if (!Array.isArray(speed.tps)) speed.tps = []
+        speed.samples = (speed.samples || 0) + 1
+        const ttft = Number(delta.speed.ttftMs)
+        if (Number.isFinite(ttft) && ttft > 0) {
+          speed.ttftMs.push(Math.round(ttft))
+          // 只留最近 40 个，取数用中位，长尾不影响结论
+          if (speed.ttftMs.length > SPEED_SAMPLE_KEEP) speed.ttftMs.splice(0, speed.ttftMs.length - SPEED_SAMPLE_KEEP)
+        }
+        const tps = Number(delta.speed.tps)
+        if (Number.isFinite(tps) && tps > 0) {
+          speed.tps.push(Math.round(tps * 10) / 10)
+          if (speed.tps.length > SPEED_SAMPLE_KEEP) speed.tps.splice(0, speed.tps.length - SPEED_SAMPLE_KEEP)
+        }
       }
       if (delta.kinds) {
         if (!row.kinds || typeof row.kinds !== 'object') row.kinds = {}
