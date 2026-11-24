@@ -291,6 +291,8 @@ const EN = {
   '站点信息': 'Site details',
   '名称': 'Name',
   '报价币种': 'Price currency',
+  '这个分组来自该行所属的 Key；同一个模型要挂到另一档套餐，就在站点页给那个分组加一把 Key':
+    'This group comes from the row’s Key; to track the same model on another plan, add a Key under that group on the site page',
   '整理分组': 'Tidy groups',
   '把供给行上的分组对齐到它所属的 Key，并合并同站同模型的重复行——先预览再落库':
     'Align each supply row’s group with the Key it belongs to, and merge duplicate rows for the same site and model — preview first, then apply',

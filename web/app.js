@@ -2099,7 +2099,7 @@ function renderPricing() {
         <td>${esc(providerName(row.providerId))}</td>
         <td class="mono">${esc(row.upstreamName)}${badge}</td>
         <td class="num sub-cell">${cacheCell}</td>
-        <td><span class="group-chip-cell">${row.group ? `<span class="badge ${groupChipOf(row.providerId, row.group)}" title="${esc(row.group)}">${esc(row.group)}</span>` : `<span style="color:var(--faint)" title="${t('该行的 Key 没有分组')}">${t('默认')}</span>`}<button class="ghost tiny" data-act="dup-offer" title="同一个模型在另一档套餐里也有时，复制一条单独跟踪（分组归属跟随 Key，行内不可直接改）">＋</button></span></td>
+        <td><span class="group-chip-cell">${row.group ? `<span class="badge ${groupChipOf(row.providerId, row.group)}" title="${esc(t('这个分组来自该行所属的 Key；同一个模型要挂到另一档套餐，就在站点页给那个分组加一把 Key'))}">${esc(row.group)}</span>` : `<span style="color:var(--faint)" title="${t('该行的 Key 没有分组')}">${t('默认')}</span>`}</span></td>
         <td class="num">${inText}</td>
         <td class="num">${outText}</td>
         <td class="num" title="倍率来自站点/分组配置，比价页只读；要改请到「站点」页">${ratioText}</td>
@@ -5030,18 +5030,6 @@ document.addEventListener('click', async (event) => {
       state = await api('DELETE', `/api/benchmarks/${encodeURIComponent(key)}`)
       render()
       toast('已删除')
-    })
-    return
-  }
-
-  if (action === 'dup-offer') {
-    const offerId = actionButton.closest('[data-offer]').dataset.offer
-    const name = prompt('新分组名（例如：Pro 号池 / 特价池 / 企业通道）')
-    if (!name || !name.trim()) return
-    await withBusy(actionButton, async () => {
-      state = await api('POST', `/api/offers/${offerId}/duplicate`, { group: name.trim() })
-      render()
-      toast(`已创建分组「${name.trim()}」，记得填它的价格`)
     })
     return
   }
