@@ -493,6 +493,8 @@ let overviewMonitor = null
 let overviewMonitorAt = 0
 let overviewLoading = false
 let overviewDays = 14
+// 真实花费：今天 / 本周 / 本月，三个区间后端一次算好，切换只重画不重拉
+let overviewSpendRange = 'today'
 const OVERVIEW_MONITOR_TTL = 60 * 1000
 // 与站点页同一套配色顺序，这样同一个站在两页是同一个颜色
 const OVERVIEW_SERIES_COLORS = [
@@ -537,12 +539,17 @@ function latestBalancePoint(series) {
   return null
 }
 
-/** 站点账单口径的今日花费：拉过才有数，「没采集」和「真的花了 0」必须分开显示 */
-function todaySiteSpend() {
+/** 站点账单口径的花费：今天必须有采集时间戳才算「有数」，
+ *  本周/本月只要该站有任意一天账单就算；否则「没采集」和「真的花了 0」看起来一样 */
+function siteSpendOf(range = overviewSpendRange) {
   const spend = overviewMonitor?.siteSpend
   const rows = Object.values(spend?.byProvider || {})
-  const fetched = rows.some((row) => row && row.todayFetchedAt)
-  return { spend, fetched, row: spend?.today || { actual: 0, requests: 0, providers: 0 } }
+  const key = ['today', 'week', 'month'].includes(range) ? range : 'today'
+  const fetched =
+    key === 'today'
+      ? rows.some((row) => row && row.todayFetchedAt)
+      : rows.some((row) => row && Number(row.days) > 0)
+  return { spend, fetched, key, row: spend?.[key] || { actual: 0, requests: 0, providers: 0 } }
 }
 
 /** 金额要带两位小数：money() 对 >=100 的数会取整，余额上千就看不见零头 */
@@ -566,16 +573,29 @@ function overviewCardItems() {
           showUsd() ? `≈ ¥${money(point.total)}` : `≈ $${money(point.total / rateCny())}`
         }`
 
-  const { spend, fetched, row } = todaySiteSpend()
+  const { spend, fetched, row, key: spendKey } = siteSpendOf()
   const spendValue = fetched ? `${priceSym()}${money2(row.actual)}` : '未采集'
   const spendSub = fetched
-    ? `${row.providers} 站 · ${row.requests} 次请求${spend?.anyTruncated ? ' · 有明细未拉全' : ''}`
+    ? `${row.providers} 站${spendKey === 'today' && row.requests ? ` · ${row.requests} 次请求` : ''}${
+        spend?.anyTruncated && spendKey === 'today' ? ' · 有明细未拉全' : ''
+      }`
     : '到「站点」页点「立即同步」后才读得到账单'
+  // 区间切换放在卡片里：三个区间后端已经算好，点一下只重画概览
+  const spendSeg = `<div class="seg seg-tiny">${[
+    ['today', '今天'],
+    ['week', '本周'],
+    ['month', '本月'],
+  ]
+    .map(
+      ([value, label]) =>
+        `<button data-overview-spend="${value}" class="${spendKey === value ? 'active' : ''}">${t(label)}</button>`,
+    )
+    .join('')}</div>`
 
   return [
     [t('站点'), providerTotal, t('个'), 'servers', 'tint-muted', t('在售 {n}', { n: s.providerCount })],
     [t('总金额'), balanceValue, '', 'wallet', 'tint-accent', balanceSub],
-    [t('真实花费'), spendValue, '', 'receipt', 'tint-warn', spendSub],
+    [t('真实花费'), spendValue, '', 'receipt', 'tint-warn', spendSub, spendSeg],
     [
       t('模型供给'),
       s.offerCount,
@@ -603,12 +623,13 @@ function statsHtml() {
   const items = overviewCardItems()
   return `<div class="stats">${items
     .map(
-      ([k, v, unit, ic, tint, sub]) => `
+      ([k, v, unit, ic, tint, sub, extra]) => `
     <div class="stat">
       <div class="stat-main">
         <div class="k">${k}</div>
         <div class="v">${esc(v)}${unit ? `<small>${unit}</small>` : ''}</div>
         ${sub ? `<div class="sub">${esc(sub)}</div>` : ''}
+        ${extra || ''}
       </div>
       <div class="stat-icon ${tint}">${icon(ic)}</div>
     </div>`,
@@ -4569,6 +4590,17 @@ document.addEventListener('click', async (event) => {
       spendRange = next
       renderMonitor()
       translateDom($('#view-monitor') || document.body)
+    }
+    return
+  }
+
+  const overviewSpendBtn = event.target.closest('[data-overview-spend]')
+  if (overviewSpendBtn) {
+    const next = overviewSpendBtn.dataset.overviewSpend
+    if (next && next !== overviewSpendRange) {
+      overviewSpendRange = next
+      renderOverview()
+      translateDom($('#view-overview') || document.body)
     }
     return
   }
