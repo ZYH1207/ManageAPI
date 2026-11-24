@@ -258,6 +258,20 @@
               就手动改成 0.18，比价结果才准。
             </p>
             <p>
+              <b>分组只有一把尺子：Key 上写的那一个。</b><br />
+              · 站点卡上的「N 个分组」按 <b>Key</b> 数，没有分组的 Key 显示「未分组」，不算一个分组<br />
+              · 每行供给上还记着一个「落价分组」，是<b>上次算钱时用的分组</b>，只作为快照；两者不一致说明
+              你换过分组而旧行还没跟着走<br />
+              · 站点页工具栏的 <b>整理分组</b> 就是这个用途：先给预览（多少条要迁移、多少条是重复行），
+              确认之后一次性把供给挪到 Key 的分组，并把同站同模型的重复行合并成一条<br />
+              · 换分组时会自动迁移该 Key 的所有行，之后再同步不会出现「同一模型两条在售」
+            </p>
+            <p>
+              <b>胶囊上的倍率是怎么显示的</b>：优先用行上的实际倍率；行上还没落价时用站点给这把 Key 配的倍率；
+              再没有就用站点公布的同名分组倍率（会注明「还没落到价格」）；都没有才显示「未落价」。
+              名字太长会截断，悬停看全名，倍率始终可见；整组免费的显示 <code>×0</code>。
+            </p>
+            <p>
               <b>分组胶囊的颜色是怎么来的？</b>按这个分组里<b>模型的厂商</b>聚合推断，不是给分组名分配颜色：<br />
               · 国产厂商（deepseek / glm / qwen / kimi / doubao / minimax 等）统一<b>蓝色</b><br />
               · 海外主流各自一色：OpenAI 绿、Claude 橙、Gemini 黄<br />
@@ -320,9 +334,21 @@
             <p>
               看路由会选谁，也能手动干预。每个模型一张表：<br />
               · <b>绿底行</b> —— 当前会选中的那个站<br />
-              · <b>有效成本</b> —— 价格 ÷ 质量，越小越优先<br />
+              · <b>价格</b> —— 名义单价（输入/输出按你的使用比例混合，再按缓存命中折掉复用部分）<br />
+              · <b>质量</b> —— 三行：质量值 / <code>可靠度 × 体验</code> / 样本数。质量的高低直接决定有效成本<br />
+              · <b>排序键</b> —— 当前档位下真正用来排序的数字，副行写它和上一条差多少<br />
+              · <b>命中率</b> —— 缓存复用比例，副行标出处：<code>实测</code>（你真实请求逐单记账）、
+              <code>实测·少</code>（样本不足，已向全局中位收缩）、<code>先验</code>（还没有样本，先按 85% 估）<br />
+              · <b>首字</b> —— 绝对毫秒，副行 <code>+Nms</code> 是同一轮里比最快的那条慢多少（已扣掉本机链路）<br />
               · <b>↑↓</b> —— 调整「可用」候选的先后，改完立即生效<br />
-              · <b>恢复自动</b> —— 清掉手动顺序，回到按有效成本排
+              · <b>恢复自动</b> —— 清掉手动顺序，回到按排序键排
+            </p>
+            <p>
+              页面左上角是<b>「决策侧重」</b>三档，只改排序键，不改准入：<br />
+              · <b>价格</b> —— 名义单价最低优先，质量只用来挡不合格的<br />
+              · <b>性价比</b>（默认）—— 有效成本 = 价格 ÷ 质量，越低越优先<br />
+              · <b>质量</b> —— 先比质量，同质量再比价格<br />
+              两种情况下，价格差在 5% 以内的几条会<b>粘住上次成功的那个站</b>（避免为了省几厘钱把上游前缀缓存换掉）。
             </p>
             <p>
               手动顺序只影响「可用」的那几条。不可信、评分过期的站默认排在后面，
@@ -336,7 +362,7 @@
               检测站有没有偷工。每个模型可以单独点「探测」，也可以点「探测全部」。<br />
               · <b>指纹</b> —— 要求精确输出固定内容，返回不对说明可能被掉包<br />
               · <b>截断</b> —— 要求数到 120，没数完说明上游压低了 max_tokens<br />
-              · <b>计费</b> —— 返回的 prompt_tokens 远超实际请求规模，说明用量虚报<br />
+              · <b>计费</b> —— 扣掉同一次请求命中的缓存后，计费输入仍远超实际请求规模，说明多收钱<br />
               · <b>缓存</b> —— 同一段长前缀连发两次，看第二次命中多少（这一步要发 2 个请求）<br />
               · <b>身份自述</b> —— 问它「你是什么模型」，结果<b>只记录、不评分</b>。
               因为模型自述本来就不可信，同一个模型换个说法很常见，拿它扣分误伤太多。
@@ -393,7 +419,20 @@
               · <b>载入内置参考价</b> —— 工具内置的一份官方价，价格常变，务必核对
             </p>
             <p>
+              <b>基准价存的是「站点原价」，不是打折后的价格。</b>倍率行算钱时是 <code>基准价 × 倍率</code>，
+              如果基准价里已经含过一次倍率，就会打两次折（实测能差 12 倍）。历史上从广场 / 供应商导入的条目
+              曾经是折后价，所以工具栏有一个 <b>校准为原价</b>：按各站现在公布的原价重算受影响的条目，
+              先给预览再落库，手填和内置参考价不动。
+            </p>
+            <p>
+              <b>币种不在这里选</b>：基准价的币种跟着「站点卡片上的报价币种」走。行内只有在「手填、且没有站点
+              引用它」时才给下拉；跟站点声明冲突的行会标出来，去点「校准为原价」就按站点声明批量写回。
+              站点还没声明报价币种时，从它导入会被拒绝——先去站点卡片选 USD 或 CNY，否则基准价会按美元写，
+              人民币站会差一个汇率。
+            </p>
+            <p>
               表格里可以直接改价格。「空闲输入 / 空闲输出」是峰谷定价用的（比如 DeepSeek 空闲时段半价）。
+              也可以点 <b>＋ 新增基准价</b> 手动补一条（币种必选）。
               「来源」列会标 <code>reference:</code>（内置）、<code>channels:</code>（可用渠道）、
               <code>plaza:</code>（模型广场）或 <code>imported:</code>（从站导入），方便分辨数据从哪来。
             </p>
@@ -422,9 +461,22 @@
             <h4 class="doc-h4">② 评分：两个维度分开算</h4>
             <p>
               <b>可用率</b> = 成功次数 ÷ 总次数（探针 + 真实流量一起算）<br />
-              <b>完整性</b> = 指纹通过率 × 0.5 + 未截断率 × 0.3 + 计费正常率 × 0.2<br />
-              <b>质量</b> = 可用率 × 完整性<br />
-              任一维度低于 0.8 就标记为不可用，不参与路由。
+              <b>完整性</b> = 指纹通过率 × 0.5 + 未截断率 × 0.3 + 计费正常率 × 0.2（只算测到的项，权重按剩余项归一）<br />
+              <b>可靠度</b> = 可用率 × 完整性<br />
+              <b>体验分</b> = 首字分<sup>0.6</sup> × 速度分<sup>0.4</sup><br />
+              <b>质量</b> = 可靠度 × 体验分
+            </p>
+            <p>
+              <b>体验分的尺子是「同一个模型在售的全部供给」</b>，不是固定毫秒：<br />
+              · <b>首字分</b> = 中位首字 ÷ 本站首字，<b>速度分</b> = 本站输出速度 ÷ 中位速度；<b>1.00 = 这个模型的中位水平</b><br />
+              · 不分档、不设上下限——比中位快就是加分，慢就是按比例降权，规则只有一条<br />
+              · 有真实流量样本的站按<b>实测</b>折算；只有探针数据的站走<b>探针档</b>，上限压到 1.00
+              （探针发的是 1k 级短请求，只能证明「不慢」，证明不了「更快」）<br />
+              · 一项都没测到的，按 1.00（中位水平）算，不是按 0 罚
+            </p>
+            <p>
+              可靠度低于 0.8 就标记为不可用，不参与路由。体验分<b>不影响准入</b>——慢的站不会因为慢被踢出去，
+              只是有效成本被除得更高，自然排在后面。
             </p>
             <p>
               评分有有效期（默认 6 小时）。过期后不再参与路由——<b>过期数据比没有数据更危险</b>，
@@ -435,6 +487,13 @@
             <p>
               <b>硬约束</b> —— 不可信、评分过期的，默认排到最后只做兜底。<br />
               <b>有效成本排序</b> —— 剩下的按 <code>价格 ÷ 质量</code> 从小到大排。
+            </p>
+            <p>
+              这里的「价格」不是网站标的名义单价，而是<b>按你的真实用法折算过的期望成本</b>：<br />
+              · <b>输入占比</b> —— 默认读你自己的真实流量（输入 token ÷ 全部 token），没有样本时按 90%<br />
+              · <b>缓存折扣</b> —— 输入价按 <code>1 − 命中率 × 0.9</code> 折算。命中率是网关<b>逐单记账</b>算出来的：
+              缓存读 ÷ (净值 + 缓存读 + 缓存写)，并剔掉冷启动那几单（新会话、前缀刚变、隔太久没用）<br />
+              · 样本不足时会向全局中位收缩，避免一两单极端值决定排名
             </p>
             <p>
               「不可信」这一条是可以用探针页的 <b>放行可疑供给</b> 开关关掉的：打开后它们不再被压到后面，
@@ -467,8 +526,9 @@
             </p>
             <p>
               网关还会对<b>成功的真实响应</b>做两类客观质量抽样：<b>空回答</b>（200 成功、正常结束却一个字都没有）
-              和<b>计费虚报</b>（上报的 <code>prompt_tokens</code> 超过请求体估算的 4 倍）。
+              和<b>计费异常</b>（扣掉<b>同一次请求</b>命中的缓存之后，计费输入仍超过请求体估算的 4 倍）。
               指纹和截断需要受控 prompt，真实请求里验不了——那两项只有探针能做。
+              站点把长系统提示算进 prompt 是常态，只要每次命中缓存，那部分几乎不花钱；所以判据只看「扣掉命中之后还剩下多少」。
               抽样要攒够 5 个样本、异常率超过 20% 才影响评分，不足就只记录。
             </p>
 
@@ -489,10 +549,10 @@
 
             <h4 class="doc-h4">几个刻意的取舍</h4>
             <p>
-              <b>延迟不参与加权排序</b> —— 延迟和价格量纲不同，硬凑成分数会失真。
-              改成一个可选上限：超过就不参与路由，规则简单可预期。<br />
-              <b>缓存命中率只展示、不折算成本</b> —— 缓存收益取决于你的使用模式。
-              前缀都不重复的话命中率就是 0，那个「便宜」对你没意义。<br />
+              <b>延迟折成相对分，不做绝对门槛</b> —— 首字和速度不与价格相加，而是除以同模型中位折成体验分，
+              再乘进质量；绝对值（比如「3 秒」「15 秒」）受本机链路和请求长度影响太大，固定阈值只会误杀。<br />
+              <b>缓存命中率按你的实测折价，且只折输入侧</b> —— 命中率来自你自己的逐单记账，
+              所以它反映的正是你的用法；前缀都不重复时命中率就是 0，折扣自动消失。<br />
               <b>余额读不到就留空</b> —— 多数站不对 API Key 开放余额接口，工具不会猜一个数字填进去。
             </p>
 
@@ -639,6 +699,23 @@
               ④ Next time the picker opens, it preselects the same group
             </p>
             <p>
+              <b>A group lives on the key — that is the single source of truth.</b><br />
+              · "N groups" on a site card counts <b>keys</b>; a key without a group reads "no group" and is not counted<br />
+              · Each supply row also carries the group used for its last pricing, as a snapshot. If the two differ, you
+              changed the group and the old rows have not followed yet<br />
+              · <b>Tidy groups</b> on the site toolbar does exactly that: first a preview (how many rows move, how many
+              are duplicates), then one confirmed pass that moves rows onto the key's group and merges duplicates of
+              the same model into one<br />
+              · Changing a group migrates that key's rows automatically, so the next sync never creates a second live
+              row for the same model
+            </p>
+            <p>
+              <b>How the chip gets its ratio:</b> the row's actual ratio first; if the row has not been priced yet, the
+              ratio the site assigned to this key; then the site's published ratio for a same-named group (marked "not
+              priced yet"); only if none exist, "not priced". Long names are truncated with the full name on hover and
+              the ratio always visible; fully free groups read <code>×0</code>.
+            </p>
+            <p>
               Where the data comes from: with a token it reads <code>/api/v1/channels/available</code>
               (the richest source, <b>no model plaza required</b>); without one it falls back to the model plaza.
               If neither works it tells you why.
@@ -727,15 +804,30 @@
             <p>
               See who routing would pick, and override it. One table per model:<br />
               · <b>Highlighted row</b> — the site that would be picked now<br />
-              · <b>Effective cost</b> — price ÷ quality, lower wins<br />
+              · <b>Price</b> — nominal unit price, blended by your input/output mix and discounted by cache reuse<br />
+              · <b>Quality</b> — three lines: the value / <code>reliability × experience</code> / sample count<br />
+              · <b>Sort key</b> — the number actually used to rank in the current mode; the sub-line says how far it is from the row above<br />
+              · <b>Hit rate</b> — cache reuse ratio; the sub-line names the source: <code>measured</code> (your own
+              per-request ledger), <code>measured·few</code> (too few samples, shrunk towards the global median),
+              <code>prior</code> (no samples yet, starts at 85%)<br />
+              · <b>TTFT</b> — absolute milliseconds; the <code>+Nms</code> sub-line is how much slower than the fastest
+              of the same probe round, with local link latency subtracted<br />
               · <b>↑↓</b> — reorder the available candidates; takes effect immediately<br />
               · <b>Back to auto</b> — clears the manual order
             </p>
             <p>
-              Manual order only affects rows that are usable. Untrusted, too-slow or expired supplies sink to the
-              bottom by default and cannot be dragged up — <b>availability is a hard rule, not an opinion</b>.
+              <b>Routing preference</b> at the top left has three modes. It only changes the sort key, never admission:<br />
+              · <b>Price</b> — lowest nominal price first; quality only filters out failures<br />
+              · <b>Value</b> (default) — effective cost = price ÷ quality, lowest first<br />
+              · <b>Quality</b> — highest quality first, price breaks ties<br />
+              In all modes, supplies within 5% of each other <b>stay on the site that last succeeded</b>, so a few
+              pennies never throw away an upstream prefix cache.
+            </p>
+            <p>
+              Manual order only affects rows that are usable. Untrusted or expired supplies sink to the bottom by
+              default and cannot be dragged up — <b>availability is a hard rule, not an opinion</b>.
               If you do want suspicious sites to compete, turn on "Allow suspicious supplies" on the Probes page;
-              their status then reads "allowed".
+              their status then reads "allowed". Speed never gates admission — it is folded into quality.
             </p>
 
             <h4 class="doc-h4">Probes</h4>
@@ -743,7 +835,8 @@
               Checks whether a site is cutting corners. Probe a single model, or all of them.<br />
               · <b>Fingerprint</b> — demands an exact fixed output; anything else suggests the request was rerouted<br />
               · <b>Truncation</b> — asks it to count to 120; stopping early means the upstream lowered max_tokens<br />
-              · <b>Billing</b> — prompt_tokens far beyond the actual prompt means inflated usage<br />
+              · <b>Billing</b> — billed input, after subtracting the cache hits of the same request, far beyond the
+              actual prompt means you are being overcharged<br />
               · <b>Cache</b> — sends the same long prefix twice and checks how much the second one hit (two requests)<br />
               · <b>Self-identification</b> — asks "what model are you"; <b>recorded, never scored</b>. Models misreport
               themselves all the time, and penalising that produces too many false positives.
@@ -756,16 +849,17 @@
               · <b>Auto probe</b> — runs in the background on an interval. Default 1 hour; can be turned off. With many
               models, set it longer — every probe costs a few tokens.<br />
               · <b>Score TTL</b> — a score older than this is discarded and no longer used for routing.<br />
-              · <b>TTFT limit</b> — supplies slower than this are excluded from routing. 0 means no limit.<br />
+              · <b>Speed</b> — there is no fixed ceiling any more: speed is folded into the experience score, so a slow
+              supply loses cost efficiency instead of being excluded.<br />
               · <b>Allow suspicious supplies</b> — off by default. When off, sites the probes flagged
-              (fingerprint mismatch / truncated / inflated / expired score) are only a last resort; when on,
+              (fingerprint mismatch / truncated / billing anomaly / expired score) are only a last resort; when on,
               they compete on effective cost like everything else.
             </p>
             <p>
               <b>Know the trade-off before turning it on</b>: suspicious sites still sort by price ÷ quality, so half
               the quality doubles the cost — only a large enough discount wins. But they can genuinely return swapped
               or truncated answers. Turn it on when saving money matters more; leave it off when trustworthy output does.
-              The TTFT limit is separate and unaffected.
+              Speed is not a gate any more: it is folded into the experience score.
             </p>
 
             <h4 class="doc-h4">Gateway</h4>
@@ -808,12 +902,22 @@
             </p>
             <p>
               <b>Which price gets imported?</b> The site's own <b>model base price</b> — the layer before the group ratio
-              is applied — otherwise ratios would be meaningless. The model plaza also exposes a field called "official
+              is applied — otherwise ratios would be meaningless. Older imports stored the already-discounted number, so
+              the toolbar has <b>Calibrate to base prices</b>: it recomputes the affected entries from each site's current
+              published base price, shows a preview first, and leaves hand-filled and built-in entries untouched. The model plaza also exposes a field called "official
               price", but in practice several sites fill it with one placeholder value for everything (e.g. every
               deepseek model reporting 0.15), so the tool ignores it.
             </p>
             <p>
+              <b>Currency is not chosen here</b>: a benchmark entry follows the <b>price currency on the site card</b>.
+              The inline currency picker only appears for hand-filled entries that no site references; entries that
+              disagree with a site's declaration are flagged, and <b>Calibrate to base prices</b> writes them back.
+              Importing from a site that has not declared its price currency is refused — set USD or CNY on the site
+              card first, otherwise base prices land as USD and a CNY site will be off by a whole exchange rate.
+            </p>
+            <p>
               At the bottom of this page there is a <b>USD→CNY rate</b>: it only affects sites priced in USD.
+              You can also add an entry manually with <b>+ Add benchmark price</b> (currency required).
             </p>
 
             <h3 class="doc-h3">How it works</h3>
@@ -832,9 +936,24 @@
             <h4 class="doc-h4">② Scoring: two dimensions, kept separate</h4>
             <p>
               <b>Availability</b> = successful probes ÷ all samples (probes and real traffic together)<br />
-              <b>Integrity</b> = fingerprint pass rate × 0.5 + not-truncated rate × 0.3 + normal billing rate × 0.2<br />
-              <b>Quality</b> = availability × integrity<br />
-              Anything below 0.8 on either dimension is marked unusable and excluded from routing.
+              <b>Integrity</b> = fingerprint pass rate × 0.5 + not-truncated rate × 0.3 + normal billing rate × 0.2
+              (only measured items count; weights renormalise over the rest)<br />
+              <b>Reliability</b> = availability × integrity<br />
+              <b>Experience</b> = TTFT score<sup>0.6</sup> × speed score<sup>0.4</sup><br />
+              <b>Quality</b> = reliability × experience
+            </p>
+            <p>
+              The experience ruler is <b>every on-sale supply of the same model</b>, not a fixed number of milliseconds:<br />
+              · <b>TTFT score</b> = median TTFT ÷ this site's TTFT; <b>speed score</b> = this site's tok/s ÷ median tok/s.
+              <b>1.00 is the median of that model</b><br />
+              · No tiers, no caps: faster than the median is rewarded, slower is scaled down, one rule only<br />
+              · Sites with real traffic are scored on <b>measured</b> numbers; probe-only sites use the
+              <b>probe tier</b>, capped at 1.00 (probes are 1k-token requests — they can prove "not slow", not "faster")<br />
+              · Nothing measured at all counts as 1.00 (median level), never 0
+            </p>
+            <p>
+              Reliability below 0.8 marks a supply unusable for routing. Experience <b>never</b> gates admission — a slow
+              site is not kicked out, its effective cost is simply divided by a smaller number.
             </p>
             <p>
               Scores expire (6 hours by default). An expired score is not used — <b>stale data is more dangerous than no
@@ -843,12 +962,20 @@
 
             <h4 class="doc-h4">③ Decision: filter first, then compare price</h4>
             <p>
-              <b>Hard constraints</b> — untrusted, too slow, expired: pushed to the back as a last resort.<br />
+              <b>Hard constraints</b> — untrusted or expired: pushed to the back as a last resort.<br />
               <b>Effective cost</b> — the rest are sorted by <code>price ÷ quality</code>, ascending.
             </p>
             <p>
+              That "price" is not the number on the site's price list — it is <b>expected cost under your own usage</b>:<br />
+              · <b>Input share</b> — taken from your real traffic (input tokens ÷ all tokens); 90% until there is data<br />
+              · <b>Cache discount</b> — input price times <code>1 − hit rate × 0.9</code>. The hit rate is
+              <b>measured per request</b> by the gateway: cache reads ÷ (net input + cache reads + cache writes), with
+              cold starts (new session, prefix just changed, idle for a while) excluded<br />
+              · With few samples it is shrunk towards the global median, so one outlier cannot decide the ranking
+            </p>
+            <p>
               The "untrusted" part can be switched off with <b>Allow suspicious supplies</b> on the Probes page: they
-              then compete on effective cost instead of being pushed back. The TTFT limit is separate and unaffected.
+              then compete on effective cost instead of being pushed back.
               The switch also changes what Pricing calls "cheapest" and what the Overview concludes, so recommendations
               and real routing always use the same rule.
             </p>
@@ -876,6 +1003,14 @@
               that site's availability. A site with healthy probes but three consecutive real failures drops to 63%
               availability, turns "unstable", and is skipped on the next route.
             </p>
+            <p>
+              Successful real responses are also sampled for two objective signals: <b>empty answers</b> (200, clean
+              finish, not a single character) and <b>billing anomalies</b> — billed input, <b>after subtracting the cache
+              hits of that same request</b>, still more than 4× the estimated request body. Sites commonly count a long
+              system prompt in prompt_tokens; when it hits the cache every time it costs almost nothing, so only the
+              remainder matters. Connection-level failures are treated as a local network problem when two or more
+              sites fail at once, and are then not charged to the site.
+            </p>
 
             <h4 class="doc-h4">⑥ Collection: balance, bills, ratios, notices</h4>
             <p>
@@ -896,10 +1031,12 @@
 
             <h4 class="doc-h4">Deliberate trade-offs</h4>
             <p>
-              <b>Latency does not participate in ranking</b> — it does not share units with price, and fudging it into a
-              score distorts things. Instead there is an optional ceiling: slower than this is excluded, simple and predictable.<br />
-              <b>Cache hit rate is shown, not priced in</b> — the benefit depends on your usage. If your prefixes never
-              repeat the hit rate is 0 and that "discount" means nothing to you.<br />
+              <b>Latency becomes a relative score, never an absolute gate</b> — TTFT and speed are divided by the
+              same-model median and multiplied into quality instead of being added to price. Absolute values depend too
+              much on local links and prompt length; a fixed ceiling only kills good supplies.<br />
+              <b>Cache hit rate is priced in, from your own measurements and on the input side only</b> — it comes from
+              your per-request ledger, so it reflects how you actually use the API; if your prefixes never repeat, the
+              hit rate is 0 and the discount disappears by itself.<br />
               <b>Balance is left blank when unreadable</b> — most sites do not expose balance to API keys; the tool will
               not guess a number.
             </p>
@@ -930,7 +1067,8 @@
               so it counts as unmatched.<br />
               <b>Can I skip picking a group?</b> Yes, it falls back to the site's base price (ratio 1). That overstates the
               cost rather than understating it, so the comparison still points the right way.<br />
-              <b>Why is a result suspicious?</b> The probe found a fingerprint mismatch, truncated output or inflated usage.
+              <b>Why is a result suspicious?</b> The probe found a fingerprint mismatch, truncated output or a billing
+              anomaly (billed input still too high after subtracting the cache hits of the same request).
               Expand the row on the Probes page to see the raw response.<br />
               <b>Do I have to use the gateway?</b> No. Price comparison and probing work on their own. The gateway adds
               automatic site selection, one key for every site, and per-client usage.<br />
