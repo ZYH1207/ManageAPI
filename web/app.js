@@ -3174,23 +3174,14 @@ function renderBenchmark() {
     const refs = ids?.size || 0
     const source = String(entry.source || 'manual')
     const shown = entry.currency || 'USD'
-    // 只有「币种没法从站点声明推出来」时才给下拉：
-    //   1) 多个引用站点声明了不同币种 → 只能由人定
-    //   2) 条目与唯一声明不一致 → 数据已经脏了，得让人改
-    //   3) 手填条目且没人引用 → 没有任何外部来源可依
-    // 其余一律只读：没人引用的历史条目、以及站点还没声明的情况，都不该让人手改
-    const editable =
-      declared.size > 1 ||
-      (declared.size === 1 && !declared.has(shown)) ||
-      (declared.size === 0 && refs === 0 && source === 'manual')
+    // 只有一种情况给下拉：手填的条目、没有任何站引用它（比如刚手写的新价）。
+    // 其余一律只读——币种的真源是站点卡片上的「报价币种」，这里多一个下拉，
+    // 就等于让人在两张表上各改一次，早晚不一致。
+    // 脏数据（表里存的币种和站点声明不一致）也不靠人点下拉修：标黄提示，
+    // 下次「校准为原价」会按站点声明写回。
+    const editable = declared.size === 0 && refs === 0 && source === 'manual'
     if (editable) {
-      const why =
-        declared.size > 1
-          ? t('引用它的站点声明了不同币种（{list}），只能由你定一个', { list: [...declared].join(' / ') })
-          : declared.size === 1
-            ? t('这条基准价跟引用站点的声明不一致（站点说 {c}）', { c: [...declared][0] })
-            : t('手填条目，没有站点可依，币种由你定')
-      return `<select data-field="currency" style="width:70px" title="${esc(why)}">
+      return `<select data-field="currency" style="width:70px" title="${esc(t('手填条目，没有站点可依，币种由你定'))}">
           <option value="USD" ${shown !== 'CNY' ? 'selected' : ''}>USD</option>
           <option value="CNY" ${shown === 'CNY' ? 'selected' : ''}>CNY</option>
         </select>`
@@ -3198,8 +3189,13 @@ function renderBenchmark() {
     const names = [...(ids || [])]
       .map((id) => state.providers.find((p) => p.id === id)?.name || id)
       .join('、')
-    const title =
-      declared.size === 1
+    const mismatched = declared.size >= 1 && !declared.has(shown)
+    const title = mismatched
+      ? t(
+          '这条存的币种是 {shown}，但引用它的站点（{names}）声明的是 {c}。先点「校准为原价」按站点声明写回，别在这里手改。',
+          { shown, names, c: [...declared].join(' / ') },
+        )
+      : declared.size === 1
         ? t('跟站点声明一致：{names} 的报价币种就是它。要改去站点卡片改「报价币种」。', { names })
         : refs === 0
           ? t('没有供给引用它，币种沿用导入时的站点声明（{c}），不影响任何价格', { c: shown })
@@ -3207,8 +3203,9 @@ function renderBenchmark() {
               names,
               c: shown,
             })
-    const faint = refs === 0 ? ' style="color:var(--faint)"' : ''
-    return `<span class="mono"${faint} title="${esc(title)}">${esc(shown)}</span>`
+    const faint = refs === 0 ? 'color:var(--faint)' : ''
+    const warn = mismatched ? 'color:var(--warn);text-decoration:underline dotted' : ''
+    return `<span class="mono" style="${faint};${warn}" title="${esc(title)}">${esc(shown)}</span>`
   }
 
   // 来源值的展示友好化（来源是低频诊断信息，降为模型列的小字，省一列宽度）。
