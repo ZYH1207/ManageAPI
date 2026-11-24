@@ -96,12 +96,13 @@ console.log('[1] 三档在同一份数据下排出不同顺序')
 
 console.log('[2] 档位只改排序，不改准入')
 {
-  // 首字上限：超过就排到可用之后，任何档位都不能把「太慢」提到前面
-  const slow = ids('price', { maxTtftMs: 150 })
-  ok(slow === 'b,a,c,d', `首字上限 150ms 不误伤 100ms 的站，顺序不变（得到 ${slow}）`)
-  const allSlow = ids('quality', { maxTtftMs: 50 })
-  ok(allSlow === 'a,c,d,b', `上限 50ms 时全员超出，仍按档位排（质量 a/c → 便宜者先 → d → b，得到 ${allSlow}）`)
-  ok(rank('quality', { maxTtftMs: 50 }).every((row) => row.routable === false), '全员超出时没有一条可路由')
+  // 首字不再有绝对门槛（探针量 1k 级短请求，真实首字慢 3~4 倍，固定上限必误杀）：
+  // 快慢只通过质量里的体验分折算，任何档位都不会因为「慢」被踢出候选
+  const ignoredGate = rank('quality', { maxTtftMs: 50 })
+  ok(
+    ignoredGate.filter((row) => row.offer.id !== 'd').every((row) => row.routable === true),
+    '首字上限已删除：慢站照样可路由，只有不稳定的 D 不可路由',
+  )
   // 不可信站无论质量档多喜欢它，都排在可用之后
   for (const mode of ['price', 'value', 'quality']) {
     const rows = rank(mode)

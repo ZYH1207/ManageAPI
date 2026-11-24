@@ -1,4 +1,4 @@
-/** 验证延迟：展示 + 首字上限过滤。 */
+/** 验证延迟展示（首字/总耗时/可路由）。 */
 const BASE = 'http://127.0.0.1:4399'
 
 async function api(method, path, body) {
@@ -36,16 +36,12 @@ for (const [offerId, score] of Object.entries(state.scores)) {
 console.log('\n=== 不设上限 ===')
 console.log('选中:', await chat(key))
 
-console.log('\n=== 设首字上限 200ms ===')
-state = await api('PATCH', '/api/settings', { maxTtftMs: 200 })
-console.log('选中:', await chat(key))
-
 await new Promise((r) => setTimeout(r, 400))
 const log = await api('GET', '/api/gateway/routing?limit=1')
 console.log('\n候选（含延迟判定）：')
 for (const c of log.routing[0].candidates || []) {
   console.log(
     `  #${c.rank} ${String(c.providerName).padEnd(10)} 首字=${String(c.ttftMs ?? '—').padEnd(6)} ` +
-    `可路由=${c.routable} 太慢=${c.tooSlow}`,
+    `可路由=${c.routable}`,
   )
 }

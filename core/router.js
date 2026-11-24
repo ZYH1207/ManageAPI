@@ -11,7 +11,9 @@
  *
  * 但用户可以在探针页打开「放行可疑供给」：打开后探针判定不可信/过期的照样参与排序，
  * 由「价格 ÷ 质量」自己去权衡——质量差一半，成本就翻倍，贵不到哪里去才轮得到它。
- * 首字上限是独立的显式设置，不受这个开关影响。
+ * 快慢不是准入门槛：首字与速度按「同模型在售供给的中位」折算成体验分乘进质量，
+ * 慢的站照样能参选，只是有效成本被除得更高（固定毫秒上限会误杀——探针量的是
+ * 1k 级短请求，真实首字要慢 3~4 倍）。
  *
  * 全都不可用时不做硬拒绝——按排序键排下去试（routable=false 的留在候选尾部），
  * 并在响应头打 X-ManageAPI-Degraded: 1，让客户端知道这一单是「硬试」出来的。
@@ -52,8 +54,7 @@ export function selectCandidates({
   stickinessPct = 0.05,
 }) {
   const key = normalizeModelKey(model)
-  const maxTtftMs = Number(settings?.maxTtftMs) || 0
-  // 用户开关：探针说可疑的也让它正常参与排序（首字上限仍然独立生效）
+  // 用户开关：探针说可疑的也让它正常参与排序（快慢不设门槛，由体验分折算）
   const allowUntrusted = Boolean(settings?.allowUntrusted)
   // 排序偏好（价格 / 性价比 / 质量）：只改排序键，不改上面两条准入判定
   const decisionMode = normalizeDecisionMode(settings?.decisionMode)
@@ -100,14 +101,10 @@ export function selectCandidates({
     // 首字相对值（同轮「比最快的那条慢多少毫秒」）：绝对值含本机链路，
     // 打平链优先用它，两条都有相对值时才比相对值，否则回落到绝对值
     const ttftRelMs = score?.ttftRelMs ?? null
-    // 太慢的直接排除，但仍保留在候选列表里——决策日志要能看出「为什么没选它」
-    const tooSlow = maxTtftMs > 0 && typeof ttftMs === 'number' && ttftMs > maxTtftMs
-
     // 把「为什么不可用」拆成人话，决策页直接显示。
     // 注意口径：fingerprint/truncation/billingRate 都是「正常比例」（未截断/未虚报），
     // 给用户看的要换算成异常比例——此前直接把 80% 未截断显示成「截断 80%」，意思完全反了
     const reasons = []
-    if (tooSlow) reasons.push('首字超限')
     // 冷却中（额度不足/限流/模型不在分组）由状态标签单独表达，不塞进 reasons——
     // 决策页那一格已经显示「额度不足 · 冷却中」，再拼一遍等于同一句话说两次
     if (score?.stale) reasons.push('评分过期')
@@ -151,8 +148,7 @@ export function selectCandidates({
       qualityKnown: quality !== null && quality !== undefined,
       // probeOk 是探针的原始判定；routable 是「这一单会不会考虑它」
       probeOk: isRoutable(score),
-      routable: (allowUntrusted || isRoutable(score)) && !tooSlow,
-      tooSlow,
+      routable: allowUntrusted || isRoutable(score),
       // effective 是展示口径（人民币）；排序用 effectiveUsd，见上
       effective: effectiveCost(price, quality),
       effectiveUsd: effectiveCost(priceUsd, quality),
@@ -408,7 +404,6 @@ export function explain(candidates) {
     sortValue: c.sortValue,
     routable: c.routable,
     probeOk: c.probeOk,
-    tooSlow: Boolean(c.tooSlow),
     ttftMs: c.ttftMs,
     tps: c.tps,
     trafficTtftMs: c.trafficTtftMs ?? null,

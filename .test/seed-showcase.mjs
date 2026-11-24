@@ -337,7 +337,6 @@ const db = {
     probeTimeoutMs: 45000,
     probeIntervalMinutes: 0,
     scoreMaxAgeHours: 6,
-    maxTtftMs: 0,
     monitorIntervalMinutes: 30,
     balanceWarnCny: 50,
     gateway: {

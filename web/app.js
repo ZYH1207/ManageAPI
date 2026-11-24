@@ -2360,14 +2360,8 @@ function renderPricing() {
     const isCollapsed = collapsedPanels.has(panelKey)
     const rows = group.rows.map((row) => {
       const score = state.scores[row.offerId]
-      const maxTtft = Number(state.settings.maxTtftMs) || 0
-      const tooSlow =
-        maxTtft > 0 && typeof score?.ttftMs === 'number' && score.ttftMs > maxTtft
-      const badge = tooSlow
-        ? ' <span class="badge warn">超时</span>'
-        : score?.probeTrusted === false
-          ? ' <span class="badge warn">可疑</span>'
-          : ''
+      const badge =
+        score?.probeTrusted === false ? ' <span class="badge warn">可疑</span>' : ''
       const cacheCell =
         row.cacheHitRate === null || row.cacheHitRate === undefined
           ? '—'
@@ -2672,7 +2666,6 @@ function blockedLabel(blocked) {
 }
 
 function decisionState(candidate) {
-  if (candidate.tooSlow) return { label: t('太慢'), cls: 'warn' }
   // 探针说可疑，但因为「放行可疑供给」开着，它照样参与选站——标出来别让人误以为是健康的
   const passed = candidate.routable && candidate.probeOk === false
   const tag = (label, cls) => ({
@@ -2935,7 +2928,7 @@ function renderDecision() {
           ? `<div class="alert" style="margin-top:10px;background:var(--warn-soft);border-color:var(--warn-border)">
                <div>
                  <div class="name">已放行：可疑的站会正常参与选站</div>
-                 <div class="desc">它们按当前「决策侧重」排序——质量档下会先比质量；价格档下它们可能排到最前面。首字上限仍然独立生效。如果你更在意输出是否可信，把这个开关关掉。</div>
+                 <div class="desc">它们按当前「决策侧重」排序——质量档下会先比质量；价格档下它们可能排到最前面。快慢由质量里的体验分折算，不受这个开关影响。如果你更在意输出是否可信，把这个开关关掉。</div>
                </div>
              </div>`
           : ''
@@ -3072,7 +3065,6 @@ function renderProbes() {
 
   const interval = Number(state.settings.probeIntervalMinutes) || 0
   const maxAge = Number(state.settings.scoreMaxAgeHours) || 6
-  const maxTtft = Number(state.settings.maxTtftMs) || 0
   const intervalOptions = [
     [0, '关闭'],
     [30, '30 分钟'],
@@ -3101,10 +3093,7 @@ function renderProbes() {
         <label class="field-inline">评分有效期
           <input id="score-age" type="number" min="1" max="72" value="${maxAge}" style="width:68px" /> 小时
         </label>
-        <label class="field-inline">首字上限
-          <input id="max-ttft" type="number" min="0" max="60000" step="500" value="${maxTtft}" style="width:82px" /> ms
-        </label>
-        <span class="hint" style="margin:0">0 = 不限；超过上限的供给不参与路由</span>
+        <span class="hint" style="margin:0">首字快慢不设上限，统一由「质量」里的体验分按同模型中位折算</span>
       </div>
       <div class="hint" style="margin-top:8px">
         有效期决定「允许错过几轮探测」：最近一次有效证据（探针或真实调用）超过它就判过期。
@@ -6155,18 +6144,6 @@ document.addEventListener('change', async (event) => {
       state = await api('PATCH', '/api/settings', { scoreMaxAgeHours: hours })
       render()
       toast(`评分有效期改为 ${hours} 小时`)
-    } catch (error) {
-      toast(error.message, true)
-    }
-    return
-  }
-
-  if (input.id === 'max-ttft') {
-    const ms = Number(input.value) || 0
-    try {
-      state = await api('PATCH', '/api/settings', { maxTtftMs: ms })
-      render()
-      toast(ms > 0 ? `首字超过 ${ms}ms 的供给将被跳过` : '已取消首字延迟限制')
     } catch (error) {
       toast(error.message, true)
     }

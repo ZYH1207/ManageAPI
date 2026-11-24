@@ -49,13 +49,11 @@ export function emptyDb() {
       probeIntervalMinutes: 60,
       // 超过这个小时数的探测结果视为过期，不再参与路由
       scoreMaxAgeHours: 6,
-      // 首字延迟上限（毫秒），0 = 不限
-      maxTtftMs: 0,
       // 放行可疑供给：默认 false，探针判定不可信/过期的会被排到后面。
       // 打开后它们按有效成本正常参与竞争——风险由用户自己承担。
       allowUntrusted: false,
       // 决策侧重（排序偏好）：'price' 名义单价 | 'value' 性价比（有效成本）| 'quality' 质量。
-      // 只改「谁排前面」，不改准入——准入仍由 allowUntrusted 与 maxTtftMs 决定。
+      // 只改「谁排前面」，不改准入——准入仍由 allowUntrusted 决定。
       // 默认 value，等于此前唯一的行为，老库升级后排序结果不变。
       decisionMode: 'value',
       // 成本口径（期望成本）：把「输入占比」与「缓存命中率」代入混合价。

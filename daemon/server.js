@@ -512,19 +512,17 @@ async function buildState({ light = false, panel = false } = {}) {
   // 输入占比来自 usage.json（异步读盘）：后台刷新，不阻塞这次渲染
   void refreshUsageShare()
   const scoreMap = scoresFor(db)
-  const maxTtftMs = Number(db.settings.maxTtftMs) || 0
   // 用户开关：放行可疑供给。打开后探针判定不可信/过期的照样参与排序，
   // 由「有效成本 = 价格 ÷ 质量」自己去权衡——质量差的价格会被除上去。
   const allowUntrusted = Boolean(db.settings.allowUntrusted)
 
-  // 探针口径的可信度：没探过的保留（否则新用户永远看不到结论），
-  // 不可信、或超过首字上限的算不可信
+  // 探针口径的可信度：没探过的保留（否则新用户永远看不到结论），不可信的算不可信。
+  // 快慢不在这里判——首字/速度由体验分按同模型中位折算，绝对毫秒门槛已被删掉
+  // （探针量的是 1k 级短请求，真实首字要比它慢 3~4 倍，任何固定上限都会误杀）。
   const probeTrusted = (offerId) => {
     const score = scoreMap.get(offerId)
     if (!score || score.samples === 0) return true
-    if (!isRoutable(score)) return false
-    if (maxTtftMs > 0 && typeof score.ttftMs === 'number' && score.ttftMs > maxTtftMs) return false
-    return true
+    return isRoutable(score)
   }
   // 实际参与推荐/排序的口径：开关打开就全放行
   const isTrusted = (offerId) => allowUntrusted || probeTrusted(offerId)
@@ -770,7 +768,7 @@ function applyFxSettings(db, body) {
   }
 }
 
-/** 探针节奏与首字上限（含「间隔不能超过有效期一半」的自洽校验）。 */
+/** 探针节奏（含「间隔不能超过有效期一半」的自洽校验）。 */
 function applyProbeSettings(db, body) {
   if (body.probeIntervalMinutes !== undefined) {
     const v = Number(body.probeIntervalMinutes)
@@ -796,11 +794,6 @@ function applyProbeSettings(db, body) {
         )
       }
     }
-  }
-  if (body.maxTtftMs !== undefined) {
-    const v = Number(body.maxTtftMs)
-    if (!Number.isFinite(v) || v < 0) throw new HttpError(400, '首字延迟上限不能为负')
-    db.settings.maxTtftMs = v
   }
 }
 
