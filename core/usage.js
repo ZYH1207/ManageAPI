@@ -147,7 +147,23 @@ function finalize(row) {
 /**
  * 汇总最近 N 天。返回按天、按 Key、按站点、按模型的四个切面。
  */
-export async function usageSummary({ days = 30 } = {}) {
+/** 插件推送里「这台网关自己」的 providerId 形态：manage-api、dsh-manage-api、manageapi… */
+const GATEWAY_ALIAS_RE = /^(?:dsh[-_])?manage[-_]?api(?:\/|$)/i
+
+/** 用量复合键的分隔符 */
+/**
+ * 用量汇总。
+ *
+ * source：
+ *   'gateway'（默认）—— 只算走 ManageAPI 网关的请求，网页端的口径
+ *   'dsh'            —— 只算 DSH 插件推来的「直连渠道」用量（没走网关）
+ *   'all'            —— 两者相加
+ *
+ * 为什么分开：这是网关的控制台，「按站点」表是拿来比站点单价与可用性的；
+ * DSH 直连渠道没有供给、没有价格，混进来既不参与比价，还会让人误以为
+ * 凭空多了几个站。插件端要看自己的出口，用 source=dsh 单独取。
+ */
+export async function usageSummary({ days = 30, source = 'gateway' } = {}) {
   const data = await readUsage()
   const range = recentDays(days)
   const rangeSet = new Set(range)
@@ -164,6 +180,14 @@ export async function usageSummary({ days = 30 } = {}) {
     for (const [composite, row] of Object.entries(bucket)) {
       // 复合键 keyId|providerId|model，model 可能含 |——统一走 parseUsageComposite
       const { keyId, providerId, model } = parseUsageComposite(composite)
+      const fromPluginKey = keyId === 'dsh-plugin' || String(providerId).startsWith('dsh:')
+      // 插件把「走网关」的调用也推过一次，键名是 dsh:<这台网关的名字>，
+      // 那是网关自己已经记过的行，两个口径里都不能再算一遍。
+      const gatewayAlias = fromPluginKey && GATEWAY_ALIAS_RE.test(String(providerId).replace(/^dsh:/, ''))
+      const fromPlugin = fromPluginKey && !gatewayAlias
+      if (gatewayAlias) continue
+      if (source === 'gateway' && fromPlugin) continue
+      if (source === 'dsh' && !fromPlugin) continue
       addRow(totals, row)
       addRow(dayTotal, row)
       if (!byKey[keyId]) byKey[keyId] = emptyRow()

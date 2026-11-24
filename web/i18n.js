@@ -564,6 +564,8 @@ const EN = {
   '网关 Key': 'Gateway key',
 
   // ---- 用量
+  '这里只统计走 ManageAPI 网关的请求。DSH 插件直连渠道的用量记在插件自己那边，不混进这张站点表——它没有供给也没有价格，混进来只会让「按站点」多出几个不存在的站。':
+    'Only requests through the ManageAPI gateway are counted here. DSH plugin direct-channel usage is tracked on the plugin side and stays out of this table — those channels have no offers or prices, so counting them would just invent extra “stations”.',
   '按天': 'By day',
   '按 Key': 'By key',
   '按模型': 'By model',

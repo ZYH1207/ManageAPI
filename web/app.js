@@ -3036,6 +3036,7 @@ function renderUsage() {
 
   view.innerHTML = `
     ${seg}
+    <div class="hint" style="margin-top:10px">${t('这里只统计走 ManageAPI 网关的请求。DSH 插件直连渠道的用量记在插件自己那边，不混进这张站点表——它没有供给也没有价格，混进来只会让「按站点」多出几个不存在的站。')}</div>
     <div class="stats" style="margin-top:16px">
       <div class="stat"><div class="k">请求数</div><div class="v">${totals.requests}</div></div>
       <div class="stat"><div class="k">输入 token</div><div class="v">${formatTokens(totals.input)}</div></div>

@@ -627,7 +627,10 @@ route('POST', /^\/api\/ingest\/usage$/, async (ctx) => {
   const provider = String(body.provider || '').trim()
   const model = String(body.model || '').trim()
   if (!provider || !model) throw new HttpError(400, 'provider 与 model 必填')
-  if (provider === 'manage-api' || provider.startsWith('manage-api/')) {
+  // 走网关的调用网关自己已经记过一次，插件再推一遍就是重复计数。
+  // DSH 侧给这个网关起的名字不一定是 manage-api，实测有 dsh-manage-api，
+  // 所以按「去掉 dsh- 前缀后是不是 manage-api」来判断。
+  if (/^(?:dsh[-_])?manage[-_]?api(?:\/|$)/i.test(provider)) {
     return { ok: true, skipped: 'gateway-managed' }
   }
   const count = (value) => {
@@ -3010,7 +3013,11 @@ route('POST', /^\/api\/gateway\/keys\/([\w-]+)\/rotate$/, async (ctx) => {
 
 route('GET', /^\/api\/usage$/, async (ctx) => {
   const days = clampInt(ctx.query.get('days'), 1, 365, 30)
-  return { usage: await usageSummary({ days }) }
+  // 默认只看网关出口；插件端（DSH 直连渠道）要自己的账，用 source=dsh。
+  const source = ['gateway', 'dsh', 'all'].includes(ctx.query.get('source'))
+    ? ctx.query.get('source')
+    : 'gateway'
+  return { usage: await usageSummary({ days, source }), source }
 })
 
 route('PATCH', /^\/api\/gateway$/, async (ctx) => {
