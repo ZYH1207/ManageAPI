@@ -194,6 +194,13 @@ try {
     ok((row.ok || 0) === 0, `也不算站点成功样本（ok=${row.ok || 0}）`)
     const last = (db.routing || []).filter((r) => r.model === 'm-slow').at(-1)
     ok(last?.outcome === 'client-aborted', `路由日志记 client-aborted（实际 ${last?.outcome}）`)
+    // 断流不等于「白跑」：首字已经等到了，这个数字对「20 万 token 的对话要等多久」
+    // 是最有价值的证据。我们自己这轮长对话几乎全是断流，扔掉它们等于长对话永远没实测。
+    const speedRows = row.speed?.rows || []
+    ok(speedRows.length === 1, `断流也留下 1 条首字样本（rows=${speedRows.length}）`)
+    ok(speedRows[0]?.aborted === true, '样本标记为断流')
+    ok(speedRows[0]?.ttftMs > 0, `首字是真实测到的（${speedRows[0]?.ttftMs}ms）`)
+    ok(speedRows[0]?.tps === null, '没有解码完就不编一个速度出来（tps=null）')
   }
   {
     const usage = JSON.parse(await readFile(join(HOME, 'usage.json'), 'utf8'))

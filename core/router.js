@@ -25,6 +25,7 @@ import { isRoutable, effectiveCost, THRESHOLDS, NO_EVIDENCE_QUALITY } from './sc
 import { experienceScores } from './experience.js'
 import { normalizeModelKey } from './inventory.js'
 import { normalizeDecisionMode, compareByMode, sortValueOf } from './decision-mode.js'
+import { bucketLabel } from './speed-profile.js'
 
 const INFINITY_COST = Number.POSITIVE_INFINITY
 
@@ -96,6 +97,14 @@ export function selectCandidates({
     // 短请求，实测同一站同一时刻真实首字要慢 3~4 倍，所以两者分开走两档尺子。
     const trafficTtftMs = Number.isFinite(Number(score?.trafficTtftMs)) ? Number(score.trafficTtftMs) : null
     const trafficTps = Number.isFinite(Number(score?.trafficTps)) ? Number(score.trafficTps) : null
+    // 这组实测数字取自哪一档 prompt：null 表示「没有与本次请求同档的样本，退回了全档」，
+    // 那种情况下体验分不给超额（见 experience.js），界面上也要说清「未同档」
+    const trafficTtftBucket = score?.trafficTtftBucket ?? null
+    const trafficTtftMatched = score?.trafficTtftMatched !== false
+    const trafficSpeedByBucket = score?.trafficSpeedByBucket ?? null
+    const trafficSpeedSamples = Number.isFinite(Number(score?.trafficSpeedSamples))
+      ? Number(score.trafficSpeedSamples)
+      : 0
     // 输出速度（解码阶段 tok/s）：体验分的另一半，和首字一起构成「快不快」
     const tps = score?.tps ?? null
     // 首字相对值（同轮「比最快的那条慢多少毫秒」）：绝对值含本机链路，
@@ -168,6 +177,10 @@ export function selectCandidates({
       tps,
       trafficTtftMs,
       trafficTps,
+      trafficTtftBucket,
+      trafficTtftMatched,
+      trafficSpeedByBucket,
+      trafficSpeedSamples,
       ttftRelMs,
     }
   })
@@ -186,6 +199,12 @@ export function selectCandidates({
           // 真实是十几万 token 长前缀，量纲不同，混着比没有意义）
           trafficTtftMs: row.trafficTtftMs ?? null,
           trafficTps: row.trafficTps ?? null,
+          // 这一批样本是否「与本次请求同档」：不同档就不许拿它给超额
+          trafficTtftBucket: row.trafficTtftBucket ?? null,
+          trafficTtftMatched: row.trafficTtftMatched !== false,
+          // 这条实测背后有几条样本：一两条样本只说明「这一次」，experience.js 会按
+          // 证据量把偏差往 1.00 收缩
+          trafficSpeedSamples: row.trafficSpeedSamples ?? null,
         })),
       )
     : { map: new Map(), baseline: null }
@@ -201,6 +220,14 @@ export function selectCandidates({
       // 'none' = 没测到，按中位水平
       tier: exp.tier || 'probe',
       capped: Boolean(exp.capped),
+      // 实测取自哪一档前缀（'short' 短前缀 / 'mid' 中前缀 / 'long' 长前缀）；
+      // bucketMatched=false 表示这批样本跟本次请求不是一个大小，界面要写「未同档」
+      bucket: exp.bucket ?? null,
+      bucketLabel: exp.bucket ? bucketLabel(exp.bucket) : null,
+      bucketMatched: exp.bucketMatched !== false,
+      // 这条实测背后有几条样本、偏差按多大比例计入（证据少时会往 1.00 收缩）
+      confidence: exp.confidence ?? 1,
+      samples: exp.samples ?? null,
       ttftMs: exp.ttftMs ?? null,
       tps: exp.tps ?? null,
       baseline: exp.baseline || expBaseline,
@@ -408,6 +435,11 @@ export function explain(candidates) {
     tps: c.tps,
     trafficTtftMs: c.trafficTtftMs ?? null,
     trafficTps: c.trafficTps ?? null,
+    // 实测口径落在哪一档前缀：路由日志里带上它，事后才能解释「当时为什么觉得它快」
+    trafficTtftBucket: c.trafficTtftBucket ?? null,
+    trafficTtftMatched: c.trafficTtftMatched !== false,
+    trafficSpeedSamples: c.trafficSpeedSamples ?? 0,
+    trafficSpeedByBucket: c.trafficSpeedByBucket ?? null,
     ttftRelMs: c.ttftRelMs ?? null,
     status: c.status,
     samples: c.samples,

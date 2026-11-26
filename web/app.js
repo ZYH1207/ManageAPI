@@ -105,7 +105,7 @@ function cacheHitTitle(x) {
   }
   if (x?.cacheHitWarmSamples) parts.push(`${x.cacheHitWarmSamples} ${t('单有效样本')}`)
   if (x?.cacheHitColdSamples) parts.push(`${t('剔除冷启动')} ${x.cacheHitColdSamples} ${t('单')}`)
-  if (x?.cacheHitLowConfidence) parts.push(t('样本偏少，已向全局中位收缩，别当精确值'))
+  if (x?.cacheHitLowConfidence) parts.push(t('样本偏少，已向全局水平收缩，别当精确值'))
   if (x?.cacheHitSource === 'actual' && !parts.length) parts.push(t('按逐单记账加权算出的实际命中率'))
   return parts.join(' · ')
 }
@@ -2764,7 +2764,63 @@ function renderDecision() {
     gate: '准入',
     manual: '手动顺序',
   }
-  // 体验分拆解：1.00 = 该模型的中位水平（不是「及格线」，也不封顶）。
+  // 前缀档：首字不是站点常数，是「这次要读多少前缀」的函数。同一供给在 5 万 token
+  // 和 20 万 token 上的首字能差 3~6 倍，所以只能同档比——跨档比出来的「谁快谁慢」是假的。
+  const PROMPT_BUCKET_LABEL = { short: '短对话', mid: '中等对话', long: '长对话' }
+
+  /**
+   * 哪一档的样本最多。没有用户明确选择时用它当默认：
+   * 长对话是最想看的，但目前样本往往全在中对话（你自己发出去的多是 90k 上下），
+   * 默认停在「一个数都没有」的那一档等于白开这一页。
+   */
+  function bestDataBucketKey() {
+    const total = { short: 0, mid: 0, long: 0 }
+    for (const decision of state.decisions || []) {
+      for (const candidate of decision.candidates || []) {
+        const byBucket = candidate.trafficSpeedByBucket
+        if (!byBucket || typeof byBucket !== 'object') continue
+        for (const key of ['short', 'mid', 'long']) {
+          const n = Number(byBucket[key]?.samples)
+          if (Number.isFinite(n) && n > 0) total[key] += n
+        }
+      }
+    }
+    let best = 'mid'
+    let bestSamples = 0
+    for (const key of ['short', 'mid', 'long']) {
+      if (total[key] > bestSamples) {
+        best = key
+        bestSamples = total[key]
+      }
+    }
+    return best
+  }
+
+  /** 决策页当前在看的对话长度档（上面的分段控件改它，两列速度都跟着换）。 */
+  function selectedBucketKey() {
+    return decisionView.speedBucket || bestDataBucketKey()
+  }
+
+  function bucketName(key) {
+    const label = PROMPT_BUCKET_LABEL[key]
+    return label ? t(label) : ''
+  }
+
+  // 「短 5.3s / 中 16.7s / 长 34.9s」——一眼看出这家站越聊越慢的陡度
+  function bucketSummaryText(byBucket) {
+    if (!byBucket || typeof byBucket !== 'object') return ''
+    const parts = []
+    for (const key of ['short', 'mid', 'long']) {
+      const stat = byBucket[key]
+      const ttft = Number(stat?.ttftMs)
+      const label = PROMPT_BUCKET_LABEL[key]
+      if (!label || !Number.isFinite(ttft) || ttft <= 0) continue
+      parts.push(`${t(label)} ${(ttft / 1000).toFixed(1)}s`)
+    }
+    return parts.join(' / ')
+  }
+
+  // 快慢拆解：1.00 = 该模型的通常水平（不是「及格线」，也不封顶）。
   // 倍数写在这里是因为用户看不到「首字 5898ms 到底算快算慢」——
   // 尺子是同一模型的其他站，换个模型就换一批尺子。
   function experienceTitle(candidate) {
@@ -2772,22 +2828,34 @@ function renderDecision() {
     if (!d || !d.baseline) return ''
     const tier = d.tier === 'real' ? d.baseline.real || {} : d.baseline.probe || d.baseline
     const parts = []
-    if (tier.ttft) parts.push(`${t('同模型首字中位')} ${Math.round(tier.ttft)}ms`)
-    if (tier.tps) parts.push(`${t('同模型速度中位')} ${tier.tps.toFixed(1)} tok/s`)
-    if (d.source === 'none') return t('没测到首字与速度，按中位水平 1.00 计（不奖不罚）')
-    const scale = d.tier === 'real'
-      ? t('这一档是真实流量（十几万 token 的长前缀），不是探针的短请求')
-      : t('这一档只有探针数据（1k 级短请求），只能证明「不慢」，所以最高 1.00')
-    return `${t('体验分 = 首字分 × 速度分的几何平均；1.00 = 该档的中位水平')}：` +
+    if (tier.ttft) parts.push(`${t('同类站首字一般')} ${Math.round(tier.ttft)}ms`)
+    if (tier.tps) parts.push(`${t('同类站出字一般')} ${tier.tps.toFixed(1)} tok/s`)
+    if (d.source === 'none') return t('没测到首字与速度，按通常水平 1.00 计（不奖不罚）')
+    let scale
+    if (d.tier === 'real') {
+      const bucket = bucketName(d.bucket || candidate.trafficTtftBucket)
+      scale = d.bucketMatched === false
+        ? t('这一档是真实流量，但还没有「同档」样本：先按全部实测算，且不给超额——不同前缀长度之间不可比')
+        : `${t('这一档是真实流量（你自己请求的实测值）')}${bucket ? `：${bucket}` : ''}`
+    } else {
+      scale = t('这一档只有探针数据（1k 级短请求），只能证明「不慢」，所以最高 1.00')
+    }
+    const rows = bucketSummaryText(candidate.trafficSpeedByBucket)
+    return `${t('快慢 = 首字分 × 速度分的几何平均；1.00 = 该档的通常水平')}：` +
       `${t('首字分')} ${d.ttftScore.toFixed(2)} × ${t('速度分')} ${d.tpsScore.toFixed(2)}` +
       (parts.length ? `（${parts.join(' · ')}）` : '') +
       `\n${scale}` +
-      (d.capped ? `\n${t('探针档不给超额，已压回 1.00')}` : '')
+      (rows ? `\n${t('各档首字一般')}：${rows}` : '') +
+      (d.capped ? `\n${d.tier === 'real' ? t('未同档，不给超额，已压回 1.00') : t('探针档不给超额，已压回 1.00')}` : '') +
+      // 样本太少时这个分被往 1.00 拉过：不说清楚，用户会觉得「明明测出来慢，怎么还是 1.06」
+      (Number.isFinite(d.confidence) && d.confidence < 1 && d.samples
+        ? `\n${t('实测只有 {n} 条样本，偏差按 {pct}% 计入', { n: d.samples, pct: Math.round(d.confidence * 100) })}`
+        : '')
   }
 
   // 质量列三行、全部正文色，不用彩色也不用悬浮提示：
   //   2.38
-  //   可靠度 0.97 × 体验 2.46
+  //   可靠度 0.97 × 快慢 2.46
   //   61 样本
   function qualityCell(candidate) {
     if (candidate.quality === null || candidate.quality === undefined) {
@@ -2795,14 +2863,16 @@ function renderDecision() {
     }
     const exp = Number(candidate.experience)
     const rel = capturedReliability(candidate)
-    // 体验分后面标一档：实测（有真实流量）/ 探针（只有短请求）/ 压回（探针不给超额）
+    // 快慢后面标一档：实测（有真实流量）/ 探针（只有短请求）/ 压回（探针不给超额）
     const detail = candidate.experienceDetail || {}
-    const tierMark = detail.tier === 'real' ? t('实测') : t('探针')
+    const tierMark = detail.tier === 'real'
+      ? (detail.bucketMatched === false ? t('实测·未同档') : t('实测'))
+      : t('探针')
     const cappedMark = detail.capped ? ` ${t('压回')}` : ''
     const expText = Number.isFinite(exp)
       ? (Math.abs(exp - 1) > 0.005
-          ? `${t('体验')} ${exp.toFixed(2)}${detail.tier === 'real' ? '' : `（${tierMark}）`}`
-          : `${t('中位水平')}（${tierMark}${cappedMark}）`)
+          ? `${t('快慢')} ${exp.toFixed(2)}${detail.tier === 'real' ? '' : `（${tierMark}）`}`
+          : `${t('通常水平')}（${tierMark}${cappedMark}）`)
       : ''
     const factors = `${t('可靠度')} ${rel.toFixed(2)}` + (expText ? ` × ${expText}` : '')
     return `<div class="q-val">${candidate.quality.toFixed(2)}</div>` +
@@ -2810,35 +2880,124 @@ function renderDecision() {
       (Number.isFinite(candidate.samples) ? `<div class="q-meta">${candidate.samples} ${t('样本')}</div>` : '')
   }
 
-  // 首字列：有真实流量就显示真实值（这才是你实际会看到的首字），
-  // 并在第二行标出探针值做对照——探针是 1k 级短请求，比真实值快 3~4 倍。
-  function ttftCell(candidate) {
+  // 首字不是一个站点常数，是对话长度的函数：同一家站短对话 5.4 秒、长对话 9.2 秒是常态
+  // （实测 RapidApi 50–120k 档 5.3s → 200k 以上 34.9s）。所以这两列只显示「当前选中
+  // 那个长度档」的数字，档位由上面的分段控件决定——不分档就把两档混在一列里比，等于
+  // 拿苹果比橘子。这一档没样本时退回（全档实测 → 探针），并且把「退回了」明写在第二行。
+  function speedPick(candidate) {
     const detail = candidate.experienceDetail || {}
-    const real = detail.tier === 'real' && Number.isFinite(Number(detail.ttftMs))
-    const lines = []
-    if (real) {
-      const tps = Number.isFinite(Number(detail.tps)) ? `${detail.tps.toFixed(1)} tok/s` : ''
-      lines.push(`<div title="${t('真实流量实测：你自己请求的真实首字')}">${Math.round(detail.ttftMs)}ms</div>`)
-      if (tps) lines.push(`<div class="sub">${tps}</div>`)
-      if (candidate.ttftMs !== null && candidate.ttftMs !== undefined) {
-        lines.push(`<div class="sub" title="${t('探针是 1k 级短请求，比真实请求快很多；这里只做对照')}">${t('探针')} ${candidate.ttftMs}ms</div>`)
+    const key = selectedBucketKey()
+    const stat = (candidate.trafficSpeedByBucket || {})[key]
+    const bucketTtft = Number(stat?.ttftMs)
+    if (Number.isFinite(bucketTtft) && bucketTtft > 0) {
+      const tps = Number(stat?.tps)
+      return {
+        source: 'bucket',
+        bucket: key,
+        ttftMs: bucketTtft,
+        tps: Number.isFinite(tps) && tps > 0 ? tps : null,
+        samples: Number(stat?.samples) || 0,
+        relMs: null,
       }
-      return lines.join('')
     }
-    if (candidate.ttftMs === null || candidate.ttftMs === undefined) {
-      return '<div style="color:var(--faint)">—</div>'
+    const realTtft = Number(detail.ttftMs)
+    if (detail.tier === 'real' && Number.isFinite(realTtft) && realTtft > 0) {
+      const tps = Number(detail.tps)
+      return {
+        source: 'real-all',
+        bucket: detail.bucket || candidate.trafficTtftBucket || null,
+        ttftMs: realTtft,
+        tps: Number.isFinite(tps) && tps > 0 ? tps : null,
+        samples: Number(candidate.trafficSpeedSamples) || 0,
+        relMs: null,
+      }
     }
-    if (typeof candidate.tps === 'number') {
-      lines.push(`<div class="sub" title="${t('输出速度：扣掉首字之后的解码阶段每秒 token 数')}">${candidate.tps.toFixed(1)} tok/s</div>`)
+    const probeTtft = Number(candidate.ttftMs)
+    if (Number.isFinite(probeTtft) && probeTtft > 0) {
+      return {
+        source: 'probe',
+        bucket: null,
+        ttftMs: probeTtft,
+        tps: Number.isFinite(Number(candidate.tps)) && Number(candidate.tps) > 0 ? Number(candidate.tps) : null,
+        samples: 0,
+        relMs: typeof candidate.ttftRelMs === 'number' ? candidate.ttftRelMs : null,
+      }
     }
-    lines.push(`${candidate.ttftMs}ms`)
-    if (typeof candidate.ttftRelMs === 'number') {
-      lines.push(`<div class="sub" title="${t('同一轮探针里比最快的那条慢多少：已扣掉本机带宽/链路的公共延迟，跨轮可比；绝对毫秒只在本机网络稳定时有意义')}">+${candidate.ttftRelMs}ms</div>`)
+    return null
+  }
+
+  /** 毫秒 → 「9.2 秒」/「820ms」。秒比毫秒好读，但短于 1 秒还是毫秒精确。 */
+  function durationText(ms) {
+    const n = Number(ms)
+    if (!Number.isFinite(n) || n <= 0) return '—'
+    return n >= 1000 ? `${(n / 1000).toFixed(1)} ${t('秒')}` : `${Math.round(n)}ms`
+  }
+
+  /** 同一家站「长对话比短对话慢多少倍」；两档都有样本才算得出来。 */
+  function slowdownRatio(byBucket) {
+    if (!byBucket || typeof byBucket !== 'object') return null
+    const short = Number(byBucket.short?.ttftMs)
+    const long = Number(byBucket.long?.ttftMs)
+    if (!Number.isFinite(short) || short <= 0) return null
+    if (!Number.isFinite(long) || long <= 0) return null
+    return long / short
+  }
+
+  // 这两个来源都要在第二行说清楚是哪来的数：真实流量的、退回全档的、还是探针的
+  function speedSourceLine(pick) {
+    const bucket = pick.bucket ? bucketName(pick.bucket) : ''
+    if (pick.source === 'bucket') {
+      return `${pick.samples} ${t('次实测请求')}${bucket ? ` · ${bucket}` : ''}`
+    }
+    if (pick.source === 'real-all') {
+      return `${t('实测·未同档')}${bucket ? ` · ${bucket}` : ''}`
+    }
+    return `${t('探针')} · ${t('只有短请求测试')}`
+  }
+
+  // 首字列（TTFS = 等到第一个字花了多久）
+  function ttfsCell(candidate) {
+    const pick = speedPick(candidate)
+    if (!pick) {
+      return `<div style="color:var(--faint)" title="${t('既没有真实流量样本，也没有探针结果')}">—</div>`
+    }
+    const title =
+      pick.source === 'probe'
+        ? t('探针是 1k 级短请求，只能证明「这个站不慢」；真实长对话的首字会比它慢很多')
+        : t('真实流量实测：你自己发出去的请求真正等了多久才等到第一个字')
+    // 三档全貌放悬浮：平时只显示选中的那一档数字，想细看再悬停，不占列宽
+    const summary = bucketSummaryText(candidate.trafficSpeedByBucket)
+    const fullTitle =
+      pick.source === 'probe' || !summary ? title : `${title}\n${t('各档首字一般')}：${summary}`
+    const lines = [`<div title="${fullTitle}">${durationText(pick.ttftMs)}</div>`]
+    lines.push(`<div class="sub">${speedSourceLine(pick)}</div>`)
+    // 「越聊越慢」：长对话 ÷ 短对话。看得出是「本来就慢」还是「短档还行、长档崩了」
+    const ratio = slowdownRatio(candidate.trafficSpeedByBucket)
+    if (ratio && selectedBucketKey() === 'long') {
+      lines.push(
+        `<div class="sub" title="${t('同一家站：长对话的首字 ÷ 短对话的首字。1.5 倍以内算平稳，3 倍以上说明它扛不住长上下文')}">` +
+        `${t('比短对话慢')} ${ratio.toFixed(1)}×</div>`
+      )
+    }
+    if (pick.relMs !== null && pick.relMs > 0) {
+      lines.push(`<div class="sub" title="${t('同一轮探针里比最快的那条慢多少：已扣掉本机带宽/链路的公共延迟，跨轮可比')}">+${pick.relMs}ms</div>`)
     }
     return lines.join('')
   }
 
-  // 可靠度 = 质量 ÷ 体验分；体验分缺失时就是质量本身
+  // 输出速度列（TPS = 等到第一个字之后，每秒出多少 token）
+  function tpsCell(candidate) {
+    const pick = speedPick(candidate)
+    if (!pick || !pick.tps) {
+      return `<div style="color:var(--faint)" title="${t('没有解码速度样本：首字到了但输出 token 太少时算不出来')}">—</div>`
+    }
+    return (
+      `<div title="${t('扣掉首字之后，解码阶段每秒输出的 token 数')}">${pick.tps.toFixed(1)} tok/s</div>` +
+      `<div class="sub">${speedSourceLine(pick)}</div>`
+    )
+  }
+
+  // 可靠度 = 质量 ÷ 快慢；快慢缺失时就是质量本身
   function capturedReliability(candidate) {
     const exp = Number(candidate.experience)
     if (!Number.isFinite(exp) || exp <= 0) return candidate.quality
@@ -2856,19 +3015,26 @@ function renderDecision() {
         : ''
       return `
         <tr class="${isChosen ? 'cheapest' : ''}" data-offer="${esc(candidate.offerId)}">
-          <td style="white-space:nowrap">${arrows}</td>
-          <td class="num" style="color:var(--faint)">${index + 1}</td>
+          <td style="white-space:nowrap" class="num">${arrows}<span style="color:var(--faint)">${index + 1}</span></td>
           <td>${esc(candidate.providerName || '—')}${isChosen ? ' <span class="badge ok">当前</span>' : ''}${
-            candidate.upstreamName && candidate.upstreamName !== decision.modelKey
-              ? `<div class="sub mono">${esc(candidate.upstreamName)}</div>`
+            candidate.group || (candidate.upstreamName && candidate.upstreamName !== decision.modelKey)
+              ? `<div class="sub">${
+                  candidate.group
+                    ? `<span class="badge ${groupChipOf(candidate.providerId, candidate.group)}">${esc(candidate.group)}</span>`
+                    : ''
+                }${
+                  candidate.upstreamName && candidate.upstreamName !== decision.modelKey
+                    ? ` <span class="mono">${esc(candidate.upstreamName)}</span>`
+                    : ''
+                }</div>`
               : ''
           }</td>
-          <td>${candidate.group ? `<span class="badge ${groupChipOf(candidate.providerId, candidate.group)}">${esc(candidate.group)}</span>` : '<span style="color:var(--faint)">默认</span>'}</td>
+          <td class="num">${ttfsCell(candidate)}</td>
+          <td class="num">${tpsCell(candidate)}</td>
           <td class="num">${candidate.price === null ? '—' : priceText(candidate.price)}</td>
           <td class="num">${qualityCell(candidate)}</td>
           <td class="num">${sortCell(candidate, index > 0 ? decision.candidates[index - 1] : null)}</td>
           <td class="num">${cacheHitCell(candidate)}</td>
-          <td class="num">${ttftCell(candidate)}</td>
           <td><span class="badge ${badge.cls}">${badge.label}</span>${candidate.statusReason ? `<div class="sub">${esc(candidate.statusReason)}</div>` : ''}</td>
         </tr>`
     }).join('')
@@ -2884,9 +3050,12 @@ function renderDecision() {
         ${isCollapsed ? '' : `
         <table>
           <thead><tr>
-            <th style="width:66px"></th><th class="num">#</th><th>站点</th><th>分组</th>
-            <th class="num">价格</th><th class="num">质量<div class="sub">${t('可靠度 × 体验')}</div></th>
-            <th class="num">排序键<div class="sub">${esc(modeMeta.label)}</div></th><th class="num">命中率<div class="sub">缓存</div></th><th class="num">首字</th><th>状态</th>
+            <th class="num" style="width:64px" title="${t('↑↓ 手动调整先后：只在「可用」的站之间有效')}">#</th><th>站点</th>
+            <th class="num" title="${t('TTFS：从发出请求到看见第一个字。数字是「当前选中档」的实测值')}">${t('首字TTFS')}<div class="sub">${t('等第一个字')}</div></th>
+            <th class="num" title="${t('TPS：第一个字到了之后，每秒输出多少 token')}">${t('输出速度TPS')}<div class="sub">${t('每秒出多少字')}</div></th>
+            <th class="num">价格<div class="sub">${t('每百万 token')}</div></th>
+            <th class="num">质量<div class="sub">${t('可靠度 × 快慢')}</div></th>
+            <th class="num">排序键<div class="sub">${esc(modeMeta.label)}</div></th><th class="num">命中率<div class="sub">缓存</div></th><th>状态</th>
           </tr></thead>
           <tbody>${rows}</tbody>
         </table>`}
@@ -2913,6 +3082,22 @@ function renderDecision() {
         </div>
       </div>`
     : ''
+  // 「按对话长度看」只影响这一页的显示，不改变谁被选中——选站用的是每次请求自己
+  // 的实际大小（后端按请求分档取尺子）。这里给的是「你想用哪种长度的眼睛看这家站」：
+  // 首字随对话变长而变慢是常态（实测 50–120k 档 5.3s → 200k 以上 34.9s），不分档
+  // 就得拿最短的请求和最长的一起比，谁快谁慢全凭运气。
+  const bucketControl = `
+    <div class="mode-inline" title="${t('首字随对话变长而变慢：同一家站短对话 5 秒、长对话 9 秒很常见。选一个长度，首字和输出速度两列都只按这一档显示，横向才有可比性')}">
+      <span class="mode-inline-label">${t('按对话长度看')}</span>
+      <div class="seg">
+        ${['short', 'mid', 'long']
+          .map(
+            (key) =>
+              `<button data-act="set-speed-bucket" data-bucket="${key}" class="${key === selectedBucketKey() ? 'active' : ''}">${t(PROMPT_BUCKET_LABEL[key])}</button>`,
+          )
+          .join('')}
+      </div>
+    </div>`
   const untrustedSwitch = `
     <div class="switch-row" style="margin-bottom:12px">
       <label class="switch">
@@ -2928,7 +3113,7 @@ function renderDecision() {
           ? `<div class="alert" style="margin-top:10px;background:var(--warn-soft);border-color:var(--warn-border)">
                <div>
                  <div class="name">已放行：可疑的站会正常参与选站</div>
-                 <div class="desc">它们按当前「决策侧重」排序——质量档下会先比质量；价格档下它们可能排到最前面。快慢由质量里的体验分折算，不受这个开关影响。如果你更在意输出是否可信，把这个开关关掉。</div>
+                 <div class="desc">它们按当前「决策侧重」排序——质量档下会先比质量；价格档下它们可能排到最前面。快慢由质量里的首字分与速度分折算，不受这个开关影响。如果你更在意输出是否可信，把这个开关关掉。</div>
                </div>
              </div>`
           : ''
@@ -2937,7 +3122,7 @@ function renderDecision() {
 
   view.innerHTML = `
     <div class="toolbar">
-      ${modeControl}
+      ${modeControl}${bucketControl}
       <div class="toolbar-right">
         <input id="decision-search" class="search" type="search" placeholder="搜索模型名…" value="${esc(filters.decision)}" />
         <span class="hint" style="margin:0">${visibleDecisions.length} / ${decisions.length} 个模型</span>
@@ -3093,7 +3278,7 @@ function renderProbes() {
         <label class="field-inline">评分有效期
           <input id="score-age" type="number" min="1" max="72" value="${maxAge}" style="width:68px" /> 小时
         </label>
-        <span class="hint" style="margin:0">首字快慢不设上限，统一由「质量」里的体验分按同模型中位折算</span>
+        <span class="hint" style="margin:0">首字快慢不设上限，统一由「质量」里的快慢按同类站一般值折算</span>
       </div>
       <div class="hint" style="margin-top:8px">
         有效期决定「允许错过几轮探测」：最近一次有效证据（探针或真实调用）超过它就判过期。
@@ -4414,6 +4599,10 @@ let connectCancelled = false
 /** 搜索框内容 */
 const filters = { pricing: '', decision: '', benchmark: '' }
 
+// 决策页「按对话长度看」的档位。放在模块级而不是 render 里：切页签回来还记得，
+// 也不会因为每次 render 重置。默认「长对话」——长会话正是首字最贵、最需要看清的那一档。
+const decisionView = { speedBucket: 'long' }
+
 const TAB_META = {
   overview: { title: '概览', sub: '当前状态一眼看完' },
   monitor: { title: '站点', sub: '站点卡片、余额与同步记录' },
@@ -5329,7 +5518,16 @@ document.addEventListener('click', async (event) => {
     return
   }
 
-  if (action === 'set-mode') {
+  if (action === 'set-speed-bucket') {
+      const key = actionButton.dataset.bucket
+      if (!key || key === decisionView.speedBucket) return
+      // 纯前端状态：后端那边的选站口径不受影响（它按每次请求自己的大小取档）
+      decisionView.speedBucket = key
+      render()
+      return
+    }
+
+    if (action === 'set-mode') {
     const picked = (Array.isArray(state.decisionModes) ? state.decisionModes : []).find(
       (mode) => mode.key === actionButton.dataset.mode,
     )

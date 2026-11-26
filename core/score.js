@@ -17,6 +17,8 @@
 
 import { classifyFailure, cooldownUntil, failureScope } from './failure.js'
 import { REAL_QUALITY_MIN_SAMPLES, REAL_QUALITY_BAD_RATE } from './quality-signals.js'
+// 真实速度按 prompt 大小分档取数：跨档比较没有意义（见 speed-profile.js 文件头）
+import { selectBucketSpeed } from './speed-profile.js'
 
 const DEFAULT_WINDOW = 20
 const DEFAULT_MAX_AGE_MS = 6 * 3600 * 1000
@@ -70,7 +72,9 @@ function freshTraffic(row, now, maxAgeMs) {
 /**
  * @param {Array} probes 探针记录
  * @param {Object} traffic offerId → { ok, fail, since } 真实流量计数
- * @param {{window?:number, maxAgeMs?:number, now?:number}} options
+ * @param {{window?:number, maxAgeMs?:number, now?:number, promptTokens?:number}} options
+ *   promptTokens: 本次要转发的请求有多大（网关逐请求传入）。真实速度按这个大小选档，
+ *   否则「200k 的请求」会拿「50k 的样本」当尺子，比出来的快慢是假的
  * @returns {Map<string, object>}
  */
 export function scoreOffers(probes, traffic = {}, options = {}) {
@@ -288,6 +292,11 @@ export function scoreOffers(probes, traffic = {}, options = {}) {
       status = 'unknown'
     } else status = 'healthy'
 
+    // 真实速度：按「本次请求自己的 prompt 档」取尺子。
+    // 拿全站平均首字去比 20 万 token 的请求，等于拿短请求的漂亮数字冒充长请求的表现——
+    // 这正是之前那张「RapidApi 最便宜所以最该选」的错误结论的来源。
+    const trafficSpeed = selectBucketSpeed(trafficRow?.speed, options.promptTokens)
+
     scores.set(offerId, {
       offerId,
       samples: probeSamples,
@@ -324,20 +333,16 @@ export function scoreOffers(probes, traffic = {}, options = {}) {
       // 和体验里的「首字」重复计算。
       // 真实流量的首字/速度（traffic 行里累积的样本），只进展示与体验分档，
       // 不参与「这就是站点速度」的判定——探针与真实是两档尺子。
-      trafficTtftMs: (() => {
-        const list = (trafficRow?.speed?.ttftMs || []).map(Number).filter((n) => Number.isFinite(n) && n > 0)
-        if (list.length === 0) return null
-        const sorted = [...list].sort((a, b) => a - b)
-        const mid = sorted.length >> 1
-        return sorted.length % 2 === 1 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2
-      })(),
-      trafficTps: (() => {
-        const list = (trafficRow?.speed?.tps || []).map(Number).filter((n) => Number.isFinite(n) && n > 0)
-        if (list.length === 0) return null
-        const sorted = [...list].sort((a, b) => a - b)
-        const mid = sorted.length >> 1
-        return sorted.length % 2 === 1 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2
-      })(),
+      trafficTtftMs: trafficSpeed.ttftMs,
+      trafficTps: trafficSpeed.tps,
+      // 这组数字取自哪一档：给了档名表示用的是「与本次请求同档」的样本；
+      // null 表示没有足够同档样本、退回了全档——那种情况下体验分不给超额（见 experience.js）
+      trafficTtftBucket: trafficSpeed.bucket,
+      trafficTtftMatched: trafficSpeed.matched,
+      trafficPromptBucket: trafficSpeed.wantBucket ?? null,
+      trafficSpeedSamples: trafficSpeed.samples,
+      // 三档各自的中位（展示用）：一眼看出这个站的「长前缀惩罚」陡不陡
+      trafficSpeedByBucket: trafficSpeed.byBucket,
       tps: median(
         recent.map((r) => {
           const ct = Number(r.completionTokens)

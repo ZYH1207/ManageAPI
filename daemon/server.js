@@ -11,6 +11,8 @@ import { fileURLToPath } from 'node:url'
 import * as store from '../core/store.js'
 import * as fxLib from '../core/fx.js'
 import * as inv from '../core/inventory.js'
+// 速度样本的保留条数：与 inventory 落盘时用的是同一个常数，别各写一份
+import { SPEED_SAMPLE_KEEP } from '../core/speed-profile.js'
 // 币种口径的唯一真源：站点价目表的币种由站点声明，不在这里猜
 import { declaredPriceCurrency, normalizeCurrency } from '../core/currency.js'
 import {
@@ -138,10 +140,16 @@ async function readBody(req, { maxBytes = MAX_BODY } = {}) {
   }
 }
 
-/** 统一入口：探针 + 真实流量 + 时效。三处调用都用这一份，避免口径漂移。 */
-function scoresFor(db) {
+/**
+ * 统一入口：探针 + 真实流量 + 时效。三处调用都用这一份，避免口径漂移。
+ * promptTokens：本次要转发的请求有多大。真实首字与 prompt 大小强相关
+ * （同一站 5 万 token 5.3s、20 万 token 34.9s），所以选站时必须按「本次请求自己的档」
+ * 取实测数字，否则等于拿短请求的漂亮数字替长请求作担保。
+ */
+function scoresFor(db, promptTokens = null) {
   return scoreOffers(db.probes, db.traffic, {
     maxAgeMs: (Number(db.settings.scoreMaxAgeHours) || 6) * 3600 * 1000,
+    promptTokens: Number.isFinite(promptTokens) && promptTokens > 0 ? promptTokens : null,
   })
 }
 
@@ -3300,7 +3308,7 @@ function bufferTraffic(offerId, ok, error, quality, providerId = null, speed = n
     fail: 0,
     kinds: {},
     quality: { samples: 0, bad: 0 },
-    speed: { samples: 0, ttftMs: [], tps: [] },
+    speed: { samples: 0, rows: [] },
   }
   if (ok) entry.ok += 1
   else {
@@ -3327,18 +3335,23 @@ function bufferTraffic(offerId, ok, error, quality, providerId = null, speed = n
   }
   // 速度样本：真实流量的首字与解码速度（决策页要拿它判断探针代表不代表真实工况）。
   // 只统计成功且有 token 的请求；被取消的请求时长没有意义，不能进样本。
-  if (speed && ok) {
+  // 每条样本都带上 prompt 大小（promptTokens）：首字不是站点常数，是前缀大小的函数，
+  // 不带大小的样本没法参与「同档比较」，也就没法回答用户真正关心的那个问题。
+  if (speed && (ok || speed.aborted)) {
     const ttft = Number(speed.ttftMs)
-    const tps = Number(speed.tps)
     if (Number.isFinite(ttft) && ttft > 0) {
-      entry.speed = entry.speed || { samples: 0, ttftMs: [], tps: [] }
-      entry.speed.samples = (entry.speed.samples || 0) + 1
-      entry.speed.ttftMs.push(Math.round(ttft))
-      if (entry.speed.ttftMs.length > 40) entry.speed.ttftMs.shift()
-      if (Number.isFinite(tps) && tps > 0) {
-        entry.speed.tps.push(Math.round(tps * 10) / 10)
-        if (entry.speed.tps.length > 40) entry.speed.tps.shift()
-      }
+      if (!entry.speed || !Array.isArray(entry.speed.rows)) entry.speed = { samples: 0, rows: [] }
+      entry.speed.rows.push({
+        ttftMs: Math.round(ttft),
+        tps: Number(speed.tps),
+        promptTokens: Number(speed.promptTokens),
+        cachedTokens: Number(speed.cachedTokens),
+        aborted: Boolean(speed.aborted),
+        at: new Date().toISOString(),
+      })
+      // 缓冲只有 5 秒窗口，上限只是保险：真正去重/裁旧在 inventory.addTraffic
+      if (entry.speed.rows.length > SPEED_SAMPLE_KEEP) entry.speed.rows.splice(0, entry.speed.rows.length - SPEED_SAMPLE_KEEP)
+      entry.speed.samples = entry.speed.rows.length
     }
   }
   trafficBuffer.set(offerId, entry)
@@ -3371,6 +3384,15 @@ async function flushTraffic() {
         current.quality = current.quality || { samples: 0, bad: 0 }
         current.quality.samples += entry.quality.samples || 0
         current.quality.bad += entry.quality.bad || 0
+      }
+      // 速度样本同样要回队：写盘失败丢掉几条首字样本，路由就少几条同档证据
+      if (Array.isArray(entry.speed?.rows) && entry.speed.rows.length > 0) {
+        if (!current.speed || !Array.isArray(current.speed.rows)) current.speed = { samples: 0, rows: [] }
+        current.speed.rows.push(...entry.speed.rows)
+        if (current.speed.rows.length > SPEED_SAMPLE_KEEP) {
+          current.speed.rows.splice(0, current.speed.rows.length - SPEED_SAMPLE_KEEP)
+        }
+        current.speed.samples = current.speed.rows.length
       }
       trafficBuffer.set(offerId, current)
     }
@@ -3830,7 +3852,10 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
   }
 
   const benchmarks = await bench.readBenchmarks()
-  const scores = scoresFor(db)
+  // 本次请求有多大：真实首字与 prompt 大小强相关（同一站 5 万 token 5.3s、20 万 token 34.9s），
+  // 所以选站阶段就要按「本次请求自己的档」取实测数字，不能等发完再补。
+  const requestTokens = estimateRequestTokens(body)
+  const scores = scoresFor(db, requestTokens)
   // 免费池只在自己的供给里选；付费池永远看不到免费项。
   // 默认两边互不回落（免费用不了就明确报错，别偷偷扣钱），
   // 只有 settings.allowPaidFallback 显式打开时才允许「免费不够用 → 付费顶上」。
@@ -3929,8 +3954,6 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
   // 失败范围决定下一步：provider 级 → 跳过这家其余供给；request 级 → 原样报错，别再换站
   const skippedProviders = new Set()
   let requestScopedError = null
-  // 请求规模估算（只用于「计费是否明显虚报」的量级判断，不追求精确）
-  const requestTokens = estimateRequestTokens(body)
 
   for (let index = 0; index < candidates.length; index += 1) {
     const candidate = candidates[index]
@@ -3989,11 +4012,34 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
         const trafficSpeed = (() => {
           const completionTokens = Number(usageNums.completionTokens)
           const ttft = Number(result.ttftMs)
-          if (clientAborted || !Number.isFinite(ttft) || ttft <= 0) return null
-          if (!(completionTokens > 0)) return { ttftMs: ttft, tps: null }
+          // 断流不代表首字没用：首字是真的等到了，只是我们没等它说完。
+          // 我们自己这轮 20 万 token 的对话几乎全是「拿到工具调用就断流」，
+          // 把这些扔掉等于「长对话」这一档永远没有实测样本——而它正是最该测的那一档。
+          const cut = clientAborted || Boolean(result.streamError)
+          if (!Number.isFinite(ttft) || ttft <= 0) return null
+          // 这条样本是在多大的前缀上量出来的：不记下来，事后就无法回答
+          // 「这个站的 30 秒首字是 5 万 token 还是 20 万 token 的」。优先用上游回报的
+          // 真实 prompt_tokens，拿不到才退回本地估算（宁可粗，也要有档）
+          const promptTokens =
+            Number.isFinite(Number(usageNums.promptTokens)) && Number(usageNums.promptTokens) > 0
+              ? Number(usageNums.promptTokens)
+              : requestTokens
+          const cachedTokens = Number.isFinite(Number(usageNums.cachedTokens)) ? Number(usageNums.cachedTokens) : null
+          const base = {
+            ttftMs: ttft,
+            tps: null,
+            promptTokens: promptTokens > 0 ? promptTokens : null,
+            cachedTokens,
+            aborted: cut,
+          }
+          // 断流的请求算不出解码速度（我们没等它解码完），首字照记、tps 留空
+          if (cut || !(completionTokens > 0)) return base
           const decodeMs = Number(latencyMs) - ttft
-          return { ttftMs: ttft, tps: decodeMs > 0 ? completionTokens / (decodeMs / 1000) : null }
+          return { ...base, tps: decodeMs > 0 ? completionTokens / (decodeMs / 1000) : null }
         })()
+        if (process.env.MAPI_DEBUG_SPEED) {
+          console.error('[speed-debug]', JSON.stringify({ ttft: result.ttftMs, clientAborted, streamError: result.streamError, completionTokens: usageNums.completionTokens, promptTokens: usageNums.promptTokens, trafficSpeed }))
+        }
         await recordCacheSample({
           offerId: candidate.offer.id,
           providerId: candidate.offer.providerId,
@@ -4038,6 +4084,11 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
                 // 高命中的站全判成虚报
                 cachedTokens: usageNums.cachedTokens,
               }),
+          // 签名是 (offerId, ok, error, quality, providerId, speed)，顺序不能错：
+          // 之前这里只写到 providerId 的位置就断了，trafficSpeed 少了一个实参没传——
+          // 于是「真实速度」这一档从上线起就没写进过库（samples 在涨、首字数组永远空），
+          // 路由只能用探针的 1k 级数字给 20 万 token 的请求定价。
+          candidate.offer.providerId,
           trafficSpeed,
         )
         // 计费核对样本：本地估算的请求 token vs 上游上报的 prompt_tokens。

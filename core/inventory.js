@@ -10,6 +10,8 @@ import { normalizeQuota, resetIfDue, consumeQuota } from './quota.js'
 import * as providers from './providers.js'
 // 币种口径的唯一真源（currency.js 零 import，不会成环）
 import { declaredPriceCurrency, normalizeCurrency } from './currency.js'
+// 速度样本的保留条数与分档口径集中在 speed-profile.js，避免两处各写一个常数
+import { SPEED_SAMPLE_KEEP } from './speed-profile.js'
 
 // 站点价目表的币种：落价时由调用方透传，读的时候也从这里取，写读同一个函数
 export { declaredPriceCurrency, currencyOf, inferSiteCurrency } from './currency.js'
@@ -1107,8 +1109,6 @@ export async function setManualOrder(modelKey, order) {
 // ----------------------------------------------------------- 真实流量计数
 
 const TRAFFIC_WINDOW_MS = 3600 * 1000
-// 每条供给留多少条速度样本（中位数足够稳，多了只是白占 db.json）
-const SPEED_SAMPLE_KEEP = 40
 
 /**
  * 计费核对样本：每 N 次成功请求抽一条，记「本地估算 token vs 上游上报 prompt_tokens」。
@@ -1203,23 +1203,44 @@ export async function addTraffic(entries, windowMs = TRAFFIC_WINDOW_MS) {
       // 真实流量的速度画像：只累计「有效样本」（成功、有 token、有首字），
       // 用来判断探针测出来的快慢能不能代表真实工况——探针发的是 1k 级短请求，
       // 而真实请求常常是十几万 token 的长前缀，两者的首字根本不是一个量纲。
+      //
+      // 每条样本都要带上它自己的 prompt 大小：首字不是站点常数，是 prompt 大小的函数
+      // （实测同一站 50–120k 档 5.3s、200k 以上 34.9s，缓存都自报 99%）。
+      // 不带大小的样本只能进「全档」，参与不了同档比较。
       if (delta.speed) {
-        if (!row.speed || typeof row.speed !== 'object') row.speed = prevSpeed && typeof prevSpeed === 'object' ? prevSpeed : { samples: 0, ttftMs: [], tps: [] }
+        if (!row.speed || typeof row.speed !== 'object') row.speed = prevSpeed && typeof prevSpeed === 'object' ? prevSpeed : { samples: 0, rows: [] }
         const speed = row.speed
-        if (!Array.isArray(speed.ttftMs)) speed.ttftMs = []
-        if (!Array.isArray(speed.tps)) speed.tps = []
-        speed.samples = (speed.samples || 0) + 1
-        const ttft = Number(delta.speed.ttftMs)
-        if (Number.isFinite(ttft) && ttft > 0) {
-          speed.ttftMs.push(Math.round(ttft))
-          // 只留最近 40 个，取数用中位，长尾不影响结论
-          if (speed.ttftMs.length > SPEED_SAMPLE_KEEP) speed.ttftMs.splice(0, speed.ttftMs.length - SPEED_SAMPLE_KEEP)
+        if (!Array.isArray(speed.rows)) speed.rows = []
+        // 兼容老调用方：只给 {ttftMs, tps} 的也收，当成「大小未知」的样本
+        const incoming = Array.isArray(delta.speed.rows)
+          ? delta.speed.rows
+          : Number.isFinite(Number(delta.speed.ttftMs))
+            ? [delta.speed]
+            : []
+        for (const sample of incoming) {
+          const ttft = Number(sample?.ttftMs)
+          if (!Number.isFinite(ttft) || ttft <= 0) continue
+          const tps = Number(sample?.tps)
+          const promptTokens = Number(sample?.promptTokens)
+          const cachedTokens = Number(sample?.cachedTokens)
+          speed.rows.push({
+            ttftMs: Math.round(ttft),
+            tps: Number.isFinite(tps) && tps > 0 ? Math.round(tps * 10) / 10 : null,
+            // prompt 大小决定了这条样本属于哪一档；没有就留 null（只能进全档）
+            promptTokens: Number.isFinite(promptTokens) && promptTokens > 0 ? Math.round(promptTokens) : null,
+            cachedTokens: Number.isFinite(cachedTokens) && cachedTokens >= 0 ? Math.round(cachedTokens) : null,
+            // 断流的请求只测到了首字（我们没等它解码完），留着但不贡献解码速度
+            aborted: Boolean(sample?.aborted),
+            at: sample?.at || atIso,
+          })
         }
-        const tps = Number(delta.speed.tps)
-        if (Number.isFinite(tps) && tps > 0) {
-          speed.tps.push(Math.round(tps * 10) / 10)
-          if (speed.tps.length > SPEED_SAMPLE_KEEP) speed.tps.splice(0, speed.tps.length - SPEED_SAMPLE_KEEP)
-        }
+        if (speed.rows.length > SPEED_SAMPLE_KEEP) speed.rows.splice(0, speed.rows.length - SPEED_SAMPLE_KEEP)
+        // 计数器由样本推出来，不再「每次落盘 +1」：
+        // 早先那版不管有没有样本都自增，db 里攒出 samples=243 却一条数组都没有的假账
+        speed.samples = speed.rows.length
+        // 老格式（两条平行数组）由 rows 派生，score.js 与前端的老路径照旧能读
+        speed.ttftMs = speed.rows.map((sample) => sample.ttftMs)
+        speed.tps = speed.rows.map((sample) => sample.tps).filter((value) => value !== null)
       }
       if (delta.kinds) {
         if (!row.kinds || typeof row.kinds !== 'object') row.kinds = {}

@@ -16,6 +16,8 @@
  * 在 score.js 里单独算，两者在选站时相乘，不要混成一个数。
  */
 
+import { MIN_BUCKET_SAMPLES } from './speed-profile.js'
+
 export const EXPERIENCE_WEIGHTS = { ttft: 0.6, tps: 0.4 }
 
 /** 没测到时的取值：中位水平，不奖不罚。 */
@@ -56,9 +58,15 @@ export function experienceBaselines(rows) {
     // 真实流量优先：有真实样本就整条走真实档，不把两种量纲混成一把尺子
     const realTtft = finitePositive(row?.trafficTtftMs)
     const realTps = finitePositive(row?.trafficTps)
+    // 尺子只能用「同一档」的样本量出来。一个站只有 50k 的样本、却拿它去量 200k 的
+    // 请求，量出来的数偏快；把它算进中位会把整把尺子拉快，让真正扛长前缀的站显得更慢。
+    // 所以这种「未同档」的样本不参与造尺子，只参与自己那一条的打分（并且不给超额）。
+    const sameSize = row?.trafficTtftMatched !== false
     if (realTtft || realTps) {
-      if (realTtft) realTtfts.push(realTtft)
-      if (realTps) realSpeeds.push(realTps)
+      if (sameSize) {
+        if (realTtft) realTtfts.push(realTtft)
+        if (realTps) realSpeeds.push(realTps)
+      }
       continue
     }
     const ttft = finitePositive(row?.ttftMs)
@@ -88,9 +96,10 @@ export function experienceBaselines(rows) {
  * 单条的体验分。
  *
  * @returns {{score:number, ttftScore:number, tpsScore:number, source:'real'|'probe'|'none',
- *   tier:'real'|'probe', capped:boolean}}
+ *   tier:'real'|'probe', capped:boolean, bucket:string|null, bucketMatched:boolean}}
  *   source: 'real' 走真实流量档 / 'probe' 只有探针数据 / 'none' 什么都没测到
- *   capped: 探针档的分数被压回 1.00（没有实测就不给超额）
+ *   capped: 分数被压回 1.00（探针档，或真实档但缺同档样本——没有实测就不给超额）
+ *   bucketMatched: 这条真实样本是不是「与本次请求同样大小」的那一档
  */
 export function experienceScore(row, baseline) {
   const realTtft = finitePositive(row?.trafficTtftMs)
@@ -113,8 +122,23 @@ export function experienceScore(row, baseline) {
   const raw = Math.pow(ttftScore, EXPERIENCE_WEIGHTS.ttft) * Math.pow(tpsScore, EXPERIENCE_WEIGHTS.tps)
   // 探针只能证明「不慢」，不能证明「比有实测的更快」：上限压到中位水平。
   // 下限不设——探针测出来明显慢的站照样该被降权。
-  const capped = tier === 'probe' && raw > EXPERIENCE_PRIOR
-  const score = capped ? EXPERIENCE_PRIOR : raw
+  // 真实档也有一个同款陷阱：这个站确实有实测，但一批样本都不是本次请求这个大小
+  // （只有 50k 的样本，却要判 200k 的请求）。拿别的大小的首字当证据，等于替它
+  // 担保一件没测过的事，所以同样不给超额——与探针档共用一个上限。
+  const bucketMatched = row?.trafficTtftMatched !== false
+  const overclaim = tier === 'probe' || !bucketMatched
+  // 证据太少时只说明「这一次」，不能据此判生死：一条 200 token 的短回答测出 tps=2.8，
+  // 不等于这家站慢 40%（那条样本里解码阶段只有几百毫秒，误差比信号大）。
+  // 样本越少越往 1.00 收缩，同档攒到 MIN_BUCKET_SAMPLES 条才全额计入偏差。
+  // 不传样本数（老调用方）按「证据充分」处理，保持既有语义。
+  const evidenceSamples = Number(row?.trafficSpeedSamples)
+  const confidence =
+    tier === 'real' && Number.isFinite(evidenceSamples) && evidenceSamples > 0
+      ? Math.min(1, evidenceSamples / MIN_BUCKET_SAMPLES)
+      : 1
+  const damped = EXPERIENCE_PRIOR + (raw - EXPERIENCE_PRIOR) * confidence
+  const capped = overclaim && damped > EXPERIENCE_PRIOR
+  const score = capped ? EXPERIENCE_PRIOR : damped
   return {
     score,
     ttftScore,
@@ -122,6 +146,12 @@ export function experienceScore(row, baseline) {
     source: ttft || tps ? tier : 'none',
     tier,
     capped,
+    // 这一条打分用了多少样本、按多大比例计入偏差（1 = 全额）
+    confidence,
+    samples: Number.isFinite(evidenceSamples) && evidenceSamples > 0 ? evidenceSamples : null,
+    // 这条证据取自哪一档（'short'/'mid'/'long'）；null = 没有同档样本、退回了全档
+    bucket: row?.trafficTtftBucket ?? null,
+    bucketMatched,
     // 界面要能写清「这个分是按谁算的」：实测档给真实首字/速度，探针档给探针值
     ttftMs: ttft,
     tps,
