@@ -156,8 +156,8 @@
             <h3 class="doc-h3">快速开始</h3>
             <ol class="doc-steps">
               <li><b>站点</b> 页添加中转站（地址结尾要带 <code>/v1</code>），粘贴它的 Key</li>
-              <li>点 <b>一键同步</b>：拉模型、读余额、识别分组一次跑完；没填「令牌」时跳过识别分组</li>
-              <li>同步没认出分组，就点 <b>导入倍率</b>，在分组列表里手动选你买的那个</li>
+              <li>点 <b>一键同步</b>：拉模型、读余额、识别分组一次跑完；没有站点登录态时跳过识别分组</li>
+              <li>同步没认出分组，就打开 <b>分组倍率</b> 面板点 <b>重新读取</b>，在分组列表里手动选你买的那个</li>
               <li>缺官方价的模型，去 <b>基准价</b> 页补上，或者载入内置参考价</li>
               <li>去 <b>探针</b> 页跑一次检测，让程序知道哪些站可信</li>
               <li>程序会按评分体系自动决定用哪个站，也可以在 <b>智能决策</b> 页手动调整先后</li>
@@ -175,6 +175,10 @@
               · <b>需要关注</b> —— 探针判定有问题的站，按站聚合，写明原因<br />
               · <b>站点排名</b> —— 按长期评分排序，绿点健康、黄点需关注、红点不稳定
             </p>
+            <p>
+              <b>顶栏的「刷新」是全站刷新</b>：除了界面状态（<code>/api/state</code>），还会重拉概览的余额和真实花费
+              （绕过 60 秒缓存）、监控页数据，以及用量页当前所选区间的数据。15 秒自动轮询仍是轻量的，只拉状态。
+            </p>
 
             <h4 class="doc-h4">站点</h4>
             <p>
@@ -183,26 +187,25 @@
               · <b>名称</b> —— 随便填，只用于你自己识别<br />
               · <b>地址</b> —— 中转站给你的 API 地址，<b>结尾必须带 <code>/v1</code></b>
               （如 <code>https://api.example.com/v1</code>）<br />
-              · <b>类型</b> —— 不确定就选「不确定」，填完令牌会自动识别（one-api / new-api / Sub2API）<br />
+              · <b>类型</b> —— 不确定就选「不确定」，登录站点后会自动识别（one-api / new-api / Sub2API）<br />
               · <b>Key</b> —— 粘贴完整的 <code>sk-...</code>，加密存储，界面只显示尾号
             </p>
             <p>每个站点卡片上有一排按钮：</p>
             <p>
               · <b>账号登录</b> —— 用站点后台的账号密码登录，自动获取令牌并续期（过期自动重登，10 分钟冷却）。验证码 / 2FA 的站不支持，会明确告诉你<br />
-              · <b>一键同步</b> —— 同步模型 → 读余额 →（有「令牌」时）识别分组，串着跑完；某一步失败不影响其他步骤。<br />
+              · <b>一键同步</b> —— 同步模型 → 读余额 →（有登录态时）识别分组，串着跑完；某一步失败不影响其他步骤。<br />
               · <b>密钥</b> —— 展开这个站的 Key 列表：加 Key、删 Key、看每把 Key 绑的分组。<br />
-              · <b>分组倍率</b> —— 展开分组倍率，改倍率或恢复站点值。详见下面「分组」一节。<br />
-              · <b>导入倍率</b> —— 读不到后台时的手动方案：列出该站所有分组，你选一个。<br />
+              · <b>分组倍率</b> —— 展开分组倍率，改倍率或恢复站点值；面板里的 <b>重新读取</b> 是读不到后台时的手动方案：从站点读分组列表，你选买的那一档。详见下面「分组」一节。<br />
               · <b>用量核对</b> —— 拉站方逐条用量明细，和网关记录做<b>扣费核验</b>：单价对不对、token 数是否吻合。<br />
               · <b>导出配置</b> —— 生成 OpenAI 兼容的配置片段，方便复制到客户端。<br />
-              · <b>令牌</b>（在站点卡片上）—— 站点后台的登录令牌，用来读余额、账单和识别分组。一个后台账号填一次，整站通用；不参与对话。保存后会自动识别这个站是哪一系。<br />
+              · <b>自动续期</b>（在站点卡片上）—— 显示登录态的状态徽章（未登录 / 已过期 / 自动 / 不续期）和到期日，旁边是「立即续期」按钮（没有登录态时显示「账号登录」）。登录态用来读余额、账单和识别分组，不参与对话；之后由刷新令牌自动续期。<br />
               · <b>充值汇率</b>（在站点卡片上）—— 充 1 元到账多少站点额度。1:1 充值的站填 1；充 ¥100 到账 $120 填 0.83。留空 = 按市场汇率折算。「实际消费」用它把站点账单换算成人民币。<br />
               · <b>分组</b>（在 Key 那一行）—— 显示这把 Key 属于哪个分组，点它也能打开选分组。
             </p>
             <p>
-              <b>令牌怎么拿</b>：浏览器登录站点后台 → F12 → Network → 点任意 <code>/api/v1/</code> 开头的请求 →
-              复制 Request Headers 里的 <code>Authorization</code> 值（去掉 <code>Bearer </code> 前缀）。
-              令牌会过期（一般 7-30 天），失效后重新复制，或者直接用「账号登录」让它自动续期。
+              <b>登录态怎么来</b>：点站点卡片上的 <b>账号登录</b>，用站点后台的账号密码登录；
+              站点开了验证码 / 2FA、账号密码连不上时，用 <b>导入登录态</b>，把浏览器里登录响应的 JSON 整体贴进来。
+              之后由刷新令牌自动续期，令牌过期不用你管。不会自动续期的站会在卡片上写明原因。
             </p>
 
             <h4 class="doc-h4">余额概览</h4>
@@ -219,7 +222,12 @@
               <b>花费 · 今天 / 本周 / 本月</b> 只显示一个数字：<b>实际消费</b>。
               它<b>直接读站点自己的账单</b>（<code>/api/v1/usage</code> 逐条汇总），不是网关侧估算——
               实测上游约 26% 的 token 不返回 <code>usage</code>、<code>cached_tokens</code> 也不稳定，
-              估算值和真实账单能差 7~10 倍。读不到账单时显示「读不到账单」，不会假装是 0。
+              估算值和真实账单能差 7~10 倍。读不到账单时显示「未采集」，并写明是哪一种原因：<br />
+              · <code>N 个站点登录态已失效，续上才读得到账单</code> —— 卡片上会给一个「全部续期」按钮，
+              逐个续完再重采一轮<br />
+              · <code>还没有站点登录态：先到站点页「账号登录」</code><br />
+              · <code>有站点没开账单接口，读不到就显示未采集</code><br />
+              采集失败也不再静默：令牌过期 / 无权限会记成「账单：&lt;原因&gt;」并标记该站登录态失效。
               监控默认每 30 分钟采集一轮，可在探针页附近设置里调间隔或关掉。
             </p>
 
@@ -235,15 +243,15 @@
               工具能列出所有分组和倍率，但最后一步得你点。
             </p>
             <p>
-              <b>点「导入倍率」之后会发生什么：</b><br />
-              ① 弹出该站所有分组，每个后面标着倍率和能覆盖你几个模型，能用的排在前面<br />
+              <b>在分组倍率面板点「重新读取」之后会发生什么：</b><br />
+              ① 列出该站所有分组，每个后面标着倍率和能覆盖你几个模型，能用的排在前面<br />
               ② 你选中自己买的那个，点「应用倍率」<br />
               ③ 这个分组会记在 Key 上，倍率写进下面所有模型，比价 / 决策 / 路由立刻同步<br />
-              ④ 下次再点「导入倍率」，会默认选中上次那个
+              ④ 下次再点「重新读取」，会默认选中上次那个
             </p>
             <p>
-              数据从哪来：有「令牌」时读 <code>/api/v1/channels/available</code>（数据最全，
-              <b>不要求站开广场</b>）；没令牌则回落「模型广场」。两条路都不通会直接告诉你原因。
+              数据从哪来：有站点登录态时读 <code>/api/v1/channels/available</code>（数据最全，
+              <b>不要求站开广场</b>）；没有登录态则回落「模型广场」。两条路都不通会直接告诉你原因。
             </p>
             <p>
               <b>分组倍率那几行怎么看</b>：<br />
@@ -322,7 +330,7 @@
             </p>
             <p>
               行里的标记：<b>「最便宜」</b>是该模型当前最低价；<b>「可疑」</b>是探针判定不可信的站，
-              价格照常显示但不参与推荐；<b>「超时」</b>是首字延迟超过你设的上限。
+              价格照常显示但不参与推荐。
               缓存命中率在单独的「缓存」列；综合成本下方的小字是空闲时段价。
             </p>
             <p>
@@ -335,13 +343,24 @@
               看路由会选谁，也能手动干预。每个模型一张表：<br />
               · <b>绿底行</b> —— 当前会选中的那个站<br />
               · <b>价格</b> —— 名义单价（输入/输出按你的使用比例混合，再按缓存命中折掉复用部分）<br />
-              · <b>质量</b> —— 三行：质量值 / <code>可靠度 × 体验</code> / 样本数。质量的高低直接决定有效成本<br />
+              · <b>质量</b> —— 三行：质量值 / <code>可靠度 × 快慢</code> / 样本数。质量的高低直接决定有效成本<br />
               · <b>排序键</b> —— 当前档位下真正用来排序的数字，副行写它和上一条差多少<br />
               · <b>命中率</b> —— 缓存复用比例，副行标出处：<code>实测</code>（你真实请求逐单记账）、
-              <code>实测·少</code>（样本不足，已向全局中位收缩）、<code>先验</code>（还没有样本，先按 85% 估）<br />
-              · <b>首字</b> —— 绝对毫秒，副行 <code>+Nms</code> 是同一轮里比最快的那条慢多少（已扣掉本机链路）<br />
+              <code>实测·少</code>（样本不足，已向全局通常水平收缩）、<code>先验</code>（还没有样本，先按 85% 估）<br />
+              · <b>首字TTFS / 输出速度TPS</b> —— 两列分开：TTFS 是等到第一个字的毫秒数，TPS 是每秒输出多少 token。
+              TTFS 的副行 <code>+Nms</code> 是同一轮里比最快的那条慢多少（已扣掉本机链路）<br />
               · <b>↑↓</b> —— 调整「可用」候选的先后，改完立即生效<br />
               · <b>恢复自动</b> —— 清掉手动顺序，回到按排序键排
+            </p>
+            <p>
+              <b>第一行的按钮是「置顶」，不是 ↑↓。</b>点一下 = 把当前排头顺序冻结成手动顺序（进入手动模式，
+              和以前手动调序一样），再点一次 = 取消置顶、清空手动顺序回到自动排序。其余行仍是 ↑↓。
+            </p>
+            <p>
+              表头上方有 <b>按对话长度看：[短对话] [中等对话] [长对话]</b> 分段控件，首字 TTFS 和输出速度 TPS
+              两列一起分档显示。<b>它只影响你看到的数字，不影响选站</b>——真实选站由后端按每个请求自己的
+              prompt 大小取档（短对话 &lt; 60k、中等 60k–180k、长对话 ≥ 180k）。首字本来就随对话变长而变慢，
+              不分档拿短请求和长请求一起比，谁快谁慢全凭运气。
             </p>
             <p>
               页面左上角是<b>「决策侧重」</b>三档，只改排序键，不改准入：<br />
@@ -375,7 +394,7 @@
               · <b>自动探测</b> —— 设间隔后后台定时跑。默认 1 小时，可以关掉。模型多的话建议设长一点，
               每次探测都要花一点 token。<br />
               · <b>评分有效期</b> —— 超过这个时间没重新探测，评分就作废、不再参与路由。<br />
-              · <b>首字与速度</b> —— 不再设固定上限：快慢按「同模型在售供给的中位」折算成体验分，
+              · <b>首字与速度</b> —— 不再设固定上限：快慢按「同模型、同对话长度档的通常水平」折算成快慢分，
               慢的站按比例降权、快的站加分，不会被直接踢出候选。<br />
               · <b>放行可疑供给</b> —— 默认关闭。关闭时，探针判定可疑（指纹不符 / 截断 / 虚报 / 评分过期）的站
               只会排在最后兜底；打开后它们按有效成本正常参与竞争。
@@ -383,7 +402,7 @@
             <p>
               <b>打开这个开关要清楚代价</b>：可疑的站仍然按「价格 ÷ 质量」排序——质量差一半，成本就翻倍，
               所以只有便宜到足够多才会被选中。但它确实可能给你返回掉包或截断的结果。
-              省钱优先就打开，输出可信优先就关着。快慢不受这个开关影响，它由体验分单独折算。
+              省钱优先就打开，输出可信优先就关着。快慢不受这个开关影响，它只看首字和输出速度。
             </p>
 
             <h4 class="doc-h4">网关</h4>
@@ -396,7 +415,12 @@
             </p>
             <p>
               <b>最近请求</b>表记录每次路由：选了谁、试了几次、耗时多少。
-              点开能看到完整的候选排序和失败原因。
+              点开能看到完整的候选排序和失败原因。结果列有三种：<br />
+              · <b>成功</b> —— 正常跑完<br />
+              · <b>已交付 · 客户端先关</b> —— 上游已经把整轮发完（收到了 <code>finish_reason</code> 和 <code>usage</code>，
+              内容是完整的、token 账也是全的），是客户端（比如 DSH）拿到工具调用就主动断了、没等最后的 <code>[DONE]</code>。
+              它算成功，不拉低可用率<br />
+              · <b>红字失败原因</b> —— 真的没拿到完整结果，按失败计
             </p>
 
             <h4 class="doc-h4">用量</h4>
@@ -413,7 +437,7 @@
             <p>
               倍率换算的参照物，本质就是「官方价」：<code>实际价 = 基准价 × 倍率</code>。
               某个模型没有基准价，它的倍率就没法换算成钱，只能填绝对价。三个来源：<br />
-              · <b>从站点导入官方价</b> —— 选一个站，一键拉取。有「令牌」读可用渠道、没令牌读模型广场。
+              · <b>从站点导入官方价</b> —— 选一个站，一键拉取。有站点登录态读可用渠道、没有登录态读模型广场。
               只补空缺，不覆盖你已有的<br />
               · <b>以此站已填价为准</b> —— 把某个站已经填好的实际价整体设为基准，适合你确信它没虚标<br />
               · <b>载入内置参考价</b> —— 工具内置的一份官方价，价格常变，务必核对
@@ -463,19 +487,23 @@
               <b>可用率</b> = 成功次数 ÷ 总次数（探针 + 真实流量一起算）<br />
               <b>完整性</b> = 指纹通过率 × 0.5 + 未截断率 × 0.3 + 计费正常率 × 0.2（只算测到的项，权重按剩余项归一）<br />
               <b>可靠度</b> = 可用率 × 完整性<br />
-              <b>体验分</b> = 首字分<sup>0.6</sup> × 速度分<sup>0.4</sup><br />
-              <b>质量</b> = 可靠度 × 体验分
+              <b>快慢</b> = 首字分<sup>0.6</sup> × 速度分<sup>0.4</sup><br />
+              <b>质量</b> = 可靠度 × 快慢
             </p>
             <p>
-              <b>体验分的尺子是「同一个模型在售的全部供给」</b>，不是固定毫秒：<br />
-              · <b>首字分</b> = 中位首字 ÷ 本站首字，<b>速度分</b> = 本站输出速度 ÷ 中位速度；<b>1.00 = 这个模型的中位水平</b><br />
-              · 不分档、不设上下限——比中位快就是加分，慢就是按比例降权，规则只有一条<br />
+              <b>快慢的尺子是「同一个模型、同一档对话长度在售的全部供给」</b>，不是固定毫秒：<br />
+              · <b>首字分</b> = 通常水平首字 ÷ 本站首字，<b>速度分</b> = 本站输出速度 ÷ 通常水平速度；
+              <b>1.00 = 这个模型这一档的通常水平</b><br />
+              · <b>真实速度按对话长度分三档</b>：短对话（prompt &lt; 60k）、中等对话（60k–180k）、
+              长对话（≥ 180k），每档各自取通常水平。比价 / 决策时用<b>本次请求自己的档</b>当尺子<br />
+              · 取不到同档样本就标「未同档」，<b>不给超额</b>（快慢上限 1.00）——不拿短请求的快去担保长请求<br />
+              · 样本少于 3 条时，偏差按比例向 1.00 收缩：1 条样本最多只能拉动 1/3<br />
               · 有真实流量样本的站按<b>实测</b>折算；只有探针数据的站走<b>探针档</b>，上限压到 1.00
-              （探针发的是 1k 级短请求，只能证明「不慢」，证明不了「更快」）<br />
-              · 一项都没测到的，按 1.00（中位水平）算，不是按 0 罚
+              （探针发的是 45 token 的小请求和 14.5k 的缓存探测，只能证明「不慢」，证明不了「更快」）<br />
+              · 一项都没测到的，按 1.00（通常水平）算，不是按 0 罚
             </p>
             <p>
-              可靠度低于 0.8 就标记为不可用，不参与路由。体验分<b>不影响准入</b>——慢的站不会因为慢被踢出去，
+              可靠度低于 0.8 就标记为不可用，不参与路由。快慢<b>不影响准入</b>——慢的站不会因为慢被踢出去，
               只是有效成本被除得更高，自然排在后面。
             </p>
             <p>
@@ -492,12 +520,12 @@
               这里的「价格」不是网站标的名义单价，而是<b>按你的真实用法折算过的期望成本</b>：<br />
               · <b>输入占比</b> —— 默认读你自己的真实流量（输入 token ÷ 全部 token），没有样本时按 90%<br />
               · <b>缓存折扣</b> —— 输入价按 <code>1 − 命中率 × 0.9</code> 折算。命中率是网关<b>逐单记账</b>算出来的：
-              缓存读 ÷ (净值 + 缓存读 + 缓存写)，并剔掉冷启动那几单（新会话、前缀刚变、隔太久没用）<br />
-              · 样本不足时会向全局中位收缩，避免一两单极端值决定排名
+              缓存读 ÷ (净值 + 缓存读 + 缓存写)，并剔掉冷启动那几单（新会话、对话刚变、隔太久没用）<br />
+              · 样本不足时会向全局通常水平收缩，避免一两单极端值决定排名
             </p>
             <p>
               「不可信」这一条是可以用探针页的 <b>放行可疑供给</b> 开关关掉的：打开后它们不再被压到后面，
-              而是和健康的站一起按有效成本竞争。快慢（首字与输出速度）由质量里的体验分折算，不受这个开关影响。
+              而是和健康的站一起按有效成本竞争。快慢（首字与输出速度）只通过质量折算进有效成本，不受这个开关影响。
               注意开关会同时影响比价页的「最便宜」和概览页的结论，保证推荐和实际路由是同一套口径。
             </p>
             <p>
@@ -525,6 +553,11 @@
               状态自动变成「不稳定」，下次路由就跳过它。
             </p>
             <p>
+              客户端提前断流、但上游已经把整轮交付完的请求（收到了 <code>finish_reason</code> 和 <code>usage</code>）
+              也记为<b>有效样本</b>——长对话几乎全是这种收尾方式，DSH 这类客户端拿到工具调用就断，不等最后的
+              <code>[DONE]</code>。它们在「最近请求」里显示为「已交付 · 客户端先关」，算成功，不拉低可用率。
+            </p>
+            <p>
               网关还会对<b>成功的真实响应</b>做两类客观质量抽样：<b>空回答</b>（200 成功、正常结束却一个字都没有）
               和<b>计费异常</b>（扣掉<b>同一次请求</b>命中的缓存之后，计费输入仍超过请求体估算的 4 倍）。
               指纹和截断需要受控 prompt，真实请求里验不了——那两项只有探针能做。
@@ -536,10 +569,14 @@
             <p>
               比价和探针回答「现在哪家划算」，采集回答「这几天发生了什么」。默认每 30 分钟一轮（可关）。
               采集只读站点接口、<b>不花 token</b>，所以能比探针勤。一个站一轮采四样，各自独立失败：<br />
-              · <b>余额</b> —— 站点后台接口，需要「令牌」；读不到就显示「无数据」，不猜数字<br />
+              · <b>余额</b> —— 站点后台接口，需要站点登录态；读不到就显示「无数据」，不猜数字<br />
               · <b>实际消费</b> —— 站点自己的按天账单，见上面「余额概览」<br />
               · <b>分组倍率</b> —— <code>/api/v1/channels/available</code>，顺便把模型原价读回来<br />
               · <b>上游公告</b> —— 按标题 + 发布时间去重
+            </p>
+            <p>
+              <b>遇到 401/403 会自己续一次</b>：定时采集碰上登录态过期，会先自动续期，再重拉这一轮的账单，
+              不用你手动处理。续不上（登录态彻底失效）才记成「账单：&lt;原因&gt;」，并把该站标为登录态失效。
             </p>
             <p>
               <b>告警按「站点 × 类型」冷却</b>：同样的余额过低六小时内只记一条，不然第一次接站就会被刷屏。
@@ -549,27 +586,28 @@
 
             <h4 class="doc-h4">几个刻意的取舍</h4>
             <p>
-              <b>延迟折成相对分，不做绝对门槛</b> —— 首字和速度不与价格相加，而是除以同模型中位折成体验分，
+              <b>延迟折成相对分，不做绝对门槛</b> —— 首字和速度不与价格相加，而是除以同模型同档对话的通常水平折成快慢分，
               再乘进质量；绝对值（比如「3 秒」「15 秒」）受本机链路和请求长度影响太大，固定阈值只会误杀。<br />
               <b>缓存命中率按你的实测折价，且只折输入侧</b> —— 命中率来自你自己的逐单记账，
-              所以它反映的正是你的用法；前缀都不重复时命中率就是 0，折扣自动消失。<br />
+              所以它反映的正是你的用法；对话都不重复时命中率就是 0，折扣自动消失。<br />
               <b>余额读不到就留空</b> —— 多数站不对 API Key 开放余额接口，工具不会猜一个数字填进去。
             </p>
 
             <h3 class="doc-h3">常见问题</h3>
             <p>
-              <b>余额读不到？</b> 多数站不对 API Key 开放余额接口。可以在站点卡片上点「令牌」填一个后台登录令牌，
-              或者直接用「账号登录」，再不行就手动填余额。<br />
-              <b>花费显示「读不到账单」？</b> 「实际消费」只认站点自己的账单（<code>/api/v1/usage</code>）。
-              读不到通常是：还没填「令牌」、令牌失效、或这个站没有开放账单接口。工具不会拿估算冒充当账单。<br />
+              <b>余额读不到？</b> 多数站不对 API Key 开放余额接口。可以在站点卡片上点「账号登录」（或「导入登录态」），
+              再不行就手动填余额。<br />
+              <b>花费显示「未采集」？</b> 「实际消费」只认站点自己的账单（<code>/api/v1/usage</code>）。
+              卡片上会写明是哪一种：还没有站点登录态、登录态已失效、或这个站没有开放账单接口。
+              工具不会拿估算冒充当账单。<br />
               <b>花费比我预期的小？</b> 账单只统计经过这个站、且站点自己记了账的部分。
               如果你在别的客户端直连这个站，那部分不在本工具的采集范围内；反过来，
               网关侧估算缺约 26% 的 token，所以我们也绝不用估算来当花费。<br />
               <b>分组胶囊是灰的？</b> 颜色按组内模型的厂商聚合推断：单厂商上色，混合厂商或<b>组内还没有模型</b>是灰色。
               灰的通常意味着这把 Key 还没同步过模型，跑一次「一键同步」就好。<br />
-              <b>令牌失效了要重新抓吗？</b> 用「账号登录」填过账号密码的站会自动续期（401 触发，10 分钟冷却）；
-              手填的令牌不会被自动覆盖，失效后需要重新抓一个。<br />
-              <b>「导入倍率」和「基准价导入」有什么区别？</b> 站点页的导入倍率写的是<b>倍率</b>，
+              <b>令牌过期了要重新抓吗？</b> 不用。用「账号登录」或「导入登录态」接上的站会自动续期（遇到 401/403 续一次，
+              10 分钟冷却）；不会自动续期的站会在卡片上写明原因，重新登录一次即可。<br />
+              <b>「重新读取」和「基准价导入」有什么区别？</b> 站点页分组倍率面板的「重新读取」写的是<b>倍率</b>，
               基准价页的写的是<b>官方价</b>。两边分工：官方价归基准价页，折扣归站点页。<br />
               <b>为什么同一个模型在两个分组里价格不一样？</b> 正常。分组背后是不同的上游渠道，
               原价和倍率都可能不同。所以必须先选对分组，价格才有意义。<br />
@@ -600,8 +638,8 @@
             <h3 class="doc-h3">Quick start</h3>
             <ol class="doc-steps">
               <li>On <b>Sites</b>, add a relay (the base URL must end with <code>/v1</code>) and paste its key</li>
-              <li>Click <b>One-click sync</b>: models, balance and group detection run in sequence; without a token group detection is skipped</li>
-              <li>If no group was detected, click <b>Import ratios</b> and pick the group you actually bought</li>
+              <li>Click <b>One-click sync</b>: models, balance and group detection run in sequence; without a login session group detection is skipped</li>
+              <li>If no group was detected, open the <b>Group ratios</b> panel, click <b>Reload</b> and pick the group you actually bought</li>
               <li>For models without an official price, add one on <b>Benchmarks</b>, or load the built-in list</li>
               <li>Run a probe on the <b>Probes</b> page so the tool knows which sites to trust</li>
               <li>Routing picks a site automatically; you can override the order on <b>Routing</b></li>
@@ -619,6 +657,12 @@
               · <b>Needs attention</b> — sites the probes flagged, grouped by site with the reason<br />
               · <b>Sites at a glance</b> — ranked by long-term score: green healthy, yellow watch, red unstable
             </p>
+            <p>
+              <b>The refresh button in the top bar reloads everything</b>: besides the UI state (<code>/api/state</code>),
+              it refetches the overview's balance and actual spend (bypassing the 60-second cache), the monitor data,
+              and the usage page for the range you have selected. The 15-second auto-poll stays lightweight —
+              state only.
+            </p>
 
             <h4 class="doc-h4">Sites</h4>
             <p>
@@ -627,7 +671,7 @@
               · <b>Name</b> — anything you like, only for your own reference<br />
               · <b>Base URL</b> — the API endpoint the relay gave you, <b>it must end with <code>/v1</code></b>
               (e.g. <code>https://api.example.com/v1</code>)<br />
-              · <b>Type</b> — pick "Not sure" if you do not know; saving a token detects it automatically
+              · <b>Type</b> — pick "Not sure" if you do not know; an account login detects it automatically
               (one-api / new-api / Sub2API)<br />
               · <b>Key</b> — paste the full <code>sk-...</code>; stored encrypted, only the last digits are shown
             </p>
@@ -635,26 +679,30 @@
             <p>
               · <b>Account login</b> — sign in with the site's dashboard credentials; the token is fetched and renewed
               automatically (on 401, with a 10-minute cooldown). Sites with captcha / 2FA are not supported and say so.<br />
-              · <b>One-click sync</b> — models → balance → (with a token) group detection, run in sequence; one failing
+              · <b>One-click sync</b> — models → balance → (with a login session) group detection, run in sequence; one failing
               step does not stop the others.<br />
               · <b>Keys</b> — expands this site's key list: add or remove keys, see the group bound to each.<br />
               · <b>Group ratios</b> — expands the ratio rows so you can edit a ratio or restore site values.
-              See the Groups section.<br />
-              · <b>Import ratios</b> — the manual path when detection fails: list the site's groups and pick one.<br />
+              The <b>Reload</b> button inside it is the manual path when detection fails: it reads the site's group
+              list and you pick the tier you bought. See the Groups section.<br />
               · <b>Usage check</b> — pulls the site's per-request usage records for a <b>billing audit</b>:
               are the unit prices right, do the token counts line up.<br />
               · <b>Export config</b> — generates an OpenAI-compatible snippet you can paste into a client.<br />
-              · <b>Token</b> (on the site card) — the site's login token, used to read balance, bills and groups.
-              One token per backend account; never used for chat. Saving it also auto-detects which relay family the site is.<br />
+              · <b>Auto-renew</b> (on the site card) — shows a login-state badge (not signed in / expired / automatic /
+              no renewal) and the expiry date, next to an <b>Renew now</b> button (it reads <b>Account login</b> when there
+              is no session). The session is used to read balance, bills and groups; never for chat. After that the
+              refresh token renews it automatically — sites that cannot renew state the reason on the card.<br />
               · <b>Top-up rate</b> (on the site card) — how much site credit one unit of real money buys. Fill 1 for 1:1
               top-ups; if ¥100 buys $120 of credit, fill 0.83. Empty = use the market FX rate. "Actual spend" uses it to
               convert the site's bill into your currency.<br />
               · <b>Group</b> (on the key row) — shows which group this key belongs to; click it to change.
             </p>
             <p>
-              <b>Getting the token</b>: log in to the site → F12 → Network → click any <code>/api/v1/</code> request →
-              copy the <code>Authorization</code> value from Request Headers (drop the <code>Bearer </code> prefix).
-              Tokens expire in 7–30 days; copy a fresh one, or use Account login so it renews itself.
+              <b>Where the login session comes from</b>: click <b>Account login</b> on the site card and sign in with
+              the site's dashboard credentials. If the site has a captcha / 2FA or the password does not go through,
+              use <b>Import session</b> and paste the login response JSON from the browser.
+              After that the refresh token renews it automatically — an expired token is no longer your problem.
+              Sites that cannot auto-renew say why on the card.
             </p>
 
             <h4 class="doc-h4">Balance overview</h4>
@@ -675,7 +723,14 @@
               <b>straight from the site's own bill</b> (<code>/api/v1/usage</code>, summed per request), not estimated by the
               gateway — about 26% of upstream tokens arrive without <code>usage</code> and <code>cached_tokens</code> is
               unstable, which puts estimates anywhere from 7× to 10× off. When the bill cannot be read it says
-              "no bill" instead of pretending it is 0. Collection runs every 30 minutes by default and can be changed
+              <b>not collected</b> and names the reason:<br />
+              · <code>{n} site session(s) expired — bills only come back once they are renewed</code> — the card then offers a
+              <b>Renew all</b> button that renews each one and re-collects<br />
+              · <code>No site session yet: sign in from the Sites page first</code><br />
+              · <code>Some sites expose no billing API; those stay uncaptured</code><br />
+              Collection failures are no longer silent: an expired token / no permission is recorded as
+              "bill: &lt;reason&gt;" and the site is marked session-invalid.
+              Collection runs every 30 minutes by default and can be changed
               or turned off in settings.
             </p>
 
@@ -692,11 +747,11 @@
               The tool can list every group and ratio, but the last click has to be yours.
             </p>
             <p>
-              <b>What happens after you click Import ratios:</b><br />
-              ① The site's groups appear, each with its ratio and how many of your models it covers; usable ones first<br />
+              <b>What happens after you click Reload in the Group ratios panel:</b><br />
+              ① It lists the site's groups, each with its ratio and how many of your models it covers; usable ones first<br />
               ② You pick the one you bought and click Apply ratios<br />
               ③ The group is stored on the key, ratios are written to every model below, and Pricing / Routing update<br />
-              ④ Next time the picker opens, it preselects the same group
+              ④ Next time you click Reload, it preselects the same group
             </p>
             <p>
               <b>A group lives on the key — that is the single source of truth.</b><br />
@@ -716,7 +771,7 @@
               the ratio always visible; fully free groups read <code>×0</code>.
             </p>
             <p>
-              Where the data comes from: with a token it reads <code>/api/v1/channels/available</code>
+              Where the data comes from: with a site login session it reads <code>/api/v1/channels/available</code>
               (the richest source, <b>no model plaza required</b>); without one it falls back to the model plaza.
               If neither works it tells you why.
             </p>
@@ -791,9 +846,8 @@
             </p>
             <p>
               Row markers: <b>Cheapest</b> is the lowest price for that model; <b>Suspicious</b> means the probes do not
-              trust the site — the price is still shown but it is not recommended; <b>Too slow</b> means first-token
-              latency exceeded your limit. Cache hit rate has its own column; the small text under blended cost is the
-              off-peak price.
+              trust the site — the price is still shown but it is not recommended. Cache hit rate has its own column;
+              the small text under blended cost is the off-peak price.
             </p>
             <p>
               When a site has several groups, the same model appears on several rows, each tagged with its group.
@@ -805,15 +859,28 @@
               See who routing would pick, and override it. One table per model:<br />
               · <b>Highlighted row</b> — the site that would be picked now<br />
               · <b>Price</b> — nominal unit price, blended by your input/output mix and discounted by cache reuse<br />
-              · <b>Quality</b> — three lines: the value / <code>reliability × experience</code> / sample count<br />
+              · <b>Quality</b> — three lines: the value / <code>reliability × speed score</code> / sample count<br />
               · <b>Sort key</b> — the number actually used to rank in the current mode; the sub-line says how far it is from the row above<br />
               · <b>Hit rate</b> — cache reuse ratio; the sub-line names the source: <code>measured</code> (your own
-              per-request ledger), <code>measured·few</code> (too few samples, shrunk towards the global median),
+              per-request ledger), <code>measured·few</code> (too few samples, shrunk towards the usual level),
               <code>prior</code> (no samples yet, starts at 85%)<br />
-              · <b>TTFT</b> — absolute milliseconds; the <code>+Nms</code> sub-line is how much slower than the fastest
-              of the same probe round, with local link latency subtracted<br />
+              · <b>First token (TTFS) / Output speed (TPS)</b> — two separate columns: TTFS is the milliseconds until
+              the first token, TPS is how many tokens per second. The <code>+Nms</code> sub-line of TTFS is how much
+              slower than the fastest of the same probe round, with local link latency subtracted<br />
               · <b>↑↓</b> — reorder the available candidates; takes effect immediately<br />
               · <b>Back to auto</b> — clears the manual order
+            </p>
+            <p>
+              <b>The first row's button is "Pin", not ↑↓.</b> Click once = freeze the current top order into a
+              manual order (manual mode, same as manual reordering); click again = unpin, clear the manual order and
+              go back to automatic ranking. Other rows keep ↑↓.
+            </p>
+            <p>
+              Above the headers sits a <b>View by chat length: [short chat] [medium chat] [long chat]</b> segment control
+              that buckets both the TTFS and TPS columns. <b>It only changes the numbers you see, never which site is
+              picked</b> — the backend buckets every request by its own prompt size (short &lt; 60k, medium 60k–180k,
+              long ≥ 180k). First-token latency grows with chat length anyway; compare short and long prompts
+              together and the winner is whoever got the luckier draw.
             </p>
             <p>
               <b>Routing preference</b> at the top left has three modes. It only changes the sort key, never admission:<br />
@@ -821,7 +888,7 @@
               · <b>Value</b> (default) — effective cost = price ÷ quality, lowest first<br />
               · <b>Quality</b> — highest quality first, price breaks ties<br />
               In all modes, supplies within 5% of each other <b>stay on the site that last succeeded</b>, so a few
-              pennies never throw away an upstream prefix cache.
+              pennies never throw away the upstream prompt cache.
             </p>
             <p>
               Manual order only affects rows that are usable. Untrusted or expired supplies sink to the bottom by
@@ -837,7 +904,7 @@
               · <b>Truncation</b> — asks it to count to 120; stopping early means the upstream lowered max_tokens<br />
               · <b>Billing</b> — billed input, after subtracting the cache hits of the same request, far beyond the
               actual prompt means you are being overcharged<br />
-              · <b>Cache</b> — sends the same long prefix twice and checks how much the second one hit (two requests)<br />
+              · <b>Cache</b> — sends the same long prompt twice and checks how much the second one hit (two requests)<br />
               · <b>Self-identification</b> — asks "what model are you"; <b>recorded, never scored</b>. Models misreport
               themselves all the time, and penalising that produces too many false positives.
             </p>
@@ -849,8 +916,8 @@
               · <b>Auto probe</b> — runs in the background on an interval. Default 1 hour; can be turned off. With many
               models, set it longer — every probe costs a few tokens.<br />
               · <b>Score TTL</b> — a score older than this is discarded and no longer used for routing.<br />
-              · <b>Speed</b> — there is no fixed ceiling any more: speed is folded into the experience score, so a slow
-              supply loses cost efficiency instead of being excluded.<br />
+              · <b>Speed</b> — there is no fixed ceiling any more: speed is scored against the usual level of the same model
+              and chat-length tier, so a slow supply loses cost efficiency instead of being excluded.<br />
               · <b>Allow suspicious supplies</b> — off by default. When off, sites the probes flagged
               (fingerprint mismatch / truncated / billing anomaly / expired score) are only a last resort; when on,
               they compete on effective cost like everything else.
@@ -859,7 +926,7 @@
               <b>Know the trade-off before turning it on</b>: suspicious sites still sort by price ÷ quality, so half
               the quality doubles the cost — only a large enough discount wins. But they can genuinely return swapped
               or truncated answers. Turn it on when saving money matters more; leave it off when trustworthy output does.
-              Speed is not a gate any more: it is folded into the experience score.
+              Speed is not a gate any more: it is folded into the speed score.
             </p>
 
             <h4 class="doc-h4">Gateway</h4>
@@ -872,7 +939,13 @@
             </p>
             <p>
               <b>Recent requests</b> logs every routing decision: who was chosen, how many attempts, how long it took.
-              Expand a row to see the full candidate order and the failure reasons.
+              Expand a row to see the full candidate order and the failure reasons. The result column has three states:<br />
+              · <b>success</b> — ran to completion normally<br />
+              · <b>delivered · client hung up first</b> — the upstream already sent the whole turn (it received
+              <code>finish_reason</code> and <code>usage</code>, so the content and the token accounting are complete);
+              the client (DSH, for instance) hung up after the tool call without waiting for the final <code>[DONE]</code>.
+              It counts as a success and does not lower availability<br />
+              · <b>a red failure reason</b> — the turn really did not arrive complete, counted as a failure
             </p>
 
             <h4 class="doc-h4">Usage</h4>
@@ -889,8 +962,8 @@
             <h4 class="doc-h4">Benchmarks</h4>
             <p>
               What ratios convert against — essentially the official price. Three sources:<br />
-              · <b>Import official prices</b> — pick a site and pull them. Uses a token to read available channels,
-              otherwise the model plaza. Only fills gaps, never overwrites<br />
+              · <b>Import official prices</b> — pick a site and pull them. With a site login session it reads available
+              channels, otherwise the model plaza. Only fills gaps, never overwrites<br />
               · <b>Use this site's prices</b> — takes one site's existing prices as the baseline, for when you trust it<br />
               · <b>Load built-in prices</b> — a bundled list; prices change often, verify before relying on it
             </p>
@@ -939,20 +1012,26 @@
               <b>Integrity</b> = fingerprint pass rate × 0.5 + not-truncated rate × 0.3 + normal billing rate × 0.2
               (only measured items count; weights renormalise over the rest)<br />
               <b>Reliability</b> = availability × integrity<br />
-              <b>Experience</b> = TTFT score<sup>0.6</sup> × speed score<sup>0.4</sup><br />
-              <b>Quality</b> = reliability × experience
+              <b>Speed score</b> = TTFT score<sup>0.6</sup> × throughput score<sup>0.4</sup><br />
+              <b>Quality</b> = reliability × speed score
             </p>
             <p>
-              The experience ruler is <b>every on-sale supply of the same model</b>, not a fixed number of milliseconds:<br />
-              · <b>TTFT score</b> = median TTFT ÷ this site's TTFT; <b>speed score</b> = this site's tok/s ÷ median tok/s.
-              <b>1.00 is the median of that model</b><br />
-              · No tiers, no caps: faster than the median is rewarded, slower is scaled down, one rule only<br />
+              The speed ruler is <b>every on-sale supply of the same model in the same chat-length tier</b>, not a fixed
+              number of milliseconds:<br />
+              · <b>TTFT score</b> = usual-level TTFT ÷ this site's TTFT; <b>throughput score</b> = this site's tok/s ÷
+              usual-level tok/s. <b>1.00 is the usual level of that model in that tier</b><br />
+              · <b>Real speed is bucketed by chat length</b>: short (prompt &lt; 60k), medium (60k–180k), long (≥ 180k);
+              each tier has its own usual level. Comparison and routing use <b>the tier of the request itself</b> as the
+              ruler<br />
+              · With no sample in the same tier it is marked "size not matched" and <b>no bonus is granted</b>
+              (speed score capped at 1.00) — a fast short-chat sample never vouches for a long chat<br />
+              · Below 3 samples the deviation shrinks proportionally towards 1.00: one sample can move it at most 1/3<br />
               · Sites with real traffic are scored on <b>measured</b> numbers; probe-only sites use the
-              <b>probe tier</b>, capped at 1.00 (probes are 1k-token requests — they can prove "not slow", not "faster")<br />
-              · Nothing measured at all counts as 1.00 (median level), never 0
+              <b>probe tier</b>, capped at 1.00 (probes are a tiny 45-token request plus a 14.5k cache probe — they can prove "not slow", not "faster")<br />
+              · Nothing measured at all counts as 1.00 (usual level), never 0
             </p>
             <p>
-              Reliability below 0.8 marks a supply unusable for routing. Experience <b>never</b> gates admission — a slow
+              Reliability below 0.8 marks a supply unusable for routing. Speed <b>never</b> gates admission — a slow
               site is not kicked out, its effective cost is simply divided by a smaller number.
             </p>
             <p>
@@ -970,8 +1049,8 @@
               · <b>Input share</b> — taken from your real traffic (input tokens ÷ all tokens); 90% until there is data<br />
               · <b>Cache discount</b> — input price times <code>1 − hit rate × 0.9</code>. The hit rate is
               <b>measured per request</b> by the gateway: cache reads ÷ (net input + cache reads + cache writes), with
-              cold starts (new session, prefix just changed, idle for a while) excluded<br />
-              · With few samples it is shrunk towards the global median, so one outlier cannot decide the ranking
+              cold starts (new session, chat content just changed, idle for a while) excluded<br />
+              · With few samples it is shrunk towards the global usual level, so one outlier cannot decide the ranking
             </p>
             <p>
               The "untrusted" part can be switched off with <b>Allow suspicious supplies</b> on the Probes page: they
@@ -1004,6 +1083,13 @@
               availability, turns "unstable", and is skipped on the next route.
             </p>
             <p>
+              A request where the client hung up early but the upstream had already delivered the whole turn
+              (<code>finish_reason</code> and <code>usage</code> received) is also a <b>valid sample</b> — that is how almost
+              every long chat ends: DSH and similar clients disconnect after the tool call instead of waiting for the final
+              <code>[DONE]</code>. Recent requests shows them as "delivered · client hung up first": counted as success,
+              availability untouched.
+            </p>
+            <p>
               Successful real responses are also sampled for two objective signals: <b>empty answers</b> (200, clean
               finish, not a single character) and <b>billing anomalies</b> — billed input, <b>after subtracting the cache
               hits of that same request</b>, still more than 4× the estimated request body. Sites commonly count a long
@@ -1017,10 +1103,16 @@
               Comparison and probes answer "which site is best right now"; collection answers "what happened these past
               days". Every 30 minutes by default (can be turned off). It only reads site APIs and
               <b>burns no tokens</b>, so it can be more frequent than probing. Four things per site, each failing on its own:<br />
-              · <b>Balance</b> — the site's dashboard API, needs a token; unreadable shows "no data" rather than a guess<br />
+              · <b>Balance</b> — the site's dashboard API, needs a site login session; unreadable shows "no data" rather than a guess<br />
               · <b>Actual spend</b> — the site's own daily bill, see Balance overview above<br />
               · <b>Group ratios</b> — <code>/api/v1/channels/available</code>, which also brings back base prices<br />
               · <b>Upstream notices</b> — deduplicated by title + publish time
+            </p>
+            <p>
+              <b>On 401/403 it renews once by itself</b>: when a scheduled collection finds the session expired, it renews
+              it automatically and then re-reads that round's bills — you do not have to do anything. Only when the
+              renewal fails (the session is really dead) is it recorded as "bill: &lt;reason&gt;" and the site marked
+              session-invalid.
             </p>
             <p>
               <b>Alerts cool down per "site × type"</b>: the same low balance is recorded once per six hours, otherwise
@@ -1032,33 +1124,35 @@
             <h4 class="doc-h4">Deliberate trade-offs</h4>
             <p>
               <b>Latency becomes a relative score, never an absolute gate</b> — TTFT and speed are divided by the
-              same-model median and multiplied into quality instead of being added to price. Absolute values depend too
-              much on local links and prompt length; a fixed ceiling only kills good supplies.<br />
+              usual level of the same model in the same chat-length tier and multiplied into quality instead of being
+              added to price. Absolute values depend too much on local links and chat length; a fixed ceiling only kills
+              good supplies.<br />
               <b>Cache hit rate is priced in, from your own measurements and on the input side only</b> — it comes from
-              your per-request ledger, so it reflects how you actually use the API; if your prefixes never repeat, the
-              hit rate is 0 and the discount disappears by itself.<br />
+              your per-request ledger, so it reflects how you actually use the API; if your chat content never repeats,
+              the hit rate is 0 and the discount disappears by itself.<br />
               <b>Balance is left blank when unreadable</b> — most sites do not expose balance to API keys; the tool will
               not guess a number.
             </p>
 
             <h3 class="doc-h3">FAQ</h3>
             <p>
-              <b>Balance cannot be read?</b> Most sites do not expose a balance endpoint to API keys. Click "Token" on the
-              site card and paste a site login token, try Account login, or just type the balance in.<br />
-              <b>Spend shows "no bill"?</b> Actual spend only recognises the site's own bill
-              (<code>/api/v1/usage</code>). It fails when the token is missing or expired, or the site has no billing API.
-              The tool will not pass an estimate off as a bill.<br />
+              <b>Balance cannot be read?</b> Most sites do not expose a balance endpoint to API keys. Use <b>Account login</b>
+              (or <b>Import session</b>) on the site card, or just type the balance in.<br />
+              <b>Spend shows "not collected"?</b> Actual spend only recognises the site's own bill
+              (<code>/api/v1/usage</code>). The card names which case it is: no site session yet, session expired, or the
+              site has no billing API. The tool will not pass an estimate off as a bill.<br />
               <b>Spend looks lower than expected?</b> The bill only covers traffic this site recorded itself. Anything you
               sent to the site from another client is outside collection; conversely, gateway-side estimates lose about
               26% of tokens, which is exactly why they are never used as spend.<br />
               <b>Why is a group chip grey?</b> Colours are inferred from the vendors of the group's models: one vendor
               colours in, mixed vendors or <b>a group with no models yet</b> stay grey. Grey usually means that key has
               not synced models — run One-click sync.<br />
-              <b>Do I have to re-copy the token when it expires?</b> Sites you added through Account login renew
-              themselves (triggered by 401, 10-minute cooldown). Manually pasted tokens are never overwritten and must be
-              re-copied.<br />
-              <b>Import ratios vs. import official prices?</b> The site page writes <b>ratios</b>; the Benchmarks page
-              writes <b>official prices</b>. Prices belong to Benchmarks, discounts belong to the site page.<br />
+              <b>Do I have to re-copy the token when it expires?</b> No. Sites connected through Account login or Import
+              session renew themselves (once on 401/403, 10-minute cooldown); sites that cannot auto-renew say why on the
+              card, and re-signing in once is enough.<br />
+              <b>Reload vs. import official prices?</b> The <b>Reload</b> button in the Group ratios panel writes
+              <b>ratios</b>; the Benchmarks page writes <b>official prices</b>. Prices belong to Benchmarks, discounts
+              belong to the site page.<br />
               <b>Why does the same model cost different amounts in two groups?</b> That is normal. Groups sit on top of
               different upstream channels, so both the base price and the ratio can differ. Picking the right group is
               what makes the price meaningful.<br />
@@ -1192,7 +1286,7 @@
         <form id="form-session-import" class="grid" style="margin-top:14px;padding-top:14px;border-top:1px dashed var(--border)">
           <p class="hint" style="margin:0 0 8px">
             站点开了人机验证（验证码 / Turnstile / 2FA）账号密码连不上？这一步在浏览器里自己过：
-            正常登录站点后台 → F12 → Network → 找登录请求 → 把响应 JSON 整体贴进来。
+            正常登录站点后台 → 打开浏览器开发者工具 → 网络（Network）→ 找登录请求 → 把响应 JSON 整体贴进来。
             有 refresh_token 就能一直自动续期；本工具不做验证码绕过。
           </p>
           <label>登录响应（JSON，或直接贴 access token）

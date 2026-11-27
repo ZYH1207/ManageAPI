@@ -41,7 +41,7 @@ node daemon/index.js --open        # open the browser on start
 
 1. Add a relay on **Sites** (the URL must end with `/v1`), paste its key
 2. Hit **Sync all**: fetch models, read balance, detect groups in one pass
-3. If the group wasn't detected, use **Import rates** and pick the tier you actually bought
+3. If the group wasn't detected, open the **Group ratios** panel, click **Reload** and pick the tier you actually bought
 4. Fill in missing official prices on **Benchmarks**, or load the built-in reference
 5. Run one **Probes** pass so the app knows which sites are trustworthy
 
@@ -83,13 +83,13 @@ The billing formula is `actual price = model base price × group ratio`. A ratio
 
 Which group you're in has to come from you: the API can tell which models a key may call, never which tier it belongs to — that is a commercial fact, not a technical one.
 
-Click **Import rates** on a site card to list every group with its ratio and how many of your models it covers:
+Click **Reload** in the **Group ratios** panel of a site card to list every group with its ratio and how many of your models it covers (click it again and it preselects the group you picked last time):
 
 ![Group picker](docs/screenshot-groups.png)
 
 > Group chips are coloured by **vendor**: all domestic vendors blue, OpenAI green, Claude orange, Gemini yellow, **free groups purple** (so "free" reads the same everywhere). Mixed or unrecognised vendors stay neutral grey rather than guess. The ratio digits inherit the group colour and are only bolded; only **markup tiers** warn: >1.2 orange, >2 red.
 
-Data source: with a **token** set it reads `/api/v1/channels/available` (the richest source, and it does **not** require the site to enable its model plaza); without one it falls back to `/api/v1/model-plaza`.
+Data source: with a site **login session** it reads `/api/v1/channels/available` (the richest source, and it does **not** require the site to enable its model plaza); without one it falls back to `/api/v1/model-plaza`.
 
 **Each supply in the pricing table is in one of two modes.** *Ratio* = base price × ratio (unit-price boxes disabled); *Price* = type the input/output unit price directly (ratio box disabled). Switching ratio → price seeds the computed price into the unit box, so the row never turns "unpriced" and disappears.
 
@@ -110,7 +110,7 @@ Each model gets **5 requests**, one per trick:
 | **Swap**: routes to a cheaper model | demand exact output `{"fp":"7Q2K","calc":391}` | exact JSON match |
 | **Truncation**: lowers `max_tokens` | ask it to "count to 120" while requesting `max_tokens: 1500` | highest number < 120, or `finish_reason=length` with far fewer tokens than requested |
 | **Inflation**: reports far more usage than real | compare `usage.prompt_tokens` with the prompt's actual size | flagged above 3× expected |
-| **Cache**: two identical long prefixes | read `cached_tokens` on the second | displayed only, never ranked |
+| **Cache**: two identical long prompts | read `cached_tokens` on the second | displayed only, never ranked |
 | **Self-identification** | ask "what model are you" | **recorded, not scored** — self-reports are unreliable |
 
 All requests are streamed, which also yields TTFT.
@@ -155,11 +155,13 @@ It reads as "what you actually pay for one trustworthy answer". A weighted sum l
 
 ![Routing](docs/screenshot-decision.png)
 
-Each row has ↑↓ for manual ordering, but **availability is a hard judgement that manual order cannot override** — untrusted, too-slow or stale supplies won't move (enable "Allow suspicious supplies" to let them compete).
+Each row has ↑↓ for manual ordering; the **first row's** button is **Pin** instead — it freezes the current top order into a manual order (manual mode), and clicking it again unpins and returns to automatic ranking. But **availability is a hard judgement that manual order cannot override** — untrusted or stale supplies won't move (enable "Allow suspicious supplies" to let them compete).
 
-TTFT **does not factor into** effective cost (different unit; weighting distorts it). Instead there's an optional ceiling: supplies above it are excluded from routing and marked "too slow".
+TTFT **does not factor into** effective cost (different unit; weighting distorts it). Instead, first-token latency and output speed form a **speed score** — scored against the *usual level* of the same model in the same **chat-length tier** (short: prompt < 60k, medium: 60k–180k, long: ≥ 180k, each tier with its own usual level), then multiplied into quality. There is **no fixed ceiling** any more: a slow supply simply costs more, it is not excluded. When a request has no sample in its own tier it is marked "size not matched" and gets no bonus (score capped at 1.00); with fewer than 3 samples the deviation shrinks towards 1.00, so one sample can move it at most 1/3.
 
-Cache hit rate is **display-only**: the benefit depends on your usage pattern — if your prefixes never repeat, the rate is 0. Ranking on list price guarantees worst-case cost; cache is a bonus.
+Cache hit rate is **display-only** in this comparison: the benefit depends on your usage pattern — if your chat content never repeats, the rate is 0. Ranking on list price guarantees worst-case cost; cache is a bonus.
+
+The decision page splits first-token latency and output speed into **first token (TTFS)** and **output speed (TPS)** columns, with a **By chat length: [short] [medium] [long]** switch above the table. That switch **only changes the numbers you see, not who gets picked** — routing uses each request's own prompt size to choose its tier.
 
 ---
 
@@ -206,11 +208,11 @@ Set `model` to the normalised name (`GET /v1/models` lists them). You never touc
 
 ![Gateway](docs/screenshot-gateway.png)
 
-**Selection order**: drop untrusted / over the TTFT ceiling / expired → sort the rest by effective cost → if the first one fails, switch to the next **before** answering the client.
+**Selection order**: drop untrusted / expired → sort the rest by effective cost → if the first one fails, switch to the next **before** answering the client.
 
 The streaming boundary that matters: **the first chunk must be read and confirmed not to be an error before committing response headers**. Any failure before that switches silently; after that there is only a graceful finish.
 
-Response headers carry `X-ManageAPI-Provider` / `X-ManageAPI-Attempts` / `X-ManageAPI-Quality`. The gateway page keeps a routing log: who served each request, how candidates were ranked, why attempts failed.
+Response headers carry `X-ManageAPI-Provider` / `X-ManageAPI-Attempts` / `X-ManageAPI-Quality`. The gateway page keeps a routing log: who served each request, how candidates were ranked, why attempts failed. Its result column has three outcomes: **success**, **delivered · client hung up first**, and a red failure reason. The middle one means the upstream already finished the whole turn (it sent `finish_reason` and `usage`, so the content and the token accounting are complete) and the client — DSH, say — disconnected after the tool call without waiting for the final `[DONE]`; it counts as a success and does not lower availability.
 
 **How usage is obtained**: clients rarely send `stream_options.include_usage`, so the gateway **injects** it and then **filters out** the trailing usage-only chunk before forwarding. The client's stream is unchanged; the gateway gets exact numbers.
 
@@ -226,6 +228,8 @@ Aggregated by "day × key × site × model" into its own `usage.json` (the only 
 
 **Only traffic through the gateway is counted.**
 
+The refresh button in the top bar is a **full refresh**: besides state, it re-reads the overview's balances and real spend (bypassing the 60-second cache), the monitor data, and the usage page's currently selected range. The 15-second auto-poll stays light and only pulls state.
+
 ---
 
 ## Monitoring
@@ -234,8 +238,9 @@ Comparison and probes answer "which site is best right now"; monitoring answers 
 
 Collection runs every 30 minutes by default (can be turned off). It only reads site APIs and burns no tokens, so it can be more frequent than probing:
 
-- **Balance** — via the site's dashboard API; requires a **token** first. When unreadable it says "no data" rather than inventing a number.
-- **Actual spend** — read **straight from the site's own bill** (`/api/v1/usage`, summing `actual_cost` per request). Why not the gateway's estimate: about **26% of tokens never arrive with `usage`** (requests that don't return it can only be recorded as 0), and `cached_tokens` is unstable (same site, same day: sometimes 553216, sometimes 128). Together those put estimates anywhere from 7× to 10× off. Unreadable bills show "no bill", not 0.
+- **Balance** — via the site's dashboard API; requires a **site login session** first (Account login, or Import session with the login-response JSON; after that the refresh token renews it automatically). When unreadable it says "no data" rather than inventing a number.
+- **Actual spend** — read **straight from the site's own bill** (`/api/v1/usage`, summing `actual_cost` per request). Why not the gateway's estimate: about **26% of tokens never arrive with `usage`** (requests that don't return it can only be recorded as 0), and `cached_tokens` is unstable (same site, same day: sometimes 553216, sometimes 128). Together those put estimates anywhere from 7× to 10× off. An unreadable bill shows **"not collected"** plus the actual reason: *N sites have an expired login session, renew to read their bills* (the card then offers **Renew all**, which renews each one and re-collects), *no site login yet: sign in on the Sites page first*, or *some sites expose no billing API*. Collection failures are no longer silent either: an expired token / no permission is recorded as "bill: &lt;reason&gt;" and the site is marked session-invalid.
+- **Auto-renewal at collection time** — when the 30-minute collection hits a 401/403 it renews the session once by itself and re-reads that round's bills, no manual step needed.
 - **Group ratios** — from `/api/v1/channels/available`, which also brings back model base prices.
 - **Upstream notices** — `/api/status` and `/api/v1/announcements`, deduplicated by title + publish time.
 
@@ -269,7 +274,7 @@ Everything lives in `~/.manage-api/`:
 
 ## Known limitations
 
-- **Balance is often unreadable.** one-api's `/api/user/self` wants a user access token rather than an `sk-` key, and many sites disable such endpoints. Workaround: set a **token** on the site card (the dashboard token copied from the browser, once per dashboard account). When it can't be read, type the balance yourself — the tool won't guess.
+- **Balance is often unreadable.** one-api's `/api/user/self` wants a user access token rather than an `sk-` key, and many sites disable such endpoints. Workaround: connect the site with **Account login** (or **Import session**, pasting the login-response JSON). Sites that cannot auto-renew say why on the card. When it can't be read, type the balance yourself — the tool won't guess.
 - **Only `/v1/chat/completions` and `/v1/models` are proxied.** Embeddings and images are not implemented.
 - **Usage depends on upstream returning `usage`.** A few sites refuse even when asked; those requests record 0 tokens but still count as requests.
 - **Per-request supplies don't compete for "cheapest"** (different unit). Billing mode is detected from the plaza's `billing_mode`; without a plaza you can set the unit to `/call` yourself.
