@@ -326,9 +326,10 @@ export function renderFreeRelayPane({ offers = [], providers = [], crossPane = '
       const fp = typeof score?.fingerprintRate === 'number' ? `${Math.round(score.fingerprintRate * 100)}%` : '—'
       const ttft = typeof score?.ttftMs === 'number' ? `${Math.round(score.ttftMs)}ms` : '—'
       // 免费页整页都是免费供给：分组列统一免费色（与站点卡「免费 N」标记同款），
-      // 厂商由「模型」列自己表达，不抢分组的语义
+      // 厂商由「模型」列自己表达，不抢分组的语义。分组名截断由 style.css 的
+      // 全局 .group-name / .gtag 规则统一定宽，长名字靠 title 悬停看全
       const group = offer.group
-        ? `<span class="gtag vchip-free">${esc(offer.group)}</span>`
+        ? `<span class="gtag vchip-free" title="${esc(offer.group)}">${esc(offer.group)}</span>`
         : `<span style="color:var(--faint)">${esc(t('默认'))}</span>`
       const status = gate
         ? `<span class="badge warn" title="${esc(t(gate.why || gate.label))}">${esc(t(gate.label))}</span>`

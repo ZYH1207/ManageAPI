@@ -38,6 +38,23 @@ export function probeTimeoutMsOf(settings = {}) {
   return Number.isFinite(raw) && raw >= PROBE_TIMEOUT_FLOOR_MS ? raw : PROBE_TIMEOUT_FLOOR_MS
 }
 
+/**
+ * 这条供给上次被探测的时间（任何一次探测记录，不论成败）。
+ *
+ * 用途只有一件：批量探测时按「最久没探的先用」排序。
+ * 以前批量是照数据里的固定顺序 slice(0, limit)，手点「探测全部」永远只打同前 5 条，
+ * 其余供给只能等定时任务轮到——13 条在售供给时那个按钮名不副实。
+ */
+export function lastProbeAt(probes = [], offerId = '') {
+  let best = 0
+  for (const p of probes) {
+    if (p.offerId !== offerId) continue
+    const t = new Date(p.ts).getTime()
+    if (Number.isFinite(t) && t > best) best = t
+  }
+  return best || 0
+}
+
 /** 这条供给上次做过缓存探测的时间（用于降频）。 */
 export function lastCacheProbeAt(probes = [], offerId = '') {
   let best = 0
@@ -71,4 +88,35 @@ export function providerCooldowns(scores, providerOf, now = Date.now()) {
     if (until > prev) map.set(providerId, { offerId, until })
   })
   return map
+}
+
+/**
+ * 批量探测该挑哪些目标：**最久没探的先探**，冷却中的站整站跳过。
+ *
+ * 以前是照数据里的固定顺序 `slice(0, limit)`：手点「探测全部」永远只打同前 5 条，
+ * 13 条在售供给时后面 8 条只能等定时任务轮到，而且完全不看冷却——
+ * 429 的站被反复砸，只会把限流拖得更久。
+ *
+ * @returns {{targets:Array, cooling:Array}} cooling 是「被跳过」的占位结果，供界面报数
+ */
+export function pickProbeTargets({ offers = [], probes = [], cooldowns = null, limit = 5, now = Date.now() } = {}) {
+  const cooling = []
+  const ready = []
+  for (const offer of offers) {
+    const hit = cooldowns && typeof cooldowns.get === 'function' ? cooldowns.get(offer.providerId) : null
+    if (hit && Number(hit.until) > now) {
+      const mins = Math.max(1, Math.round((hit.until - now) / 60000))
+      cooling.push({
+        offerId: offer.id,
+        providerId: offer.providerId,
+        ok: false,
+        skipped: 'cooling',
+        error: `站点在冷却中（约 ${mins} 分钟后到期），这一轮跳过`,
+      })
+      continue
+    }
+    ready.push(offer)
+  }
+  ready.sort((a, b) => lastProbeAt(probes, a.id) - lastProbeAt(probes, b.id))
+  return { targets: ready.slice(0, Math.max(0, limit)), cooling }
 }

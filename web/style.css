@@ -963,18 +963,25 @@ a.icon-btn:hover { text-decoration: none; }
   font-size: 11px; padding: 1.5px 7px; line-height: 1.5;
   background: var(--accent-soft); border: 1px solid transparent; border-radius: 6px;
   color: var(--accent); font-weight: 500;
-}
-.prov-group-chips .group-chip:hover { border-color: var(--accent); }
-/* 站点真会起 40 字的分组名（「【自建】混池 6.1-sol专属，高缓不降智…」）：
-   只截断名字本身，倍率是名字的兄弟节点、不参与省略——
-   以前整个胶囊 overflow:hidden，名字一长后面「×0.12」就被省略号一起吃掉 */
-.prov-group-chips .group-chip {
+  /* 名字的截断宽度由全局 .group-name 规则读 --gn-max，胶囊自己只留外层上限 */
+  --gn-max: 112px;
   max-width: 176px; display: inline-flex; align-items: center; gap: 4px; white-space: nowrap;
 }
-.prov-group-chips .group-chip .chip-name {
-  min-width: 0; max-width: 112px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+.prov-group-chips .group-chip:hover { border-color: var(--accent); }
+
+/* 分组名：唯一的截断规则（改这里就够，别在各页面再写 max-width + ellipsis）
+   站点真会起 40 字的分组名（「【自建】混池 6.1-sol专属，高缓不降智…」）。名字一律由
+   app.js 的 groupNameHtml() 渲染成 .group-name（站点卡胶囊沿用 .chip-name 类名），
+   各上下文只调 --gn-max 定宽度：站点卡 112px / Key 行 210px / 比价列 180px / 监控 100%。
+   倍率、徽章是名字的兄弟节点（flex:none），名字一长不会把它们一起省略掉。 */
+.group-name,
+.group-chip .chip-name,
+.gtag {
+  display: inline-block; vertical-align: bottom;
+  max-width: var(--gn-max, 150px);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.prov-group-chips .group-chip > *:not(.chip-name) { flex: none; }
+.group-chip > *:not(.chip-name) { flex: none; }
 
 /* ------------------------------------------- 厂商品牌配色（分组胶囊 / 分组徽章）
    胶囊底色按厂商品牌色：国产统一 DeepSeek 蓝、OpenAI 用 ChatGPT 绿、
@@ -1035,11 +1042,11 @@ a.icon-btn:hover { text-decoration: none; }
 .badge.kindchip-vendor { background: var(--vendor-free-soft); color: var(--vendor-free); }
 .badge.kindchip-relay { background: hsl(215 18% 93%); color: hsl(215 15% 38%); }
 [data-theme='dark'] .badge.kindchip-relay { background: hsl(215 15% 17%); color: hsl(215 20% 68%); }
-/* 免费页分组列的小胶囊（那里原本是纯文本） */
+/* 免费页分组列的小胶囊（那里原本是纯文本）：宽度走全局 .group-name 规则 */
 .gtag {
-  display: inline-block; font-size: 11px; padding: 1px 7px; border-radius: 6px;
+  font-size: 11px; padding: 1px 7px; border-radius: 6px;
   background: var(--divider); color: var(--muted); border: 1px solid transparent;
-  white-space: nowrap; max-width: 160px; overflow: hidden; text-overflow: ellipsis;
+  --gn-max: 160px;
 }
 .gtag[class*='vchip-'] { background: var(--g-bg); color: var(--g-fg); border-color: var(--g-ring); }
 /* 「还有 N 个 / 收起」：可点击的展开开关，虚线边框与普通胶囊区分 */
@@ -1417,10 +1424,9 @@ td input.ratio { width: 64px; }
 }
 .group-pick-foot .grow { flex: 1; }
 
-/* Key 行上的分组小标签 */
+/* Key 行上的分组小标签（名字宽度走全局 .group-name 规则） */
 button.group-chip {
-  max-width: 210px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  color: var(--muted);
+  color: var(--muted); --gn-max: 210px;
 }
 button.group-chip:hover { color: var(--accent); }
 
@@ -1456,13 +1462,15 @@ button.group-chip:hover { color: var(--accent); }
 .pricing-table .unit-cell { display: inline-flex; flex-direction: column; gap: 4px; align-items: flex-start; }
 .pricing-table .unit-badge { font-variant-numeric: tabular-nums; }
 
-/* 模型名与分组超长时省略号：分组列曾把整张表撑到 270px+，
-   把右侧的成本/价差直接挤出可视区。全名放在 title 里，悬停可见 */
-.pricing-table td.mono, .pricing-table td.mono .badge,
-.pricing-table td .group-chip-cell .badge {
+/* 模型名超长时省略号：全名放在 title 里，悬停可见 */
+.pricing-table td.mono {
   max-width: 190px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.pricing-table td .group-chip-cell { max-width: 200px; display: inline-flex; align-items: center; gap: 4px; }
+/* 分组列曾把整张表撑到 270px+，把右侧的成本/价差挤出可视区：这里只压列宽，
+   名字怎么截断交给全局 .group-name 规则（宽度走 --gn-max） */
+.pricing-table td .group-chip-cell {
+  max-width: 200px; display: inline-flex; align-items: center; gap: 4px; --gn-max: 180px;
+}
 
 /* 综合成本 / 价差两列右侧吸附：横向滚动时始终可见——这两列才是比价要看的东西 */
 .pricing-table th:nth-last-child(-n+2), .pricing-table td:nth-last-child(-n+2) {
@@ -1997,7 +2005,7 @@ body.prov-dragging .drop-zone { display: flex; }
 .monitor-site .prov-tiles { margin-top: 11px; }
 .monitor-site-groups { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 10px; }
 .monitor-site-groups .group-chip {
-  font-size: 11px; padding: 1px 6px; max-width: 100%;
+  font-size: 11px; padding: 1px 6px; max-width: 100%; --gn-max: 100%;
   background: var(--surface); border-color: var(--border);
 }
 /* 同一行卡片等高时，按钮沉到底边，视觉上对齐 */

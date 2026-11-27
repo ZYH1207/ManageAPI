@@ -238,7 +238,7 @@ export function billingVerdict({
  * 完整探测一个「站 × 分组 × 模型」。
  * 发四次请求：指纹与计费、截断、缓存（两次）。
  */
-export async function probeModel({ baseUrl, apiKey, model, timeoutMs = 45000, skipCache = false }) {
+export async function probeModel({ baseUrl, apiKey, model, timeoutMs = 45000, skipCache = false, skipIdentity = false }) {
   const result = {
     ok: false,
     model,
@@ -365,20 +365,24 @@ export async function probeModel({ baseUrl, apiKey, model, timeoutMs = 45000, sk
   result.billedInputInflated = verdict.billedInputInflated
   result.cacheSuspect = verdict.cacheSuspect
 
-  // ---- 身份自述：只记录，不参与评分（模型自述经常不准）
-  try {
-    const identity = await chatOnce({
-      baseUrl,
-      apiKey,
-      model,
-      prompt: IDENTITY_PROMPT,
-      maxTokens: 40,
-      timeoutMs,
-    })
-    const text = String(identity.text || '').trim().replace(/\s+/g, ' ')
-    result.identityClaim = text ? text.slice(0, 80) : null
-  } catch {
-    result.identityClaim = null
+  // ---- 身份自述：只记录，不参与评分（模型自述经常不准）。
+  // 日常轮次跳过（skipIdentity）：一条供给探过一次之后，再问「你是什么模型」
+  // 就是每轮白打一发请求——它对评分零贡献，只占额度。
+  if (!skipIdentity) {
+    try {
+      const identity = await chatOnce({
+        baseUrl,
+        apiKey,
+        model,
+        prompt: IDENTITY_PROMPT,
+        maxTokens: 40,
+        timeoutMs,
+      })
+      const text = String(identity.text || '').trim().replace(/\s+/g, ' ')
+      result.identityClaim = text ? text.slice(0, 80) : null
+    } catch {
+      result.identityClaim = null
+    }
   }
 
   return result

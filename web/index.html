@@ -378,7 +378,8 @@
 
             <h4 class="doc-h4">探针</h4>
             <p>
-              检测站有没有偷工。每个模型可以单独点「探测」，也可以点「探测全部」。<br />
+              检测站有没有偷工。每个模型可以单独点「探测」，也可以点「探测全部」——一次最多 20 个，
+              按<b>最久没探过的先探</b>轮转（不是永远打同一批），冷却中的站会跳过，点两次就能把全部供给过一遍。<br />
               · <b>指纹</b> —— 要求精确输出固定内容，返回不对说明可能被掉包<br />
               · <b>截断</b> —— 要求数到 120，没数完说明上游压低了 max_tokens<br />
               · <b>计费</b> —— 扣掉同一次请求命中的缓存后，计费输入仍远超实际请求规模，说明多收钱<br />
@@ -477,7 +478,7 @@
 
             <h4 class="doc-h4">① 探针：查的是「有没有偷工」，不是「模型聪不聪明」</h4>
             <p>
-              每次探测对一个模型发 5 个请求，分别对应中转站最常见的几种偷工方式。
+              每次探测对一个模型发 3~5 个请求（缓存与身份自述按需才发），分别对应中转站最常见的几种偷工方式。
               它测的不是 MMLU 那种「模型有多聪明」——同一个模型在 A 站和 B 站能力本来就一样，
               有差别的是<b>它们有没有老实提供服务</b>。
             </p>
@@ -899,7 +900,9 @@
 
             <h4 class="doc-h4">Probes</h4>
             <p>
-              Checks whether a site is cutting corners. Probe a single model, or all of them.<br />
+              Checks whether a site is cutting corners. Probe a single model, or all of them — up to 20 per click,
+              always starting with the ones <b>probed longest ago</b> (so repeated clicks sweep every supply
+              instead of hammering the same few), and sites in cooldown are skipped.<br />
               · <b>Fingerprint</b> — demands an exact fixed output; anything else suggests the request was rerouted<br />
               · <b>Truncation</b> — asks it to count to 120; stopping early means the upstream lowered max_tokens<br />
               · <b>Billing</b> — billed input, after subtracting the cache hits of the same request, far beyond the
@@ -1001,7 +1004,8 @@
 
             <h4 class="doc-h4">① Probes: detecting shortcuts, not measuring intelligence</h4>
             <p>
-              Each probe sends five requests to a model, covering the most common ways a relay cuts corners.
+              Each probe sends three to five requests to a model (the cache pair and the identity question only when
+              needed), covering the most common ways a relay cuts corners.
               It is not an MMLU-style benchmark — the same model is equally capable everywhere; what differs is
               <b>whether the site actually delivers it</b>.
             </p>

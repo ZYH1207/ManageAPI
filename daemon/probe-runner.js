@@ -4,19 +4,22 @@
 import * as store from '../core/store.js'
 import * as inv from '../core/inventory.js'
 import { probeModel } from '../core/probe.js'
+import { scoreOffers } from '../core/score.js'
 import {
   isNonChatModel,
   isTransientError,
   lastCacheProbeAt,
+  pickProbeTargets,
   probeTimeoutMsOf,
+  providerCooldowns,
   shouldProbeCache,
 } from '../core/probe-policy.js'
 
 /**
- * @param {{providerId?:string, offerId?:string, offerIds?:string[], limit?:number}} options
+ * @param {{providerId?:string, offerId?:string, offerIds?:string[], limit?:number, deep?:boolean}} options
  * @returns {Promise<Array>} 每个目标的探测结果
  */
-export async function runProbes({ providerId, offerId, offerIds, limit = 5 } = {}) {
+export async function runProbes({ providerId, offerId, offerIds, limit = 5, deep = false } = {}) {
   const db = await store.readDb()
 
   // 探针目标与路由/比价同口径：下线、暂停、忽略的都不探（手动指定 offerId 时也拦，避免定时任务漏网）。
@@ -36,7 +39,27 @@ export async function runProbes({ providerId, offerId, offerIds, limit = 5 } = {
     db.credentials.find((c) => c.providerId === offer.providerId)
 
   targets = targets.filter((offer) => credentialFor(offer))
-  if (!offerId) targets = targets.slice(0, limit)
+
+  // ---- 批量目标怎么挑：最久没探的先探，冷却中的站跳过。
+  // 以前这里是 targets.slice(0, limit)：顺序永远是数据里的固定顺序，于是手点
+  // 「探测全部」每次都打同前 5 条（13 条在售供给时后面 8 条只能等定时任务），
+  // 而且完全不看冷却——429 的站被反复砸，只会把限流拖得更久。
+  // 定时任务会显式传 offerIds（它自己已经算过到期顺序与冷却）：名单说了算，
+  // 这里只按 limit 截断；只有「没给名单」的手动/站点级批量才由这里挑目标。
+  // 挑选规则本身是纯函数（pickProbeTargets），有单测盯着。
+  const explicitList = Array.isArray(offerIds) && offerIds.length > 0
+  let coolingRows = []
+  if (explicitList) {
+    targets = targets.slice(0, limit)
+  } else if (!offerId) {
+    const scores = scoreOffers(db.probes, db.traffic, {
+      maxAgeMs: (Number(db.settings?.scoreMaxAgeHours) || 6) * 3600 * 1000,
+    })
+    const cooldowns = providerCooldowns(scores, (id) => db.offers.find((o) => o.id === id)?.providerId)
+    const picked = pickProbeTargets({ offers: targets, probes: db.probes, cooldowns, limit })
+    targets = picked.targets
+    coolingRows = picked.cooling
+  }
 
   // 4 路并发：一轮 10 个目标串行跑满 45 秒超时时要 7 分钟以上，
   // 站点会在这期间持续处于「探针过期」而掉出路由池。写盘仍由 mutate 串行，
@@ -71,6 +94,9 @@ export async function runProbes({ providerId, offerId, offerIds, limit = 5 } = {
         continue
       }
       const skipCache = !shouldProbeCache(lastCacheProbeAt(db.probes, offer.id))
+      // 身份自述只记录、不评分（模型自述经常是错的），日常每轮白打一发没意义：
+      // 只在「这条供给第一次探」或单条深探（人点的那一下）时才问。
+      const skipIdentity = !deep && db.probes.some((p) => p.offerId === offer.id)
       const probeOnce = () =>
         probeModel({
           baseUrl: inv.apiBaseOf(provider),
@@ -78,6 +104,7 @@ export async function runProbes({ providerId, offerId, offerIds, limit = 5 } = {
           model: offer.upstreamName,
           timeoutMs,
           skipCache,
+          skipIdentity,
         })
       let record = await probeOnce()
       // 瞬时错误（5xx / 超时 / 连接没建立）先重试一次：一针定生死会把
@@ -111,7 +138,10 @@ export async function runProbes({ providerId, offerId, offerIds, limit = 5 } = {
   const localNetworkOutage =
     failed.length >= 2 && netFailed.length / failed.length >= 0.6 && netProviders.size >= 2
   if (localNetworkOutage) {
-    return results.filter(Boolean).map((r) => ({ ...r, skipped: 'local-network-outage' }))
+    return [
+      ...results.filter(Boolean).map((r) => ({ ...r, skipped: 'local-network-outage' })),
+      ...coolingRows,
+    ]
   }
 
   // ---- 首字相对化：绝对毫秒里含本机链路（带宽/运营商抖动/家里路由器），
@@ -142,5 +172,5 @@ export async function runProbes({ providerId, offerId, offerIds, limit = 5 } = {
       modelKey: targets.find((t) => t.id === record.offerId)?.modelKey,
     })
   }
-  return results.filter(Boolean)
+  return [...results.filter(Boolean), ...coolingRows]
 }

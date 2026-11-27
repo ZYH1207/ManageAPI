@@ -136,17 +136,23 @@ function cacheHitCell(candidate) {
   return `<span title="${esc(title)}">${Math.round(rate * 100)}%</span>${badge}`
 }
 
-/** 站点登录态状态灯（卡片上站点名左边的小圆点）：
- *  绿=账号密码登录有效；黄=有登录态但已失效 / 不会自动续期；
- *  红=什么都没有——余额、公告、分组识别这些登录态功能全是哑的 */
+/**
+ * 站点登录态状态灯（站点卡标题旁那个小圆点）。
+ *  绿=登录态有效且过期能自动续上（renewable 由后端 renewModeOf 判定：
+ *     sub2api 有刷新令牌=refresh、账号密码登录=login）；
+ *  红=没登录态 / 登录态已失效，余额、公告、分组识别这些功能全是哑的；
+ *  黄=有效但这个站不会自己续期，过期后要手动再登一次。
+ * 注意别再用 adminTokenSource === 'login' 判「能续期」：sub2api 的 session 令牌
+ * 靠刷新令牌续，以前被一律涂黄，等于谎报「不会自动续期」（北辰 / X-AI / 凌风 都中招）。
+ */
 function loginLightDot(p) {
   const dot = (cls, title) => `<span class="dot login-dot ${cls}" title="${esc(title)}"></span>`
   if (!p.hasAdminToken) return dot('red', t('未登录：余额、公告、分组识别、用量核对都不可用'))
-  if (p.adminTokenSource === 'login' && p.tokenStatus !== 'invalid') {
-    return dot('green', t('登录态有效：过期会自动续期'))
-  }
   if (p.tokenStatus === 'invalid') {
-    return dot('yellow', t('登录态已失效：余额、公告、分组识别暂时不可用，请重新账号登录'))
+    return dot('red', t('登录态已失效：余额、公告、分组识别暂时不可用，请重新账号登录'))
+  }
+  if (p.renewable === 'refresh' || p.renewable === 'login') {
+    return dot('green', t('登录态有效：过期会自动续期'))
   }
   return dot('yellow', t('登录态可用，但不会自动续期'))
 }
@@ -250,6 +256,17 @@ function groupChipOf(providerId, groupName) {
     (o) => o.providerId === providerId && (o.group || '') === g,
   )
   return groupChipClass(groupOffers)
+}
+
+/**
+ * 分组名的**唯一渲染出处**：站点真会起 40 字的分组名（「【自建】混池 6.1-sol专属，高缓不降智…」），
+ * 每一处显示分组名的地方都套这个 span，截断规则只在 style.css 的 `.group-name` 一处维护；
+ * 各上下文只调 CSS 变量 `--gn-max` 定宽度。倍率、徽章是名字的兄弟节点，不跟着被吃掉。
+ * （此前 5 个页面各写一套 max-width + ellipsis，宽度还不一样，改一处漏四处。）
+ */
+function groupNameHtml(name) {
+  const g = String(name ?? '')
+  return `<span class="group-name" title="${esc(g)}">${esc(g)}</span>`
 }
 
 let toastTimer = null
@@ -1699,7 +1716,7 @@ function providersHtml({ withForm = true, panel = '', actions = '' } = {}) {
           <span class="prov-group-chips">
             ${(expanded ? keyGroups : keyGroups.slice(0, 6)).map((g) => {
               // 长分组名（站点真能起 40 字的）在胶囊里截断，悬停看全名
-              return `<span class="group-chip ${groupChipOf(p.id, g)}" title="${esc(g)}"><span class="chip-name">${esc(g)}</span>${groupChipTag(g)}</span>`
+              return `<span class="group-chip ${groupChipOf(p.id, g)}" title="${esc(g)}"><span class="chip-name group-name">${esc(g)}</span>${groupChipTag(g)}</span>`
             }).join('')}
             ${keyGroups.length > 6
               ? `<button class="group-chip group-more" data-act="group-toggle" data-provider="${esc(p.id)}">${expanded ? t('收起') : t('还有 {n} 个', { n: keyGroups.length - 6 })}</button>`
@@ -1737,7 +1754,7 @@ function providersHtml({ withForm = true, panel = '', actions = '' } = {}) {
               <span class="tail">sk-••••${esc(k.tail || '????')}</span>
               ${typeof k.tokenRate === 'number' ? `<span class="badge" title="${t('站点后台给这把 Key 配的倍率')}">×${k.tokenRate}</span>` : ''}
               <button class="ghost tiny group-chip ${groupChipOf(p.id, k.group)}" data-act="open-group-picker" title="${k.group ? '这把 Key 属于这个分组，点这里换' : '还没选分组，点这里选（会顺便把倍率填好）'}">
-                ${k.group ? `分组 · ${esc(k.group)}` : '选分组'}
+                ${k.group ? `分组 · ${groupNameHtml(k.group)}` : '选分组'}
               </button>
               <span class="tail">${keyOffers.length} 个模型</span>
               <span class="grow"></span>
@@ -2332,7 +2349,7 @@ function renderPricing() {
             return `
             <tr data-offer="${esc(offer.id)}">
               <td>${esc(providerName(offer.providerId))}</td>
-              <td class="mono">${esc(offer.upstreamName)}${offer.group ? ` <span class="badge ${groupChipOf(offer.providerId, offer.group)}">${esc(offer.group)}</span>` : ''}</td>
+              <td class="mono">${esc(offer.upstreamName)}${offer.group ? ` <span class="badge ${groupChipOf(offer.providerId, offer.group)}">${groupNameHtml(offer.group)}</span>` : ''}</td>
               <td class="num" style="color:var(--faint)">${benchText}</td>
               <td class="num"><input type="number" step="0.001" placeholder="—" value="${offer.inPrice ?? ''}" data-field="inPrice" /></td>
               <td class="num"><input type="number" step="0.001" placeholder="—" value="${offer.outPrice ?? ''}" data-field="outPrice" /></td>
@@ -2405,7 +2422,7 @@ function renderPricing() {
         <td>${esc(providerName(row.providerId))}</td>
         <td class="mono">${esc(row.upstreamName)}${badge}</td>
         <td class="num sub-cell">${cacheCell}</td>
-        <td><span class="group-chip-cell">${row.group ? `<span class="badge ${groupChipOf(row.providerId, row.group)}" title="${esc(t('这个分组来自该行所属的 Key；同一个模型要挂到另一档套餐，就在站点页给那个分组加一把 Key'))}">${esc(row.group)}</span>` : `<span style="color:var(--faint)" title="${t('该行的 Key 没有分组')}">${t('默认')}</span>`}</span></td>
+        <td><span class="group-chip-cell">${row.group ? `<span class="badge ${groupChipOf(row.providerId, row.group)}" title="${esc(t('这个分组来自该行所属的 Key；同一个模型要挂到另一档套餐，就在站点页给那个分组加一把 Key'))}">${groupNameHtml(row.group)}</span>` : `<span style="color:var(--faint)" title="${t('该行的 Key 没有分组')}">${t('默认')}</span>`}</span></td>
         <td class="num">${inText}</td>
         <td class="num">${outText}</td>
         <td class="num" title="倍率来自站点/分组配置，比价页只读；要改请到「站点」页">${ratioText}</td>
@@ -3073,7 +3090,7 @@ function renderDecision() {
             candidate.group || (candidate.upstreamName && candidate.upstreamName !== decision.modelKey)
               ? `<div class="sub">${
                   candidate.group
-                    ? `<span class="badge ${groupChipOf(candidate.providerId, candidate.group)}">${esc(candidate.group)}</span>`
+                    ? `<span class="badge ${groupChipOf(candidate.providerId, candidate.group)}">${groupNameHtml(candidate.group)}</span>`
                     : ''
                 }${
                   candidate.upstreamName && candidate.upstreamName !== decision.modelKey
@@ -3317,10 +3334,10 @@ function renderProbes() {
         <div style="flex:1;min-width:240px">
           <div style="font-weight:500">主动探测</div>
           <div class="hint" style="margin:4px 0 0">
-            每个模型发 5 个请求：指纹 + 计费、截断、缓存（连发两次）、身份自述。结果进入评分，路由据此排除可疑的站。
+            每个模型发 3~5 个请求：指纹 + 计费、截断，必要时再问身份自述、连发两次缓存。结果进入评分，路由据此排除可疑的站。
           </div>
         </div>
-        <button class="primary" data-act="probe-all">探测全部（最多 5 个）</button>
+        <button class="primary" data-act="probe-all">探测全部（最多 20 个）</button>
       </div>
       <div style="display:flex;align-items:center;gap:20px;flex-wrap:wrap;margin-top:14px;padding-top:12px;border-top:1px dashed var(--border)">
         <label class="field-inline">自动探测
@@ -3357,7 +3374,7 @@ function renderProbes() {
           }`
       return `
         <tr data-offer="${esc(offer.id)}" ${hasDetail ? 'data-act="toggle-detail" tabindex="0" style="cursor:pointer"' : ''}>
-          <td class="mono">${esc(offer.upstreamName)}${offer.group ? ` <span class="badge ${groupChipOf(offer.providerId, offer.group)}">${esc(offer.group)}</span>` : ''}${hasDetail ? ' <span style="color:var(--faint);font-size:10px">▾</span>' : ''}</td>
+          <td class="mono">${esc(offer.upstreamName)}${offer.group ? ` <span class="badge ${groupChipOf(offer.providerId, offer.group)}">${groupNameHtml(offer.group)}</span>` : ''}${hasDetail ? ' <span style="color:var(--faint);font-size:10px">▾</span>' : ''}</td>
           <td>${statusCell}</td>
           <td class="num">${pct(score?.availability)}</td>
           <td class="num">${pct(score?.fingerprintRate)}</td>
@@ -3513,7 +3530,7 @@ function renderGateway() {
           <td style="color:var(--faint)">${fmtDateTime(r.ts)}</td>
           <td>${esc(r.keyName || '—')}</td>
           <td class="mono">${esc(r.model)}</td>
-          <td>${r.chosenProviderName ? `${esc(r.chosenProviderName)}${r.chosenGroup ? ` <span class="badge ${r.pool === 'free' ? 'vchip-free' : groupChipOf(r.chosenProviderId, r.chosenGroup)}">${esc(r.chosenGroup)}</span>` : ''}` : '<span class="badge danger">全部失败</span>'}</td>
+          <td>${r.chosenProviderName ? `${esc(r.chosenProviderName)}${r.chosenGroup ? ` <span class="badge ${r.pool === 'free' ? 'vchip-free' : groupChipOf(r.chosenProviderId, r.chosenGroup)}">${groupNameHtml(r.chosenGroup)}</span>` : ''}` : '<span class="badge danger">全部失败</span>'}</td>
           <td class="num">${r.usage ? formatTokens((r.usage.prompt_tokens || 0) + (r.usage.completion_tokens || 0)) : '—'}</td>
           <td class="num">${r.attempts}</td>
           <td class="num">${r.ttftMs ? `${r.ttftMs}ms` : '—'}</td>
@@ -4345,7 +4362,7 @@ function renderMonitor() {
       // 倍率 0 的分组就是免费池，用免费色（与站点卡「免费 N」标记一致）
       const groupChips = groups
         .slice(0, 6)
-        .map((g) => `<span class="group-chip static ${g.rate === 0 ? 'vchip-free' : ''}">${esc(g.name)}${typeof g.rate === 'number' ? ` <span class="ratio-tone ${ratioToneClass(g.rate)}">×${g.rate}</span>` : ''}</span>`)
+        .map((g) => `<span class="group-chip static ${g.rate === 0 ? 'vchip-free' : ''}" title="${esc(g.name)}">${groupNameHtml(g.name)}${typeof g.rate === 'number' ? ` <span class="ratio-tone ${ratioToneClass(g.rate)}">×${g.rate}</span>` : ''}</span>`)
         .join('')
       const more = groups.length > 6
         ? `<span class="hint">${t('还有 {n} 个', { n: groups.length - 6 })}</span>`
@@ -5881,11 +5898,17 @@ document.addEventListener('click', async (event) => {
   if (action === 'probe-all') {
     toast('正在探测，需要几秒到几十秒…')
     await withBusy(actionButton, async () => {
-      const result = await api('POST', '/api/probes/run', { limit: 5 })
+      // 一次最多 20 个：13 条在售供给能一次盖住。以前这里硬写 5，
+      // 且后端按数据固定顺序取前 5 条，于是「探测全部」永远只打同一批。
+      const result = await api('POST', '/api/probes/run', { limit: 20 })
       state = result
       render()
-      const okCount = result.probeResults.filter((r) => r.ok).length
-      toast(`探测 ${result.probeResults.length} 个，成功 ${okCount}`)
+      const rows = result.probeResults || []
+      const okCount = rows.filter((r) => r.ok).length
+      const cooling = rows.filter((r) => r.skipped === 'cooling').length
+      const parts = [`探测 ${rows.length - cooling} 个，成功 ${okCount}`]
+      if (cooling) parts.push(`${cooling} 个在冷却中跳过`)
+      toast(parts.join('，'))
     })
     return
   }

@@ -103,7 +103,8 @@ Ratio state is one of three: **site value** (untouched), **custom** (you edited 
 
 The most common relay problem isn't downtime — it's "still works, but no longer the same model".
 
-Each model gets **5 requests**, one per trick:
+Each model gets **3–5 requests** (the cache pair only every 6 hours, the identity question only on the first
+probe of a supply or a single deep probe), one per trick:
 
 | Trick | Probe | Verdict |
 |---|---|---|
@@ -274,9 +275,11 @@ Everything lives in `~/.manage-api/`:
 
 ## Known limitations
 
-- **Balance is often unreadable.** one-api's `/api/user/self` wants a user access token rather than an `sk-` key, and many sites disable such endpoints. Workaround: connect the site with **Account login** (or **Import session**, pasting the login-response JSON). Sites that cannot auto-renew say why on the card. When it can't be read, type the balance yourself — the tool won't guess.
+- **Balance and billing both need a site login session.** one-api's `/api/user/self` and sub2api's `/api/v1/usage` want a login session, not an `sk-` key, and many sites disable such endpoints. Connect the site once with **Account login** (or **Import session**); after that an expired session **renews itself** (refresh token first, falling back to a fresh account/password login), and sites that cannot auto-renew say why on the card. When it can't be read you get "no data" / "not collected" — the tool won't guess.
 - **Only `/v1/chat/completions` and `/v1/models` are proxied.** Embeddings and images are not implemented.
-- **Usage depends on upstream returning `usage`.** A few sites refuse even when asked; those requests record 0 tokens but still count as requests.
+- **Usage depends on upstream returning `usage`.** A few sites refuse even when asked; those requests record 0 tokens but still count as requests. A request the client cut short *after* upstream had delivered the whole turn is recorded as **"delivered · client hung up"**, and its `usage` and first-token time still count (long conversations almost always end this way — throwing them away would leave the long-chat bucket with no data forever).
+- **A probe proves "not slow", never "fast".** A probe is a 45-token request plus a 14.5k cache pair every 6 hours; a real 200k-token conversation waits 2.6–11.9× longer for its first token. Speed scoring therefore prefers real traffic samples and compares **within prompt-size buckets** (60k / 180k boundaries); with fewer than 3 samples in a bucket the deviation is damped toward 1.00, and a bucket with no samples gets no bonus. New sites, and sites whose context size just changed, look conservative.
+- **One "Probe all" click covers at most 20 models**: it always starts with the ones probed longest ago and skips sites in cooldown, so two clicks sweep everything.
 - **Per-request supplies don't compete for "cheapest"** (different unit). Billing mode is detected from the plaza's `billing_mode`; without a plaza you can set the unit to `/call` yourself.
 - **Only one instance at a time.**
 

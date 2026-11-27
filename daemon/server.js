@@ -2553,7 +2553,9 @@ route('POST', /^\/api\/cost\/preview$/, async (ctx) => {
 // ------------------------------------------------------------------- probes
 
 route('POST', /^\/api\/probes\/run$/, async (ctx) => {
-  const limit = Math.min(Number(ctx.body.limit) || 5, 20)
+  // 上限 40：13 条在售供给时「探测全部」要能一次盖住，而 20 只是旧默认——
+  // 以前这里默认 5，前端也硬写 5，于是按钮叫「全部」却永远只打 5 条。
+  const limit = Math.min(Number(ctx.body.limit) || 20, 40)
   const offerId = ctx.body.offerId
   // 手动探测同样受冷却约束：429 还在冷却时再打一针只会加重限流，
   // 而「要不要现在硬探一次」应该由人明确决定，所以给 409 + force 开关。
@@ -2576,6 +2578,9 @@ route('POST', /^\/api\/probes\/run$/, async (ctx) => {
     providerId: ctx.body.providerId,
     offerId,
     limit,
+    // 单条点「验一次」是人在等结果，顺便问一句身份自述（只展示、不评分）；
+    // 批量与定时任务不问，省掉每轮那一发白请求。
+    deep: Boolean(offerId),
   })
   if (results.length === 0) {
     throw new HttpError(400, '没有可探测的目标：需要该站至少一个 Key，并已同步模型列表')
