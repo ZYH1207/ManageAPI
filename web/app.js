@@ -137,44 +137,58 @@ function cacheHitCell(candidate) {
 }
 
 /** 站点登录态状态灯（卡片上站点名左边的小圆点）：
- *  绿=账号密码登录有效；黄=有令牌但不是可用登录态（手填的 / 登录令牌已失效）；
+ *  绿=账号密码登录有效；黄=有登录态但已失效 / 不会自动续期；
  *  红=什么都没有——余额、公告、分组识别这些登录态功能全是哑的 */
 function loginLightDot(p) {
   const dot = (cls, title) => `<span class="dot login-dot ${cls}" title="${esc(title)}"></span>`
-  if (!p.hasAdminToken) return dot('red', t('未填站点令牌：余额、公告、分组识别、用量核对都不可用'))
+  if (!p.hasAdminToken) return dot('red', t('未登录：余额、公告、分组识别、用量核对都不可用'))
   if (p.adminTokenSource === 'login' && p.tokenStatus !== 'invalid') {
-    return dot('green', t('登录态有效：账号密码登录的令牌，过期会自动续期'))
+    return dot('green', t('登录态有效：过期会自动续期'))
   }
   if (p.tokenStatus === 'invalid') {
-    return dot('yellow', t('令牌已失效：余额、公告、分组识别暂时不可用，请重新登录或填入新令牌'))
+    return dot('yellow', t('登录态已失效：余额、公告、分组识别暂时不可用，请重新账号登录'))
   }
-  return dot('yellow', t('已填站点令牌（非登录态）：功能可用，但不会自动续期'))
+  return dot('yellow', t('登录态可用，但不会自动续期'))
 }
 
-/** 卡片上的登录态续期说明：令牌从哪来、什么时候过期、能不能自动续 */
-function renewalLine(p) {
-  if (!p.hasAdminToken) {
-    return `<span class="hint" style="margin:0">${t('还没有站点令牌：余额、公告、分组识别暂时用不了')}</span>`
-  }
-  const mode =
+/** 「自动续期」格的状态徽章：一眼看清能不能自己续上，解释全放 title */
+function renewBadge(p) {
+  if (!p.hasAdminToken) return `<span class="badge">${t('未登录')}</span>`
+  if (p.tokenStatus === 'invalid') return `<span class="badge danger">${t('已过期')}</span>`
+  if (p.renewable === 'refresh' || p.renewable === 'login') return `<span class="badge ok">${t('自动')}</span>`
+  return `<span class="badge">${t('不续期')}</span>`
+}
+
+/** 到期只留短写：11-30 / 已过期，不写「还有 3 天 12 小时」；已失效时徽章已经说了，不再重复 */
+function renewExpiryText(p) {
+  if (!p.adminTokenExpiresAt || p.tokenStatus === 'invalid') return ''
+  const ms = Date.parse(p.adminTokenExpiresAt) - Date.now()
+  if (!Number.isFinite(ms)) return ''
+  if (ms <= 0) return t('已过期')
+  const d = new Date(p.adminTokenExpiresAt)
+  return `${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
+/** 卡片上的「自动续期」格：和旁边几格同样的形状（小标题 + 值 + 一个按钮），字数越少越好 */
+function renewalTile(p) {
+  const hint =
     p.renewable === 'refresh'
-      ? t('自动续期：刷新令牌（不打扰你）')
+      ? t('会自动续期：快到期时用刷新令牌换新的，不用你管')
       : p.renewable === 'login'
-        ? t('自动续期：账号密码')
-        : t('不会自动续期（手动令牌）')
-  let expires = ''
-  if (p.adminTokenExpiresAt) {
-    const ms = Date.parse(p.adminTokenExpiresAt) - Date.now()
-    if (Number.isFinite(ms)) {
-      const days = Math.floor(ms / 86400000)
-      const hours = Math.max(0, Math.floor(ms / 3600000))
-      expires = ms <= 0 ? t('令牌已过期') : days >= 1 ? `令牌 ${days} 天后过期` : `令牌 ${hours} 小时后过期`
-    }
-  }
-  const renewBtn = p.renewable
-    ? `<button class="ghost tiny" data-act="renew-token" data-provider="${esc(p.id)}" title="${t('立刻刷新一次令牌')}">${t('立即续期')}</button>`
+        ? t('会自动续期：过期时用账号密码重新登录')
+        : p.hasAdminToken
+          ? t('这个站没法自动续期，过期后重新账号登录一次')
+          : t('用站点后台账号登录一次，之后自动续期')
+  const action = p.hasAdminToken
+    ? `<button class="ghost tiny" data-act="renew-token" data-provider="${esc(p.id)}" title="${t('立刻续期一次')}">${t('立即续期')}</button>`
+    : `<button class="ghost tiny" data-act="open-login" data-provider="${esc(p.id)}" title="${t('用站点后台账号登录，自动获取并续期令牌')}">${t('账号登录')}</button>`
+  const expiry = renewExpiryText(p)
+  const err = p.tokenRenewError
+    ? `<span class="tail" style="color:var(--warn)" title="${esc(String(p.tokenRenewError))}">${esc(String(p.tokenRenewError).slice(0, 16))}</span>`
     : ''
-  return `<span class="hint" style="margin:0">${mode}${expires ? ` · ${esc(expires)}` : ''}${p.tokenRenewError ? ` · <span style="color:var(--warn)">${esc(String(p.tokenRenewError).slice(0, 80))}</span>` : ''}</span>${renewBtn}`
+  return `<span class="k" title="${esc(hint)}">${t('自动续期')}</span>
+            <b>${renewBadge(p)}${expiry ? ` <span class="of">${esc(expiry)}</span>` : ''}</b>
+            ${action}${err}`
 }
 
 /** 余额状态徽章：档位全站统一——≤0 红（真没钱了）、低于阈值黄（该充值）、
@@ -631,11 +645,26 @@ function overviewCardItems() {
 
   const { spend, fetched, row, key: spendKey } = siteSpendOf()
   const spendValue = fetched ? `${priceSym()}${money2(row.actual)}` : '未采集'
+  // 「未采集」有三种完全不同的原因，以前都写同一句话，用户无从下手
+  const provs = (state.providers || []).filter((p) => !p.paused)
+  const expired = provs.filter((p) => p.hasAdminToken && p.tokenStatus === 'invalid')
+  const noSession = provs.filter((p) => !p.hasAdminToken)
+  const noBillApi = provs.length - expired.length - noSession.length
   const spendSub = fetched
     ? `${row.providers} 站${spendKey === 'today' && row.requests ? ` · ${row.requests} 次请求` : ''}${
         spend?.anyTruncated && spendKey === 'today' ? ' · 有明细未拉全' : ''
       }`
-    : '到「站点」页点「立即同步」后才读得到账单'
+    : expired.length > 0
+      ? t('{n} 个站点登录态已失效，续上才读得到账单', { n: expired.length })
+      : noSession.length === provs.length
+        ? t('还没有站点登录态：先到站点页「账号登录」')
+        : noBillApi > 0 && expired.length === 0
+          ? t('有站点没开账单接口，读不到就显示未采集')
+          : t('到「站点」页点「立即同步」后才读得到账单')
+  const renewAllBtn =
+    !fetched && expired.length > 0
+      ? `<div class="seg seg-tiny"><button data-act="renew-all-tokens" title="${esc(t('把登录态失效的站点依次续期一次（刷新令牌优先），再重新采集账单'))}">${t('全部续期')}</button></div>`
+      : ''
   // 区间切换放在卡片里：三个区间后端已经算好，点一下只重画概览
   const spendSeg = `<div class="seg seg-tiny">${[
     ['today', '今天'],
@@ -651,7 +680,7 @@ function overviewCardItems() {
   return [
     [t('站点'), providerTotal, t('个'), 'servers', 'tint-muted', t('在售 {n}', { n: s.providerCount })],
     [t('总金额'), balanceValue, '', 'wallet', 'tint-accent', balanceSub],
-    [t('真实花费'), spendValue, '', 'receipt', 'tint-warn', spendSub, spendSeg],
+    [t('真实花费'), spendValue, '', 'receipt', 'tint-warn', spendSub, spendSeg + renewAllBtn],
     [
       t('模型供给'),
       s.offerCount,
@@ -780,6 +809,7 @@ function overviewFlowCard() {
   const rows = (state.routing || []).slice(0, 14)
   const badgeOf = (outcome) => {
     if (outcome === 'ok') return '<span class="badge ok">成功</span>'
+    if (outcome === 'ok-cut') return '<span class="badge ok">已交付 · 客户端先关</span>'
     if (outcome === 'client-aborted') return '<span class="badge">取消</span>'
     if (outcome === 'stream-broken') return '<span class="badge danger">断流</span>'
     return '<span class="badge danger">失败</span>'
@@ -1661,16 +1691,7 @@ function providersHtml({ withForm = true, panel = '', actions = '' } = {}) {
             <b><input class="unit-price" type="number" step="0.0001" min="0" placeholder="${p.currency === 'CNY' ? '1' : money(rateCny())}"
               value="${p.unitPrice ?? ''}" data-act="unit-price" /></b>
           </div>
-          <div title="${esc(t('「令牌」是站点后台的登录凭证，一次填好整站通用，用来读余额、公告和分组'))}">
-            <span class="k">令牌</span>
-            <b>${p.hasAdminToken
-              ? (p.tokenStatus === 'invalid'
-                ? '<span class="badge danger">已失效</span>'
-                : '<span class="badge ok">已填</span>')
-              : '<span class="badge">未填</span>'}</b>
-            <button class="ghost tiny" data-act="set-admin-token" data-provider="${esc(p.id)}" title="${esc(p.adminTokenTail ? `${t('令牌尾号')} …${p.adminTokenTail}` : t('未填站点令牌'))}">${p.hasAdminToken ? '更换' : '填写'}</button>
-          </div>
-          <div class="prov-renew" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:4px">${renewalLine(p)}</div>
+          <div>${renewalTile(p)}</div>
         </div>
 
         <div class="prov-groups">
@@ -1692,7 +1713,6 @@ function providersHtml({ withForm = true, panel = '', actions = '' } = {}) {
           <button data-act="prov-panel" data-panel="sync">${icon('layers')}同步详情</button>
           <button data-act="prov-panel" data-panel="keys">${icon('key')}密钥</button>
           <button data-act="prov-panel" data-panel="rates">${icon('columns')}分组倍率</button>
-          <button data-act="open-group-picker" title="从站点读分组，选你买的那个，倍率自动填到下面所有模型">${icon('columns')}导入倍率</button>
           <button data-act="usage-check" title="用管理令牌拉站方用量，和我们的估算对比">${icon('receipt')}用量核对</button>
           <button data-act="export">${icon('download')}导出配置</button>
         </div>
@@ -1734,7 +1754,7 @@ function providersHtml({ withForm = true, panel = '', actions = '' } = {}) {
             p.hasAdminToken
               ? ''
               : `<div class="hint" style="margin-top:2px">
-            ${t('「令牌」在站点卡片上（不在 Key 上）——它是站点后台的登录凭证，一个后台账号填一次，整站通用。获取：登录后台 → F12 → Network → 点任意 <code>/api/v1/</code> 请求 → 复制 Request Headers 里的 <code>Authorization</code>（去掉 <code>Bearer </code> 前缀）。令牌会过期，失效后重新复制。填了令牌后会自动识别这个站是哪一系。')}
+            ${t('还没有站点登录态：余额、公告、分组识别都用不了。点上面的「账号登录」，之后自动续期。')}
           </div>`
           }
         </div>
@@ -1742,8 +1762,9 @@ function providersHtml({ withForm = true, panel = '', actions = '' } = {}) {
         ${groupRows ? `
         <div data-pane="rates" class="keylist" style="border-top:1px solid var(--border);padding-top:10px">
           <div class="keyrow" style="border:none;padding-bottom:2px">
-            <span style="color:var(--muted);font-size:12px" title="这里列的是「供给行落价时记下的分组」，不是 Key 上的分组；两边不一致时可以点站点页工具栏的「整理分组」对齐">分组倍率（按落价分组）</span>
+            <span style="color:var(--muted);font-size:12px" title="这里列的是「供给行落价时记下的分组」，不是 Key 上的分组">分组倍率（按落价分组）</span>
             <span class="grow"></span>
+            <button class="ghost tiny" data-act="open-group-picker" title="${t('从站点读分组，选你买的那个，倍率自动填到下面所有模型')}">${t('重新读取')}</button>
             ${
               hasCustom
                 ? `<button class="ghost tiny" data-act="restore-ratio-all" title="把这个站所有自定义倍率改回站点公布的值">全部恢复为站点值</button>`
@@ -1858,7 +1879,6 @@ function syncPanelHtml(data = monitorData || {}) {
 function syncActionsHtml() {
   return `
     <button data-act="monitor-collect">${icon('refresh')}${t('立即同步')}</button>
-    <button data-act="groups-repair" title="${t('把供给行上的分组对齐到它所属的 Key，并合并同站同模型的重复行——先预览再落库')}">${icon('layers')}${t('整理分组')}</button>
     <button class="primary" data-act="add-provider">${icon('plus')}${t('新增站点')}</button>`
 }
 
@@ -2036,7 +2056,7 @@ function openProvPanel(button, pane) {
   }
   // 分组倍率那一块只在读到倍率时才渲染；没有就明说怎么办，别给一个空弹窗
   if (pane === 'rates' && !fragment.querySelector('[data-pane="rates"]')) {
-    fragment.innerHTML = `<div class="hint">${t('还没有读到分组倍率。点「导入倍率」从站点读一次，或在下面手动填。')}</div>`
+    fragment.innerHTML = `<div class="hint">${t('还没有读到分组倍率。点「重新读取」从站点读一次，或在下面手动填。')}</div>`
   }
   body.innerHTML = ''
   body.appendChild(fragment)
@@ -2459,22 +2479,48 @@ function paintCurrencySwitch() {
  *   scores 保留——概览/探针/网关页和通知中心都靠它，停在这些页时评分才会跟着轮询更新）
  * - 重绘后恢复滚动位置
  */
-async function refreshState({ silent = false } = {}) {
+async function refreshState({ silent = false, force = false } = {}) {
   const focused = document.activeElement
-  if (focused && /^(INPUT|TEXTAREA|SELECT)$/.test(focused.tagName)) return
+  if (focused && /^(INPUT|TEXTAREA|SELECT)$/.test(focused.tagName)) return false
   const scroller = $('.content')
   const scrollTop = scroller ? scroller.scrollTop : 0
   const light = !HEAVY_TABS.has(activeTab)
   try {
+    // force = 用户手点顶栏「刷新」：把不在 state 里的三块也一起重拉。
+    // 以前只拉 state，于是概览的余额/花费（60 秒 TTL）、监控页、以及
+    // 选了非 30 天的用量页，点刷新都不动——它们读的是各自的缓存。
+    if (force) {
+      usageData = null
+      await Promise.all([
+        api('GET', `/api/monitor?days=${overviewDays}`)
+          .then((data) => {
+            overviewMonitor = data
+            overviewMonitorAt = Date.now()
+          })
+          .catch(() => {}),
+        api('GET', `/api/monitor?days=${monitorDays}`)
+          .then((data) => {
+            monitorData = data
+          })
+          .catch(() => {}),
+        api('GET', `/api/usage?days=${usageRange}`)
+          .then((data) => {
+            usageData = data?.usage ?? data
+          })
+          .catch(() => {}),
+      ])
+    }
     const next = await api('GET', `/api/state${light ? '?light=1' : ''}`)
     state = light && state ? { ...state, ...next } : next
     // 用量页默认 30 天与 state.usage 同口径：清掉旧快照轮询才能生效
     // （此前点过范围按钮后快照永不清空，用量页一直渲染旧数据）
-    if (usageRange === 30) usageData = null
+    if (!force && usageRange === 30) usageData = null
     render()
     if (scroller) scroller.scrollTop = scrollTop
+    return true
   } catch (error) {
     if (!silent) toast(String(error), true)
+    return false
   }
 }
 
@@ -3010,9 +3056,16 @@ function renderDecision() {
     const rows = decision.candidates.map((candidate, index) => {
       const badge = decisionState(candidate)
       const isChosen = candidate.offerId === decision.chosenOfferId
-      const arrows = candidate.routable
-        ? `<button class="ghost tiny" data-act="move-up" title="上移">↑</button><button class="ghost tiny" data-act="move-down" title="下移">↓</button>`
-        : ''
+      // 只有第一行把「上移」换成「置顶」——第一行本来也没法再往上挪。
+      // 置顶 = 冻结当前排头（写一条手动顺序）；再点一次清空手动顺序 = 回到自动。
+      // 其它行保持原来的上移/下移，一个字没动。
+      const pinned = candidate.routable && Boolean(decision.manual) && index === 0
+      const pinButton = `<button class="ghost tiny${pinned ? ' pinned' : ''}" data-act="pin-top" title="${esc(
+        pinned ? t('取消置顶：清空手动顺序，回到自动排序') : t('置顶：固定当前排头，并进入手动顺序'),
+      )}">${pinned ? t('取消置顶') : t('置顶')}</button>`
+      const upButton = `<button class="ghost tiny" data-act="move-up" title="${esc(t('上移'))}">↑</button>`
+      const downButton = `<button class="ghost tiny" data-act="move-down" title="${esc(t('下移'))}">↓</button>`
+      const arrows = candidate.routable ? `${index === 0 ? pinButton : upButton}${downButton}` : ''
       return `
         <tr class="${isChosen ? 'cheapest' : ''}" data-offer="${esc(candidate.offerId)}">
           <td style="white-space:nowrap" class="num">${arrows}<span style="color:var(--faint)">${index + 1}</span></td>
@@ -3050,7 +3103,7 @@ function renderDecision() {
         ${isCollapsed ? '' : `
         <table>
           <thead><tr>
-            <th class="num" style="width:64px" title="${t('↑↓ 手动调整先后：只在「可用」的站之间有效')}">#</th><th>站点</th>
+            <th class="num" style="width:104px" title="${t('第一行是「置顶」：固定当前排头并进入手动顺序，再点一次回到自动；其余行用 ↑↓ 上下挪')}">#</th><th>站点</th>
             <th class="num" title="${t('TTFS：从发出请求到看见第一个字。数字是「当前选中档」的实测值')}">${t('首字TTFS')}<div class="sub">${t('等第一个字')}</div></th>
             <th class="num" title="${t('TPS：第一个字到了之后，每秒输出多少 token')}">${t('输出速度TPS')}<div class="sub">${t('每秒出多少字')}</div></th>
             <th class="num">价格<div class="sub">${t('每百万 token')}</div></th>
@@ -3372,7 +3425,8 @@ function renderGateway() {
 
   const baseUrl = `${location.origin}/v1`
   const routing = state.routing || []
-  const okCount = routing.filter((r) => r.outcome === 'ok').length
+  // ok-cut = 上游交付完毕、客户端先关（DSH 拿到工具调用就断开），内容是完整的，算成功
+  const okCount = routing.filter((r) => r.outcome === 'ok' || r.outcome === 'ok-cut').length
   const healthyModels = Object.values(state.scores || {}).filter((s) => s.routable).length
   const usage = state.usage || { totals: {}, byKey: {}, byModel: {} }
   const byKey = usage.byKey || {}
@@ -3464,7 +3518,7 @@ function renderGateway() {
           <td class="num">${r.attempts}</td>
           <td class="num">${r.ttftMs ? `${r.ttftMs}ms` : '—'}</td>
           <td class="num">${r.latencyMs}ms</td>
-          <td>${r.outcome === 'ok' ? '<span class="badge ok">成功</span>' : `<span class="badge danger">${esc(r.outcome)}</span>`}</td>
+          <td>${r.outcome === 'ok' ? '<span class="badge ok">成功</span>' : r.outcome === 'ok-cut' ? '<span class="badge ok">已交付 · 客户端先关</span>' : `<span class="badge danger">${esc(r.outcome)}</span>`}</td>
         </tr>`).join('')
 
   const logBlock = `
@@ -5493,6 +5547,32 @@ document.addEventListener('click', async (event) => {
     return
   }
 
+  if (action === 'pin-top') {
+    const row = actionButton.closest('[data-offer]')
+    const container = actionButton.closest('[data-model]')
+    if (!row || !container) return
+    const modelKey = container.dataset.model
+    const offerId = row.dataset.offer
+    const decision = state.decisions.find((d) => d.modelKey === modelKey)
+    if (!decision) return
+
+    // 当前手动顺序（没有手动顺序时就是自动排序本身）
+    const ids = decision.candidates.filter((c) => c.routable).map((c) => c.offerId)
+    if (!ids.includes(offerId)) return
+    // 只有第一行有这个按钮：置顶 = 把当前顺序冻结成手动顺序（排头不变，别再浮动）
+    const isPinned = Boolean(decision.manual) && ids[0] === offerId
+    const next = isPinned ? [] : ids
+
+    try {
+      state = await api('PUT', `/api/decisions/${encodeURIComponent(modelKey)}/order`, { order: next })
+      render()
+      toast(isPinned ? t('已取消置顶，回到自动排序') : t('已固定排头顺序，进入手动模式'))
+    } catch (error) {
+      toast(error.message, true)
+    }
+    return
+  }
+
   if (action === 'move-up' || action === 'move-down') {
     const row = actionButton.closest('[data-offer]')
     const container = actionButton.closest('[data-model]')
@@ -5589,13 +5669,49 @@ document.addEventListener('click', async (event) => {
     if (!providerId) return
     await withBusy(actionButton, async () => {
       try {
-        state = await api('POST', `/api/providers/${providerId}/renew`)
+        state = await api('POST', `/api/providers/${providerId}/renew`, {})
         render()
         const method = state.renew?.method === 'refresh' ? '刷新令牌' : '账号密码'
         toast(`令牌已续期（${method}）`)
       } catch (error) {
         toast(error.message, true)
       }
+    })
+    return
+  }
+
+  // 概览卡上的「全部续期」：把登录态失效、但还能自动续的站依次续一次，再采一轮账单
+  if (action === 'renew-all-tokens') {
+    await withBusy(actionButton, async () => {
+      const targets = (state.providers || []).filter((p) => !p.paused && p.hasAdminToken && p.tokenStatus === 'invalid')
+      let done = 0
+      const failed = []
+      for (const p of targets) {
+        try {
+          await api('POST', `/api/providers/${p.id}/renew`, {})
+          done += 1
+        } catch (error) {
+          failed.push(`${p.name}：${error.message}`)
+        }
+      }
+      try {
+        overviewMonitor = await api('GET', `/api/monitor?days=${overviewDays}`)
+        overviewMonitorAt = Date.now()
+      } catch {
+        /* 采集没跑起来也不挡续期结果 */
+      }
+      try {
+        await refreshState()
+      } catch {
+        /* 状态刷新失败就用手上的 */
+      }
+      render()
+      toast(
+        failed.length
+          ? t('续期 {ok} 个，{n} 个失败：{error}', { ok: done, n: failed.length, error: failed[0] })
+          : t('已续期 {n} 个站点', { n: done }),
+        failed.length > 0,
+      )
     })
     return
   }
@@ -5672,81 +5788,11 @@ document.addEventListener('click', async (event) => {
     return
   }
 
-  // 整理分组：把行上的分组对齐到 Key、合并重复行（默认只预览）
-  if (action === 'groups-repair') {
-    await withBusy(actionButton, async () => {
-      try {
-        const preview = await api('POST', '/api/groups/repair', {})
-        const plan = preview.groupsRepair
-        if (!plan || (!plan.moves.length && !plan.duplicates.length)) {
-          toast(t('分组都对得上，没有重复行'))
-          return
-        }
-        const moveLines = plan.movesByProvider
-          .slice(0, 8)
-          .map((row) => `${row.provider}：${row.rows} 条（${row.groups.join('、')}）`)
-          .join('\n')
-        const dupLines = plan.duplicates
-          .slice(0, 6)
-          .map((row) => `${row.provider} · ${row.keepName}：合并掉 ${row.dropped.length} 条`)
-          .join('\n')
-        const parts = []
-        if (plan.moves.length) parts.push(t('{n} 条供给的分组和它所属的 Key 不一致：', { n: plan.moves.length }) + `\n${moveLines}`)
-        if (plan.duplicates.length) parts.push(t('{n} 组同站同模型的重复行：', { n: plan.duplicates.length }) + `\n${dupLines}`)
-        if (plan.orphanOffers) parts.push(t('另有 {n} 条供给没挂 Key（无法判断归属，保持不动）', { n: plan.orphanOffers }))
-        const ok = confirm(
-          parts.join('\n\n') + '\n\n' + t('对齐分组不会改变价格，合并重复行会删掉信息较少的那条。确认执行？'),
-        )
-        if (!ok) return
-        const applied = await api('POST', '/api/groups/repair', { apply: true })
-        state = applied
-        render()
-        const done = applied.groupsRepair
-        toast(t('已整理：{m} 条供给归到 Key 的分组，合并 {d} 条重复行', { m: done.offersMoved, d: done.offersMerged }))
-      } catch (error) {
-        toast(error.message, true)
-      }
-    })
-    return
-  }
-
-  if (action === 'set-admin-token') {
-    const providerId = actionButton.dataset.provider || actionButton.closest('[data-provider]')?.dataset.provider
-    if (!providerId) return
-    const value = prompt(
-      '粘贴站点后台的登录令牌（浏览器 F12 → Network → 任意 /api/v1/ 请求 → Request Headers 里的 Authorization 值，去掉 Bearer 前缀）\n\n一个后台账号填一次，整站通用。留空表示清除。',
-      '',
-    )
-    if (value === null) return
-    try {
-      state = await api('PATCH', `/api/providers/${providerId}`, { adminToken: value.trim() || null })
-      render()
-      if (!value.trim()) {
-        toast('令牌已清除')
-        return
-      }
-      // 填令牌后自动识别系别：匿名探测不出的站，带令牌再探往往就能认出来
-      try {
-        state = await api('POST', `/api/providers/${providerId}/detect-kind`, {})
-        render()
-        const r = state.kindResult
-        if (r?.kind && r.kind !== 'unknown') {
-          toast(`令牌已保存 · 识别为 ${r.kind} 系（${r.evidence}）`)
-        } else {
-          toast(`令牌已保存，系别没能识别：${r?.evidence || '探测失败'}`, true)
-        }
-      } catch {
-        toast('令牌已保存，系别识别失败')
-      }
-    } catch (error) {
-      toast(error.message, true)
-    }
-    return
-  }
+  // 手填令牌已下线：登录态统一走「账号登录 / 导入登录态」，由刷新令牌自动续期
 
   if (action === 'refresh-state') {
-    await refreshState()
-    toast(t('已刷新'))
+    // 手点刷新 = 全站刷新：state 之外的三块（余额/花费、监控、用量当前区间）也重拉
+    if ((await refreshState({ force: true })) !== false) toast(t('已刷新'))
     return
   }
 

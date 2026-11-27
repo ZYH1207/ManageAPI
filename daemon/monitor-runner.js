@@ -39,7 +39,7 @@ export async function collectProviderSnapshots({ providerId = null, logger = con
       if (secret) apiKeys.push(secret)
     }
     const apiKey = apiKeys[0] || ''
-    const adminToken = await inv.revealAdminToken(provider.id)
+    let adminToken = await inv.revealAdminToken(provider.id)
 
     // ---------------------------------------------------------------- 余额
     if (apiKey || adminToken) {
@@ -84,24 +84,42 @@ export async function collectProviderSnapshots({ providerId = null, logger = con
         d.setDate(d.getDate() - offset)
         return { offset, day: localDayKey(d) }
       })
-      const settled = await Promise.all(
-        dayList.map(async ({ day }) => {
-          try {
-            const spend = await providers.fetchSiteDailySpend({
-              baseUrl: inv.apiBaseOf(provider),
-              adminToken,
-              date: day,
-              timeoutMs: 12000,
-            })
-            return [day, spend]
-          } catch {
-            // 读不到账单不是采集失败：站点可能没开 usage 接口，或令牌只读余额
-            return null
-          }
-        }),
-      )
-      const days = Object.fromEntries(settled.filter(Boolean))
+      const baseUrl = inv.apiBaseOf(provider)
+      // 拉一天账单；失败要把原因带回来——以前 catch 里直接 return null，
+      // 令牌过期和「这站没有 usage 接口」在界面上长得一模一样，都是「未采集」
+      const fetchDay = async (token, day) => {
+        try {
+          const spend = await providers.fetchSiteDailySpend({ baseUrl, adminToken: token, date: day, timeoutMs: 12000 })
+          return { day, spend }
+        } catch (error) {
+          return { day, error: String(error?.message || error) }
+        }
+      }
+      let settled = await Promise.all(dayList.map(({ day }) => fetchDay(adminToken, day)))
+      // 401/403 = 令牌过期。当场续一次再重拉：这一步以前完全没有，
+      // 所谓「自动续期」只在点按钮和同步遇 401 时发生，定时采集从不续，
+      // 于是令牌一过期，真实花费就永久停在「未采集」
+      const authFail = settled.find((row) => row.error && /HTTP (401|403)/.test(row.error))
+      if (authFail && provider.adminTokenSource !== 'manual') {
+        const renewed = await inv.autoRelogin(provider.id).catch(() => null)
+        const fresh = renewed?.ok ? await inv.revealAdminToken(provider.id) : null
+        if (fresh) {
+          adminToken = fresh
+          settled = await Promise.all(dayList.map(({ day }) => fetchDay(fresh, day)))
+        }
+      }
+      const days = Object.fromEntries(settled.filter((row) => row.spend).map((row) => [row.day, row.spend]))
       if (Object.keys(days).length > 0) snap.siteSpendDays = days
+      const firstError = settled.find((row) => row.error)?.error || ''
+      if (Object.keys(days).length === 0 && firstError) {
+        // 令牌过期/没权限才值得提醒；超时、结构不对按「这个站读不到账单」处理
+        if (/HTTP (401|403)/.test(firstError)) {
+          errors.push(`账单：${firstError}`)
+          await inv.setTokenStatus(provider.id, { ok: false, message: firstError })
+        } else {
+          logger.info?.(`[监控] ${provider.name}：读不到账单（${firstError}）`)
+        }
+      }
     }
 
     // ---------------------------------------------------------------- 公告

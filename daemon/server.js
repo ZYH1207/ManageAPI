@@ -189,7 +189,9 @@ async function refreshUsageShare() {
 }
 
 /**
- * 上次成功的站：同一模型最近一条 outcome='ok' 的路由记录。
+ * 上次成功的站：同一模型最近一条 outcome='ok' / 'ok-cut' 的路由记录。
+ * 「ok-cut」是上游已交付完、客户端先关连接（DSH 拿到工具调用就断开的常态），
+ * 这一轮内容是完整的，算成功；不算它的话，粘性在这类客户端上形同关闭。
  * 用途只有一个——两条候选价格差很小时优先留在它上面，避免一次抖动就换站、
  * 把上游的前缀缓存全作废（换站省下的钱通常抵不过重算的 prompt）。
  */
@@ -198,7 +200,7 @@ function stickyOfferFor(routingRows, model) {
   const key = inv.normalizeModelKey(model)
   for (let i = rows.length - 1; i >= 0; i -= 1) {
     const row = rows[i]
-    if (!row || row.outcome !== 'ok' || !row.chosenOfferId) continue
+    if (!row || (row.outcome !== 'ok' && row.outcome !== 'ok-cut') || !row.chosenOfferId) continue
     if (inv.normalizeModelKey(row.model || '') === key) return row.chosenOfferId
   }
   return null
@@ -3347,6 +3349,9 @@ function bufferTraffic(offerId, ok, error, quality, providerId = null, speed = n
         promptTokens: Number(speed.promptTokens),
         cachedTokens: Number(speed.cachedTokens),
         aborted: Boolean(speed.aborted),
+            // 干净断流（上游已交付完、客户端先关）!= 真被掐断：
+            // 前者这一轮是完整的，只是我们没读 [DONE]
+            clean: Boolean(speed.clean),
         at: new Date().toISOString(),
       })
       // 缓冲只有 5 秒窗口，上限只是保险：真正去重/裁旧在 inventory.addTraffic
@@ -3638,7 +3643,15 @@ async function forwardToUpstream({
     // 响应已经拿到了，只是客户端先走了：token 照样计费、照样记用量，
     // 但不写已经死掉的 socket，也不把它算成站点的成功样本
     if (clientGone || clientSignal?.aborted) {
-      return { committed: true, clientAborted: true, usage: payload.usage || null, ttftMs: null, upstreamStatus, warmCacheHint }
+      return {
+        committed: true,
+        clientAborted: true,
+        usage: payload.usage || null,
+        ttftMs: null,
+        upstreamStatus,
+        warmCacheHint,
+        finishReason: payload?.choices?.[0]?.finish_reason ?? null,
+      }
     }
     res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', ...headers })
     res.end(JSON.stringify(payload))
@@ -3801,7 +3814,10 @@ async function forwardToUpstream({
     // 这既不是站方断流也不是网关故障：已写出的部分内容保留，但绝不记成站点失败。
     if (clientGone || clientSignal?.aborted) {
       if (!res.writableEnded) res.end()
-      return { committed, usage, ttftMs, clientAborted: true, upstreamStatus, warmCacheHint }
+      // finishReason 一起带回去：断流时它是「这轮到底说完没有」的唯一证据。
+      // 收到了 = 上游已经把这一整轮交付完（finish_reason 在最后一个内容帧里），
+      // 客户端只是没读最后的 [DONE] 就关了 socket；没收到 = 真的说到一半被掐。
+      return { committed, usage, ttftMs, clientAborted: true, upstreamStatus, warmCacheHint, finishReason }
     }
     const reason = idleTimedOut ? `上游流中断（${STREAM_IDLE_MS / 1000} 秒无数据）` : error.message
     if (!committed) return { committed: false, error: `流中断：${reason}`, upstreamStatus }
@@ -3977,6 +3993,12 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
         // 客户端取消（ESC / 关页面）：上游确实被我们 abort 了，但这不是站的失败样本。
         // 记成 client-aborted —— 既不拉低可用率，也不把「被取消」伪装成成功。
         const clientAborted = Boolean(result.clientAborted)
+        const cut = clientAborted || Boolean(result.streamError)
+        // 「干净断流」：上游已经把 finish_reason 发过来了，说明这一轮模型交付完毕，
+        // 只是客户端没读最后的 [DONE] 就关了连接（DSH 拿到工具调用就断开，是典型情况）。
+        // 这种请求和「模型话说到一半被掐」在账上必须分开：前者是完成的，后者才可能丢内容。
+        // 不分开的话，永远回答不了「上游是不是被提前掐断」这个问题。
+        const cleanCut = cut && Boolean(result.finishReason)
         // 真实流量的命中率：决策页显示的是「探针给的先验」，这次请求的真实值更可信。
         // 记进路由日志后，同一站的实测命中率会比探针更早反映「缓存被关掉」这种事
         const realUsage = usageNumbers(result.usage)
@@ -3997,9 +4019,13 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
           upstreamModel: candidate.offer.upstreamName,
           chosenGroup: candidate.offer.group || '',
           attempts: index + 1,
-          outcome: clientAborted ? 'client-aborted' : result.streamError ? 'stream-broken' : 'ok',
+          outcome: cut ? (cleanCut ? 'ok-cut' : clientAborted ? 'client-aborted' : 'stream-broken') : 'ok',
           latencyMs,
           ttftMs: result.ttftMs ?? null,
+          // 断流的两条证据一起记：finishReason 决定这轮算不算说完了，
+          // cut 让统计能一眼把「我们不等」和「站方断流」分开
+          finishReason: result.finishReason ?? null,
+          cut,
           usage: result.usage || null,
           cacheHitRate: realHitRate,
           candidates: explain(candidates),
@@ -4015,7 +4041,7 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
           // 断流不代表首字没用：首字是真的等到了，只是我们没等它说完。
           // 我们自己这轮 20 万 token 的对话几乎全是「拿到工具调用就断流」，
           // 把这些扔掉等于「长对话」这一档永远没有实测样本——而它正是最该测的那一档。
-          const cut = clientAborted || Boolean(result.streamError)
+          // cut / cleanCut 在外层已经算好（同一份证据），这里直接用，别再 shadow 一份
           if (!Number.isFinite(ttft) || ttft <= 0) return null
           // 这条样本是在多大的前缀上量出来的：不记下来，事后就无法回答
           // 「这个站的 30 秒首字是 5 万 token 还是 20 万 token 的」。优先用上游回报的
@@ -4031,9 +4057,12 @@ async function handleChatCompletions(req, res, db, keyRecord, isFreeEntry = fals
             promptTokens: promptTokens > 0 ? promptTokens : null,
             cachedTokens,
             aborted: cut,
+            // 断流里只有「干净断流」是上游交付完毕的：这种样本的解码速度是真的
+            clean: cleanCut,
           }
-          // 断流的请求算不出解码速度（我们没等它解码完），首字照记、tps 留空
-          if (cut || !(completionTokens > 0)) return base
+          // 脏断流（话说到一半被掐）解码时间不完整，只能记首字；
+          // 干净断流整轮都交付了，解码速度照算
+          if ((cut && !cleanCut) || !(completionTokens > 0)) return base
           const decodeMs = Number(latencyMs) - ttft
           return { ...base, tps: decodeMs > 0 ? completionTokens / (decodeMs / 1000) : null }
         })()

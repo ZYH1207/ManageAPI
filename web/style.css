@@ -127,6 +127,9 @@ button.primary:hover { background: #0d655d; border-color: #0d655d; }
 [data-theme='dark'] button.primary:hover { background: #6ee7b7; border-color: #6ee7b7; }
 button.ghost { border-color: transparent; color: var(--muted); padding: 4px 8px; }
 button.ghost:hover { background: var(--hover); color: var(--text); }
+/* 已置顶：常亮，跟普通按钮区分开，否则「取消」看不出是谁按下的结果 */
+button.ghost.pinned { color: var(--accent); background: var(--accent-soft); border-color: var(--accent-mid); }
+button.ghost.pinned:hover { background: var(--accent-soft); color: var(--accent); }
 button.danger { color: var(--danger); border-color: var(--danger-border); }
 button.danger:hover { background: var(--danger-soft); border-color: var(--danger); }
 button:disabled { opacity: 0.5; cursor: default; }

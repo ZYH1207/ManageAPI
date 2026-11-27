@@ -6,9 +6,11 @@
  * classifyFailure 的默认规则 → countsAsOutage=true → 记成站点断流：
  * 可用率被这次「用户自己不要了」的请求拉低，排查时也被引向站方。
  *
- * 本测试用一个会慢慢吐字的上游复现两条路径：
+ * 本测试用一个会慢慢吐字的上游复现三条路径：
  *   A. 客户端收了一半就 abort  → 期望 client-aborted，不计 fail、不计错误
  *   B. 上游自己把连接掐了      → 期望仍是 stream-broken + fail（不能被顺手放过）
+ *   C. 上游交付完毕、客户端先关 → 期望 ok-cut：finish_reason 到了就算说完，
+ *                              解码速度照算（这是 DSH 拿到工具调用就断开的常态）
  *
  * 用法：node .test/check-client-abort.mjs
  */
@@ -38,7 +40,7 @@ const upstream = createServer((req, res) => {
   const url = new URL(req.url, 'http://127.0.0.1')
   if (url.pathname === '/v1/models') {
     res.writeHead(200, { 'Content-Type': 'application/json' })
-    res.end(JSON.stringify({ data: [{ id: 'm-slow' }, { id: 'm-break' }] }))
+    res.end(JSON.stringify({ data: [{ id: 'm-slow' }, { id: 'm-break' }, { id: 'm-cut' }] }))
     return
   }
   if (!url.pathname.endsWith('/chat/completions')) {
@@ -63,6 +65,28 @@ const upstream = createServer((req, res) => {
     const frame = (obj) => res.write(`data: ${JSON.stringify(obj)}\n\n`)
     // 先来一个没有正文的 role 帧（网关会先扣在 held 缓冲里，不算提交）
     frame({ choices: [{ delta: { role: 'assistant' } }] })
+
+    if (model === 'm-cut') {
+      // 干净断流：上游把这一整轮交付完了（finish_reason + usage 一起到达），
+      // 但客户端只读到 finish 就关了连接，永远没读到 [DONE]。
+      // 这正是 DSH 拿到工具调用就断开的样子——内容其实交付完了。
+      let n = 0
+      const timer = setInterval(() => {
+        n += 1
+        frame({ choices: [{ delta: { content: `第${n}段` } }] })
+        if (n >= 2) {
+          clearInterval(timer)
+          frame({
+            choices: [{ delta: {}, finish_reason: 'stop' }],
+            usage: { prompt_tokens: 12, completion_tokens: 60 },
+          })
+          // 拖着不写 [DONE]：客户端会在读到 finish 后先走
+        }
+      }, 30)
+      req.on('aborted', () => clearInterval(timer))
+      res.on('close', () => clearInterval(timer))
+      return
+    }
 
     if (model === 'm-break') {
       // 上游自己断：吐两帧正文后直接掐连接（不写 [DONE]）
@@ -118,10 +142,13 @@ async function call(method, path, body) {
 }
 
 /** 读一次流式请求；onFirstContent 返回后由调用方决定是否 abort。 */
-async function streamOnce(model, auth, { abortAfterFirstContent = false } = {}) {
+async function streamOnce(model, auth, { abortAfterFirstContent = false, abortOn = null, abortAfterMs = 0 } = {}) {
   const controller = new AbortController()
   let sawContent = false
   let aborted = false
+  // 按时间断：上游那一帧 finish_reason 会被网关扣在 held 里（没有后续正文），
+  // 客户端根本看不到，所以「读到 finish 再断」只能靠等一小会儿来确定它已经到上游侧了
+  const deadline = abortAfterMs > 0 ? setTimeout(() => { aborted = true; controller.abort() }, abortAfterMs) : null
   try {
     const res = await fetch(`${base}/v1/chat/completions`, {
       method: 'POST',
@@ -136,6 +163,12 @@ async function streamOnce(model, auth, { abortAfterFirstContent = false } = {}) 
       const { value, done } = await reader.read()
       if (done) break
       text += decoder.decode(value, { stream: true })
+      if (abortOn && !aborted && abortOn.test(text)) {
+        sawContent = true
+        aborted = true
+        controller.abort()
+        break
+      }
       if (abortAfterFirstContent && !sawContent && /"content":"[^"]+"/.test(text)) {
         sawContent = true
         controller.abort()
@@ -147,6 +180,8 @@ async function streamOnce(model, auth, { abortAfterFirstContent = false } = {}) 
   } catch (error) {
     // abort 自身抛 AbortError，属于预期
     return { text: '', aborted, sawContent, error: error.name }
+  } finally {
+    if (deadline) clearTimeout(deadline)
   }
 }
 
@@ -172,7 +207,8 @@ try {
   const offerOf = (modelKey) => state.offers.find((o) => o.modelKey === modelKey)
   const slowOffer = offerOf('m-slow')
   const breakOffer = offerOf('m-break')
-  ok(Boolean(slowOffer && breakOffer), '同步出两条供给（m-slow / m-break）')
+  const cutOffer = offerOf('m-cut')
+  ok(Boolean(slowOffer && breakOffer && cutOffer), '同步出三条供给（m-slow / m-break / m-cut）')
 
   const gatewayKey = state.gateway.keys.find((k) => k.enabled)?.key
   if (!gatewayKey) throw new Error('没有可用的网关 Key')
@@ -227,6 +263,24 @@ try {
     const usage = JSON.parse(await readFile(join(HOME, 'usage.json'), 'utf8'))
     const rows = Object.values(usage.days || {}).flatMap((d) => Object.values(d))
     ok(rows.some((r) => (r.errors || 0) >= 1), '真断流仍然计入用量错误')
+  }
+
+  // ------------------------------------------------------------ C. 干净断流
+  console.log('\n[3] 上游交付完毕但客户端先关（干净断流 → ok-cut）')
+  const c = await streamOnce('m-cut', auth, { abortAfterMs: 500 })
+  ok(c.aborted, '客户端拿到正文后先走了，没等 [DONE]（finish 帧被 held 住，看不到）')
+  await sleep(6500)
+  {
+    const db = JSON.parse(await readFile(join(HOME, 'db.json'), 'utf8'))
+    const row = db.traffic[cutOffer.id] || {}
+    ok((row.fail || 0) === 0, `干净断流不算站点失败（fail=${row.fail || 0}）`)
+    const last = (db.routing || []).filter((r) => r.model === 'm-cut').at(-1)
+    ok(last?.outcome === 'ok-cut', `路由日志记 ok-cut（实际 ${last?.outcome}）`)
+    ok(last?.finishReason === 'stop', `断流证据带 finish_reason（实际 ${last?.finishReason}）`)
+    const speedRows = row.speed?.rows || []
+    ok(speedRows.length === 1, `干净断流留下 1 条速度样本（rows=${speedRows.length}）`)
+    ok(speedRows[0]?.aborted === true && speedRows[0]?.clean === true, '样本标记为「断流但干净」')
+    ok(speedRows[0]?.tps > 0, `上游交付完毕，解码速度可以照算（tps=${speedRows[0]?.tps}）`)
   }
 
   console.log('')

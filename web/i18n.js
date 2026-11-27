@@ -308,12 +308,41 @@ const EN = {
   '导入登录响应': 'Import login response',
   '登录响应（JSON，或直接贴 access token）': 'Login response (JSON, or paste the access token)',
   '立即续期': 'Renew now',
-  '立刻刷新一次令牌': 'Refresh the token now',
-  '自动续期：刷新令牌（不打扰你）': 'Auto-renew: refresh token (unattended)',
-  '自动续期：账号密码': 'Auto-renew: account password',
-  '不会自动续期（手动令牌）': 'No auto-renew (manual token)',
-  '令牌已过期': 'Token expired',
-  '还没有站点令牌：余额、公告、分组识别暂时用不了': 'No site token yet: balance, announcements and group detection stay disabled',
+  '立刻续期一次': 'Renew once now',
+  '自动续期': 'Auto-renew',
+  '未登录': 'Not signed in',
+  '已过期': 'Expired',
+  '自动': 'Auto',
+  '不续期': 'No auto-renew',
+  '到期': 'expires',
+  '重新读取': 'Reload',
+  '会自动续期：快到期时用刷新令牌换新的，不用你管':
+    'Renews itself: a refresh token takes over before expiry — nothing for you to do',
+  '会自动续期：过期时用账号密码重新登录': 'Renews itself: it signs in again with the saved account when it expires',
+  '这个站没法自动续期，过期后重新账号登录一次': 'This site cannot auto-renew; sign in again once it expires',
+  '用站点后台账号登录一次，之后自动续期': 'Sign in once with the site account; it renews itself afterwards',
+  '用站点后台账号登录，自动获取并续期令牌': 'Sign in with the site account to fetch and renew the token automatically',
+  '还没有站点登录态：余额、公告、分组识别都用不了。点上面的「账号登录」，之后自动续期。':
+    'No site session yet: balance, announcements and group detection are off. Click “Sign in” above; it renews itself afterwards.',
+  '未登录：余额、公告、分组识别、用量核对都不可用':
+    'Not signed in: balance, announcements, group detection and usage checks are unavailable',
+  '登录态有效：过期会自动续期': 'Session valid: renews itself before expiry',
+  '登录态已失效：余额、公告、分组识别暂时不可用，请重新账号登录':
+    'Session expired: balance, announcements and group detection are down — sign in again',
+  '登录态可用，但不会自动续期': 'Session works but does not renew itself',
+  '全部续期': 'Renew all',
+  '已续期 {n} 个站点': 'Renewed {n} site(s)',
+  '续期 {ok} 个，{n} 个失败：{error}': 'Renewed {ok}; {n} failed: {error}',
+  '把登录态失效的站点依次续期一次（刷新令牌优先），再重新采集账单':
+    'Renews every expired site once (refresh token first), then re-reads the bills',
+  '{n} 个站点登录态已失效，续上才读得到账单':
+    '{n} site session(s) expired — bills only come back once they are renewed',
+  '还没有站点登录态：先到站点页「账号登录」':
+    'No site session yet: sign in from the Sites page first',
+  '有站点没开账单接口，读不到就显示未采集':
+    'Some sites expose no billing API; those stay uncaptured',
+  '从站点读分组，选你买的那个，倍率自动填到下面所有模型':
+    'Read groups from the site, pick the one you bought, and the rate fills in for every model below',
   '自动判定': 'Auto-detected',
   '已判定': 'detected',
   '无证据': 'no evidence',
@@ -449,6 +478,15 @@ const EN = {
   '恢复': 'Restore',
   '上移': 'Move up',
   '下移': 'Move down',
+  '置顶': 'Pin',
+  '取消置顶': 'Unpin',
+  '置顶：固定当前排头，并进入手动顺序': 'Pin: freezes the current top site and switches to manual order',
+  '取消置顶：清空手动顺序，回到自动排序':
+    'Unpin: clears the manual order and returns to automatic ranking',
+  '已固定排头顺序，进入手动模式': 'Top order frozen — manual mode on',
+  '已取消置顶，回到自动排序': 'Unpinned — back to automatic ranking',
+  '第一行是「置顶」：固定当前排头并进入手动顺序，再点一次回到自动；其余行用 ↑↓ 上下挪':
+    'The first row has Pin: it freezes the current top site and turns on manual order; click again to go back to auto. Other rows use ↑↓',
   '未探测': 'Not probed',
   '未录入': 'Not set',
   '未指定分组': 'No group',
@@ -898,7 +936,7 @@ Object.assign(EN, {
   // 词典补漏：t() 用到但此前缺失的条目（英文界面之前会回落成中文）
   '诊断信息': 'Diagnostics',
   '下面这段可以直接全选复制，发给开发者定位问题。': 'Select the block below and send it to the developer to help pin down the issue.',
-  '还没有读到分组倍率。点「导入倍率」从站点读一次，或在下面手动填。': 'No group rates yet. Click "Import rates" to read them from the site, or fill them in manually below.',
+  '还没有读到分组倍率。点「重新读取」从站点读一次，或在下面手动填。': 'No group rates yet. Click "Reload" to read them from the site, or fill them in manually below.',
   '/次': '/call',
   '已忽略 {n}': '{n} ignored',
   '没有匹配的模型。': 'No matching models.',
@@ -1058,10 +1096,10 @@ Object.assign(EN, {
 Object.assign(EN, {
   '免费池只收「实际价为 0」的模型。分组名叫「免费」但价格没填的，不算——空不等于 0。':
     'The free pool only takes models whose actual price is 0. A group named "free" with an empty price does not count — blank is not zero.',
-  '去「比价」页把它的输入/输出价填 0，或直接点「标为免费」；也可以先「导入倍率」，实际价算下来是 0 的会自动进来。':
-    'Set its input/output price to 0 on the Pricing page, or click "Mark free". You can also import ratios first — anything that works out to 0 lands here automatically.',
+  '去「比价」页把它的输入/输出价填 0，或直接点「标为免费」；也可以先在站点页读一次分组倍率，实际价算下来是 0 的会自动进来。':
+    'Set its input/output price to 0 on the Pricing page, or click "Mark free". You can also reload group rates on the Sites page first — anything that works out to 0 lands here automatically.',
   '去比价页标免费': 'Mark free on Pricing',
-  '去站点导入倍率': 'Import ratios on Sites',
+  '去站点读倍率': 'Reload rates on Sites',
   '标为免费': 'Mark free',
   '把输入/输出价都设为 0，这条就进免费池（不进比价和自动选站）':
     'Sets input and output price to 0 — this supply moves to the free pool and leaves paid comparison.',

@@ -1229,8 +1229,10 @@ export async function addTraffic(entries, windowMs = TRAFFIC_WINDOW_MS) {
             // prompt 大小决定了这条样本属于哪一档；没有就留 null（只能进全档）
             promptTokens: Number.isFinite(promptTokens) && promptTokens > 0 ? Math.round(promptTokens) : null,
             cachedTokens: Number.isFinite(cachedTokens) && cachedTokens >= 0 ? Math.round(cachedTokens) : null,
-            // 断流的请求只测到了首字（我们没等它解码完），留着但不贡献解码速度
+            // 断流的请求只测到了首字（我们没等它解码完），留着但不贡献解码速度；
+            // clean=true 表示上游其实交付完了（finish_reason 收到），只是客户端先关了连接
             aborted: Boolean(sample?.aborted),
+            clean: Boolean(sample?.clean),
             at: sample?.at || atIso,
           })
         }
